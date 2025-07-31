@@ -1,0 +1,1652 @@
+"""
+Chat Router for handling conversation and messaging.
+"""
+
+import asyncio
+import base64
+import json
+import os
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
+
+import aiohttp
+from fastapi import (APIRouter, Depends, HTTPException, Request, Response,
+                     status)
+from fastapi.responses import Response, StreamingResponse
+from pydantic import BaseModel
+from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from ..database import get_db
+from ..models import Conversation, Message, MessageRole, MessageStatus, User
+from ..routers.auth_router import get_current_user
+from ..services.dynamic_tool_registry import dynamic_tool_registry
+from ..services.execution_orchestrator import ExecutionOrchestrator
+from ..services.intent_processor import IntentProcessor
+from ..services.tool_executor import tool_executor
+from ..services.tool_router import ToolRouter
+
+router = APIRouter()
+
+
+class MessageCreate(BaseModel):
+    content: str
+    provider: str = None
+
+
+class ConversationCreate(BaseModel):
+    title: str = None
+
+
+class ConversationUpdate(BaseModel):
+    title: str
+
+
+class MessageRead(BaseModel):
+    id: int
+    conversation_id: int
+    role: str
+    content: str
+    status: str
+    tokens_used: Optional[int] = None
+    tools_called: Optional[List[Dict[str, Any]]] = None
+    tool_call_id: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+    
+    @classmethod
+    def from_orm(cls, obj):
+        """Custom from_orm method to handle datetime conversion."""
+        data = {
+            "id": obj.id,
+            "conversation_id": obj.conversation_id,
+            "role": obj.role,
+            "content": obj.content,
+            "status": obj.status,
+            "tokens_used": obj.tokens_used,
+            "tools_called": obj.tools_called,
+            "tool_call_id": obj.tool_call_id,
+            "error_message": obj.error_message,
+            "created_at": obj.created_at.isoformat() if obj.created_at else None
+        }
+        return cls(**data)
+
+
+@router.post("/conversations", status_code=status.HTTP_201_CREATED)
+async def create_conversation(
+    data: ConversationCreate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Create a new conversation."""
+    try:
+        conversation = Conversation(
+            user_id=user.id,
+            title=data.title or "New Conversation"
+        )
+        db.add(conversation)
+        await db.commit()
+        await db.refresh(conversation)
+
+        return {
+            "success": True,
+            "data": {
+                "id": conversation.id,
+                "title": conversation.title,
+                "is_active": conversation.is_active,
+                "created_at": conversation.created_at.isoformat() if conversation.created_at else "",
+                "updated_at": conversation.updated_at.isoformat() if conversation.updated_at else ""
+            }
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create conversation: {str(e)}"
+        )
+
+
+@router.get("/conversations")
+async def get_conversations(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Get user's conversations."""
+    try:
+        result = await db.execute(
+            select(Conversation)
+            .filter(Conversation.user_id == user.id)
+            .order_by(Conversation.updated_at.desc())
+        )
+        conversations = result.scalars().all()
+
+        return {
+            "success": True,
+            "data": [
+                {
+                    "id": conv.id,
+                    "title": conv.title,
+                    "is_active": conv.is_active,
+                    "created_at": conv.created_at.isoformat() if conv.created_at else "",
+                    "updated_at": conv.updated_at.isoformat() if conv.updated_at else ""
+                }
+                for conv in conversations
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get conversations: {str(e)}"
+        )
+
+
+@router.get("/conversations/{conversation_id}", response_model=Dict[str, Any])
+async def get_conversation(
+    conversation_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Get a specific conversation with its messages."""
+    result = await db.execute(
+        select(Conversation)
+        .filter(Conversation.id == conversation_id, Conversation.user_id == user.id)
+        .options(selectinload(Conversation.messages))
+    )
+    conversation = result.scalar_one_or_none()
+
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    return {
+        "id": conversation.id,
+        "title": conversation.title,
+        "is_active": conversation.is_active,
+        "messages": [
+            {
+                "id": msg.id,
+                "role": msg.role,
+                "content": msg.content,
+                "status": msg.status,
+                "tokens_used": msg.tokens_used,
+                "tools_called": msg.tools_called,
+                "error_message": msg.error_message,
+                "created_at": msg.created_at
+            }
+            for msg in conversation.messages
+        ],
+        "created_at": conversation.created_at,
+        "updated_at": conversation.updated_at
+    }
+
+
+async def build_system_prompt() -> str:
+    system_prompt = """You are Mini-Hub, a business automation assistant. Be direct and efficient.
+
+    ## CORE PRINCIPLES:
+    1. Respond to current input only - no context from previous messages
+    2. Be direct and efficient - quick responses
+    3. Use tools only when needed - don't call tools for casual conversation
+    4. Precise tool calls - exact tool names and correct arguments
+
+    ## TOOL CALL FORMAT:
+    When you need to use a tool, format your response exactly like this:
+    ```
+    TOOL_CALL: {"tool": "tool_name", "arguments": {"param": "value"}}
+    ```
+    
+    IMPORTANT: 
+    - Always use the exact format: TOOL_CALL: followed by valid JSON
+    - Use the exact tool names as listed below
+    - Provide all required arguments for the tool
+    - Only call tools when the user specifically requests an action
+
+    ## AVAILABLE TOOLS:
+    - **slack_team_communication**: Send messages to Slack channels
+    - **slack_team_management**: Create and manage Slack channels, list users, and manage workspace settings
+    - **whatsapp_messaging**: Send WhatsApp messages
+    - **hubspot_contact_operations**: Manage HubSpot contacts
+    - **ga4_analytics_dashboard**: Get Google Analytics data
+    - **file_management**: Upload, download, generate PDFs
+    - **web_tools**: Web scraping and automation
+    - **content_creation**: Generate images and content
+
+    ## RESPONSE STYLE:
+    - Be concise and clear
+    - Avoid repetition
+    - Use proper grammar and spelling
+    - Respond naturally to user requests
+    """
+
+    return system_prompt
+
+
+async def relevant_tools(available_tools: List[Dict[str, Any]],
+                         data: MessageCreate) -> List[Dict[str, Any]]:
+    # Smart tool selection based on user intent
+    relevant_tools = []
+    user_request = data.content.lower()
+
+    # Intent detection for Slack actions
+    if any(word in user_request for word in ["create channel", "new channel",
+                                             "make channel", "list channels",
+                                             "get members", "list members", "list channel members", "invite users",
+                                             "archive channel", "set topic",
+                                             "set purpose", "list users"]):
+        relevant_tools = [tool for tool in available_tools
+                          if tool['name'] == "slack_team_management"]
+    elif any(word in user_request for word in ["send message", "send to",
+                                               "message to", "post message",
+                                               "send report", "send alert",
+                                               "schedule message"]):
+        if "slack" in user_request or "#" in user_request:
+            relevant_tools = [tool for tool in available_tools
+                              if tool['name'] == "slack_team_communication"]
+        elif any(word in user_request for word in ["whatsapp", "phone", "sms"]):
+            relevant_tools = [tool for tool in available_tools
+                              if "whatsapp" in tool['name']]
+        else:
+            # Default to Slack messaging if no specific platform mentioned
+            relevant_tools = [tool for tool in available_tools
+                              if tool['name'] == "slack_team_communication"]
+    elif any(word in user_request for word in ["upload file", "file upload",
+                                               "share file", "attach file"]):
+        relevant_tools = [tool for tool in available_tools
+                          if tool['name'] == "slack_file_management"]
+    elif any(word in user_request for word in ["add reaction", "react",
+                                               "emoji", "thumbs up", "like"]):
+        relevant_tools = [tool for tool in available_tools
+                          if tool['name'] == "slack_reactions"]
+    elif any(word in user_request for word in ["search", "find message",
+                                               "look for", "search messages"]):
+        relevant_tools = [tool for tool in available_tools
+                          if tool['name'] == "slack_search"]
+    elif any(word in user_request for word in ["get user info", "user info",
+                                               "list users", "find user",
+                                               "user details"]):
+        relevant_tools = [tool for tool in available_tools
+                          if tool['name'] == "slack_user_management"]
+    elif any(word in user_request for word in ["pin message", "pinned messages",
+                                               "get pinned", "pin"]):
+        relevant_tools = [tool for tool in available_tools
+                          if tool['name'] == "slack_pins"]
+
+        # Intent detection for WhatsApp
+    elif any(word in user_request for word in ["whatsapp", "phone", "sms",
+                                               "text", "message"]):
+        if any(word in user_request for word in ["template", "template message",
+                                                 "list templates", "create template",
+                                                 "show templates", "get templates"]):
+            relevant_tools = [tool for tool in available_tools
+                              if tool['name'] == "whatsapp_templates"]
+        elif any(word in user_request for word in ["media", "image", "video",
+                                                   "audio", "document", "file",
+                                                   "photo", "picture"]):
+            relevant_tools = [tool for tool in available_tools
+                              if tool['name'] == "whatsapp_messaging"]
+        elif any(word in user_request for word in ["location", "send location",
+                                                   "share location", "where",
+                                                   "coordinates", "map"]):
+            relevant_tools = [tool for tool in available_tools
+                              if tool['name'] == "whatsapp_messaging"]
+        else:
+            # Default to WhatsApp messaging for general message requests
+            relevant_tools = [tool for tool in available_tools
+                              if tool['name'] == "whatsapp_messaging"]
+
+    # Intent detection for HubSpot/CRM
+    elif any(word in user_request for word in ["contact", "lead", "person"]):
+        relevant_tools = [tool for tool in available_tools
+                          if "hubspot_contact" in tool['name']]
+    elif any(word in user_request for word in ["deal", "opportunity", "sale"]):
+        relevant_tools = [tool for tool in available_tools
+                          if "hubspot_deal" in tool['name']]
+    elif any(word in user_request for word in ["hubspot", "crm"]):
+        relevant_tools = [tool for tool in available_tools
+                          if "hubspot" in tool['name']]
+
+    # Intent detection for Analytics
+    elif any(word in user_request for word in ["analytics", "ga4", "report",
+                                               "traffic", "data"]):
+        relevant_tools = [tool for tool in available_tools
+                          if "ga4" in tool['name']]
+
+    # Intent detection for Web Tools
+    elif any(word in user_request for word in ["scrape", "website", "web page",
+                                               "extract", "data from", "check website",
+                                               "website status", "extract emails"]):
+        relevant_tools = [tool for tool in available_tools
+                          if tool['name'] == "web_tools"]
+
+    # Intent detection for Marketing
+    elif any(word in user_request for word in ["campaign", "marketing",
+                                               "automation"]):
+        relevant_tools = [tool for tool in available_tools
+                          if "marketing" in tool['name']]
+
+    # If no specific intent detected, don't include any tools
+    # Let the LLM respond naturally without tool calling
+    else:
+        relevant_tools = []
+    return relevant_tools
+
+
+async def create_conversation_summary(messages: List[Message]) -> str:
+    """
+    Create a summary of old conversation context.
+    Uses a simple but effective summarization approach.
+    """
+    if not messages:
+        return ""
+
+    # Extract key information from messages
+    summary_parts = []
+    user_messages = [msg for msg in messages if msg.role == "user"]
+    assistant_messages = [msg for msg in messages if msg.role == "assistant"]
+
+    # Summarize user intent and topics
+    if user_messages:
+        topics = []
+        for msg in user_messages[-5:]:  # Last 5 user messages
+            content = msg.content.lower()
+            if "slack" in content:
+                topics.append("Slack communication")
+            if "whatsapp" in content:
+                topics.append("WhatsApp messaging")
+            if "hubspot" in content or "crm" in content:
+                topics.append("CRM management")
+            if "analytics" in content or "ga4" in content:
+                topics.append("Analytics reporting")
+            if "marketing" in content:
+                topics.append("Marketing campaigns")
+
+        if topics:
+            unique_topics = list(set(topics))
+            summary_parts.append(
+                f"Previous topics: {', '.join(unique_topics)}")
+
+    # Summarize assistant actions
+    if assistant_messages:
+        actions = []
+        for msg in assistant_messages[-3:]:  # Last 3 assistant messages
+            content = msg.content.lower()
+            if "sent" in content or "message" in content:
+                actions.append("Messages sent")
+            if "created" in content or "channel" in content:
+                actions.append("Channels/contacts created")
+            if "report" in content or "analytics" in content:
+                actions.append("Reports generated")
+
+        if actions:
+            unique_actions = list(set(actions))
+            summary_parts.append(
+                f"Recent actions: {', '.join(unique_actions)}")
+
+    # Create final summary
+    if summary_parts:
+        return "Conversation Summary: " + ". ".join(summary_parts)
+    else:
+        return "Conversation Summary: General discussion about marketing tools and automation."
+
+
+async def analyze_conversation_complexity(messages: List[Message], user_message: str) -> Dict[str, Any]:
+    """
+    Analyze conversation complexity and user intent to determine optimal chunking strategy.
+    """
+    complexity_score = 0
+    intent_type = "general"
+    recommended_context_size = 8
+
+    # Analyze message count
+    if len(messages) > 30:
+        complexity_score += 3
+    elif len(messages) > 20:
+        complexity_score += 2
+    elif len(messages) > 10:
+        complexity_score += 1
+
+    # Analyze user intent
+    user_message_lower = user_message.lower()
+
+    # Tool-specific intents (need more context)
+    if any(word in user_message_lower for word in ["slack", "whatsapp", "hubspot", "crm", "analytics", "ga4"]):
+        intent_type = "tool_operation"
+        complexity_score += 2
+        recommended_context_size = 10  # Need more context for tool operations
+
+    # Complex queries (need more context)
+    if any(word in user_message_lower for word in ["report", "summary", "analysis", "compare", "trend"]):
+        intent_type = "complex_query"
+        complexity_score += 2
+        recommended_context_size = 12
+
+    # Simple queries (need less context)
+    if any(word in user_message_lower for word in ["hello", "hi", "thanks", "thank you", "ok", "yes", "no"]):
+        intent_type = "simple_interaction"
+        complexity_score -= 1
+        recommended_context_size = 4
+
+    # Check for follow-up questions
+    if any(word in user_message_lower for word in ["what about", "how about", "also", "and", "but", "however"]):
+        intent_type = "follow_up"
+        complexity_score += 1
+        recommended_context_size = 8
+
+    # Analyze recent conversation patterns
+    recent_messages = messages[-5:] if len(messages) >= 5 else messages
+    tool_calls_count = sum(1 for msg in recent_messages if msg.tools_called)
+
+    if tool_calls_count > 0:
+        intent_type = "tool_continuation"
+        complexity_score += 1
+        recommended_context_size = 10
+
+    return {
+        "complexity_score": complexity_score,
+        "intent_type": intent_type,
+        "recommended_context_size": recommended_context_size,
+        "message_count": len(messages),
+        "recent_tool_calls": tool_calls_count
+    }
+
+
+async def get_dynamic_context(conversation_id: int, db: AsyncSession, user_message: str) -> List[Message]:
+    """
+    Get dynamically optimized context based on conversation analysis.
+    """
+    # Get all messages for analysis
+    result = await db.execute(
+        select(Message)
+        .filter(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at.desc())
+    )
+    all_messages = result.scalars().all()
+    all_messages.reverse()  # Put in chronological order
+
+    # Analyze conversation complexity
+    analysis = await analyze_conversation_complexity(all_messages, user_message)
+
+    # Determine optimal strategy based on analysis
+    if analysis["message_count"] <= 5:
+        # Very short conversation - use all messages
+        return all_messages
+
+    elif analysis["message_count"] <= 15 and analysis["complexity_score"] <= 1:
+        # Short, simple conversation - use recent messages
+        recent_messages = all_messages[-analysis["recommended_context_size"]:]
+        return recent_messages
+
+    elif analysis["message_count"] > 25 and analysis["complexity_score"] >= 3:
+        # Long, complex conversation - use summarization
+        old_messages = all_messages[:-analysis["recommended_context_size"]]
+        recent_messages = all_messages[-analysis["recommended_context_size"]:]
+
+        # Create summary of old messages
+        summary = await create_conversation_summary(old_messages)
+
+        # Create a summary message
+        summary_message = type('obj', (object,), {
+            'role': 'system',
+            'content': summary,
+            'created_at': recent_messages[0].created_at if recent_messages else None
+        })()
+
+        return [summary_message] + recent_messages
+
+    else:
+        # Medium complexity - use smart chunking
+        recent_messages = all_messages[-analysis["recommended_context_size"]:]
+        return recent_messages
+
+
+async def get_optimized_context(conversation_id: int, db: AsyncSession, max_messages: int = 4, user_message: str = "") -> List[Message]:
+    """
+    Get optimized conversation context for LLM.
+    Uses dynamic chunking based on conversation analysis.
+    """
+    # Use dynamic context selection if user message is provided
+    if user_message:
+        return await get_dynamic_context(conversation_id, db, user_message)
+
+    # Fallback to original logic for backward compatibility
+    # Get recent messages with a reasonable limit, including tool messages
+    result = await db.execute(
+        select(Message)
+        .filter(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at.desc())
+        .limit(max_messages * 2)  # Get more to account for tool messages
+    )
+    messages = result.scalars().all()
+    messages.reverse()  # Put back in chronological order
+    
+    # Filter to include tool messages and their related assistant messages
+    optimized_messages = []
+    for msg in messages:
+        if msg.role in [MessageRole.USER, MessageRole.ASSISTANT, MessageRole.TOOL]:
+            optimized_messages.append(msg)
+    
+    # Limit to max_messages while preserving tool message relationships
+    if len(optimized_messages) > max_messages:
+        optimized_messages = optimized_messages[-max_messages:]
+    
+    messages = optimized_messages
+
+    # If we have very few messages, return all of them
+    if len(messages) <= 4:
+        return messages
+
+    # For longer conversations, check if we need summarization
+    total_messages_result = await db.execute(
+        select(Message)
+        .filter(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at.desc())
+    )
+    all_messages = total_messages_result.scalars().all()
+
+    # If conversation is very long (>20 messages), use summarization
+    if len(all_messages) > 20:
+        # Get old messages for summarization (everything except recent ones)
+        old_messages = all_messages[max_messages:]
+        old_messages.reverse()  # Put in chronological order
+
+        # Create summary of old messages
+        summary = await create_conversation_summary(old_messages)
+
+        # Create a summary message
+        from ..models import MessageRole
+        summary_message = type('obj', (object,), {
+            'role': 'system',
+            'content': summary,
+            'created_at': messages[0].created_at if messages else None
+        })()
+
+        # Return summary + recent messages
+        return [summary_message] + messages
+
+    # For medium-length conversations, just use recent messages
+    return messages
+
+
+async def build_context_prompt(messages: List[Message], system_prompt: str, user_message: str) -> str:
+    """
+    Build an optimized prompt for high-throughput interactions.
+    """
+    prompt = system_prompt + "\n\nRecent:\n"
+
+    # Add only essential context with shorter truncation
+    for msg in messages[-3:]:  # Only last 3 messages for speed
+        content = msg.content
+        if len(content) > 100:  # Shorter truncation
+            content = content[:100] + "..."
+
+        prompt += f"{msg.role}: {content}\n"
+
+    prompt += f"\nUser: {user_message}\nAssistant:"
+
+    return prompt
+
+
+def clean_streaming_chunk(chunk: str) -> str:
+    """Clean streaming chunks to remove obvious repetition and artifacts."""
+    if not chunk:
+        return ""
+
+    # Remove obvious repetition patterns
+    import re
+
+    # Remove repeated characters (more than 2 in a row)
+    chunk = re.sub(r'(.)\1{2,}', r'\1\1', chunk)
+
+    # Remove repeated words (more than 1 in a row)
+    chunk = re.sub(r'\b(\w+)(\s+\1)+\b', r'\1', chunk)
+
+    # Remove repeated phrases (more than 1 in a row)
+    chunk = re.sub(r'(\b\w+\s+\w+\b)(\s+\1)+', r'\1', chunk)
+
+    # Remove repeated sentences
+    chunk = re.sub(r'([^.!?]+[.!?])\s*\1+', r'\1', chunk)
+
+    # Remove backticks that might be artifacts
+    chunk = chunk.replace('``', '`')
+
+    # Remove excessive spaces
+    chunk = re.sub(r'\s{3,}', ' ', chunk)
+
+    # Remove common streaming artifacts
+    chunk = re.sub(r'[^\w\s\.,!?;:()\[\]{}"\'-]', '', chunk)
+
+    # Remove partial words that might be artifacts
+    chunk = re.sub(r'\b\w{1,2}\s+', '', chunk)
+
+    return chunk.strip()
+
+
+def extract_tool_call(response: str) -> dict:
+    """Extract tool call from response text."""
+    import json
+    import re
+
+    # Look for TOOL_CALL pattern with better handling
+    tool_call_match = re.search(r'TOOL_CALL:\s*(\{.*?\})', response, re.DOTALL)
+    if tool_call_match:
+        try:
+            tool_call_text = tool_call_match.group(1).strip()
+            print(f"🔍 Extracted tool call text: '{tool_call_text}'")
+
+            # Handle common JSON formatting issues
+            if tool_call_text.startswith("```") and tool_call_text.endswith("```"):
+                tool_call_text = tool_call_text[3:-3].strip()
+
+            # Remove any markdown formatting
+            if tool_call_text.startswith("json"):
+                tool_call_text = tool_call_text[4:].strip()
+
+            # Remove any trailing commas
+            tool_call_text = tool_call_text.rstrip(',')
+
+            result = json.loads(tool_call_text)
+            print(f"✅ Successfully parsed tool call: {result}")
+            return result
+        except json.JSONDecodeError as e:
+            print(f"❌ JSON parsing error: {e}")
+            print(f"❌ Problematic text: '{tool_call_text}'")
+            return None
+    return None
+
+
+async def execute_tool_call(tool_call: dict, user: User, db: AsyncSession, tools_called: List[Dict[str, Any]] = None) -> str:
+    """Execute a tool call and return the result."""
+    from ..services.tool_executor import tool_executor
+
+    try:
+        result = await tool_executor.execute_tool(
+            tool_name=tool_call["tool"],
+            arguments=tool_call["arguments"],
+            user=user,
+            db=db,
+            tools_called=tools_called
+        )
+        return str(result)
+    except Exception as e:
+        return f"Error executing tool: {str(e)}"
+
+
+async def test_ollama_connection() -> Dict[str, Any]:
+    """Test Ollama connection and return status."""
+    try:
+        import os
+
+        import aiohttp
+
+        ollama_base_url = os.getenv(
+            "OLLAMA_BASE_URL", "http://localhost:11434")
+        ollama_url = f"{ollama_base_url}/api/tags"
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(ollama_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status == 200:
+                    models = await response.json()
+                    return {
+                        "success": True,
+                        "message": "Ollama is running",
+                        "models": [model.get("name", "") for model in models.get("models", [])],
+                        "url": ollama_url
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "message": f"Ollama returned status {response.status}",
+                        "url": ollama_url
+                    }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Cannot connect to Ollama: {str(e)}",
+            "url": ollama_base_url
+        }
+
+
+async def execute_function_calling_loop(
+    provider: str,
+    model: str,
+    conversation: Conversation,
+    user_message: str,
+    user: User,
+    db: AsyncSession,
+    tools_called: List[Dict[str, Any]],
+    max_iterations: int = 5
+) -> tuple[str, List[Dict[str, Any]]]:
+    """
+    Execute function calling loop with structured tool execution.
+    
+    This function implements a multi-step tool calling process where:
+    1. LLM decides whether to call tools or respond directly
+    2. Tool calls are executed and results are stored
+    3. Process continues until no more tool calls are needed
+    4. All intermediate messages are stored in the database
+    """
+    print(f"🔄 Starting function calling loop for {provider}")
+    
+    # Get available tools in OpenAI format
+    available_tools = await dynamic_tool_registry.get_tools_for_llm(user.id, db)
+    openai_tools = dynamic_tool_registry.convert_tools_to_openai_format(available_tools)
+    
+    # Get conversation context
+    context_messages = await get_optimized_context(conversation.id, db, user_message=user_message)
+    
+    # Prepare initial messages for LLM
+    messages = []
+    for msg in context_messages:
+        if msg.role == MessageRole.USER:
+            messages.append({"role": "user", "content": msg.content})
+        elif msg.role == MessageRole.ASSISTANT:
+            messages.append({"role": "assistant", "content": msg.content})
+        elif msg.role == MessageRole.TOOL:
+            messages.append({"role": "tool", "content": msg.content, "tool_call_id": msg.tool_call_id})
+    
+    # Add the new user message
+    messages.append({"role": "user", "content": user_message})
+    
+    print(f"📝 Initial messages prepared: {len(messages)} messages")
+    print(f"🔧 Available tools: {len(openai_tools)} tools")
+    
+    # Execute the function calling loop
+    for iteration in range(max_iterations):
+        print(f"🔄 Iteration {iteration + 1}/{max_iterations}")
+        
+        try:
+            # Call LLM with function calling support
+            if provider == "ollama":
+                response = await call_ollama_with_functions(model, messages, openai_tools)
+            else:
+                response = await call_llm_fallback(provider, model, messages, openai_tools)
+            
+            if not response:
+                print(f"❌ No response from LLM in iteration {iteration + 1}")
+                break
+            
+            # Extract assistant message
+            assistant_message = response.get('choices', [{}])[0].get('message', {})
+            assistant_content = assistant_message.get('content', '')
+            tool_calls = assistant_message.get('tool_calls', [])
+            
+            print(f"📤 Assistant response: {len(assistant_content)} chars, {len(tool_calls)} tool calls")
+            
+            # Save assistant message to database
+            assistant_msg = Message(
+                conversation_id=conversation.id,
+                role=MessageRole.ASSISTANT,
+                content=assistant_content,
+                status=MessageStatus.COMPLETED,
+                tools_called=tool_calls if tool_calls else None
+            )
+            db.add(assistant_msg)
+            await db.commit()
+            await db.refresh(assistant_msg)
+            
+            # Add assistant message to conversation
+            messages.append({
+                "role": "assistant",
+                "content": assistant_content,
+                "tool_calls": tool_calls
+            })
+            
+            # If no tool calls, we're done
+            if not tool_calls:
+                print(f"✅ No tool calls, returning final response")
+                return assistant_content, tools_called
+            
+            # Execute tool calls
+            for tool_call in tool_calls:
+                function_name = tool_call.get('function', {}).get('name', '')
+                arguments_str = tool_call.get('function', {}).get('arguments', '{}')
+                tool_call_id = tool_call.get('id', '')
+                
+                try:
+                    arguments = json.loads(arguments_str)
+                except json.JSONDecodeError as e:
+                    print(f"❌ JSON decode error for tool call: {e}")
+                    continue
+                
+                print(f"🔧 Executing tool: {function_name} with args: {arguments}")
+                
+                # Execute the tool
+                tool_result = await tool_executor.execute_tool(
+                    function_name, arguments, user, db, tools_called
+                )
+                
+                # Store tool call info
+                tools_called.append({
+                    "name": function_name,
+                    "arguments": arguments,
+                    "result": tool_result,
+                    "tool_call_id": tool_call_id
+                })
+                
+                # Save tool result as tool message
+                tool_msg = Message(
+                    conversation_id=conversation.id,
+                    role=MessageRole.TOOL,
+                    content=json.dumps(tool_result) if isinstance(tool_result, dict) else str(tool_result),
+                    status=MessageStatus.COMPLETED,
+                    tool_call_id=tool_call_id
+                )
+                db.add(tool_msg)
+                await db.commit()
+                await db.refresh(tool_msg)
+                
+                # Add tool message to conversation
+                messages.append({
+                    "role": "tool",
+                    "content": json.dumps(tool_result) if isinstance(tool_result, dict) else str(tool_result),
+                    "tool_call_id": tool_call_id
+                })
+                
+                print(f"✅ Tool executed: {function_name}")
+        
+        except Exception as e:
+            print(f"❌ Error in iteration {iteration + 1}: {e}")
+            import traceback
+            print(f"❌ Traceback: {traceback.format_exc()}")
+            break
+    
+    # If we've exhausted iterations, return the last assistant message
+    if messages:
+        last_assistant = None
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant":
+                last_assistant = msg
+                break
+        
+        if last_assistant:
+            return last_assistant.get("content", ""), tools_called
+    
+    return "I apologize, but I encountered an issue processing your request. Please try again.", tools_called
+
+
+async def call_ollama_with_functions(model: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Call Ollama with function calling support."""
+    import os
+
+    import aiohttp
+    
+    ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    
+    # Try the new OpenAI-compatible endpoint first
+    ollama_url = f"{ollama_base_url}/v1/chat/completions"
+    
+    payload = {
+        "model": model,
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": "auto"
+    }
+    
+    print(f"🌐 Calling Ollama at: {ollama_url}")
+    print(f"📦 Payload: {json.dumps(payload, indent=2)}")
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                ollama_url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=300)
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    print(f"✅ Ollama response: {json.dumps(result, indent=2)}")
+                    return result
+                else:
+                    error_text = await response.text()
+                    print(f"❌ Ollama error {response.status}: {error_text}")
+                    
+                    # Fallback to old API if new endpoint doesn't work
+                    if response.status == 404:
+                        print("🔄 Falling back to old Ollama API")
+                        return await call_ollama_legacy(model, messages, tools)
+                    
+                    return None
+    except Exception as e:
+        print(f"❌ Error calling Ollama: {e}")
+        return None
+
+
+async def call_ollama_legacy(model: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Call Ollama using the legacy API with structured prompts."""
+    import os
+
+    import aiohttp
+    
+    ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    ollama_url = f"{ollama_base_url}/api/generate"
+    
+    # Convert messages to a single prompt
+    prompt = ""
+    for msg in messages:
+        if msg["role"] == "system":
+            prompt += f"System: {msg['content']}\n\n"
+        elif msg["role"] == "user":
+            prompt += f"User: {msg['content']}\n"
+        elif msg["role"] == "assistant":
+            prompt += f"Assistant: {msg['content']}\n"
+        elif msg["role"] == "tool":
+            prompt += f"Tool Result: {msg['content']}\n"
+    
+    # Add tool information to the prompt
+    if tools:
+        prompt += "\nAvailable tools:\n"
+        for tool in tools:
+            function = tool.get("function", {})
+            prompt += f"- {function.get('name')}: {function.get('description')}\n"
+            if function.get('parameters'):
+                prompt += f"  Parameters: {json.dumps(function.get('parameters'), indent=2)}\n"
+        
+        prompt += "\nPlease respond with either:\n"
+        prompt += "1. A direct response to the user, OR\n"
+        prompt += "2. A JSON array of tool calls in this format:\n"
+        prompt += '[{"tool": "tool_name", "arguments": {"param1": "value1"}}]\n\n'
+    
+    prompt += "Assistant:"
+    
+    print(f"📝 Legacy prompt length: {len(prompt)} chars")
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                ollama_url,
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "enable_thinking": False
+                    }
+                },
+                timeout=aiohttp.ClientTimeout(total=300)
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    response_text = result.get("response", "")
+                    
+                    # Try to parse tool calls from the response
+                    tool_calls = []
+                    if "[" in response_text and "]" in response_text:
+                        try:
+                            # Extract JSON array from response
+                            start = response_text.find("[")
+                            end = response_text.rfind("]") + 1
+                            json_str = response_text[start:end]
+                            parsed_tools = json.loads(json_str)
+                            
+                            # Convert to OpenAI format
+                            for i, tool_call in enumerate(parsed_tools):
+                                tool_calls.append({
+                                    "id": f"call_{i}",
+                                    "type": "function",
+                                    "function": {
+                                        "name": tool_call.get("tool"),
+                                        "arguments": json.dumps(tool_call.get("arguments", {}))
+                                    }
+                                })
+                        except (json.JSONDecodeError, KeyError) as e:
+                            print(f"❌ Failed to parse tool calls: {e}")
+                    
+                    return {
+                        "choices": [{
+                            "message": {
+                                "role": "assistant",
+                                "content": response_text,
+                                "tool_calls": tool_calls
+                            }
+                        }]
+                    }
+                else:
+                    error_text = await response.text()
+                    print(f"❌ Legacy Ollama error {response.status}: {error_text}")
+                    return None
+    except Exception as e:
+        print(f"❌ Error calling legacy Ollama: {e}")
+        return None
+
+
+async def call_llm_fallback(provider: str, model: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Fallback for providers that don't support function calling."""
+    # For now, just return None to indicate no function calling support
+    print(f"⚠️ No function calling support for provider: {provider}")
+    return None
+
+
+async def process_ollama(provider: str, data: MessageCreate, user: User, db: AsyncSession, conversation: Conversation, tools_called: List[Dict[str, Any]]) -> tuple[str, List[Dict[str, Any]], Conversation]:
+    """Process message using the new function calling approach."""
+    if provider == "ollama":
+        try:
+            print(f"🚀 Starting improved Ollama processing for user {user.id}")
+
+            # Test Ollama connection first
+            connection_test = await test_ollama_connection()
+            if not connection_test["success"]:
+                error_msg = f"❌ **Connection Error**: {connection_test['message']}. Please check if Ollama is running and accessible at {connection_test['url']}"
+                return error_msg, tools_called, conversation
+
+            print(f"✅ Ollama connection test passed: {connection_test['message']}")
+            print(f"📋 Available models: {connection_test.get('models', [])}")
+
+            # Check if current model is available
+            current_model = "mistral:latest"
+            if current_model not in connection_test.get("models", []):
+                error_msg = f"🤖 **Model Error**: The model '{current_model}' is not available. Available models: {', '.join(connection_test.get('models', []))}"
+                return error_msg, tools_called, conversation
+
+            # Use the new function calling loop
+            final_response, updated_tools_called = await execute_function_calling_loop(
+                provider=provider,
+                model=current_model,
+                conversation=conversation,
+                user_message=data.content,
+                user=user,
+                db=db,
+                tools_called=tools_called,
+                max_iterations=5
+            )
+
+            return final_response, updated_tools_called, conversation
+
+        except Exception as e:
+            import traceback
+            error_msg = str(e)
+            print(f"🔴 ERROR in process_ollama: {error_msg}")
+            print(f"🔴 Error traceback: {traceback.format_exc()}")
+
+            # Provide specific error messages based on the error type
+            if "Connection refused" in error_msg or "Cannot connect" in error_msg:
+                assistant_content = "❌ **Connection Error**: I cannot connect to the AI service. Please check if Ollama is running on your system."
+            elif "timeout" in error_msg.lower():
+                assistant_content = "⏰ **Timeout Error**: The request took too long. This might be due to a complex request or high system load. Please try again or break your request into smaller parts."
+            elif "model" in error_msg.lower() and "not found" in error_msg.lower():
+                assistant_content = f"🤖 **Model Error**: The AI model '{data.provider or 'mistral:latest'}' is not available. Please check your Ollama installation."
+            elif "permission" in error_msg.lower():
+                assistant_content = "🔒 **Permission Error**: I don't have permission to access the required resources."
+            elif "rate limit" in error_msg.lower():
+                assistant_content = "🚫 **Rate Limit**: Too many requests. Please wait a moment and try again."
+            else:
+                assistant_content = f"⚠️ **Technical Issue**: {error_msg}\n\n🔍 **Debug Info**: Please check the application logs for more details."
+            
+            return assistant_content, tools_called, conversation
+    else:
+        # Placeholder for other providers
+        assistant_content = f"This is a placeholder response for {provider}. Integration coming soon."
+        return assistant_content, tools_called, conversation
+
+
+# REMOVED: execute_task_sequence and prepare_task_arguments methods - they cause hallucinations
+
+
+@router.post("/conversations/{conversation_id}/messages", response_model=MessageRead)
+async def send_message(
+    conversation_id: int,
+    data: MessageCreate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Send a message to a conversation with orchestrated processing."""
+    print(f"📨 Processing message in conversation {conversation_id}")
+    
+    # Validate conversation exists and user has access
+    conversation = await get_conversation_or_404(conversation_id, user.id, db)
+    
+    # Create user message
+    user_message = Message(
+        conversation_id=conversation_id,
+        role=MessageRole.USER,
+        content=data.content,
+        status=MessageStatus.COMPLETED
+    )
+    db.add(user_message)
+    await db.commit()
+    await db.refresh(user_message)
+    
+    # Use ExecutionOrchestrator for masterclass-level processing
+    orchestrator = ExecutionOrchestrator(db, user, conversation_id)
+    
+    try:
+        # Process message with full orchestration
+        final_content, tools_called = await orchestrator.process_message(data.content, data.provider)
+        
+        # Create final assistant message
+        assistant_message = Message(
+            conversation_id=conversation_id,
+            role=MessageRole.ASSISTANT,
+            content=final_content,
+            status=MessageStatus.COMPLETED,
+            tools_called=tools_called if tools_called else None
+        )
+        db.add(assistant_message)
+        await db.commit()
+        await db.refresh(assistant_message)
+        
+        print(f"✅ Message processed successfully")
+        return MessageRead.from_orm(assistant_message)
+        
+    except Exception as e:
+        print(f"❌ Error processing message: {e}")
+        import traceback
+        print(f"❌ Traceback: {traceback.format_exc()}")
+        
+        # Create error message
+        error_message = Message(
+            conversation_id=conversation_id,
+            role=MessageRole.ASSISTANT,
+            content="I apologize, but I encountered an issue processing your request. Please try again.",
+            status=MessageStatus.COMPLETED,
+            error_message=str(e)
+        )
+        db.add(error_message)
+        await db.commit()
+        await db.refresh(error_message)
+        
+        return MessageRead.from_orm(error_message)
+
+
+@router.put("/conversations/{conversation_id}")
+async def update_conversation(
+    conversation_id: int,
+    data: ConversationUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Update a conversation title."""
+    # First check if conversation exists and belongs to user
+    result = await db.execute(
+        select(Conversation)
+        .filter(Conversation.id == conversation_id, Conversation.user_id == user.id)
+    )
+    conversation = result.scalar_one_or_none()
+
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    # Update the conversation title
+    conversation.title = data.title
+    await db.commit()
+    await db.refresh(conversation)
+
+    return {
+        "success": True,
+        "data": {
+            "id": conversation.id,
+            "title": conversation.title,
+            "is_active": conversation.is_active,
+            "created_at": conversation.created_at.isoformat() if conversation.created_at else "",
+            "updated_at": conversation.updated_at.isoformat() if conversation.updated_at else ""
+        },
+        "message": "Conversation updated successfully"
+    }
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Delete a conversation and all its messages."""
+    # First check if conversation exists and belongs to user
+    result = await db.execute(
+        select(Conversation)
+        .filter(Conversation.id == conversation_id, Conversation.user_id == user.id)
+    )
+    conversation = result.scalar_one_or_none()
+
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    # Delete all messages in the conversation first
+    await db.execute(
+        delete(Message).where(Message.conversation_id == conversation_id)
+    )
+
+    # Delete the conversation
+    await db.execute(
+        delete(Conversation).where(Conversation.id == conversation_id)
+    )
+
+    await db.commit()
+
+    return {
+        "success": True,
+        "message": "Conversation deleted successfully",
+        "conversation_id": conversation_id
+    }
+
+
+@router.get("/ollama/status")
+def check_ollama_status():
+    """Check Ollama service status."""
+    try:
+        import requests
+        response = requests.get("http://localhost:11434/api/tags", timeout=5)
+        if response.status_code == 200:
+            models = response.json()
+            return {
+                "status": "running",
+                "models": [model["name"] for model in models],
+                "total_models": len(models)
+            }
+        else:
+            return {
+                "status": "error",
+                "message": f"Ollama returned status {response.status_code}",
+                "models": []
+            }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Cannot connect to Ollama: {str(e)}",
+            "models": []
+        }
+
+
+@router.get("/ollama/diagnostic")
+async def ollama_diagnostic():
+    """Comprehensive Ollama diagnostic."""
+    try:
+        # Test connection
+        connection_test = await test_ollama_connection()
+
+        # Get system info
+        import os
+        import platform
+        system_info = {
+            "platform": platform.system(),
+            "python_version": platform.python_version(),
+            "ollama_url": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        }
+
+        # Test model availability
+        current_model = "mistral:latest"  # Current model in use
+        model_test = {
+            "current_model": current_model,
+            "available": current_model in connection_test.get("models", [])
+        }
+
+        return {
+            "success": True,
+            "connection": connection_test,
+            "system": system_info,
+            "model": model_test,
+            "recommendations": []
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "recommendations": [
+                "Check if Ollama is installed and running",
+                "Verify the model is available: ollama list",
+                "Check network connectivity to localhost:11434"
+            ]
+        }
+
+
+@router.get("/conversations/{conversation_id}/messages")
+async def get_messages(
+    conversation_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Get all messages for a specific conversation."""
+    # First check if conversation exists and belongs to user
+    result = await db.execute(
+        select(Conversation)
+        .filter(Conversation.id == conversation_id, Conversation.user_id == user.id)
+    )
+    conversation = result.scalar_one_or_none()
+
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    # Get messages for this conversation
+    result = await db.execute(
+        select(Message)
+        .filter(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at)
+    )
+    messages = result.scalars().all()
+
+    return {
+        "success": True,
+        "data": [
+            {
+                "id": msg.id,
+                "conversation_id": msg.conversation_id,
+                "role": msg.role,
+                "content": msg.content,
+                "status": msg.status,
+                "tokens_used": msg.tokens_used,
+                "tools_called": msg.tools_called,
+                "error_message": msg.error_message,
+                "created_at": msg.created_at.isoformat() if msg.created_at else ""
+            }
+            for msg in messages
+        ]
+    }
+
+
+@router.get("/providers")
+async def get_available_providers():
+    """Get available LLM providers."""
+    from ..services.llm_service import llm_service
+
+    # Get all configured providers
+    available_providers = llm_service.get_available_providers()
+
+    # Define all possible providers with their display names
+    all_providers = {
+        "openai": "OpenAI GPT",
+        "gemini": "Google Gemini",
+        "ollama": "Ollama (Local)",
+        "huggingface": "Hugging Face",
+        "togetherai": "Together AI",
+        "anthropic": "Anthropic Claude"
+    }
+
+    # Return all providers with their availability status
+    providers_list = []
+    for provider_id, display_name in all_providers.items():
+        providers_list.append({
+            "id": provider_id,
+            "name": display_name,
+            "available": provider_id in available_providers
+        })
+
+    return {
+        "success": True,
+        "data": {
+            "providers": [p["id"] for p in providers_list if p["available"]],
+            "all_providers": providers_list,
+            "default": "ollama"
+        }
+    }
+
+
+@router.get("/tools")
+async def get_available_tools():
+    """Get available MCP tools."""
+    try:
+        # Get all tools from the dynamic registry
+        tools = await dynamic_tool_registry.get_all_tools(None)
+
+        return {
+            "success": True,
+            "data": {
+                "tools": tools,
+                "total": len(tools),
+                "description": "Dynamic tools based on platform capabilities and user connections"
+            }
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get tools: {str(e)}"
+        )
+
+
+@router.get("/download/{conversation_id}/{message_id}/{filename}")
+async def download_file(
+    conversation_id: int,
+    message_id: int,
+    filename: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Download a file from a specific message."""
+    try:
+        # Verify conversation belongs to user
+        result = await db.execute(
+            select(Conversation)
+            .filter(Conversation.id == conversation_id, Conversation.user_id == user.id)
+        )
+        conversation = result.scalar_one_or_none()
+
+        if not conversation:
+            raise HTTPException(
+                status_code=404, detail="Conversation not found")
+
+        # Get the specific message
+        result = await db.execute(
+            select(Message)
+            .filter(Message.id == message_id, Message.conversation_id == conversation_id)
+        )
+        message = result.scalar_one_or_none()
+
+        if not message:
+            raise HTTPException(status_code=404, detail="Message not found")
+
+        # Check if message has tools_called with file content
+        if not message.tools_called:
+            raise HTTPException(
+                status_code=404, detail="No file content found in message")
+
+        # Find the file_management tool result
+        file_content = None
+        for tool_call in message.tools_called:
+            if tool_call.get("name") == "file_management" and tool_call.get("result", {}).get("success"):
+                result_data = tool_call["result"]
+                if "content" in result_data:
+                    file_content = result_data["content"]
+                    break
+
+        if not file_content:
+            raise HTTPException(
+                status_code=404, detail="No file content found")
+
+        # Decode base64 content
+        try:
+            file_bytes = base64.b64decode(file_content)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid file content: {str(e)}")
+
+        # Determine content type based on filename
+        content_type = "application/octet-stream"
+        if filename.endswith('.pdf'):
+            content_type = "application/pdf"
+        elif filename.endswith('.png'):
+            content_type = "image/png"
+        elif filename.endswith('.jpg') or filename.endswith('.jpeg'):
+            content_type = "image/jpeg"
+        elif filename.endswith('.txt'):
+            content_type = "text/plain"
+        elif filename.endswith('.html'):
+            content_type = "text/html"
+
+        return Response(
+            content=file_bytes,
+            media_type=content_type,
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Length": str(len(file_bytes))
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to download file: {str(e)}"
+        )
+
+# Add this endpoint to get file information
+
+
+@router.get("/files/{conversation_id}/{message_id}")
+async def get_file_info(
+    conversation_id: int,
+    message_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Get file information from a specific message."""
+    try:
+        # Verify conversation belongs to user
+        result = await db.execute(
+            select(Conversation)
+            .filter(Conversation.id == conversation_id, Conversation.user_id == user.id)
+        )
+        conversation = result.scalar_one_or_none()
+
+        if not conversation:
+            raise HTTPException(
+                status_code=404, detail="Conversation not found")
+
+        # Get the specific message
+        result = await db.execute(
+            select(Message)
+            .filter(Message.id == message_id, Message.conversation_id == conversation_id)
+        )
+        message = result.scalar_one_or_none()
+
+        if not message:
+            raise HTTPException(status_code=404, detail="Message not found")
+
+        # Extract file information from tools_called
+        files = []
+        if message.tools_called:
+            for tool_call in message.tools_called:
+                if tool_call.get("name") == "file_management" and tool_call.get("result", {}).get("success"):
+                    result_data = tool_call["result"]
+                    if "filename" in result_data:
+                        files.append({
+                            "filename": result_data["filename"],
+                            "size": result_data.get("size", 0),
+                            "method": result_data.get("method", "unknown"),
+                            "download_url": f"/api/chat/download/{conversation_id}/{message_id}/{result_data['filename']}"
+                        })
+
+        return {
+            "success": True,
+            "data": {
+                "message_id": message_id,
+                "conversation_id": conversation_id,
+                "files": files
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get file info: {str(e)}"
+        )
+
+
+@router.post("/conversations/{conversation_id}/validate-tool")
+async def validate_tool_call(
+    conversation_id: int,
+    tool_call: Dict[str, Any],
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Validate a tool call before execution."""
+    try:
+        # Validate conversation access
+        conversation = await get_conversation_or_404(conversation_id, user.id, db)
+        
+        tool_name = tool_call.get("tool")
+        arguments = tool_call.get("arguments", {})
+        
+        if not tool_name:
+            raise HTTPException(status_code=400, detail="Missing tool name")
+        
+        # Use ToolRouter for validation
+        tool_router = ToolRouter(user, db)
+        tool = await tool_router.get_tool_by_name(tool_name)
+        if not tool:
+            raise HTTPException(status_code=404, detail=f"Tool {tool_name} not found")
+        
+        # Validate arguments
+        validation_result = await tool_router.validate_tool_arguments(tool_name, arguments)
+        
+        return {
+            "valid": validation_result["valid"],
+            "errors": validation_result["errors"],
+            "corrected_arguments": validation_result.get("corrected_arguments"),
+            "tool_description": tool.get("description", ""),
+            "tool_schema": tool.get("inputSchema", {})
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/conversations/{conversation_id}/explain-intent")
+async def explain_intent(
+    conversation_id: int,
+    data: MessageCreate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Explain the intent classification for a user message."""
+    try:
+        # Validate conversation access
+        conversation = await get_conversation_or_404(conversation_id, user.id, db)
+        
+        # Use IntentProcessor for explanation
+        intent_processor = IntentProcessor(user, db)
+        explanation = await intent_processor.explain_intent(data.content)
+        
+        return explanation
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/conversations/{conversation_id}/explain-tools")
+async def explain_relevant_tools(
+    conversation_id: int,
+    data: MessageCreate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Explain which tools are relevant for a user message."""
+    try:
+        # Validate conversation access
+        conversation = await get_conversation_or_404(conversation_id, user.id, db)
+        
+        # Use ToolRouter for tool explanation
+        tool_router = ToolRouter(user, db)
+        relevant_tools = await tool_router.get_relevant_tools(data.content)
+        
+        tool_explanations = []
+        for tool in relevant_tools:
+            tool_explanations.append({
+                "name": tool.get("name"),
+                "description": tool.get("description"),
+                "relevance_score": tool.get("relevance_score", 0),
+                "platform": tool.get("platform", "universal"),
+                "schema": tool.get("inputSchema", {})
+            })
+        
+        return {
+            "user_input": data.content,
+            "relevant_tools": tool_explanations,
+            "total_tools_found": len(relevant_tools),
+            "explanation": f"Found {len(relevant_tools)} relevant tools for your request."
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+async def get_conversation_or_404(conversation_id: int, user_id: int, db: AsyncSession) -> Conversation:
+    """Get conversation or raise 404 if not found or user doesn't have access."""
+    result = await db.execute(
+        select(Conversation)
+        .filter(Conversation.id == conversation_id, Conversation.user_id == user_id)
+    )
+    conversation = result.scalar_one_or_none()
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conversation

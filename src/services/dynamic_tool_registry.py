@@ -1,0 +1,584 @@
+"""
+Dynamic Tool Registry Service for generating tools based on user connections.
+"""
+
+import logging
+from typing import Any, Dict, List, Optional
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..database import get_db
+from ..models import Connection, ConnectionStatus
+from .platform_registry import platform_registry
+
+logger = logging.getLogger(__name__)
+
+
+class DynamicToolRegistry:
+    """Dynamic registry for MCP tools based on user connections."""
+    
+    def __init__(self):
+        self.base_tools: Dict[str, Dict[str, Any]] = {}
+        self._initialize_base_tools()
+    
+    def _initialize_base_tools(self):
+        """Initialize base tools that are always available."""
+        self.base_tools = {
+            # Marketing Campaign Automation - Always available
+            "marketing_campaign_automation": {
+                "name": "marketing_campaign_automation",
+                "description": "Automate marketing campaigns across multiple platforms with AI-driven optimization",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "campaign_type": {"type": "string", "enum": ["email", "social", "ads", "multi_channel"]},
+                        "target_audience": {"type": "object"},
+                        "content": {"type": "object"},
+                        "schedule": {"type": "object"},
+                        "optimization_rules": {"type": "object"},
+                        "platforms": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["campaign_type", "target_audience"]
+                },
+                "category": "marketing",
+                "always_available": True
+            },
+            "campaign_performance_tracking": {
+                "name": "campaign_performance_tracking",
+                "description": "Track and analyze campaign performance across all channels",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "campaign_id": {"type": "string"},
+                        "metrics": {"type": "array", "items": {"type": "string"}},
+                        "date_range": {"type": "string"},
+                        "channels": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["campaign_id"]
+                },
+                "category": "marketing",
+                "always_available": True
+            },
+            # Advanced Features - Always available
+            "lead_scoring_engine": {
+                "name": "lead_scoring_engine",
+                "description": "Score and qualify leads using AI-driven algorithms and behavioral analysis",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["score_lead", "create_rule", "get_analytics", "update_criteria"]},
+                        "lead_data": {"type": "object"},
+                        "rule_config": {"type": "object"},
+                        "date_range": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                "category": "advanced",
+                "always_available": True
+            },
+            "customer_journey_mapping": {
+                "name": "customer_journey_mapping",
+                "description": "Map and analyze customer journeys across all touchpoints and channels",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_map", "track_touchpoint", "get_journey", "analyze_trends", "optimize"]},
+                        "journey_data": {"type": "object"},
+                        "touchpoint_data": {"type": "object"},
+                        "optimization_goals": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["operation"]
+                },
+                "category": "advanced",
+                "always_available": True
+            },
+            "predictive_analytics_engine": {
+                "name": "predictive_analytics_engine",
+                "description": "Predict customer behavior, churn risk, and business outcomes using AI",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["generate_forecast", "analyze_trends", "predict_behavior", "get_analytics"]},
+                        "metric": {"type": "string"},
+                        "historical_data": {"type": "object"},
+                        "forecast_periods": {"type": "integer"},
+                        "confidence_level": {"type": "number"},
+                        "customer_data": {"type": "object"},
+                        "prediction_type": {"type": "string"},
+                        "data_source": {"type": "string"},
+                        "date_range": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                "category": "advanced",
+                "always_available": True
+            },
+            "ab_testing_platform": {
+                "name": "ab_testing_platform",
+                "description": "Create, run, and analyze A/B tests for campaigns and user experiences",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_test", "run_test", "get_results", "analyze_performance"]},
+                        "test_config": {"type": "object"},
+                        "test_id": {"type": "string"},
+                        "variants": {"type": "array", "items": {"type": "object"}},
+                        "traffic_split": {"type": "object"},
+                        "success_metrics": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["operation"]
+                },
+                "category": "advanced",
+                "always_available": True
+            },
+            "social_media_management": {
+                "name": "social_media_management",
+                "description": "Manage social media campaigns, content scheduling, and engagement tracking",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["schedule_post", "analyze_performance", "engage_audience", "create_campaign"]},
+                        "platform": {"type": "string", "enum": ["facebook", "twitter", "linkedin", "instagram"]},
+                        "content": {"type": "object"},
+                        "schedule": {"type": "object"},
+                        "campaign_data": {"type": "object"},
+                        "engagement_metrics": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["operation"]
+                },
+                "category": "marketing",
+                "always_available": True
+            },
+            # File Management Tools - Always available
+            "file_management": {
+                "name": "file_management",
+                "description": "Upload, download, and manage files with PDF generation and document conversion",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["upload", "download", "list", "delete", "generate_pdf", "convert_document", "generate_qr"]},
+                        "filename": {"type": "string"},
+                        "content": {"type": "string"},
+                        "from_format": {"type": "string"},
+                        "to_format": {"type": "string"},
+                        "template": {"type": "string"},
+                        "qr_data": {"type": "string"},
+                        "qr_size": {"type": "integer"}
+                    },
+                    "required": ["operation"]
+                },
+                "category": "file_management",
+                "always_available": True
+            },
+            # Web Tools - Always available
+            "web_tools": {
+                "name": "web_tools",
+                "description": "Web scraping, link generation, and web automation tools",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["scrape_website", "extract_data", "generate_short_link", "generate_tracking_link", "automate_task", "check_status", "extract_emails"]},
+                        "url": {"type": "string"},
+                        "selectors": {"type": "object"},
+                        "original_url": {"type": "string"},
+                        "custom_alias": {"type": "string"},
+                        "campaign": {"type": "string"},
+                        "source": {"type": "string"},
+                        "task_config": {"type": "object"}
+                    },
+                    "required": ["operation"]
+                },
+                "category": "web_tools",
+                "always_available": True
+            },
+            # Content Creation Tools - Always available
+            "content_creation": {
+                "name": "content_creation",
+                "description": "Generate images, create content from templates, optimize SEO, and generate bulk content",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string", 
+                            "enum": ["generate_image", "create_from_template", "generate_bulk_content", "optimize_seo", "generate_calendar"],
+                            "description": "The type of content creation operation to perform"
+                        },
+                        "text": {
+                            "type": "string",
+                            "description": "Text description for image generation or content creation"
+                        },
+                        "style": {
+                            "type": "string",
+                            "description": "Style specification for image generation (e.g., 'realistic', 'cartoon', 'abstract')"
+                        },
+                        "size": {
+                            "type": "object",
+                            "description": "Size specification for image generation (e.g., {'width': 512, 'height': 512})"
+                        },
+                        "template_name": {
+                            "type": "string",
+                            "description": "Name of the template to use for content creation"
+                        },
+                        "variables": {
+                            "type": "object",
+                            "description": "Variables to substitute in the template"
+                        },
+                        "base_content": {
+                            "type": "string",
+                            "description": "Base content for optimization or bulk generation"
+                        },
+                        "variations": {
+                            "type": "integer",
+                            "description": "Number of content variations to generate"
+                        },
+                        "content_type": {
+                            "type": "string",
+                            "description": "Type of content to generate (e.g., 'blog', 'social', 'email')"
+                        },
+                        "keywords": {
+                            "type": "array", 
+                            "items": {"type": "string"},
+                            "description": "Keywords for SEO optimization or content generation"
+                        },
+                        "start_date": {
+                            "type": "string",
+                            "description": "Start date for calendar generation"
+                        },
+                        "end_date": {
+                            "type": "string",
+                            "description": "End date for calendar generation"
+                        }
+                    },
+                    "required": ["operation"],
+                    "allOf": [
+                        {
+                            "if": {
+                                "properties": {"operation": {"const": "generate_image"}}
+                            },
+                            "then": {
+                                "required": ["operation", "text"]
+                            }
+                        }
+                    ]
+                },
+                "category": "content_creation",
+                "always_available": True
+            },
+            # Enterprise Features - Always available
+            "white_label_management": {
+                "name": "white_label_management",
+                "description": "Create and manage white-label solutions with custom branding and domains",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_brand", "update_brand", "create_deployment", "get_assets", "get_status"]},
+                        "brand_config": {"type": "object"},
+                        "domain_config": {"type": "object"},
+                        "deployment_config": {"type": "object"},
+                        "brand_id": {"type": "string"},
+                        "deployment_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                "category": "enterprise",
+                "always_available": True
+            },
+            "workflow_builder": {
+                "name": "workflow_builder",
+                "description": "Build custom automation workflows with drag-and-drop interface and conditional logic",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_workflow", "update_workflow", "execute_workflow", "get_analytics"]},
+                        "workflow_config": {"type": "object"},
+                        "triggers": {"type": "array", "items": {"type": "object"}},
+                        "steps": {"type": "array", "items": {"type": "object"}},
+                        "conditions": {"type": "array", "items": {"type": "object"}},
+                        "trigger_data": {"type": "object"},
+                        "workflow_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                "category": "enterprise",
+                "always_available": True
+            },
+            "api_management": {
+                "name": "api_management",
+                "description": "Manage API keys, rate limits, monitoring, and developer portal features",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_api_key", "validate_key", "set_rate_limit", "get_analytics", "create_portal"]},
+                        "user_id": {"type": "string"},
+                        "api_key": {"type": "string"},
+                        "permissions": {"type": "array", "items": {"type": "string"}},
+                        "rate_limit_config": {"type": "object"},
+                        "portal_config": {"type": "object"}
+                    },
+                    "required": ["operation"]
+                },
+                "category": "enterprise",
+                "always_available": True
+            },
+            "enterprise_security": {
+                "name": "enterprise_security",
+                "description": "Advanced security features, compliance monitoring, and audit logging",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_policy", "enforce_policy", "encrypt_data", "decrypt_data", "run_compliance_check"]},
+                        "policy_config": {"type": "object"},
+                        "user_id": {"type": "string"},
+                        "action": {"type": "string"},
+                        "resource": {"type": "string"},
+                        "context": {"type": "object"},
+                        "data": {"type": "string"},
+                        "key_id": {"type": "string"},
+                        "check_type": {"type": "string"},
+                        "parameters": {"type": "object"}
+                    },
+                    "required": ["operation"]
+                },
+                "category": "enterprise",
+                "always_available": True
+            },
+            "multi_tenant_management": {
+                "name": "multi_tenant_management",
+                "description": "Manage multi-tenant architecture with tenant isolation and resource management",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_tenant", "update_plan", "check_quota", "get_analytics", "create_integration"]},
+                        "tenant_config": {"type": "object"},
+                        "tenant_id": {"type": "string"},
+                        "new_plan": {"type": "string"},
+                        "resource_type": {"type": "string"},
+                        "amount": {"type": "integer"},
+                        "integration_config": {"type": "object"}
+                    },
+                    "required": ["operation"]
+                },
+                "category": "enterprise",
+                "always_available": True
+            }
+        }
+    
+    async def get_user_tools(self, user_id: int, db: AsyncSession) -> List[Dict[str, Any]]:
+        """Get tools available for a specific user based on their connections."""
+        tools = []
+        
+        # Add base tools that are always available
+        for tool_name, tool_config in self.base_tools.items():
+            # Add status field for frontend compatibility
+            tool_config["status"] = "available"
+            tool_config["id"] = tool_name  # Add id field for frontend
+            tools.append(tool_config)
+        
+        # Get user's active connections
+        result = await db.execute(
+            select(Connection)
+            .filter(Connection.user_id == user_id, Connection.status == ConnectionStatus.ACTIVE)
+        )
+        connections = result.scalars().all()
+        
+        # Generate tools based on user's connections
+        for connection in connections:
+            if connection.platform == "slack":
+                tools.extend(self._get_slack_tools(connection))
+            elif connection.platform == "hubspot":
+                tools.extend(self._get_hubspot_tools(connection))
+            elif connection.platform == "ga4":
+                tools.extend(self._get_ga4_tools(connection))
+        
+        return tools
+    
+    def _get_slack_tools(self, connection: Connection) -> List[Dict[str, Any]]:
+        """Get Slack tools for a connection."""
+        return [
+            {
+                "name": "slack_list_channels",
+                "description": "List all Slack channels in the workspace",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                },
+                "connection_id": connection.id,
+                "platform": "slack",
+                "status": "available",
+                "id": "slack_list_channels"
+            },
+            {
+                "name": "slack_send_message",
+                "description": "Send a message to a Slack channel",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "channel": {"type": "string", "description": "Channel name or ID"},
+                        "message": {"type": "string", "description": "Message to send"}
+                    },
+                    "required": ["channel", "message"]
+                },
+                "connection_id": connection.id,
+                "platform": "slack",
+                "status": "available",
+                "id": "slack_send_message"
+            },
+            {
+                "name": "slack_get_channel_members",
+                "description": "Get members of a Slack channel",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "channel_name": {"type": "string", "description": "Channel name"}
+                    },
+                    "required": ["channel_name"]
+                },
+                "connection_id": connection.id,
+                "platform": "slack",
+                "status": "available",
+                "id": "slack_get_channel_members"
+            },
+            {
+                "name": "slack_create_channel",
+                "description": "Create a new Slack channel",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "channel_name": {
+                            "type": "string", 
+                            "description": "Name of the channel to create (without # prefix, lowercase letters, numbers, hyphens, and underscores only)"
+                        }
+                    },
+                    "required": ["channel_name"]
+                },
+                "connection_id": connection.id,
+                "platform": "slack",
+                "status": "available",
+                "id": "slack_create_channel"
+            }
+        ]
+    
+    def _get_hubspot_tools(self, connection: Connection) -> List[Dict[str, Any]]:
+        """Get HubSpot tools for a connection."""
+        return [
+            {
+                "name": "hubspot_list_contacts",
+                "description": "List contacts from HubSpot CRM",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "description": "Number of contacts to retrieve", "default": 10}
+                    },
+                    "required": []
+                },
+                "connection_id": connection.id,
+                "platform": "hubspot",
+                "status": "available",
+                "id": "hubspot_list_contacts"
+            }
+        ]
+    
+    def _get_ga4_tools(self, connection: Connection) -> List[Dict[str, Any]]:
+        """Get GA4 tools for a connection."""
+        return [
+            {
+                "name": "ga4_get_traffic",
+                "description": "Get Google Analytics 4 traffic data",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "hours": {"type": "integer", "description": "Hours of data to retrieve", "default": 24}
+                    },
+                    "required": []
+                },
+                "connection_id": connection.id,
+                "platform": "ga4",
+                "status": "available",
+                "id": "ga4_get_traffic"
+            },
+            {
+                "name": "ga4_get_conversions",
+                "description": "Get Google Analytics 4 conversion data",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "hours": {"type": "integer", "description": "Hours of data to retrieve", "default": 24}
+                    },
+                    "required": []
+                },
+                "connection_id": connection.id,
+                "platform": "ga4",
+                "status": "available",
+                "id": "ga4_get_conversions"
+            }
+        ]
+    
+    async def get_all_tools(self, db: AsyncSession) -> List[Dict[str, Any]]:
+        """Get all tools (base tools + all platform tools)."""
+        tools = []
+        
+        # Add base tools
+        for tool_name, tool_config in self.base_tools.items():
+            tools.append(tool_config)
+        
+        # Add all platform tools
+        platform_tools = platform_registry.get_all_tools()
+        tools.extend(platform_tools)
+        
+        return tools
+    
+    def get_tool(self, tool_name: str) -> Optional[Dict[str, Any]]:
+        """Get a specific tool by name."""
+        # Check base tools first
+        if tool_name in self.base_tools:
+            return self.base_tools[tool_name]
+        
+        # Check platform tools
+        for platform_id in platform_registry.platforms:
+            platform_tools = platform_registry.get_platform_tools(platform_id)
+            for tool in platform_tools:
+                if tool["name"] == tool_name:
+                    return tool
+        
+        return None
+    
+    async def get_tools_for_llm(self, user_id: int = None, db: AsyncSession = None) -> List[Dict[str, Any]]:
+        """Get tools in format suitable for LLM function calling."""
+        if user_id and db:
+            # Get user-specific tools
+            return await self.get_user_tools(user_id, db)
+        else:
+            # Get all tools
+            return await self.get_all_tools(db)
+    
+    def convert_tools_to_openai_format(self, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Convert internal tool format to OpenAI function calling format."""
+        openai_tools = []
+        for tool in tools:
+            openai_tool = {
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool.get("inputSchema", {})
+                }
+            }
+            openai_tools.append(openai_tool)
+        return openai_tools
+    
+    async def get_tool_descriptions(self, user_id: int = None, db: AsyncSession = None) -> str:
+        """Get a human-readable description of all available tools."""
+        tools = await self.get_tools_for_llm(user_id, db)
+        descriptions = []
+        for tool in tools:
+            desc = f"- {tool['name']}: {tool['description']}"
+            if 'platform' in tool:
+                desc += f" (via {tool['platform']})"
+            descriptions.append(desc)
+        return "\n".join(descriptions)
+
+
+# Global dynamic tool registry instance
+dynamic_tool_registry = DynamicToolRegistry() 
