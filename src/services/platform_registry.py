@@ -807,6 +807,115 @@ class PlatformRegistry:
             },
             test_function="test_instagram_connection"
         )
+
+        # Salesforce Platform
+        salesforce_capabilities = [
+            PlatformCapability(
+                name="Contact Management",
+                description="Create, update, and manage Salesforce contacts with full CRUD operations",
+                tool_name="salesforce_contact_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create", "update", "search", "get"]},
+                        "contact_data": {"type": "object"},
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer", "default": 50}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["create", "update", "search", "get"]
+            ),
+            PlatformCapability(
+                name="Lead Management",
+                description="Manage Salesforce leads - create, convert, and track lead pipeline",
+                tool_name="salesforce_lead_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create", "update", "convert", "get"]},
+                        "lead_data": {"type": "object"},
+                        "status": {"type": "string"},
+                        "limit": {"type": "integer", "default": 50}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["create", "update", "convert", "get"]
+            ),
+            PlatformCapability(
+                name="Opportunity Management",
+                description="Manage Salesforce opportunities and sales pipeline",
+                tool_name="salesforce_opportunity_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create", "update", "get", "pipeline_report"]},
+                        "opportunity_data": {"type": "object"},
+                        "stage": {"type": "string"},
+                        "limit": {"type": "integer", "default": 50}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["create", "update", "get", "pipeline_report"]
+            ),
+            PlatformCapability(
+                name="Account Management",
+                description="Manage Salesforce accounts and company information",
+                tool_name="salesforce_account_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create", "update", "get"]},
+                        "account_data": {"type": "object"},
+                        "limit": {"type": "integer", "default": 50}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["create", "update", "get"]
+            ),
+            PlatformCapability(
+                name="Data Sync",
+                description="Sync data between Salesforce and other platforms like HubSpot",
+                tool_name="salesforce_data_sync",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["sync_from_hubspot", "sync_contacts", "sync_leads"]},
+                        "source_data": {"type": "array", "items": {"type": "object"}},
+                        "mapping": {"type": "object"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["sync_from_hubspot", "sync_contacts", "sync_leads"]
+            )
+        ]
+
+        self.platforms["salesforce"] = Platform(
+            id="salesforce",
+            name="Salesforce",
+            description="CRM platform for contact, lead, and opportunity management",
+            icon="salesforce",
+            features=[
+                "Contact management",
+                "Lead tracking",
+                "Opportunity management",
+                "Sales pipeline",
+                "Data synchronization"
+            ],
+            capabilities=salesforce_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "client_id": {"type": "string", "description": "Salesforce Connected App Client ID"},
+                    "client_secret": {"type": "string", "description": "Salesforce Connected App Client Secret"},
+                    "username": {"type": "string", "description": "Salesforce Username"},
+                    "password": {"type": "string", "description": "Salesforce Password"},
+                    "security_token": {"type": "string", "description": "Salesforce Security Token"}
+                },
+                "required": ["client_id", "client_secret", "username", "password", "security_token"]
+            },
+            test_function="test_salesforce_connection"
+        )
     
     def get_platform(self, platform_id: str) -> Optional[Platform]:
         """Get a platform by ID."""
