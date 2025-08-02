@@ -128,6 +128,9 @@ class PrecisionToolRouter:
             r'create.*slack.*channel': 'slack_create_channel',
             r'whatsapp.*message': 'whatsapp_messaging',
             r'(hubspot|crm).*contact': 'hubspot_contact_operations',
+            r'(salesforce|crm).*contact': 'salesforce_create_contact',
+            r'(salesforce|crm).*lead': 'salesforce_create_lead',
+            r'(salesforce|crm).*opportunity': 'salesforce_create_opportunity',
             r'analytics.*report': 'ga4_analytics_dashboard',
             r'(upload|download).*file': 'file_management',
             r'scrape.*website': 'web_tools',
@@ -455,6 +458,70 @@ class PrecisionToolRouter:
                     ["predictive", "analysis"]
                 ],
                 "keywords": ["predict", "forecast", "trends", "behavior"]
+            },
+            "salesforce_create_contact": {
+                "patterns": [
+                    ["create", "contact", "salesforce"],
+                    ["add", "contact", "crm"],
+                    ["new", "contact", "salesforce"]
+                ],
+                "keywords": ["salesforce", "contact", "create", "add", "crm"]
+            },
+            "salesforce_search_contacts": {
+                "patterns": [
+                    ["search", "contact", "salesforce"],
+                    ["find", "contact", "crm"],
+                    ["lookup", "contact"]
+                ],
+                "keywords": ["salesforce", "contact", "search", "find", "lookup"]
+            },
+            "salesforce_create_lead": {
+                "patterns": [
+                    ["create", "lead", "salesforce"],
+                    ["add", "lead", "crm"],
+                    ["new", "lead", "salesforce"]
+                ],
+                "keywords": ["salesforce", "lead", "create", "add", "crm"]
+            },
+            "salesforce_get_leads": {
+                "patterns": [
+                    ["get", "leads", "salesforce"],
+                    ["list", "leads", "crm"],
+                    ["view", "leads"]
+                ],
+                "keywords": ["salesforce", "lead", "get", "list", "view"]
+            },
+            "salesforce_create_opportunity": {
+                "patterns": [
+                    ["create", "opportunity", "salesforce"],
+                    ["add", "opportunity", "crm"],
+                    ["new", "opportunity", "salesforce"]
+                ],
+                "keywords": ["salesforce", "opportunity", "create", "add", "crm"]
+            },
+            "salesforce_get_opportunities": {
+                "patterns": [
+                    ["get", "opportunities", "salesforce"],
+                    ["list", "opportunities", "crm"],
+                    ["view", "opportunities"]
+                ],
+                "keywords": ["salesforce", "opportunity", "get", "list", "view"]
+            },
+            "salesforce_get_pipeline_report": {
+                "patterns": [
+                    ["pipeline", "report", "salesforce"],
+                    ["sales", "report", "crm"],
+                    ["opportunity", "report"]
+                ],
+                "keywords": ["salesforce", "pipeline", "report", "sales", "opportunity"]
+            },
+            "salesforce_sync_from_hubspot": {
+                "patterns": [
+                    ["sync", "hubspot", "salesforce"],
+                    ["import", "contacts", "hubspot"],
+                    ["migrate", "data", "hubspot"]
+                ],
+                "keywords": ["salesforce", "hubspot", "sync", "import", "migrate"]
             }
         }
     

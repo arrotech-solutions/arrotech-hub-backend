@@ -17,6 +17,7 @@ from .multi_tenant_service import MultiTenantService
 from .payment_service import PaymentService
 from .predictive_analytics_service import PredictiveAnalyticsService
 from .rate_limit_service import RateLimitService
+from .salesforce_service import SalesforceService
 from .slack_service import SlackService
 from .social_media_service import SocialMediaService
 from .web_tools_service import WebToolsService
@@ -39,6 +40,7 @@ __all__ = [
     "PaymentService",
     "PredictiveAnalyticsService",
     "RateLimitService",
+    "SalesforceService",
     "SlackService",
     "SocialMediaService",
     "WebToolsService",
