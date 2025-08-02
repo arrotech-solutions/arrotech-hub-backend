@@ -19,6 +19,7 @@ from .hubspot_service import HubSpotService
 from .salesforce_service import SalesforceService
 from .slack_service import SlackService
 from .social_media_service import SocialMediaService
+from .teams_service import TeamsService
 from .web_tools_service import WebToolsService
 from .whatsapp_service import WhatsAppService
 
@@ -33,6 +34,7 @@ class ToolExecutor:
             "slack": SlackService(),
             "hubspot": HubSpotService(),
             "salesforce": SalesforceService(),
+            "teams": TeamsService(),
             "ga4": GA4Service(),
             "whatsapp": WhatsAppService(),
             "social_media": SocialMediaService(),
@@ -50,7 +52,7 @@ class ToolExecutor:
                 if hasattr(service, 'initialize'):
                     # Only initialize services that don't require parameters
                     # Services like Salesforce require a connection parameter and should be initialized per-request
-                    if service_name in ["slack", "ga4", "whatsapp", "social_media", "file_management", "web_tools", "content_creation", "rate_limit", "billing"]:
+                    if service_name in ["slack", "teams", "ga4", "whatsapp", "social_media", "file_management", "web_tools", "content_creation", "rate_limit", "billing"]:
                         await service.initialize()
             self._initialized = True
 
@@ -77,6 +79,8 @@ class ToolExecutor:
             # Route to appropriate service based on tool name
             if tool_name.startswith("slack_"):
                 return await self._execute_slack_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("teams_"):
+                return await self._execute_teams_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("hubspot_"):
                 return await self._execute_hubspot_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("salesforce_"):
@@ -877,6 +881,214 @@ class ToolExecutor:
         return {
             "success": False,
             "error": f"Unknown Slack tool: {tool_name}",
+            "result": None
+        }
+
+    async def _execute_teams_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute Microsoft Teams-related tools."""
+        # Get user's Teams connection
+        result = await db.execute(
+            select(Connection)
+            .filter(
+                Connection.user_id == user.id,
+                Connection.platform == "teams",
+                Connection.status == ConnectionStatus.ACTIVE
+            )
+        )
+        connection = result.scalar_one_or_none()
+
+        if not connection:
+            return {
+                "success": False,
+                "error": "No active Teams connection found",
+                "result": None
+            }
+
+        # Initialize Teams service with user's connection config
+        teams_service = TeamsService()
+        await teams_service.initialize()
+        print(f"🔧 Initialized Teams service with user config for user {user.id}")
+
+        if tool_name == "teams_team_communication":
+            action = arguments.get("action", "send_message")
+            channel = arguments.get("channel", "")
+            message = arguments.get("message", "")
+            message_type = arguments.get("message_type", "text")
+            card_content = arguments.get("card_content")
+            alert_type = arguments.get("alert_type")
+            severity = arguments.get("severity", "info")
+            meeting_title = arguments.get("meeting_title")
+            meeting_time = arguments.get("meeting_time")
+            meeting_link = arguments.get("meeting_link")
+            attendees = arguments.get("attendees", [])
+
+            if action == "send_message":
+                result = await teams_service.send_message(
+                    channel=channel,
+                    message=message,
+                    message_type=message_type
+                )
+                return {
+                    "success": result.get("success", False),
+                    "result": result.get("message", "Message sent"),
+                    "data": result
+                }
+            elif action == "send_adaptive_card":
+                if not card_content:
+                    return {
+                        "success": False,
+                        "error": "Card content is required for adaptive card",
+                        "result": None
+                    }
+                result = await teams_service.send_adaptive_card(
+                    channel=channel,
+                    card_content=card_content
+                )
+                return {
+                    "success": result.get("success", False),
+                    "result": result.get("message", "Adaptive card sent"),
+                    "data": result
+                }
+            elif action == "send_alert":
+                if not alert_type or not message:
+                    return {
+                        "success": False,
+                        "error": "Alert type and message are required",
+                        "result": None
+                    }
+                result = await teams_service.send_alert(
+                    channel=channel,
+                    alert_type=alert_type,
+                    message=message,
+                    severity=severity
+                )
+                return {
+                    "success": result.get("success", False),
+                    "result": result.get("message", "Alert sent"),
+                    "data": result
+                }
+            elif action == "send_meeting_notification":
+                if not meeting_title or not meeting_time:
+                    return {
+                        "success": False,
+                        "error": "Meeting title and time are required",
+                        "result": None
+                    }
+                result = await teams_service.send_meeting_notification(
+                    channel=channel,
+                    meeting_title=meeting_title,
+                    meeting_time=meeting_time,
+                    meeting_link=meeting_link,
+                    attendees=attendees
+                )
+                return {
+                    "success": result.get("success", False),
+                    "result": result.get("message", "Meeting notification sent"),
+                    "data": result
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown Teams communication action: {action}",
+                    "result": None
+                }
+
+        elif tool_name == "teams_channel_management":
+            action = arguments.get("action")
+            team_id = arguments.get("team_id")
+            channel_name = arguments.get("channel_name")
+            description = arguments.get("description")
+            channel_id = arguments.get("channel_id")
+
+            if action == "list_channels":
+                result = await teams_service.list_channels()
+                return {
+                    "success": result.get("success", False),
+                    "result": "Channels retrieved",
+                    "data": result
+                }
+            elif action == "get_channel_members":
+                if not channel_id:
+                    return {
+                        "success": False,
+                        "error": "Channel ID is required",
+                        "result": None
+                    }
+                result = await teams_service.get_channel_members(channel_id)
+                return {
+                    "success": result.get("success", False),
+                    "result": "Channel members retrieved",
+                    "data": result
+                }
+            elif action == "create_channel":
+                if not team_id or not channel_name:
+                    return {
+                        "success": False,
+                        "error": "Team ID and channel name are required",
+                        "result": None
+                    }
+                result = await teams_service.create_channel(
+                    team_id=team_id,
+                    channel_name=channel_name,
+                    description=description
+                )
+                return {
+                    "success": result.get("success", False),
+                    "result": result.get("message", "Channel created"),
+                    "data": result
+                }
+            elif action == "get_team_info":
+                if not team_id:
+                    return {
+                        "success": False,
+                        "error": "Team ID is required",
+                        "result": None
+                    }
+                result = await teams_service.get_team_info(team_id)
+                return {
+                    "success": result.get("success", False),
+                    "result": "Team info retrieved",
+                    "data": result
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown Teams channel management action: {action}",
+                    "result": None
+                }
+
+        elif tool_name == "teams_message_search":
+            query = arguments.get("query")
+            channel_id = arguments.get("channel_id")
+            limit = arguments.get("limit", 20)
+
+            if not query:
+                return {
+                    "success": False,
+                    "error": "Search query is required",
+                    "result": None
+                }
+
+            result = await teams_service.search_messages(
+                query=query,
+                channel_id=channel_id,
+                limit=limit
+            )
+            return {
+                "success": result.get("success", False),
+                "result": "Messages searched",
+                "data": result
+            }
+
+        return {
+            "success": False,
+            "error": f"Unknown Teams tool: {tool_name}",
             "result": None
         }
 
