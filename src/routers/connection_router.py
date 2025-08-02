@@ -17,6 +17,7 @@ from ..services.ga4_service import GA4Service
 from ..services.hubspot_service import HubSpotService
 from ..services.platform_registry import platform_registry
 from ..services.slack_service import SlackService
+from ..services.teams_service import TeamsService
 from ..services.whatsapp_service import WhatsAppService
 
 router = APIRouter()
@@ -25,6 +26,7 @@ router = APIRouter()
 hubspot_service = HubSpotService()
 ga4_service = GA4Service()
 slack_service = SlackService()
+teams_service = TeamsService()
 whatsapp_service = WhatsAppService()
 
 
@@ -318,6 +320,8 @@ async def test_platform_connection(platform: str, config: Dict[str, Any]) -> Dic
             return await test_instagram_connection(config)
         elif platform == "salesforce":
             return await test_salesforce_connection(config)
+        elif platform == "teams":
+            return await test_teams_connection(config)
         else:
             return {
                 "success": False,
@@ -550,6 +554,34 @@ async def test_salesforce_connection(config: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "success": False,
             "error": f"Salesforce connection test failed: {str(e)}"
+        }
+
+
+async def test_teams_connection(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Test Microsoft Teams connection."""
+    try:
+        # Test Teams connection using the service
+        result = await teams_service.test_connection(config)
+        
+        if result.get("success"):
+            return {
+                "success": True,
+                "message": "Teams connection test successful",
+                "data": {
+                    "method": result.get("method"),
+                    "user": result.get("user")
+                }
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.get("error", "Teams connection test failed")
+            }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Teams connection test failed: {str(e)}"
         }
 
 
