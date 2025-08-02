@@ -26,6 +26,11 @@ class BaseConfig(BaseSettings):
     GA4_PROPERTY_ID: Optional[str] = None
     GA4_CREDENTIALS_FILE: Optional[str] = None
     SLACK_BOT_TOKEN: Optional[str] = None
+    TEAMS_WEBHOOK_URL: Optional[str] = None
+    TEAMS_ACCESS_TOKEN: Optional[str] = None
+    TEAMS_TENANT_ID: Optional[str] = None
+    TEAMS_CLIENT_ID: Optional[str] = None
+    TEAMS_CLIENT_SECRET: Optional[str] = None
     WHATSAPP_TOKEN: Optional[str] = None
     WHATSAPP_PHONE_NUMBER_ID: Optional[str] = None
     WHATSAPP_BUSINESS_ACCOUNT_ID: Optional[str] = None
