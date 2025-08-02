@@ -916,6 +916,95 @@ class PlatformRegistry:
             },
             test_function="test_salesforce_connection"
         )
+        
+        # Microsoft Teams Platform
+        teams_capabilities = [
+            PlatformCapability(
+                name="Team Communication",
+                description="Send messages, notifications, and adaptive cards to Teams channels",
+                tool_name="teams_team_communication",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["send_message", "send_adaptive_card", "send_alert", "send_meeting_notification"]},
+                        "channel": {"type": "string"},
+                        "message": {"type": "string"},
+                        "message_type": {"type": "string", "default": "text"},
+                        "card_content": {"type": "object"},
+                        "alert_type": {"type": "string"},
+                        "severity": {"type": "string", "enum": ["info", "warning", "error", "success"]},
+                        "meeting_title": {"type": "string"},
+                        "meeting_time": {"type": "string"},
+                        "meeting_link": {"type": "string"},
+                        "attendees": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["action", "channel"]
+                },
+                operations=["send_message", "send_adaptive_card", "send_alert", "send_meeting_notification"]
+            ),
+            PlatformCapability(
+                name="Channel Management",
+                description="Manage Teams channels, members, and team information",
+                tool_name="teams_channel_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["list_channels", "get_channel_members", "create_channel", "get_team_info"]},
+                        "team_id": {"type": "string"},
+                        "channel_name": {"type": "string"},
+                        "description": {"type": "string"},
+                        "channel_id": {"type": "string"}
+                    },
+                    "required": ["action"]
+                },
+                operations=["list_channels", "get_channel_members", "create_channel", "get_team_info"]
+            ),
+            PlatformCapability(
+                name="Message Search",
+                description="Search for messages and content in Teams channels",
+                tool_name="teams_message_search",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "channel_id": {"type": "string"},
+                        "limit": {"type": "integer", "default": 20}
+                    },
+                    "required": ["query"]
+                },
+                operations=["search_messages"]
+            )
+        ]
+        
+        self.platforms["teams"] = Platform(
+            id="teams",
+            name="Microsoft Teams",
+            description="Microsoft Teams integration for team communication and collaboration",
+            icon="teams",
+            features=[
+                "Team messaging",
+                "Adaptive cards",
+                "Channel management",
+                "Meeting notifications",
+                "Message search"
+            ],
+            capabilities=teams_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "webhook_url": {"type": "string", "description": "Teams Webhook URL (for webhook method)"},
+                    "access_token": {"type": "string", "description": "Microsoft Graph API Access Token (for Graph API method)"},
+                    "tenant_id": {"type": "string", "description": "Microsoft Tenant ID (for Graph API method)"},
+                    "client_id": {"type": "string", "description": "Microsoft Client ID (for Graph API method)"},
+                    "client_secret": {"type": "string", "description": "Microsoft Client Secret (for Graph API method)"}
+                },
+                "anyOf": [
+                    {"required": ["webhook_url"]},
+                    {"required": ["access_token", "tenant_id", "client_id", "client_secret"]}
+                ]
+            },
+            test_function="test_teams_connection"
+        )
     
     def get_platform(self, platform_id: str) -> Optional[Platform]:
         """Get a platform by ID."""

@@ -376,6 +376,56 @@ class ToolRegistry:
                     "required": ["action"]
                 }
             },
+            # Microsoft Teams Integration
+            "teams_team_communication": {
+                "name": "teams_team_communication",
+                "description": "Send messages, adaptive cards, alerts, and meeting notifications to Microsoft Teams channels",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["send_message", "send_adaptive_card", "send_alert", "send_meeting_notification"]},
+                        "channel": {"type": "string"},
+                        "message": {"type": "string"},
+                        "message_type": {"type": "string", "enum": ["text", "html"], "default": "text"},
+                        "card_content": {"type": "object"},
+                        "alert_type": {"type": "string", "enum": ["info", "warning", "error", "success"]},
+                        "severity": {"type": "string", "enum": ["low", "medium", "high"], "default": "medium"},
+                        "meeting_title": {"type": "string"},
+                        "meeting_time": {"type": "string"},
+                        "meeting_link": {"type": "string"},
+                        "attendees": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["action"]
+                }
+            },
+            "teams_channel_management": {
+                "name": "teams_channel_management",
+                "description": "Manage Microsoft Teams channels - list channels, get members, create channels, and get team information",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["list_channels", "get_channel_members", "create_channel", "get_team_info"]},
+                        "team_id": {"type": "string"},
+                        "channel_name": {"type": "string"},
+                        "description": {"type": "string"},
+                        "channel_id": {"type": "string"}
+                    },
+                    "required": ["action"]
+                }
+            },
+            "teams_message_search": {
+                "name": "teams_message_search",
+                "description": "Search for messages in Microsoft Teams channels",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "channel_id": {"type": "string"},
+                        "limit": {"type": "integer", "default": 20}
+                    },
+                    "required": ["query"]
+                }
+            },
             # WhatsApp Business API Integration
             "whatsapp_messaging": {
                 "name": "whatsapp_messaging",
