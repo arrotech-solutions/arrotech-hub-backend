@@ -316,6 +316,8 @@ async def test_platform_connection(platform: str, config: Dict[str, Any]) -> Dic
             return await test_linkedin_connection(config)
         elif platform == "instagram":
             return await test_instagram_connection(config)
+        elif platform == "salesforce":
+            return await test_salesforce_connection(config)
         else:
             return {
                 "success": False,
@@ -459,6 +461,95 @@ async def test_instagram_connection(config: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "success": False,
             "error": f"Instagram connection test failed: {str(e)}"
+        }
+
+
+async def test_salesforce_connection(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Test Salesforce connection."""
+    try:
+        # Validate required fields
+        client_id = config.get("client_id")
+        client_secret = config.get("client_secret")
+        username = config.get("username")
+        password = config.get("password")
+        security_token = config.get("security_token")
+        
+        if not all([client_id, client_secret, username, password, security_token]):
+            return {
+                "success": False,
+                "error": "Salesforce client_id, client_secret, username, password, and security_token are required"
+            }
+        
+        # Test authentication with Salesforce
+        from ..services.salesforce_service import SalesforceService
+
+        # Create a temporary connection object for testing
+        class TempConnection:
+            def __init__(self, config):
+                self.config = config
+        
+        temp_connection = TempConnection(config)
+        salesforce_service = SalesforceService()
+        
+        try:
+            # Test authentication first
+            await salesforce_service.initialize(temp_connection)
+            
+            # Test a simple API call to verify connection
+            # Get available objects to test the connection
+            result = await salesforce_service._make_request("GET", "/sobjects")
+            
+            if not result or not isinstance(result, dict):
+                return {
+                    "success": False,
+                    "error": "Failed to retrieve Salesforce objects - authentication may have succeeded but API call failed"
+                }
+            
+            return {
+                "success": True,
+                "message": "Salesforce connection test successful",
+                "data": {
+                    "instance_url": salesforce_service.instance_url,
+                    "api_version": "v58.0",
+                    "available_objects": list(result.keys()) if isinstance(result, dict) else [],
+                    "total_objects": len(result.keys()) if isinstance(result, dict) else 0
+                }
+            }
+            
+        except Exception as auth_error:
+            # Provide more detailed error information
+            error_msg = str(auth_error)
+            
+            # Check for common Salesforce authentication errors
+            if "invalid_grant" in error_msg.lower():
+                return {
+                    "success": False,
+                    "error": "Invalid credentials. Please check your username, password, and security token.",
+                    "details": error_msg
+                }
+            elif "invalid_client" in error_msg.lower():
+                return {
+                    "success": False,
+                    "error": "Invalid client credentials. Please check your client_id and client_secret.",
+                    "details": error_msg
+                }
+            elif "400" in error_msg:
+                return {
+                    "success": False,
+                    "error": "Bad request to Salesforce. Please verify all credentials are correct and properly formatted.",
+                    "details": error_msg
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Salesforce authentication failed: {error_msg}",
+                    "details": "Check your credentials and ensure your Salesforce account has API access enabled."
+                }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Salesforce connection test failed: {str(e)}"
         }
 
 

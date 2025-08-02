@@ -16,6 +16,7 @@ from .content_creation_service import ContentCreationService
 from .file_management_service import FileManagementService
 from .ga4_service import GA4Service
 from .hubspot_service import HubSpotService
+from .salesforce_service import SalesforceService
 from .slack_service import SlackService
 from .social_media_service import SocialMediaService
 from .web_tools_service import WebToolsService
@@ -31,6 +32,7 @@ class ToolExecutor:
         self.services = {
             "slack": SlackService(),
             "hubspot": HubSpotService(),
+            "salesforce": SalesforceService(),
             "ga4": GA4Service(),
             "whatsapp": WhatsAppService(),
             "social_media": SocialMediaService(),
@@ -42,11 +44,14 @@ class ToolExecutor:
         self._initialized = False
 
     async def _initialize_services(self):
-        """Initialize all services."""
+        """Initialize all services that don't require parameters."""
         if not self._initialized:
             for service_name, service in self.services.items():
                 if hasattr(service, 'initialize'):
-                    await service.initialize()
+                    # Only initialize services that don't require parameters
+                    # Services like Salesforce require a connection parameter and should be initialized per-request
+                    if service_name in ["slack", "ga4", "whatsapp", "social_media", "file_management", "web_tools", "content_creation", "rate_limit", "billing"]:
+                        await service.initialize()
             self._initialized = True
 
     async def execute_tool(
@@ -74,6 +79,8 @@ class ToolExecutor:
                 return await self._execute_slack_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("hubspot_"):
                 return await self._execute_hubspot_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("salesforce_"):
+                return await self._execute_salesforce_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("ga4_"):
                 return await self._execute_ga4_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("marketing_"):
@@ -935,6 +942,108 @@ class ToolExecutor:
             "error": f"Unknown HubSpot tool: {tool_name}",
             "result": None
         }
+
+    async def _execute_salesforce_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute Salesforce-related tools."""
+        # Get user's Salesforce connection
+        result = await db.execute(
+            select(Connection)
+            .filter(
+                Connection.user_id == user.id,
+                Connection.platform == "salesforce",
+                Connection.status == ConnectionStatus.ACTIVE
+            )
+        )
+        connection = result.scalar_one_or_none()
+
+        if not connection:
+            return {
+                "success": False,
+                "error": "No active Salesforce connection found",
+                "result": None
+            }
+
+        # Initialize Salesforce service with user's connection config
+        salesforce_service = SalesforceService()
+        await salesforce_service.initialize(connection)
+        print(f"🔧 Initialized Salesforce service with user config for user {user.id}")
+
+        if tool_name == "salesforce_create_contact":
+            result = await salesforce_service.create_contact(arguments)
+            return {
+                "success": result["success"],
+                "result": result.get("message", "Contact operation completed"),
+                "data": result
+            }
+        elif tool_name == "salesforce_search_contacts":
+            query = arguments.get("query")
+            limit = arguments.get("limit", 50)
+            result = await salesforce_service.search_contacts(query, limit)
+            return {
+                "success": result["success"],
+                "result": f"Found {result.get('total_size', 0)} contacts",
+                "data": result
+            }
+        elif tool_name == "salesforce_create_lead":
+            result = await salesforce_service.create_lead(arguments)
+            return {
+                "success": result["success"],
+                "result": result.get("message", "Lead operation completed"),
+                "data": result
+            }
+        elif tool_name == "salesforce_get_leads":
+            status = arguments.get("status")
+            limit = arguments.get("limit", 50)
+            result = await salesforce_service.get_leads(status, limit)
+            return {
+                "success": result["success"],
+                "result": f"Retrieved {result.get('total_size', 0)} leads",
+                "data": result
+            }
+        elif tool_name == "salesforce_create_opportunity":
+            result = await salesforce_service.create_opportunity(arguments)
+            return {
+                "success": result["success"],
+                "result": result.get("message", "Opportunity operation completed"),
+                "data": result
+            }
+        elif tool_name == "salesforce_get_opportunities":
+            stage = arguments.get("stage")
+            limit = arguments.get("limit", 50)
+            result = await salesforce_service.get_opportunities(stage, limit)
+            return {
+                "success": result["success"],
+                "result": f"Retrieved {result.get('total_size', 0)} opportunities",
+                "data": result
+            }
+        elif tool_name == "salesforce_get_pipeline_report":
+            date_range = arguments.get("date_range", "30")
+            result = await salesforce_service.get_sales_pipeline_report(date_range)
+            return {
+                "success": result["success"],
+                "result": "Pipeline report generated",
+                "data": result
+            }
+        elif tool_name == "salesforce_sync_from_hubspot":
+            hubspot_contacts = arguments.get("hubspot_contacts", [])
+            result = await salesforce_service.sync_contacts_from_hubspot(hubspot_contacts)
+            return {
+                "success": result["success"],
+                "result": result.get("message", "Sync operation completed"),
+                "data": result
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"Unknown Salesforce tool: {tool_name}",
+                "result": None
+            }
 
     async def _execute_ga4_tool(
         self,

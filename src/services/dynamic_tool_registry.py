@@ -388,6 +388,8 @@ class DynamicToolRegistry:
                 tools.extend(self._get_slack_tools(connection))
             elif connection.platform == "hubspot":
                 tools.extend(self._get_hubspot_tools(connection))
+            elif connection.platform == "salesforce":
+                tools.extend(self._get_salesforce_tools(connection))
             elif connection.platform == "ga4":
                 tools.extend(self._get_ga4_tools(connection))
         
@@ -477,6 +479,151 @@ class DynamicToolRegistry:
                 "platform": "hubspot",
                 "status": "available",
                 "id": "hubspot_list_contacts"
+            }
+        ]
+    
+    def _get_salesforce_tools(self, connection: Connection) -> List[Dict[str, Any]]:
+        """Get Salesforce tools for a connection."""
+        return [
+            {
+                "name": "salesforce_create_contact",
+                "description": "Create a new contact in Salesforce CRM",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "FirstName": {"type": "string", "description": "Contact's first name"},
+                        "LastName": {"type": "string", "description": "Contact's last name"},
+                        "Email": {"type": "string", "description": "Contact's email address"},
+                        "Phone": {"type": "string", "description": "Contact's phone number"},
+                        "Company": {"type": "string", "description": "Contact's company"},
+                        "Title": {"type": "string", "description": "Contact's job title"},
+                        "Description": {"type": "string", "description": "Additional notes about the contact"}
+                    },
+                    "required": ["FirstName", "LastName"]
+                },
+                "connection_id": connection.id,
+                "platform": "salesforce",
+                "status": "available",
+                "id": "salesforce_create_contact"
+            },
+            {
+                "name": "salesforce_search_contacts",
+                "description": "Search contacts in Salesforce CRM",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query for contacts"},
+                        "limit": {"type": "integer", "description": "Number of contacts to retrieve", "default": 50}
+                    },
+                    "required": ["query"]
+                },
+                "connection_id": connection.id,
+                "platform": "salesforce",
+                "status": "available",
+                "id": "salesforce_search_contacts"
+            },
+            {
+                "name": "salesforce_create_lead",
+                "description": "Create a new lead in Salesforce CRM",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "FirstName": {"type": "string", "description": "Lead's first name"},
+                        "LastName": {"type": "string", "description": "Lead's last name"},
+                        "Company": {"type": "string", "description": "Lead's company"},
+                        "Email": {"type": "string", "description": "Lead's email address"},
+                        "Phone": {"type": "string", "description": "Lead's phone number"},
+                        "LeadSource": {"type": "string", "description": "Source of the lead"},
+                        "Status": {"type": "string", "description": "Lead status", "default": "New"}
+                    },
+                    "required": ["FirstName", "LastName", "Company"]
+                },
+                "connection_id": connection.id,
+                "platform": "salesforce",
+                "status": "available",
+                "id": "salesforce_create_lead"
+            },
+            {
+                "name": "salesforce_get_leads",
+                "description": "Get leads from Salesforce CRM",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "status": {"type": "string", "description": "Filter by lead status"},
+                        "limit": {"type": "integer", "description": "Number of leads to retrieve", "default": 50}
+                    },
+                    "required": []
+                },
+                "connection_id": connection.id,
+                "platform": "salesforce",
+                "status": "available",
+                "id": "salesforce_get_leads"
+            },
+            {
+                "name": "salesforce_create_opportunity",
+                "description": "Create a new opportunity in Salesforce CRM",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "Name": {"type": "string", "description": "Opportunity name"},
+                        "Amount": {"type": "number", "description": "Opportunity amount"},
+                        "StageName": {"type": "string", "description": "Opportunity stage", "default": "Prospecting"},
+                        "CloseDate": {"type": "string", "description": "Expected close date (YYYY-MM-DD)"},
+                        "AccountId": {"type": "string", "description": "Associated account ID"},
+                        "Description": {"type": "string", "description": "Opportunity description"}
+                    },
+                    "required": ["Name", "CloseDate"]
+                },
+                "connection_id": connection.id,
+                "platform": "salesforce",
+                "status": "available",
+                "id": "salesforce_create_opportunity"
+            },
+            {
+                "name": "salesforce_get_opportunities",
+                "description": "Get opportunities from Salesforce CRM",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "stage": {"type": "string", "description": "Filter by opportunity stage"},
+                        "limit": {"type": "integer", "description": "Number of opportunities to retrieve", "default": 50}
+                    },
+                    "required": []
+                },
+                "connection_id": connection.id,
+                "platform": "salesforce",
+                "status": "available",
+                "id": "salesforce_get_opportunities"
+            },
+            {
+                "name": "salesforce_get_pipeline_report",
+                "description": "Get sales pipeline report from Salesforce",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "date_range": {"type": "string", "description": "Date range in days", "default": "30"}
+                    },
+                    "required": []
+                },
+                "connection_id": connection.id,
+                "platform": "salesforce",
+                "status": "available",
+                "id": "salesforce_get_pipeline_report"
+            },
+            {
+                "name": "salesforce_sync_from_hubspot",
+                "description": "Sync contacts from HubSpot to Salesforce",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "hubspot_contacts": {"type": "array", "description": "Array of HubSpot contacts to sync"}
+                    },
+                    "required": ["hubspot_contacts"]
+                },
+                "connection_id": connection.id,
+                "platform": "salesforce",
+                "status": "available",
+                "id": "salesforce_sync_from_hubspot"
             }
         ]
     
