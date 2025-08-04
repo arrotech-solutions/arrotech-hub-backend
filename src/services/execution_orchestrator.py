@@ -194,8 +194,18 @@ Always use the exact tool names provided above and include all required paramete
                 
                 # If no tool calls, we're done
                 if not tool_calls:
-                    print(f"✅ No tool calls - returning final response")
-                    return content, tools_called
+                    print(f"✅ No tool calls - generating final user-facing response")
+                    # Make a final LLM call with the updated messages (including tool result)
+                    if provider == "ollama":
+                        final_response = await self._call_ollama_with_functions(messages, tools)
+                    else:
+                        final_response = await self._call_llm_fallback(provider, messages, tools)
+                    if final_response:
+                        final_message = final_response.get('choices', [{}])[0].get('message', {})
+                        final_content = final_message.get('content', '')
+                        return final_content, tools_called
+                    else:
+                        return content, tools_called
                 
                 # Execute tool calls
                 for tool_call in tool_calls:

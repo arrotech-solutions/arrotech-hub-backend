@@ -43,6 +43,10 @@ class BaseConfig(BaseSettings):
     WHATSAPP_BUSINESS_ACCOUNT_ID: Optional[str] = None
     WHATSAPP_BASE_URL: Optional[str] = None
 
+    # Asana API Configuration
+    ASANA_ACCESS_TOKEN: Optional[str] = None
+    ASANA_WORKSPACE_ID: Optional[str] = None
+
     # LLM API Keys
     OPENAI_API_KEY: Optional[str] = None
     GEMINI_API_KEY: Optional[str] = None
