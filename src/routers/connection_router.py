@@ -19,6 +19,7 @@ from ..services.platform_registry import platform_registry
 from ..services.slack_service import SlackService
 from ..services.teams_service import TeamsService
 from ..services.whatsapp_service import WhatsAppService
+from ..services.zoom_service import ZoomService
 
 router = APIRouter()
 
@@ -27,6 +28,7 @@ hubspot_service = HubSpotService()
 ga4_service = GA4Service()
 slack_service = SlackService()
 teams_service = TeamsService()
+zoom_service = ZoomService()
 whatsapp_service = WhatsAppService()
 
 
@@ -322,6 +324,8 @@ async def test_platform_connection(platform: str, config: Dict[str, Any]) -> Dic
             return await test_salesforce_connection(config)
         elif platform == "teams":
             return await test_teams_connection(config)
+        elif platform == "zoom":
+            return await test_zoom_connection(config)
         else:
             return {
                 "success": False,
@@ -582,6 +586,34 @@ async def test_teams_connection(config: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "success": False,
             "error": f"Teams connection test failed: {str(e)}"
+        }
+
+
+async def test_zoom_connection(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Test Zoom connection."""
+    try:
+        # Test Zoom connection using the service
+        result = await zoom_service.test_connection(config)
+        
+        if result.get("success"):
+            return {
+                "success": True,
+                "message": "Zoom connection test successful",
+                "data": {
+                    "method": result.get("method"),
+                    "user": result.get("user")
+                }
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.get("error", "Zoom connection test failed")
+            }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Zoom connection test failed: {str(e)}"
         }
 
 

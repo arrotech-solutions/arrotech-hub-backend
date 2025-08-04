@@ -1005,6 +1005,143 @@ class PlatformRegistry:
             },
             test_function="test_teams_connection"
         )
+
+        # Zoom
+        zoom_capabilities = [
+            PlatformCapability(
+                name="Meeting Management",
+                description="Create, update, delete, and manage Zoom meetings",
+                tool_name="zoom_meeting_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["create", "get", "update", "delete", "list"]},
+                        "topic": {"type": "string"},
+                        "start_time": {"type": "string"},
+                        "duration": {"type": "integer", "default": 60},
+                        "password": {"type": "string"},
+                        "meeting_id": {"type": "string"},
+                        "settings": {"type": "object"}
+                    },
+                    "required": ["action"]
+                },
+                operations=["create", "get", "update", "delete", "list"]
+            ),
+            PlatformCapability(
+                name="Meeting Operations",
+                description="Manage meeting participants, registrants, and operations",
+                tool_name="zoom_meeting_operations",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["get_participants", "get_registrants", "get_invitation", "update_status"]},
+                        "meeting_id": {"type": "string"},
+                        "page_size": {"type": "integer", "default": 30},
+                        "page_number": {"type": "integer", "default": 1}
+                    },
+                    "required": ["action", "meeting_id"]
+                },
+                operations=["get_participants", "get_registrants", "get_invitation", "update_status"]
+            ),
+            PlatformCapability(
+                name="Recording Management",
+                description="Manage meeting recordings and recordings analytics",
+                tool_name="zoom_recording_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["get_recordings", "delete_recording"]},
+                        "meeting_id": {"type": "string"},
+                        "recording_id": {"type": "string"},
+                        "page_size": {"type": "integer", "default": 30},
+                        "page_number": {"type": "integer", "default": 1}
+                    },
+                    "required": ["action", "meeting_id"]
+                },
+                operations=["get_recordings", "delete_recording"]
+            ),
+            PlatformCapability(
+                name="User Management",
+                description="Manage Zoom users and account information",
+                tool_name="zoom_user_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["get_user", "list_users"]},
+                        "user_id": {"type": "string", "default": "me"},
+                        "status": {"type": "string", "default": "active"},
+                        "page_size": {"type": "integer", "default": 30},
+                        "page_number": {"type": "integer", "default": 1}
+                    },
+                    "required": ["action"]
+                },
+                operations=["get_user", "list_users"]
+            ),
+            PlatformCapability(
+                name="Webinar Management",
+                description="Create and manage Zoom webinars",
+                tool_name="zoom_webinar_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["create", "get", "list"]},
+                        "topic": {"type": "string"},
+                        "start_time": {"type": "string"},
+                        "duration": {"type": "integer", "default": 60},
+                        "password": {"type": "string"},
+                        "webinar_id": {"type": "string"},
+                        "settings": {"type": "object"}
+                    },
+                    "required": ["action"]
+                },
+                operations=["create", "get", "list"]
+            ),
+            PlatformCapability(
+                name="Analytics and Reports",
+                description="Get meeting reports, analytics, and performance data",
+                tool_name="zoom_analytics",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["get_meeting_reports", "get_daily_reports"]},
+                        "user_id": {"type": "string", "default": "me"},
+                        "from_date": {"type": "string"},
+                        "to_date": {"type": "string"},
+                        "year": {"type": "integer"},
+                        "month": {"type": "integer"},
+                        "page_size": {"type": "integer", "default": 30},
+                        "page_number": {"type": "integer", "default": 1}
+                    },
+                    "required": ["action"]
+                },
+                operations=["get_meeting_reports", "get_daily_reports"]
+            )
+        ]
+
+        self.platforms["zoom"] = Platform(
+            id="zoom",
+            name="Zoom",
+            description="Zoom integration for meeting management, recordings, and analytics",
+            icon="zoom",
+            features=[
+                "Meeting management",
+                "Recording management", 
+                "User management",
+                "Webinar management",
+                "Analytics and reports"
+            ],
+            capabilities=zoom_capabilities,
+                    config_schema={
+            "type": "object",
+            "properties": {
+                "client_id": {"type": "string", "description": "Zoom OAuth client ID"},
+                "client_secret": {"type": "string", "description": "Zoom OAuth client secret"},
+                "account_id": {"type": "string", "description": "Zoom account ID"}
+            },
+            "required": ["client_id", "client_secret"]
+        },
+            test_function="test_zoom_connection"
+        )
     
     def get_platform(self, platform_id: str) -> Optional[Platform]:
         """Get a platform by ID."""
