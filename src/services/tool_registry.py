@@ -426,6 +426,111 @@ class ToolRegistry:
                     "required": ["query"]
                 }
             },
+            # Zoom Integration
+            "zoom_meeting_management": {
+                "name": "zoom_meeting_management",
+                "description": "Create, update, delete, and manage Zoom meetings",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["create", "get", "update", "delete", "list"]},
+                        "topic": {"type": "string"},
+                        "start_time": {"type": "string"},
+                        "duration": {"type": "integer", "default": 60},
+                        "password": {"type": "string"},
+                        "meeting_id": {"type": "string"},
+                        "settings": {"type": "object"},
+                        "user_id": {"type": "string", "default": "me"},
+                        "type": {"type": "string", "default": "scheduled"},
+                        "page_size": {"type": "integer", "default": 30},
+                        "page_number": {"type": "integer", "default": 1}
+                    },
+                    "required": ["action"]
+                }
+            },
+            "zoom_meeting_operations": {
+                "name": "zoom_meeting_operations",
+                "description": "Manage meeting participants, registrants, and operations",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["get_participants", "get_registrants", "get_invitation", "update_status"]},
+                        "meeting_id": {"type": "string"},
+                        "page_size": {"type": "integer", "default": 30},
+                        "page_number": {"type": "integer", "default": 1},
+                        "status_action": {"type": "string"}
+                    },
+                    "required": ["action", "meeting_id"]
+                }
+            },
+            "zoom_recording_management": {
+                "name": "zoom_recording_management",
+                "description": "Manage meeting recordings and recordings analytics",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["get_recordings", "delete_recording"]},
+                        "meeting_id": {"type": "string"},
+                        "recording_id": {"type": "string"},
+                        "page_size": {"type": "integer", "default": 30},
+                        "page_number": {"type": "integer", "default": 1}
+                    },
+                    "required": ["action", "meeting_id"]
+                }
+            },
+            "zoom_user_management": {
+                "name": "zoom_user_management",
+                "description": "Manage Zoom users and account information",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["get_user", "list_users"]},
+                        "user_id": {"type": "string", "default": "me"},
+                        "status": {"type": "string", "default": "active"},
+                        "page_size": {"type": "integer", "default": 30},
+                        "page_number": {"type": "integer", "default": 1}
+                    },
+                    "required": ["action"]
+                }
+            },
+            "zoom_webinar_management": {
+                "name": "zoom_webinar_management",
+                "description": "Create and manage Zoom webinars",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["create", "get", "list"]},
+                        "topic": {"type": "string"},
+                        "start_time": {"type": "string"},
+                        "duration": {"type": "integer", "default": 60},
+                        "password": {"type": "string"},
+                        "webinar_id": {"type": "string"},
+                        "settings": {"type": "object"},
+                        "user_id": {"type": "string", "default": "me"},
+                        "page_size": {"type": "integer", "default": 30},
+                        "page_number": {"type": "integer", "default": 1}
+                    },
+                    "required": ["action"]
+                }
+            },
+            "zoom_analytics": {
+                "name": "zoom_analytics",
+                "description": "Get meeting reports, analytics, and performance data",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["get_meeting_reports", "get_daily_reports"]},
+                        "user_id": {"type": "string", "default": "me"},
+                        "from_date": {"type": "string"},
+                        "to_date": {"type": "string"},
+                        "year": {"type": "integer"},
+                        "month": {"type": "integer"},
+                        "page_size": {"type": "integer", "default": 30},
+                        "page_number": {"type": "integer", "default": 1}
+                    },
+                    "required": ["action"]
+                }
+            },
             # WhatsApp Business API Integration
             "whatsapp_messaging": {
                 "name": "whatsapp_messaging",
