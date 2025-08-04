@@ -78,6 +78,10 @@ services:
       - ZOOM_CLIENT_SECRET=${ZOOM_CLIENT_SECRET}
       - ZOOM_ACCOUNT_ID=${ZOOM_ACCOUNT_ID}
 
+      # Asana Configuration
+      - ASANA_ACCESS_TOKEN=${ASANA_ACCESS_TOKEN}
+      - ASANA_WORKSPACE_ID=${ASANA_WORKSPACE_ID}
+
       # Security
       - SECRET_KEY=${SECRET_KEY}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}

@@ -4,6 +4,7 @@ Services package for Mini-Hub MCP Server.
 
 from .ab_testing_service import ABTestingService
 from .api_management_service import APIManagementService
+from .asana_service import AsanaService
 from .billing_service import BillingService
 from .campaign_service import CampaignService
 from .content_creation_service import ContentCreationService
@@ -45,5 +46,6 @@ __all__ = [
     "SocialMediaService",
     "WebToolsService",
     "WhiteLabelService",
-    "WorkflowBuilderService"
+    "WorkflowBuilderService",
+    "AsanaService"
 ] 
