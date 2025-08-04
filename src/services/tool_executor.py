@@ -22,6 +22,7 @@ from .social_media_service import SocialMediaService
 from .teams_service import TeamsService
 from .web_tools_service import WebToolsService
 from .whatsapp_service import WhatsAppService
+from .zoom_service import ZoomService
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class ToolExecutor:
             "hubspot": HubSpotService(),
             "salesforce": SalesforceService(),
             "teams": TeamsService(),
+            "zoom": ZoomService(),
             "ga4": GA4Service(),
             "whatsapp": WhatsAppService(),
             "social_media": SocialMediaService(),
@@ -52,7 +54,7 @@ class ToolExecutor:
                 if hasattr(service, 'initialize'):
                     # Only initialize services that don't require parameters
                     # Services like Salesforce require a connection parameter and should be initialized per-request
-                    if service_name in ["slack", "teams", "ga4", "whatsapp", "social_media", "file_management", "web_tools", "content_creation", "rate_limit", "billing"]:
+                    if service_name in ["slack", "teams", "zoom", "ga4", "whatsapp", "social_media", "file_management", "web_tools", "content_creation", "rate_limit", "billing"]:
                         await service.initialize()
             self._initialized = True
 
@@ -81,6 +83,8 @@ class ToolExecutor:
                 return await self._execute_slack_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("teams_"):
                 return await self._execute_teams_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("zoom_"):
+                return await self._execute_zoom_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("hubspot_"):
                 return await self._execute_hubspot_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("salesforce_"):
@@ -1089,6 +1093,391 @@ class ToolExecutor:
         return {
             "success": False,
             "error": f"Unknown Teams tool: {tool_name}",
+            "result": None
+        }
+
+    async def _execute_zoom_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute Zoom-related tools."""
+        # Get user's Zoom connection
+        result = await db.execute(
+            select(Connection)
+            .filter(
+                Connection.user_id == user.id,
+                Connection.platform == "zoom",
+                Connection.status == ConnectionStatus.ACTIVE
+            )
+        )
+        connection = result.scalar_one_or_none()
+
+        if not connection:
+            return {
+                "success": False,
+                "error": "No active Zoom connection found",
+                "result": None
+            }
+
+        # Initialize Zoom service with user's connection config
+        zoom_service = ZoomService()
+        await zoom_service.initialize(connection.config)
+        print(f"🔧 Initialized Zoom service with user config for user {user.id}")
+
+        if tool_name == "zoom_meeting_management":
+            action = arguments.get("action")
+            topic = arguments.get("topic")
+            start_time = arguments.get("start_time")
+            duration = arguments.get("duration", 60)
+            password = arguments.get("password")
+            meeting_id = arguments.get("meeting_id")
+            settings = arguments.get("settings")
+
+            if action == "create":
+                if not topic:
+                    return {
+                        "success": False,
+                        "error": "Topic is required for creating a meeting",
+                        "result": None
+                    }
+                result = await zoom_service.create_meeting(
+                    topic=topic,
+                    start_time=start_time,
+                    duration=duration,
+                    password=password,
+                    settings=settings
+                )
+                return {
+                    "success": result.get("success", False),
+                    "result": "Meeting created successfully",
+                    "data": result
+                }
+            elif action == "get":
+                if not meeting_id:
+                    return {
+                        "success": False,
+                        "error": "Meeting ID is required",
+                        "result": None
+                    }
+                result = await zoom_service.get_meeting(meeting_id)
+                return {
+                    "success": result.get("success", False),
+                    "result": "Meeting details retrieved",
+                    "data": result
+                }
+            elif action == "update":
+                if not meeting_id:
+                    return {
+                        "success": False,
+                        "error": "Meeting ID is required",
+                        "result": None
+                    }
+                result = await zoom_service.update_meeting(
+                    meeting_id=meeting_id,
+                    topic=topic,
+                    start_time=start_time,
+                    duration=duration,
+                    settings=settings
+                )
+                return {
+                    "success": result.get("success", False),
+                    "result": "Meeting updated successfully",
+                    "data": result
+                }
+            elif action == "delete":
+                if not meeting_id:
+                    return {
+                        "success": False,
+                        "error": "Meeting ID is required",
+                        "result": None
+                    }
+                result = await zoom_service.delete_meeting(meeting_id)
+                return {
+                    "success": result.get("success", False),
+                    "result": "Meeting deleted successfully",
+                    "data": result
+                }
+            elif action == "list":
+                user_id = arguments.get("user_id", "me")
+                meeting_type = arguments.get("type", "scheduled")
+                page_size = arguments.get("page_size", 30)
+                page_number = arguments.get("page_number", 1)
+                
+                result = await zoom_service.list_meetings(
+                    user_id=user_id,
+                    type=meeting_type,
+                    page_size=page_size,
+                    page_number=page_number
+                )
+                return {
+                    "success": result.get("success", False),
+                    "result": "Meetings listed successfully",
+                    "data": result
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown Zoom meeting management action: {action}",
+                    "result": None
+                }
+
+        elif tool_name == "zoom_meeting_operations":
+            action = arguments.get("action")
+            meeting_id = arguments.get("meeting_id")
+            page_size = arguments.get("page_size", 30)
+            page_number = arguments.get("page_number", 1)
+
+            if not meeting_id:
+                return {
+                    "success": False,
+                    "error": "Meeting ID is required",
+                    "result": None
+                }
+
+            if action == "get_participants":
+                result = await zoom_service.get_meeting_participants(
+                    meeting_id=meeting_id,
+                    page_size=page_size,
+                    page_number=page_number
+                )
+                return {
+                    "success": result.get("success", False),
+                    "result": "Meeting participants retrieved",
+                    "data": result
+                }
+            elif action == "get_registrants":
+                result = await zoom_service.get_meeting_registrants(
+                    meeting_id=meeting_id,
+                    page_size=page_size,
+                    page_number=page_number
+                )
+                return {
+                    "success": result.get("success", False),
+                    "result": "Meeting registrants retrieved",
+                    "data": result
+                }
+            elif action == "get_invitation":
+                result = await zoom_service.get_meeting_invitation(meeting_id)
+                return {
+                    "success": result.get("success", False),
+                    "result": "Meeting invitation retrieved",
+                    "data": result
+                }
+            elif action == "update_status":
+                status_action = arguments.get("status_action")
+                if not status_action:
+                    return {
+                        "success": False,
+                        "error": "Status action is required",
+                        "result": None
+                    }
+                result = await zoom_service.update_meeting_status(meeting_id, status_action)
+                return {
+                    "success": result.get("success", False),
+                    "result": "Meeting status updated",
+                    "data": result
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown Zoom meeting operations action: {action}",
+                    "result": None
+                }
+
+        elif tool_name == "zoom_recording_management":
+            action = arguments.get("action")
+            meeting_id = arguments.get("meeting_id")
+            recording_id = arguments.get("recording_id")
+            page_size = arguments.get("page_size", 30)
+            page_number = arguments.get("page_number", 1)
+
+            if not meeting_id:
+                return {
+                    "success": False,
+                    "error": "Meeting ID is required",
+                    "result": None
+                }
+
+            if action == "get_recordings":
+                result = await zoom_service.get_meeting_recordings(
+                    meeting_id=meeting_id,
+                    page_size=page_size,
+                    page_number=page_number
+                )
+                return {
+                    "success": result.get("success", False),
+                    "result": "Meeting recordings retrieved",
+                    "data": result
+                }
+            elif action == "delete_recording":
+                if not recording_id:
+                    return {
+                        "success": False,
+                        "error": "Recording ID is required",
+                        "result": None
+                    }
+                result = await zoom_service.delete_recording(meeting_id, recording_id)
+                return {
+                    "success": result.get("success", False),
+                    "result": "Recording deleted successfully",
+                    "data": result
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown Zoom recording management action: {action}",
+                    "result": None
+                }
+
+        elif tool_name == "zoom_user_management":
+            action = arguments.get("action")
+            user_id = arguments.get("user_id", "me")
+            status = arguments.get("status", "active")
+            page_size = arguments.get("page_size", 30)
+            page_number = arguments.get("page_number", 1)
+
+            if action == "get_user":
+                result = await zoom_service.get_user(user_id)
+                return {
+                    "success": result.get("success", False),
+                    "result": "User information retrieved",
+                    "data": result
+                }
+            elif action == "list_users":
+                result = await zoom_service.list_users(
+                    status=status,
+                    page_size=page_size,
+                    page_number=page_number
+                )
+                return {
+                    "success": result.get("success", False),
+                    "result": "Users listed successfully",
+                    "data": result
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown Zoom user management action: {action}",
+                    "result": None
+                }
+
+        elif tool_name == "zoom_webinar_management":
+            action = arguments.get("action")
+            topic = arguments.get("topic")
+            start_time = arguments.get("start_time")
+            duration = arguments.get("duration", 60)
+            password = arguments.get("password")
+            webinar_id = arguments.get("webinar_id")
+            settings = arguments.get("settings")
+
+            if action == "create":
+                if not topic:
+                    return {
+                        "success": False,
+                        "error": "Topic is required for creating a webinar",
+                        "result": None
+                    }
+                result = await zoom_service.create_webinar(
+                    topic=topic,
+                    start_time=start_time,
+                    duration=duration,
+                    password=password,
+                    settings=settings
+                )
+                return {
+                    "success": result.get("success", False),
+                    "result": "Webinar created successfully",
+                    "data": result
+                }
+            elif action == "get":
+                if not webinar_id:
+                    return {
+                        "success": False,
+                        "error": "Webinar ID is required",
+                        "result": None
+                    }
+                result = await zoom_service.get_webinar(webinar_id)
+                return {
+                    "success": result.get("success", False),
+                    "result": "Webinar details retrieved",
+                    "data": result
+                }
+            elif action == "list":
+                user_id = arguments.get("user_id", "me")
+                page_size = arguments.get("page_size", 30)
+                page_number = arguments.get("page_number", 1)
+                
+                result = await zoom_service.list_webinars(
+                    user_id=user_id,
+                    page_size=page_size,
+                    page_number=page_number
+                )
+                return {
+                    "success": result.get("success", False),
+                    "result": "Webinars listed successfully",
+                    "data": result
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown Zoom webinar management action: {action}",
+                    "result": None
+                }
+
+        elif tool_name == "zoom_analytics":
+            action = arguments.get("action")
+            user_id = arguments.get("user_id", "me")
+            from_date = arguments.get("from_date")
+            to_date = arguments.get("to_date")
+            year = arguments.get("year")
+            month = arguments.get("month")
+            page_size = arguments.get("page_size", 30)
+            page_number = arguments.get("page_number", 1)
+
+            if action == "get_meeting_reports":
+                result = await zoom_service.get_meeting_reports(
+                    user_id=user_id,
+                    from_date=from_date,
+                    to_date=to_date,
+                    page_size=page_size,
+                    page_number=page_number
+                )
+                return {
+                    "success": result.get("success", False),
+                    "result": "Meeting reports retrieved",
+                    "data": result
+                }
+            elif action == "get_daily_reports":
+                if not year or not month:
+                    return {
+                        "success": False,
+                        "error": "Year and month are required for daily reports",
+                        "result": None
+                    }
+                result = await zoom_service.get_daily_reports(
+                    year=year,
+                    month=month,
+                    page_size=page_size,
+                    page_number=page_number
+                )
+                return {
+                    "success": result.get("success", False),
+                    "result": "Daily reports retrieved",
+                    "data": result
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown Zoom analytics action: {action}",
+                    "result": None
+                }
+
+        return {
+            "success": False,
+            "error": f"Unknown Zoom tool: {tool_name}",
             "result": None
         }
 
