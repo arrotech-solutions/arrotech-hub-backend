@@ -392,6 +392,8 @@ class DynamicToolRegistry:
                 tools.extend(self._get_salesforce_tools(connection))
             elif connection.platform == "ga4":
                 tools.extend(self._get_ga4_tools(connection))
+            elif connection.platform == "asana":
+                tools.extend(self._get_asana_tools(connection))
         
         return tools
     
@@ -659,6 +661,126 @@ class DynamicToolRegistry:
                 "platform": "ga4",
                 "status": "available",
                 "id": "ga4_get_conversions"
+            }
+        ]
+    
+    def _get_asana_tools(self, connection: Connection) -> List[Dict[str, Any]]:
+        """Get Asana tools for a connection."""
+        return [
+            {
+                "name": "asana_create_project",
+                "description": "Create a new Asana project",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Name of the project"},
+                        "notes": {"type": "string", "description": "Project description"},
+                        "team_id": {"type": "string", "description": "Team ID for the project"},
+                        "workspace_id": {"type": "string", "description": "Workspace ID (optional, uses default if not provided)"}
+                    },
+                    "required": ["name"]
+                },
+                "connection_id": connection.id,
+                "platform": "asana",
+                "status": "available",
+                "id": "asana_create_project"
+            },
+            {
+                "name": "asana_list_projects",
+                "description": "List all Asana projects",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": {"type": "string", "description": "Workspace ID to list projects from"},
+                        "team_id": {"type": "string", "description": "Team ID to filter projects"},
+                        "limit": {"type": "integer", "description": "Number of projects to retrieve", "default": 50}
+                    },
+                    "required": []
+                },
+                "connection_id": connection.id,
+                "platform": "asana",
+                "status": "available",
+                "id": "asana_list_projects"
+            },
+            {
+                "name": "asana_create_task",
+                "description": "Create a new Asana task",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Name of the task"},
+                        "notes": {"type": "string", "description": "Task description"},
+                        "project_id": {"type": "string", "description": "Project ID to add task to"},
+                        "assignee": {"type": "string", "description": "User ID to assign task to"},
+                        "due_date": {"type": "string", "description": "Due date (YYYY-MM-DD format)"}
+                    },
+                    "required": ["name"]
+                },
+                "connection_id": connection.id,
+                "platform": "asana",
+                "status": "available",
+                "id": "asana_create_task"
+            },
+            {
+                "name": "asana_list_tasks",
+                "description": "List Asana tasks",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project_id": {"type": "string", "description": "Project ID to list tasks from"},
+                        "assignee": {"type": "string", "description": "User ID to filter tasks by assignee"},
+                        "limit": {"type": "integer", "description": "Number of tasks to retrieve", "default": 50}
+                    },
+                    "required": []
+                },
+                "connection_id": connection.id,
+                "platform": "asana",
+                "status": "available",
+                "id": "asana_list_tasks"
+            },
+            {
+                "name": "asana_add_comment",
+                "description": "Add a comment to an Asana task",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string", "description": "Task ID to add comment to"},
+                        "comment_text": {"type": "string", "description": "Comment text to add"}
+                    },
+                    "required": ["task_id", "comment_text"]
+                },
+                "connection_id": connection.id,
+                "platform": "asana",
+                "status": "available",
+                "id": "asana_add_comment"
+            },
+            {
+                "name": "asana_get_teams",
+                "description": "Get all teams in the workspace",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": {"type": "string", "description": "Workspace ID to get teams from"}
+                    },
+                    "required": []
+                },
+                "connection_id": connection.id,
+                "platform": "asana",
+                "status": "available",
+                "id": "asana_get_teams"
+            },
+            {
+                "name": "asana_get_workspaces",
+                "description": "Get all workspaces accessible to the user",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                },
+                "connection_id": connection.id,
+                "platform": "asana",
+                "status": "available",
+                "id": "asana_get_workspaces"
             }
         ]
     

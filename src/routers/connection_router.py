@@ -13,6 +13,7 @@ from sqlalchemy.orm import selectinload
 from ..database import get_db
 from ..models import Connection, ConnectionStatus, User
 from ..routers.auth_router import get_current_user
+from ..services.asana_service import AsanaService
 from ..services.ga4_service import GA4Service
 from ..services.hubspot_service import HubSpotService
 from ..services.platform_registry import platform_registry
@@ -30,6 +31,7 @@ slack_service = SlackService()
 teams_service = TeamsService()
 zoom_service = ZoomService()
 whatsapp_service = WhatsAppService()
+asana_service = AsanaService()
 
 
 class ConnectionCreate(BaseModel):
@@ -326,6 +328,8 @@ async def test_platform_connection(platform: str, config: Dict[str, Any]) -> Dic
             return await test_teams_connection(config)
         elif platform == "zoom":
             return await test_zoom_connection(config)
+        elif platform == "asana":
+            return await test_asana_connection(config)
         else:
             return {
                 "success": False,
@@ -614,6 +618,34 @@ async def test_zoom_connection(config: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "success": False,
             "error": f"Zoom connection test failed: {str(e)}"
+        }
+
+
+async def test_asana_connection(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Test Asana connection."""
+    try:
+        # Test Asana connection using the service
+        result = await asana_service.test_connection(config)
+        
+        if result.get("success"):
+            return {
+                "success": True,
+                "message": "Asana connection test successful",
+                "data": {
+                    "method": result.get("method"),
+                    "user": result.get("user")
+                }
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.get("error", "Asana connection test failed")
+            }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Asana connection test failed: {str(e)}"
         }
 
 
