@@ -31,6 +31,13 @@ class BaseConfig(BaseSettings):
     TEAMS_TENANT_ID: Optional[str] = None
     TEAMS_CLIENT_ID: Optional[str] = None
     TEAMS_CLIENT_SECRET: Optional[str] = None
+    
+    # Zoom OAuth Configuration
+    ZOOM_CLIENT_ID: Optional[str] = None
+    ZOOM_CLIENT_SECRET: Optional[str] = None
+    ZOOM_ACCOUNT_ID: Optional[str] = None
+
+    # WhatsApp API Configuration
     WHATSAPP_TOKEN: Optional[str] = None
     WHATSAPP_PHONE_NUMBER_ID: Optional[str] = None
     WHATSAPP_BUSINESS_ACCOUNT_ID: Optional[str] = None
