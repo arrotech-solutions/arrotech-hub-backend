@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
 from ..models import Connection, ConnectionStatus, User
+from .asana_service import AsanaService
 from .content_creation_service import ContentCreationService
 from .file_management_service import FileManagementService
 from .ga4_service import GA4Service
@@ -43,6 +44,7 @@ class ToolExecutor:
             "file_management": FileManagementService(),
             "web_tools": WebToolsService(),
             "content_creation": ContentCreationService(),
+            "asana": AsanaService(),
         }
         # Initialize services
         self._initialized = False
@@ -97,6 +99,8 @@ class ToolExecutor:
                 return await self._execute_whatsapp_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("social_media_"):
                 return await self._execute_social_media_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("asana_"):
+                return await self._execute_asana_tool(tool_name, arguments, user, db)
             elif tool_name == "file_management":
                 return await self._execute_file_management_tool(arguments, user, db, getattr(self, '_tools_called', []))
             elif tool_name == "web_tools":
@@ -2046,6 +2050,394 @@ class ToolExecutor:
         except Exception as e:
             logger.error(f"Error executing social media tool: {e}")
             return {"success": False, "error": str(e)}
+
+    async def _execute_asana_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute Asana tools."""
+        try:
+            # Get user's Asana connection
+            result = await db.execute(
+                select(Connection)
+                .filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == "asana",
+                    Connection.status == ConnectionStatus.ACTIVE
+                )
+            )
+            connection = result.scalars().first()
+            
+            if not connection:
+                return {
+                    "success": False,
+                    "error": "No active Asana connection found. Please create an Asana connection first."
+                }
+
+            # Initialize Asana service with connection config
+            asana_service = AsanaService()
+            await asana_service.initialize(connection.config)
+            
+            # Route to specific Asana tool
+            if tool_name == "asana_create_project":
+                return await self._execute_asana_create_project(arguments, asana_service, connection)
+            elif tool_name == "asana_list_projects":
+                return await self._execute_asana_list_projects(arguments, asana_service, connection)
+            elif tool_name == "asana_create_task":
+                return await self._execute_asana_create_task(arguments, asana_service, connection)
+            elif tool_name == "asana_list_tasks":
+                return await self._execute_asana_list_tasks(arguments, asana_service, connection)
+            elif tool_name == "asana_add_comment":
+                return await self._execute_asana_add_comment(arguments, asana_service, connection)
+            elif tool_name == "asana_get_teams":
+                return await self._execute_asana_get_teams(arguments, asana_service, connection)
+            elif tool_name == "asana_get_workspaces":
+                return await self._execute_asana_get_workspaces(arguments, asana_service, connection)
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown Asana tool: {tool_name}"
+                }
+        except Exception as e:
+            logger.error(f"Error executing Asana tool {tool_name}: {e}")
+            return {
+                "success": False,
+                "error": f"Asana tool execution failed: {str(e)}"
+            }
+
+    async def _execute_asana_create_project(
+        self,
+        arguments: Dict[str, Any],
+        asana_service: AsanaService,
+        connection: Connection
+    ) -> Dict[str, Any]:
+        """Execute Asana create project tool."""
+        try:
+            name = arguments.get("name")
+            if not name:
+                return {
+                    "success": False,
+                    "error": "Project name is required"
+                }
+
+            # Use connection config or fallback to environment variables
+            config = connection.config
+            workspace_id = arguments.get("workspace_id") or config.get("workspace_id")
+            team_id = arguments.get("team_id")
+            notes = arguments.get("notes", "")
+            
+
+
+            # Ensure we have either workspace_id or team_id for project creation
+            if not workspace_id and not team_id:
+                # Try to get workspace_id from the service's initialized config
+                if asana_service.workspace_id:
+                    workspace_id = asana_service.workspace_id
+                else:
+                    return {
+                        "success": False,
+                        "error": "Either workspace_id or team_id is required for project creation. Please ensure your Asana connection includes a workspace_id or specify one in the request."
+                    }
+
+            result = await asana_service.create_project(
+                name=name,
+                notes=notes,
+                workspace_id=workspace_id,
+                team_id=team_id
+            )
+
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "result": f"Created Asana project: {name}",
+                    "data": result.get("data")
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": result.get("error", "Failed to create Asana project")
+                }
+        except Exception as e:
+            logger.error(f"Error creating Asana project: {e}")
+            return {
+                "success": False,
+                "error": f"Failed to create Asana project: {str(e)}"
+            }
+
+    async def _execute_asana_list_projects(
+        self,
+        arguments: Dict[str, Any],
+        asana_service: AsanaService,
+        connection: Connection
+    ) -> Dict[str, Any]:
+        """Execute Asana list projects tool."""
+        try:
+            config = connection.config
+            workspace_id = arguments.get("workspace_id") or config.get("workspace_id")
+            team_id = arguments.get("team_id")
+
+            # Ensure we have either workspace_id or team_id for listing projects
+            if not workspace_id and not team_id:
+                # Try to get workspace_id from the service's initialized config
+                if asana_service.workspace_id:
+                    workspace_id = asana_service.workspace_id
+                else:
+                    return {
+                        "success": False,
+                        "error": "Either workspace_id or team_id is required for listing projects. Please ensure your Asana connection includes a workspace_id or specify one in the request."
+                    }
+
+            result = await asana_service.list_projects(
+                workspace_id=workspace_id,
+                team_id=team_id
+            )
+
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "result": f"Retrieved {len(result.get('data', []))} Asana projects",
+                    "data": result.get("data")
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": result.get("error", "Failed to list Asana projects")
+                }
+        except Exception as e:
+            logger.error(f"Error listing Asana projects: {e}")
+            return {
+                "success": False,
+                "error": f"Failed to list Asana projects: {str(e)}"
+            }
+
+    async def _execute_asana_create_task(
+        self,
+        arguments: Dict[str, Any],
+        asana_service: AsanaService,
+        connection: Connection
+    ) -> Dict[str, Any]:
+        """Execute Asana create task tool."""
+        try:
+            name = arguments.get("name")
+            if not name:
+                return {
+                    "success": False,
+                    "error": "Task name is required"
+                }
+
+            config = connection.config
+            workspace_id = config.get("workspace_id")
+            project_id = arguments.get("project_id")
+            assignee = arguments.get("assignee")
+            due_date = arguments.get("due_date")
+            notes = arguments.get("notes", "")
+
+            # Ensure we have workspace_id for task creation
+            if not workspace_id:
+                # Try to get workspace_id from the service's initialized config
+                if asana_service.workspace_id:
+                    workspace_id = asana_service.workspace_id
+                else:
+                    return {
+                        "success": False,
+                        "error": "workspace_id is required for task creation. Please ensure your Asana connection includes a workspace_id."
+                    }
+
+            result = await asana_service.create_task(
+                name=name,
+                notes=notes,
+                workspace_id=workspace_id,
+                projects=[project_id] if project_id else None,
+                assignee=assignee,
+                due_date=due_date
+            )
+
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "result": f"Created Asana task: {name}",
+                    "data": result.get("data")
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": result.get("error", "Failed to create Asana task")
+                }
+        except Exception as e:
+            logger.error(f"Error creating Asana task: {e}")
+            return {
+                "success": False,
+                "error": f"Failed to create Asana task: {str(e)}"
+            }
+
+    async def _execute_asana_list_tasks(
+        self,
+        arguments: Dict[str, Any],
+        asana_service: AsanaService,
+        connection: Connection
+    ) -> Dict[str, Any]:
+        """Execute Asana list tasks tool."""
+        try:
+            config = connection.config
+            workspace_id = config.get("workspace_id")
+            project_id = arguments.get("project_id")
+            assignee = arguments.get("assignee")
+            limit = arguments.get("limit", 50)
+
+            # Ensure we have workspace_id for task listing
+            if not workspace_id:
+                # Try to get workspace_id from the service's initialized config
+                if asana_service.workspace_id:
+                    workspace_id = asana_service.workspace_id
+                else:
+                    return {
+                        "success": False,
+                        "error": "workspace_id is required for task listing. Please ensure your Asana connection includes a workspace_id."
+                    }
+
+            result = await asana_service.list_tasks(
+                workspace_id=workspace_id,
+                project_id=project_id,
+                assignee=assignee,
+                limit=limit
+            )
+
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "result": f"Retrieved {len(result.get('data', []))} Asana tasks",
+                    "data": result.get("data")
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": result.get("error", "Failed to list Asana tasks")
+                }
+        except Exception as e:
+            logger.error(f"Error listing Asana tasks: {e}")
+            return {
+                "success": False,
+                "error": f"Failed to list Asana tasks: {str(e)}"
+            }
+
+    async def _execute_asana_add_comment(
+        self,
+        arguments: Dict[str, Any],
+        asana_service: AsanaService,
+        connection: Connection
+    ) -> Dict[str, Any]:
+        """Execute Asana add comment tool."""
+        try:
+            task_id = arguments.get("task_id")
+            comment_text = arguments.get("comment_text")
+            
+            if not task_id:
+                return {
+                    "success": False,
+                    "error": "Task ID is required"
+                }
+            if not comment_text:
+                return {
+                    "success": False,
+                    "error": "Comment text is required"
+                }
+
+            result = await asana_service.add_comment(
+                task_id=task_id,
+                text=comment_text
+            )
+
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "result": f"Added comment to Asana task {task_id}",
+                    "data": result.get("data")
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": result.get("error", "Failed to add comment to Asana task")
+                }
+        except Exception as e:
+            logger.error(f"Error adding comment to Asana task: {e}")
+            return {
+                "success": False,
+                "error": f"Failed to add comment to Asana task: {str(e)}"
+            }
+
+    async def _execute_asana_get_teams(
+        self,
+        arguments: Dict[str, Any],
+        asana_service: AsanaService,
+        connection: Connection
+    ) -> Dict[str, Any]:
+        """Execute Asana get teams tool."""
+        try:
+            config = connection.config
+            workspace_id = arguments.get("workspace_id") or config.get("workspace_id")
+
+            # Ensure we have workspace_id for getting teams
+            if not workspace_id:
+                # Try to get workspace_id from the service's initialized config
+                if asana_service.workspace_id:
+                    workspace_id = asana_service.workspace_id
+                else:
+                    return {
+                        "success": False,
+                        "error": "workspace_id is required for getting teams. Please ensure your Asana connection includes a workspace_id."
+                    }
+
+            result = await asana_service.get_teams(workspace_id=workspace_id)
+
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "result": f"Retrieved {len(result.get('data', []))} Asana teams",
+                    "data": result.get("data")
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": result.get("error", "Failed to get Asana teams")
+                }
+        except Exception as e:
+            logger.error(f"Error getting Asana teams: {e}")
+            return {
+                "success": False,
+                "error": f"Failed to get Asana teams: {str(e)}"
+            }
+
+    async def _execute_asana_get_workspaces(
+        self,
+        arguments: Dict[str, Any],
+        asana_service: AsanaService,
+        connection: Connection
+    ) -> Dict[str, Any]:
+        """Execute Asana get workspaces tool."""
+        try:
+            result = await asana_service.get_workspaces()
+
+            if result.get("success"):
+                workspaces = result.get("data", [])
+                return {
+                    "success": True,
+                    "result": f"Retrieved {len(workspaces)} Asana workspaces",
+                    "data": workspaces
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": result.get("error", "Failed to get Asana workspaces")
+                }
+        except Exception as e:
+            logger.error(f"Error getting Asana workspaces: {e}")
+            return {
+                "success": False,
+                "error": f"Failed to get Asana workspaces: {str(e)}"
+            }
 
     def _resolve_tool_output_references(self, arguments: Dict[str, Any], tools_called: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Resolve tool output references like $(tool_name.output) or $output_of_tool_name in arguments."""

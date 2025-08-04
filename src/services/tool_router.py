@@ -139,7 +139,15 @@ class PrecisionToolRouter:
             r'track.*performance': 'campaign_performance_tracking',
             r'score.*lead': 'lead_scoring_engine',
             r'journey.*map': 'customer_journey_mapping',
-            r'predict.*behavior': 'predictive_analytics_engine'
+            r'predict.*behavior': 'predictive_analytics_engine',
+            r'list.*asana.*project': 'asana_list_projects',
+            r'create.*asana.*project': 'asana_create_project',
+            r'list.*asana.*task': 'asana_list_tasks',
+            r'create.*asana.*task': 'asana_create_task',
+            r'add.*asana.*comment': 'asana_add_comment',
+            r'get.*asana.*team': 'asana_get_teams',
+            r'get.*asana.*workspace': 'asana_get_workspaces',
+            r'list.*asana.*workspace': 'asana_get_workspaces'
         }
         
         user_input = user_input.lower()
@@ -450,6 +458,65 @@ class PrecisionToolRouter:
                     ["touchpoint", "analysis"]
                 ],
                 "keywords": ["journey", "customer", "touchpoint", "map"]
+            },
+            "asana_list_projects": {
+                "patterns": [
+                    ["list", "asana", "project"],
+                    ["get", "asana", "project"],
+                    ["show", "asana", "project"],
+                    ["list", "my", "asana", "project"]
+                ],
+                "keywords": ["asana", "project", "list", "get", "show"]
+            },
+            "asana_create_project": {
+                "patterns": [
+                    ["create", "asana", "project"],
+                    ["new", "asana", "project"],
+                    ["add", "asana", "project"]
+                ],
+                "keywords": ["asana", "project", "create", "new", "add"]
+            },
+            "asana_list_tasks": {
+                "patterns": [
+                    ["list", "asana", "task"],
+                    ["get", "asana", "task"],
+                    ["show", "asana", "task"],
+                    ["list", "my", "asana", "task"]
+                ],
+                "keywords": ["asana", "task", "list", "get", "show"]
+            },
+            "asana_create_task": {
+                "patterns": [
+                    ["create", "asana", "task"],
+                    ["new", "asana", "task"],
+                    ["add", "asana", "task"]
+                ],
+                "keywords": ["asana", "task", "create", "new", "add"]
+            },
+            "asana_add_comment": {
+                "patterns": [
+                    ["add", "asana", "comment"],
+                    ["comment", "asana", "task"],
+                    ["note", "asana", "task"]
+                ],
+                "keywords": ["asana", "comment", "note", "add"]
+            },
+            "asana_get_teams": {
+                "patterns": [
+                    ["get", "asana", "team"],
+                    ["list", "asana", "team"],
+                    ["show", "asana", "team"]
+                ],
+                "keywords": ["asana", "team", "get", "list", "show"]
+            },
+            "asana_get_workspaces": {
+                "patterns": [
+                    ["get", "asana", "workspace"],
+                    ["list", "asana", "workspace"],
+                    ["show", "asana", "workspace"],
+                    ["find", "asana", "workspace"]
+                ],
+                "keywords": ["asana", "workspace", "get", "list", "show", "find"]
             },
             "predictive_analytics_engine": {
                 "patterns": [

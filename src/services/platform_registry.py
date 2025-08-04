@@ -1142,6 +1142,106 @@ class PlatformRegistry:
         },
             test_function="test_zoom_connection"
         )
+
+        # Asana Platform
+        asana_capabilities = [
+            PlatformCapability(
+                name="Project Management",
+                description="Create, update, and manage Asana projects",
+                tool_name="asana_project_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create", "read", "update", "delete", "list"]},
+                        "project_data": {"type": "object"},
+                        "workspace_id": {"type": "string"},
+                        "team_id": {"type": "string"},
+                        "project_id": {"type": "string"},
+                        "limit": {"type": "integer", "default": 50}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["create", "read", "update", "delete", "list"]
+            ),
+            PlatformCapability(
+                name="Task Management",
+                description="Create, update, and manage Asana tasks and subtasks",
+                tool_name="asana_task_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create", "read", "update", "delete", "list", "create_subtask"]},
+                        "task_data": {"type": "object"},
+                        "workspace_id": {"type": "string"},
+                        "project_id": {"type": "string"},
+                        "assignee": {"type": "string"},
+                        "parent_task_id": {"type": "string"},
+                        "limit": {"type": "integer", "default": 50}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["create", "read", "update", "delete", "list", "create_subtask"]
+            ),
+            PlatformCapability(
+                name="Team Collaboration",
+                description="Manage teams, users, and collaboration features",
+                tool_name="asana_team_collaboration",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_teams", "get_users", "get_team_members", "add_comment"]},
+                        "workspace_id": {"type": "string"},
+                        "team_id": {"type": "string"},
+                        "task_id": {"type": "string"},
+                        "comment_text": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_teams", "get_users", "get_team_members", "add_comment"]
+            ),
+            PlatformCapability(
+                name="Portfolio Management",
+                description="Create and manage portfolios for project organization",
+                tool_name="asana_portfolio_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_portfolio", "get_portfolios", "add_project_to_portfolio"]},
+                        "portfolio_data": {"type": "object"},
+                        "workspace_id": {"type": "string"},
+                        "portfolio_id": {"type": "string"},
+                        "project_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["create_portfolio", "get_portfolios", "add_project_to_portfolio"]
+            )
+        ]
+
+        self.platforms["asana"] = Platform(
+            id="asana",
+            name="Asana",
+            description="Project management and team collaboration platform",
+            icon="asana",
+            features=[
+                "Project management",
+                "Task management",
+                "Team collaboration",
+                "Portfolio management",
+                "Section management",
+                "Tag management"
+            ],
+            capabilities=asana_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "access_token": {"type": "string", "description": "Asana access token"},
+                    "workspace_id": {"type": "string", "description": "Asana workspace ID"}
+                },
+                "required": ["access_token"]
+            },
+            test_function="test_asana_connection"
+        )
     
     def get_platform(self, platform_id: str) -> Optional[Platform]:
         """Get a platform by ID."""

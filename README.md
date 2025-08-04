@@ -15,6 +15,7 @@ A comprehensive MCP (Model Context Protocol) server that connects AI models to m
 - **HubSpot Integration**: Full CRM and marketing automation
 - **Google Analytics 4**: Advanced web analytics and reporting
 - **Slack Integration**: Team communication and notifications
+- **Asana Integration**: Project management and team collaboration
 - **Connection Management**: Easy setup and testing of integrations
 - **Real-time Sync**: Live data synchronization
 
@@ -131,6 +132,23 @@ A comprehensive MCP (Model Context Protocol) server that connects AI models to m
    - Enter your bot token
    - Test the connection
 
+#### Asana Integration
+1. **Get Your Asana Access Token**
+   - Log into your Asana account
+   - Go to My Settings → Apps → Manage Developer Apps
+   - Create a new personal access token
+   - Copy the token (you won't be able to see it again)
+
+2. **Get Your Workspace ID**
+   - In Asana, go to your workspace
+   - The workspace ID is in the URL: `https://app.asana.com/0/[WORKSPACE_ID]/list`
+   - Copy the workspace ID
+
+3. **Configure Asana in Mini-Hub**
+   - Add a new Asana connection
+   - Enter your access token and workspace ID
+   - Test the connection to verify it works
+
 ### Step 3: Using AI-Powered Marketing Automation
 
 #### Natural Language Commands
@@ -161,6 +179,13 @@ Once your tools are connected, you can use natural language to automate marketin
 - Post automated reports
 - Send campaign summaries
 - Notify teams of important events
+
+**Asana Actions:**
+- Create and manage projects
+- Create and assign tasks
+- Add comments to tasks
+- Manage team members
+- Create portfolios for project organization
 
 ### Step 4: Dashboard and Monitoring
 
