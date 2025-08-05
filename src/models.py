@@ -36,6 +36,7 @@ class ConnectionPlatform(str, Enum):
     HUBSPOT = "hubspot"
     GA4 = "ga4"
     SLACK = "slack"
+    POWERBI = "powerbi"
 
 
 class MessageRole(str, Enum):
@@ -266,6 +267,11 @@ class UserSettings(Base):
 
     # Custom Settings
     custom_settings = Column(JSON, nullable=True)  # User-defined settings
+
+    # Power BI Settings
+    powerbi_auto_refresh = Column(Boolean, default=True)
+    powerbi_default_workspace = Column(String, nullable=True)
+    powerbi_embed_enabled = Column(Boolean, default=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

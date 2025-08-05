@@ -1242,6 +1242,128 @@ class PlatformRegistry:
             },
             test_function="test_asana_connection"
         )
+
+        # Power BI Platform
+        powerbi_capabilities = [
+            PlatformCapability(
+                name="Workspace Management",
+                description="Manage Power BI workspaces - create, delete, and get workspace information",
+                tool_name="powerbi_workspace_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["list", "create", "delete", "get_info"]},
+                        "workspace_name": {"type": "string"},
+                        "workspace_description": {"type": "string"},
+                        "workspace_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["list", "create", "delete", "get_info"]
+            ),
+            PlatformCapability(
+                name="Dataset Operations",
+                description="Manage Power BI datasets - get datasets, schema, refresh, and execute DAX queries",
+                tool_name="powerbi_dataset_operations",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["list", "get_schema", "refresh", "execute_query", "get_refresh_history"]},
+                        "workspace_id": {"type": "string"},
+                        "dataset_id": {"type": "string"},
+                        "dax_query": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["list", "get_schema", "refresh", "execute_query", "get_refresh_history"]
+            ),
+            PlatformCapability(
+                name="Report Management",
+                description="Manage Power BI reports - list reports, get embed tokens, and report analytics",
+                tool_name="powerbi_report_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["list", "get_embed_token", "get_analytics"]},
+                        "workspace_id": {"type": "string"},
+                        "report_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["list", "get_embed_token", "get_analytics"]
+            ),
+            PlatformCapability(
+                name="Dashboard Operations",
+                description="Manage Power BI dashboards - list dashboards and get dashboard information",
+                tool_name="powerbi_dashboard_operations",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["list", "get_info"]},
+                        "workspace_id": {"type": "string"},
+                        "dashboard_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["list", "get_info"]
+            ),
+            PlatformCapability(
+                name="Analytics Summary",
+                description="Get comprehensive Power BI analytics summary including workspaces, datasets, reports, and activity logs",
+                tool_name="powerbi_analytics_summary",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": {"type": "string"},
+                        "include_activity_logs": {"type": "boolean", "default": True},
+                        "start_date": {"type": "string"},
+                        "end_date": {"type": "string"}
+                    }
+                },
+                operations=["get_analytics_summary"]
+            ),
+            PlatformCapability(
+                name="User Management",
+                description="Manage Power BI workspace users and permissions",
+                tool_name="powerbi_user_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["list_users", "get_user_info"]},
+                        "workspace_id": {"type": "string"},
+                        "user_id": {"type": "string"}
+                    },
+                    "required": ["operation", "workspace_id"]
+                },
+                operations=["list_users", "get_user_info"]
+            )
+        ]
+
+        self.platforms["powerbi"] = Platform(
+            id="powerbi",
+            name="Power BI",
+            description="Microsoft Power BI for business intelligence and data analytics",
+            icon="powerbi",
+            features=[
+                "Workspace management",
+                "Dataset operations",
+                "Report management",
+                "Dashboard operations",
+                "Analytics summary",
+                "User management"
+            ],
+            capabilities=powerbi_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "client_id": {"type": "string", "description": "Power BI Client ID"},
+                    "client_secret": {"type": "string", "description": "Power BI Client Secret"},
+                    "tenant_id": {"type": "string", "description": "Power BI Tenant ID"}
+                },
+                "required": ["client_id", "client_secret", "tenant_id"]
+            },
+            test_function="test_powerbi_connection"
+        )
     
     def get_platform(self, platform_id: str) -> Optional[Platform]:
         """Get a platform by ID."""
