@@ -1,4 +1,4 @@
-@echo off
+git @echo off
 echo 🔐 Generating SSL certificates for development...
 
 REM Create ssl directory
