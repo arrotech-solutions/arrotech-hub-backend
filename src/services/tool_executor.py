@@ -17,6 +17,7 @@ from .content_creation_service import ContentCreationService
 from .file_management_service import FileManagementService
 from .ga4_service import GA4Service
 from .hubspot_service import HubSpotService
+from .powerbi_service import PowerBIService
 from .salesforce_service import SalesforceService
 from .slack_service import SlackService
 from .social_media_service import SocialMediaService
@@ -35,6 +36,7 @@ class ToolExecutor:
         self.services = {
             "slack": SlackService(),
             "hubspot": HubSpotService(),
+            "powerbi": PowerBIService(),
             "salesforce": SalesforceService(),
             "teams": TeamsService(),
             "zoom": ZoomService(),
@@ -101,6 +103,8 @@ class ToolExecutor:
                 return await self._execute_social_media_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("asana_"):
                 return await self._execute_asana_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("powerbi_"):
+                return await self._execute_powerbi_tool(tool_name, arguments, user, db)
             elif tool_name == "file_management":
                 return await self._execute_file_management_tool(arguments, user, db, getattr(self, '_tools_called', []))
             elif tool_name == "web_tools":
@@ -2437,6 +2441,287 @@ class ToolExecutor:
             return {
                 "success": False,
                 "error": f"Failed to get Asana workspaces: {str(e)}"
+            }
+
+    async def _execute_powerbi_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute Power BI-related tools."""
+        try:
+            # Get user's Power BI connection
+            result = await db.execute(
+                select(Connection)
+                .filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == "powerbi",
+                    Connection.status == ConnectionStatus.ACTIVE
+                )
+            )
+            connection = result.scalar_one_or_none()
+
+            if not connection:
+                return {
+                    "success": False,
+                    "error": "No active Power BI connection found",
+                    "result": None
+                }
+
+            # Initialize Power BI service
+            powerbi_service = PowerBIService()
+            
+            # Route to specific Power BI tool
+            if tool_name == "powerbi_workspace_management":
+                return await self._execute_powerbi_workspace_management(arguments, powerbi_service, connection)
+            elif tool_name == "powerbi_dataset_operations":
+                return await self._execute_powerbi_dataset_operations(arguments, powerbi_service, connection)
+            elif tool_name == "powerbi_report_management":
+                return await self._execute_powerbi_report_management(arguments, powerbi_service, connection)
+            elif tool_name == "powerbi_dashboard_operations":
+                return await self._execute_powerbi_dashboard_operations(arguments, powerbi_service, connection)
+            elif tool_name == "powerbi_analytics_summary":
+                return await self._execute_powerbi_analytics_summary(arguments, powerbi_service, connection)
+            elif tool_name == "powerbi_user_management":
+                return await self._execute_powerbi_user_management(arguments, powerbi_service, connection)
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown Power BI tool: {tool_name}",
+                    "result": None
+                }
+
+        except Exception as e:
+            logger.error(f"Error executing Power BI tool {tool_name}: {str(e)}")
+            return {
+                "success": False,
+                "error": f"Failed to execute Power BI tool: {str(e)}",
+                "result": None
+            }
+
+    async def _execute_powerbi_workspace_management(
+        self,
+        arguments: Dict[str, Any],
+        powerbi_service: PowerBIService,
+        connection: Connection
+    ) -> Dict[str, Any]:
+        """Execute Power BI workspace management operations."""
+        try:
+            operation = arguments.get("operation", "list")
+            
+            if operation == "list":
+                result = await powerbi_service.get_workspaces()
+            elif operation == "create":
+                workspace_name = arguments.get("workspace_name")
+                workspace_description = arguments.get("workspace_description")
+                result = await powerbi_service.create_workspace(workspace_name, workspace_description)
+            elif operation == "delete":
+                workspace_id = arguments.get("workspace_id")
+                result = await powerbi_service.delete_workspace(workspace_id)
+            elif operation == "get_info":
+                # For get_info, we'll return the workspaces list
+                result = await powerbi_service.get_workspaces()
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown operation: {operation}",
+                    "result": None
+                }
+
+            return {
+                "success": result.get("success", False),
+                "result": result.get("data", result.get("message", "Operation completed")),
+                "data": result
+            }
+
+        except Exception as e:
+            logger.error(f"Error in Power BI workspace management: {e}")
+            return {
+                "success": False,
+                "error": f"Failed to execute Power BI workspace operation: {str(e)}"
+            }
+
+    async def _execute_powerbi_dataset_operations(
+        self,
+        arguments: Dict[str, Any],
+        powerbi_service: PowerBIService,
+        connection: Connection
+    ) -> Dict[str, Any]:
+        """Execute Power BI dataset operations."""
+        try:
+            operation = arguments.get("operation", "list")
+            workspace_id = arguments.get("workspace_id")
+            
+            if operation == "list":
+                result = await powerbi_service.get_datasets(workspace_id)
+            elif operation == "get_schema":
+                dataset_id = arguments.get("dataset_id")
+                result = await powerbi_service.get_dataset_schema(dataset_id, workspace_id)
+            elif operation == "refresh":
+                dataset_id = arguments.get("dataset_id")
+                result = await powerbi_service.refresh_dataset(dataset_id, workspace_id)
+            elif operation == "execute_query":
+                dataset_id = arguments.get("dataset_id")
+                dax_query = arguments.get("dax_query")
+                result = await powerbi_service.execute_dax_query(dataset_id, dax_query, workspace_id)
+            elif operation == "get_refresh_history":
+                dataset_id = arguments.get("dataset_id")
+                result = await powerbi_service.get_refresh_history(dataset_id, workspace_id)
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown operation: {operation}",
+                    "result": None
+                }
+
+            return {
+                "success": result.get("success", False),
+                "result": result.get("data", result.get("message", "Operation completed")),
+                "data": result
+            }
+
+        except Exception as e:
+            logger.error(f"Error in Power BI dataset operations: {e}")
+            return {
+                "success": False,
+                "error": f"Failed to execute Power BI dataset operation: {str(e)}"
+            }
+
+    async def _execute_powerbi_report_management(
+        self,
+        arguments: Dict[str, Any],
+        powerbi_service: PowerBIService,
+        connection: Connection
+    ) -> Dict[str, Any]:
+        """Execute Power BI report management operations."""
+        try:
+            operation = arguments.get("operation", "list")
+            workspace_id = arguments.get("workspace_id")
+            
+            if operation == "list":
+                result = await powerbi_service.get_reports(workspace_id)
+            elif operation == "get_embed_token":
+                report_id = arguments.get("report_id")
+                result = await powerbi_service.get_report_embed_token(report_id, workspace_id)
+            elif operation == "get_analytics":
+                # For analytics, we'll return the reports list with additional info
+                result = await powerbi_service.get_reports(workspace_id)
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown operation: {operation}",
+                    "result": None
+                }
+
+            return {
+                "success": result.get("success", False),
+                "result": result.get("data", result.get("message", "Operation completed")),
+                "data": result
+            }
+
+        except Exception as e:
+            logger.error(f"Error in Power BI report management: {e}")
+            return {
+                "success": False,
+                "error": f"Failed to execute Power BI report operation: {str(e)}"
+            }
+
+    async def _execute_powerbi_dashboard_operations(
+        self,
+        arguments: Dict[str, Any],
+        powerbi_service: PowerBIService,
+        connection: Connection
+    ) -> Dict[str, Any]:
+        """Execute Power BI dashboard operations."""
+        try:
+            operation = arguments.get("operation", "list")
+            workspace_id = arguments.get("workspace_id")
+            
+            if operation == "list":
+                result = await powerbi_service.get_dashboards(workspace_id)
+            elif operation == "get_info":
+                # For get_info, we'll return the dashboards list
+                result = await powerbi_service.get_dashboards(workspace_id)
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown operation: {operation}",
+                    "result": None
+                }
+
+            return {
+                "success": result.get("success", False),
+                "result": result.get("data", result.get("message", "Operation completed")),
+                "data": result
+            }
+
+        except Exception as e:
+            logger.error(f"Error in Power BI dashboard operations: {e}")
+            return {
+                "success": False,
+                "error": f"Failed to execute Power BI dashboard operation: {str(e)}"
+            }
+
+    async def _execute_powerbi_analytics_summary(
+        self,
+        arguments: Dict[str, Any],
+        powerbi_service: PowerBIService,
+        connection: Connection
+    ) -> Dict[str, Any]:
+        """Execute Power BI analytics summary."""
+        try:
+            workspace_id = arguments.get("workspace_id")
+            result = await powerbi_service.get_analytics_summary(workspace_id)
+
+            return {
+                "success": result.get("success", False),
+                "result": result.get("data", result.get("message", "Analytics summary generated")),
+                "data": result
+            }
+
+        except Exception as e:
+            logger.error(f"Error in Power BI analytics summary: {e}")
+            return {
+                "success": False,
+                "error": f"Failed to generate Power BI analytics summary: {str(e)}"
+            }
+
+    async def _execute_powerbi_user_management(
+        self,
+        arguments: Dict[str, Any],
+        powerbi_service: PowerBIService,
+        connection: Connection
+    ) -> Dict[str, Any]:
+        """Execute Power BI user management operations."""
+        try:
+            operation = arguments.get("operation", "list_users")
+            workspace_id = arguments.get("workspace_id")
+            
+            if operation == "list_users":
+                result = await powerbi_service.get_workspace_users(workspace_id)
+            elif operation == "get_user_info":
+                # For get_user_info, we'll return the users list
+                result = await powerbi_service.get_workspace_users(workspace_id)
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown operation: {operation}",
+                    "result": None
+                }
+
+            return {
+                "success": result.get("success", False),
+                "result": result.get("data", result.get("message", "Operation completed")),
+                "data": result
+            }
+
+        except Exception as e:
+            logger.error(f"Error in Power BI user management: {e}")
+            return {
+                "success": False,
+                "error": f"Failed to execute Power BI user management operation: {str(e)}"
             }
 
     def _resolve_tool_output_references(self, arguments: Dict[str, Any], tools_called: List[Dict[str, Any]]) -> Dict[str, Any]:

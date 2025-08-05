@@ -1115,6 +1115,87 @@ class ToolRegistry:
                     },
                     "required": ["operation"]
                 }
+            },
+            # Power BI Analytics & Reporting
+            "powerbi_workspace_management": {
+                "name": "powerbi_workspace_management",
+                "description": "Manage Power BI workspaces - create, delete, and get workspace information",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["list", "create", "delete", "get_info"]},
+                        "workspace_name": {"type": "string"},
+                        "workspace_description": {"type": "string"},
+                        "workspace_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                }
+            },
+            "powerbi_dataset_operations": {
+                "name": "powerbi_dataset_operations",
+                "description": "Manage Power BI datasets - get datasets, schema, refresh, and execute DAX queries",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["list", "get_schema", "refresh", "execute_query", "get_refresh_history"]},
+                        "workspace_id": {"type": "string"},
+                        "dataset_id": {"type": "string"},
+                        "dax_query": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                }
+            },
+            "powerbi_report_management": {
+                "name": "powerbi_report_management",
+                "description": "Manage Power BI reports - list reports, get embed tokens, and report analytics",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["list", "get_embed_token", "get_analytics"]},
+                        "workspace_id": {"type": "string"},
+                        "report_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                }
+            },
+            "powerbi_dashboard_operations": {
+                "name": "powerbi_dashboard_operations",
+                "description": "Manage Power BI dashboards - list dashboards and get dashboard information",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["list", "get_info"]},
+                        "workspace_id": {"type": "string"},
+                        "dashboard_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                }
+            },
+            "powerbi_analytics_summary": {
+                "name": "powerbi_analytics_summary",
+                "description": "Get comprehensive Power BI analytics summary including workspaces, datasets, reports, and activity logs",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": {"type": "string"},
+                        "include_activity_logs": {"type": "boolean", "default": True},
+                        "start_date": {"type": "string"},
+                        "end_date": {"type": "string"}
+                    }
+                }
+            },
+            "powerbi_user_management": {
+                "name": "powerbi_user_management",
+                "description": "Manage Power BI workspace users and permissions",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["list_users", "get_user_info"]},
+                        "workspace_id": {"type": "string"},
+                        "user_id": {"type": "string"}
+                    },
+                    "required": ["operation", "workspace_id"]
+                }
             }
         }
     

@@ -394,6 +394,8 @@ class DynamicToolRegistry:
                 tools.extend(self._get_ga4_tools(connection))
             elif connection.platform == "asana":
                 tools.extend(self._get_asana_tools(connection))
+            elif connection.platform == "powerbi":
+                tools.extend(self._get_powerbi_tools(connection))
         
         return tools
     
@@ -781,6 +783,136 @@ class DynamicToolRegistry:
                 "platform": "asana",
                 "status": "available",
                 "id": "asana_get_workspaces"
+            }
+        ]
+    
+    def _get_powerbi_tools(self, connection: Connection) -> List[Dict[str, Any]]:
+        """Get Power BI tools for a connection."""
+        return [
+            {
+                "name": "powerbi_list_workspaces",
+                "description": "List all Power BI workspaces accessible to the user",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                },
+                "connection_id": connection.id,
+                "platform": "powerbi",
+                "status": "available",
+                "id": "powerbi_list_workspaces"
+            },
+            {
+                "name": "powerbi_list_datasets",
+                "description": "List datasets in a Power BI workspace",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": {"type": "string", "description": "Workspace ID to list datasets from"}
+                    },
+                    "required": ["workspace_id"]
+                },
+                "connection_id": connection.id,
+                "platform": "powerbi",
+                "status": "available",
+                "id": "powerbi_list_datasets"
+            },
+            {
+                "name": "powerbi_list_reports",
+                "description": "List reports in a Power BI workspace",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": {"type": "string", "description": "Workspace ID to list reports from"}
+                    },
+                    "required": ["workspace_id"]
+                },
+                "connection_id": connection.id,
+                "platform": "powerbi",
+                "status": "available",
+                "id": "powerbi_list_reports"
+            },
+            {
+                "name": "powerbi_list_dashboards",
+                "description": "List dashboards in a Power BI workspace",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": {"type": "string", "description": "Workspace ID to list dashboards from"}
+                    },
+                    "required": ["workspace_id"]
+                },
+                "connection_id": connection.id,
+                "platform": "powerbi",
+                "status": "available",
+                "id": "powerbi_list_dashboards"
+            },
+            {
+                "name": "powerbi_execute_dax_query",
+                "description": "Execute a DAX query on a Power BI dataset",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": {"type": "string", "description": "Workspace ID containing the dataset"},
+                        "dataset_id": {"type": "string", "description": "Dataset ID to query"},
+                        "dax_query": {"type": "string", "description": "DAX query to execute"}
+                    },
+                    "required": ["workspace_id", "dataset_id", "dax_query"]
+                },
+                "connection_id": connection.id,
+                "platform": "powerbi",
+                "status": "available",
+                "id": "powerbi_execute_dax_query"
+            },
+            {
+                "name": "powerbi_refresh_dataset",
+                "description": "Refresh a Power BI dataset",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": {"type": "string", "description": "Workspace ID containing the dataset"},
+                        "dataset_id": {"type": "string", "description": "Dataset ID to refresh"}
+                    },
+                    "required": ["workspace_id", "dataset_id"]
+                },
+                "connection_id": connection.id,
+                "platform": "powerbi",
+                "status": "available",
+                "id": "powerbi_refresh_dataset"
+            },
+            {
+                "name": "powerbi_get_embed_token",
+                "description": "Get an embed token for a Power BI report",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": {"type": "string", "description": "Workspace ID containing the report"},
+                        "report_id": {"type": "string", "description": "Report ID to get embed token for"}
+                    },
+                    "required": ["workspace_id", "report_id"]
+                },
+                "connection_id": connection.id,
+                "platform": "powerbi",
+                "status": "available",
+                "id": "powerbi_get_embed_token"
+            },
+            {
+                "name": "powerbi_get_analytics_summary",
+                "description": "Get comprehensive Power BI analytics summary",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": {"type": "string", "description": "Workspace ID to get analytics for"},
+                        "include_activity_logs": {"type": "boolean", "default": True, "description": "Include activity logs in summary"},
+                        "start_date": {"type": "string", "description": "Start date for analytics (YYYY-MM-DD)"},
+                        "end_date": {"type": "string", "description": "End date for analytics (YYYY-MM-DD)"}
+                    },
+                    "required": []
+                },
+                "connection_id": connection.id,
+                "platform": "powerbi",
+                "status": "available",
+                "id": "powerbi_get_analytics_summary"
             }
         ]
     
