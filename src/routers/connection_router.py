@@ -625,6 +625,23 @@ async def test_zoom_connection(config: Dict[str, Any]) -> Dict[str, Any]:
         }
 
 
+async def test_ga4_connection(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Test GA4 connection."""
+    try:
+        # Create temporary service for testing
+        ga4_service = GA4Service()
+        
+        # Test the connection
+        result = await ga4_service.test_connection(config)
+        return result
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"GA4 connection test failed: {str(e)}"
+        }
+
+
 async def test_asana_connection(config: Dict[str, Any]) -> Dict[str, Any]:
     """Test Asana connection."""
     try:

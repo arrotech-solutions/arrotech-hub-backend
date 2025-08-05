@@ -122,42 +122,222 @@ class PrecisionToolRouter:
         return deduped
     
     def _exact_command_match(self, user_input: str, tools: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """Match predefined exact commands"""
+        """Match predefined exact commands for all available tools"""
         command_map = {
+            # Slack Tools
             r'(send|post).*slack': 'slack_send_message',
             r'create.*slack.*channel': 'slack_create_channel',
-            r'whatsapp.*message': 'whatsapp_messaging',
-            r'(hubspot|crm).*contact': 'hubspot_contact_operations',
-            r'(salesforce|crm).*contact': 'salesforce_create_contact',
-            r'(salesforce|crm).*lead': 'salesforce_create_lead',
-            r'(salesforce|crm).*opportunity': 'salesforce_create_opportunity',
-            r'analytics.*report': 'ga4_analytics_dashboard',
-            r'(upload|download).*file': 'file_management',
-            r'scrape.*website': 'web_tools',
-            r'generate.*image': 'content_creation',
-            r'campaign.*automation': 'marketing_campaign_automation',
-            r'track.*performance': 'campaign_performance_tracking',
-            r'score.*lead': 'lead_scoring_engine',
-            r'journey.*map': 'customer_journey_mapping',
-            r'predict.*behavior': 'predictive_analytics_engine',
+            r'list.*slack.*channel': 'slack_list_channels',
+            r'get.*slack.*channel.*member': 'slack_get_channel_members',
+            r'list.*slack.*member': 'slack_get_channel_members',
+            
+            # WhatsApp Tools
+            r'whatsapp.*message': 'whatsapp_send_message',
+            r'send.*whatsapp': 'whatsapp_send_message',
+            r'whatsapp.*media': 'whatsapp_send_media_message',
+            
+            # HubSpot Tools
+            r'(hubspot|crm).*contact': 'hubspot_crm_management',
+            r'create.*hubspot.*contact': 'hubspot_crm_management',
+            r'get.*hubspot.*contact': 'hubspot_crm_management',
+            r'update.*hubspot.*contact': 'hubspot_crm_management',
+            
+            # Salesforce Tools
+            r'(salesforce|crm).*contact': 'salesforce_crm_management',
+            r'create.*salesforce.*contact': 'salesforce_crm_management',
+            r'get.*salesforce.*contact': 'salesforce_crm_management',
+            r'(salesforce|crm).*lead': 'salesforce_crm_management',
+            r'create.*salesforce.*lead': 'salesforce_crm_management',
+            r'get.*salesforce.*lead': 'salesforce_crm_management',
+            r'(salesforce|crm).*opportunity': 'salesforce_crm_management',
+            r'create.*salesforce.*opportunity': 'salesforce_crm_management',
+            r'get.*salesforce.*opportunity': 'salesforce_crm_management',
+            
+            # GA4 Tools
+            r'ga4.*traffic': 'ga4_get_traffic',
+            r'get.*ga4.*traffic': 'ga4_get_traffic',
+            r'show.*ga4.*traffic': 'ga4_get_traffic',
+            r'ga4.*conversion': 'ga4_get_conversions',
+            r'get.*ga4.*conversion': 'ga4_get_conversions',
+            r'show.*ga4.*conversion': 'ga4_get_conversions',
+            r'analytics.*traffic': 'ga4_get_traffic',
+            r'analytics.*conversion': 'ga4_get_conversions',
+            r'google.*analytics.*traffic': 'ga4_get_traffic',
+            r'google.*analytics.*conversion': 'ga4_get_conversions',
+            r'user.*behavior.*ga4': 'ga4_get_traffic',
+            r'user.*behavior.*analytics': 'ga4_get_traffic',
+            r'show.*user.*behavior.*ga4': 'ga4_get_traffic',
+            r'show.*user.*behavior.*analytics': 'ga4_get_traffic',
+            
+            # Asana Tools
             r'list.*asana.*project': 'asana_list_projects',
+            r'get.*asana.*project': 'asana_list_projects',
+            r'show.*asana.*project': 'asana_list_projects',
             r'create.*asana.*project': 'asana_create_project',
+            r'add.*asana.*project': 'asana_create_project',
             r'list.*asana.*task': 'asana_list_tasks',
+            r'get.*asana.*task': 'asana_list_tasks',
+            r'show.*asana.*task': 'asana_list_tasks',
             r'create.*asana.*task': 'asana_create_task',
+            r'add.*asana.*task': 'asana_create_task',
             r'add.*asana.*comment': 'asana_add_comment',
+            r'comment.*asana.*task': 'asana_add_comment',
             r'get.*asana.*team': 'asana_get_teams',
+            r'list.*asana.*team': 'asana_get_teams',
             r'get.*asana.*workspace': 'asana_get_workspaces',
-            r'list.*asana.*workspace': 'asana_get_workspaces'
+            r'list.*asana.*workspace': 'asana_get_workspaces',
+            
+            # Power BI Tools
+            r'powerbi.*workspace': 'powerbi_list_workspaces',
+            r'power.*bi.*workspace': 'powerbi_list_workspaces',
+            r'list.*powerbi.*workspace': 'powerbi_list_workspaces',
+            r'list.*power.*bi.*workspace': 'powerbi_list_workspaces',
+            r'get.*powerbi.*workspace': 'powerbi_list_workspaces',
+            r'get.*power.*bi.*workspace': 'powerbi_list_workspaces',
+            r'powerbi.*dataset': 'powerbi_list_datasets',
+            r'power.*bi.*dataset': 'powerbi_list_datasets',
+            r'list.*powerbi.*dataset': 'powerbi_list_datasets',
+            r'list.*power.*bi.*dataset': 'powerbi_list_datasets',
+            r'powerbi.*report': 'powerbi_list_reports',
+            r'power.*bi.*report': 'powerbi_list_reports',
+            r'list.*powerbi.*report': 'powerbi_list_reports',
+            r'list.*power.*bi.*report': 'powerbi_list_reports',
+            r'powerbi.*dashboard': 'powerbi_list_dashboards',
+            r'power.*bi.*dashboard': 'powerbi_list_dashboards',
+            r'list.*powerbi.*dashboard': 'powerbi_list_dashboards',
+            r'list.*power.*bi.*dashboard': 'powerbi_list_dashboards',
+            r'powerbi.*dax': 'powerbi_execute_dax_query',
+            r'power.*bi.*dax': 'powerbi_execute_dax_query',
+            r'execute.*dax': 'powerbi_execute_dax_query',
+            r'powerbi.*refresh': 'powerbi_refresh_dataset',
+            r'power.*bi.*refresh': 'powerbi_refresh_dataset',
+            r'refresh.*dataset': 'powerbi_refresh_dataset',
+            r'powerbi.*embed': 'powerbi_get_embed_token',
+            r'power.*bi.*embed': 'powerbi_get_embed_token',
+            r'embed.*token': 'powerbi_get_embed_token',
+            
+            # Zoom Tools
+            r'zoom.*meeting': 'zoom_meeting_management',
+            r'create.*zoom.*meeting': 'zoom_meeting_management',
+            r'schedule.*zoom.*meeting': 'zoom_meeting_management',
+            r'list.*zoom.*meeting': 'zoom_meeting_management',
+            r'get.*zoom.*meeting': 'zoom_meeting_management',
+            
+            # Teams Tools
+            r'teams.*message': 'teams_send_message',
+            r'send.*teams.*message': 'teams_send_message',
+            r'teams.*notification': 'teams_send_message',
+            r'teams.*webhook': 'teams_send_message',
+            
+            # File Management Tools
+            r'(upload|download).*file': 'file_management',
+            r'upload.*document': 'file_management',
+            r'download.*document': 'file_management',
+            r'generate.*pdf': 'file_management',
+            r'create.*pdf': 'file_management',
+            
+            # Web Tools
+            r'scrape.*website': 'web_tools',
+            r'extract.*web.*data': 'web_tools',
+            r'web.*scraping': 'web_tools',
+            r'crawl.*website': 'web_tools',
+            
+            # Content Creation Tools
+            r'generate.*image': 'content_creation',
+            r'create.*image': 'content_creation',
+            r'design.*image': 'content_creation',
+            r'generate.*content': 'content_creation',
+            r'create.*content': 'content_creation',
+            
+            # Marketing Tools
+            r'campaign.*automation': 'marketing_campaign_automation',
+            r'automate.*campaign': 'marketing_campaign_automation',
+            r'marketing.*automation': 'marketing_campaign_automation',
+            r'track.*performance': 'campaign_performance_tracking',
+            r'campaign.*performance': 'campaign_performance_tracking',
+            r'performance.*tracking': 'campaign_performance_tracking',
+            
+            # Advanced Analytics Tools
+            r'score.*lead': 'lead_scoring_engine',
+            r'lead.*scoring': 'lead_scoring_engine',
+            r'qualify.*lead': 'lead_scoring_engine',
+            r'journey.*map': 'customer_journey_mapping',
+            r'customer.*journey': 'customer_journey_mapping',
+            r'map.*journey': 'customer_journey_mapping',
+            r'predict.*behavior': 'predictive_analytics_engine',
+            r'predictive.*analysis': 'predictive_analytics_engine',
+            r'forecast.*trend': 'predictive_analytics_engine',
+            r'predict.*trend': 'predictive_analytics_engine',
+            
+            # A/B Testing Tools
+            r'ab.*test': 'ab_testing_platform',
+            r'a/b.*test': 'ab_testing_platform',
+            r'create.*ab.*test': 'ab_testing_platform',
+            r'run.*ab.*test': 'ab_testing_platform',
+            
+            # Workflow Tools
+            r'workflow.*builder': 'workflow_builder',
+            r'create.*workflow': 'workflow_builder',
+            r'build.*workflow': 'workflow_builder',
+            r'automate.*workflow': 'workflow_builder',
+            
+            # API Management Tools
+            r'api.*management': 'api_management',
+            r'manage.*api': 'api_management',
+            r'api.*endpoint': 'api_management',
+            r'create.*api': 'api_management',
+            
+            # Multi-tenant Tools
+            r'multi.*tenant': 'multi_tenant_service',
+            r'tenant.*management': 'multi_tenant_service',
+            r'manage.*tenant': 'multi_tenant_service',
+            
+            # Enterprise Security Tools
+            r'enterprise.*security': 'enterprise_security_service',
+            r'security.*audit': 'enterprise_security_service',
+            r'compliance.*check': 'enterprise_security_service',
+            
+            # White Label Tools
+            r'white.*label': 'white_label_service',
+            r'brand.*customization': 'white_label_service',
+            r'custom.*branding': 'white_label_service',
+            
+            # Billing Tools
+            r'billing.*management': 'billing_service',
+            r'invoice.*management': 'billing_service',
+            r'payment.*processing': 'billing_service',
+            r'subscription.*management': 'billing_service',
+            
+            # Rate Limiting Tools
+            r'rate.*limit': 'rate_limit_service',
+            r'throttle.*request': 'rate_limit_service',
+            r'limit.*api.*call': 'rate_limit_service',
+            
+            # File Management Tools (Extended)
+            r'file.*management': 'file_management',
+            r'manage.*file': 'file_management',
+            r'organize.*file': 'file_management',
+            r'backup.*file': 'file_management',
+            
+            # Web Tools (Extended)
+            r'web.*tool': 'web_tools',
+            r'web.*utility': 'web_tools',
+            r'web.*service': 'web_tools',
+            r'web.*integration': 'web_tools'
         }
         
         user_input = user_input.lower()
         print(f"   🔍 Testing exact patterns on: '{user_input}'")
         
-        for pattern, tool_name in command_map.items():
+        # Sort patterns by specificity (longer patterns first) to ensure more specific matches
+        sorted_patterns = sorted(command_map.items(), key=lambda x: len(x[0]), reverse=True)
+        
+        for pattern, tool_name in sorted_patterns:
             if re.search(pattern, user_input):
                 print(f"   ✅ Pattern '{pattern}' matched for tool '{tool_name}'")
                 tool = next((t for t in tools if t['name'] == tool_name), None)
                 if tool:
+                    print(f"   🎯 Found matching tool: {tool_name}")
                     return tool
                 else:
                     print(f"   ⚠️  Tool '{tool_name}' not found in available tools")
@@ -589,6 +769,199 @@ class PrecisionToolRouter:
                     ["migrate", "data", "hubspot"]
                 ],
                 "keywords": ["salesforce", "hubspot", "sync", "import", "migrate"]
+            },
+            # GA4 Tools
+            "ga4_get_traffic": {
+                "patterns": [
+                    ["ga4", "traffic"],
+                    ["google", "analytics", "traffic"],
+                    ["analytics", "traffic"],
+                    ["user", "behavior", "ga4"],
+                    ["show", "user", "behavior", "ga4"],
+                    ["get", "ga4", "traffic"],
+                    ["show", "ga4", "traffic"]
+                ],
+                "keywords": ["ga4", "google", "analytics", "traffic", "user", "behavior", "show", "get"]
+            },
+            "ga4_get_conversions": {
+                "patterns": [
+                    ["ga4", "conversion"],
+                    ["google", "analytics", "conversion"],
+                    ["analytics", "conversion"],
+                    ["get", "ga4", "conversion"],
+                    ["show", "ga4", "conversion"]
+                ],
+                "keywords": ["ga4", "google", "analytics", "conversion", "show", "get"]
+            },
+            # WhatsApp Tools
+            "whatsapp_send_message": {
+                "patterns": [
+                    ["whatsapp", "message"],
+                    ["send", "whatsapp"],
+                    ["whatsapp", "notification"]
+                ],
+                "keywords": ["whatsapp", "message", "send", "notification"]
+            },
+            "whatsapp_send_media_message": {
+                "patterns": [
+                    ["whatsapp", "media"],
+                    ["send", "media", "whatsapp"],
+                    ["whatsapp", "image"],
+                    ["whatsapp", "video"]
+                ],
+                "keywords": ["whatsapp", "media", "image", "video", "send"]
+            },
+            # Teams Tools
+            "teams_send_message": {
+                "patterns": [
+                    ["teams", "message"],
+                    ["send", "teams", "message"],
+                    ["teams", "notification"],
+                    ["teams", "webhook"]
+                ],
+                "keywords": ["teams", "message", "send", "notification", "webhook"]
+            },
+            # Zoom Tools
+            "zoom_meeting_management": {
+                "patterns": [
+                    ["zoom", "meeting"],
+                    ["create", "zoom", "meeting"],
+                    ["schedule", "zoom", "meeting"],
+                    ["list", "zoom", "meeting"],
+                    ["get", "zoom", "meeting"]
+                ],
+                "keywords": ["zoom", "meeting", "create", "schedule", "list", "get"]
+            },
+            # Power BI Tools
+            "powerbi_list_workspaces": {
+                "patterns": [
+                    ["powerbi", "workspace"],
+                    ["power", "bi", "workspace"],
+                    ["list", "powerbi", "workspace"],
+                    ["get", "powerbi", "workspace"]
+                ],
+                "keywords": ["powerbi", "power", "bi", "workspace", "list", "get"]
+            },
+            "powerbi_list_datasets": {
+                "patterns": [
+                    ["powerbi", "dataset"],
+                    ["power", "bi", "dataset"],
+                    ["list", "powerbi", "dataset"],
+                    ["get", "powerbi", "dataset"]
+                ],
+                "keywords": ["powerbi", "power", "bi", "dataset", "list", "get"]
+            },
+            "powerbi_list_reports": {
+                "patterns": [
+                    ["powerbi", "report"],
+                    ["power", "bi", "report"],
+                    ["list", "powerbi", "report"],
+                    ["get", "powerbi", "report"]
+                ],
+                "keywords": ["powerbi", "power", "bi", "report", "list", "get"]
+            },
+            "powerbi_list_dashboards": {
+                "patterns": [
+                    ["powerbi", "dashboard"],
+                    ["power", "bi", "dashboard"],
+                    ["list", "powerbi", "dashboard"],
+                    ["get", "powerbi", "dashboard"]
+                ],
+                "keywords": ["powerbi", "power", "bi", "dashboard", "list", "get"]
+            },
+            "powerbi_execute_dax_query": {
+                "patterns": [
+                    ["powerbi", "dax"],
+                    ["power", "bi", "dax"],
+                    ["execute", "dax"],
+                    ["run", "dax", "query"]
+                ],
+                "keywords": ["powerbi", "power", "bi", "dax", "execute", "query"]
+            },
+            "powerbi_refresh_dataset": {
+                "patterns": [
+                    ["powerbi", "refresh"],
+                    ["power", "bi", "refresh"],
+                    ["refresh", "dataset"]
+                ],
+                "keywords": ["powerbi", "power", "bi", "refresh", "dataset"]
+            },
+            "powerbi_get_embed_token": {
+                "patterns": [
+                    ["powerbi", "embed"],
+                    ["power", "bi", "embed"],
+                    ["embed", "token"]
+                ],
+                "keywords": ["powerbi", "power", "bi", "embed", "token"]
+            },
+            # Advanced Tools
+            "ab_testing_platform": {
+                "patterns": [
+                    ["ab", "test"],
+                    ["a/b", "test"],
+                    ["create", "ab", "test"],
+                    ["run", "ab", "test"]
+                ],
+                "keywords": ["ab", "test", "a/b", "create", "run"]
+            },
+            "workflow_builder": {
+                "patterns": [
+                    ["workflow", "builder"],
+                    ["create", "workflow"],
+                    ["build", "workflow"],
+                    ["automate", "workflow"]
+                ],
+                "keywords": ["workflow", "builder", "create", "build", "automate"]
+            },
+            "api_management": {
+                "patterns": [
+                    ["api", "management"],
+                    ["manage", "api"],
+                    ["api", "endpoint"],
+                    ["create", "api"]
+                ],
+                "keywords": ["api", "management", "endpoint", "create"]
+            },
+            "multi_tenant_service": {
+                "patterns": [
+                    ["multi", "tenant"],
+                    ["tenant", "management"],
+                    ["manage", "tenant"]
+                ],
+                "keywords": ["multi", "tenant", "management"]
+            },
+            "enterprise_security_service": {
+                "patterns": [
+                    ["enterprise", "security"],
+                    ["security", "audit"],
+                    ["compliance", "check"]
+                ],
+                "keywords": ["enterprise", "security", "audit", "compliance"]
+            },
+            "white_label_service": {
+                "patterns": [
+                    ["white", "label"],
+                    ["brand", "customization"],
+                    ["custom", "branding"]
+                ],
+                "keywords": ["white", "label", "brand", "custom"]
+            },
+            "billing_service": {
+                "patterns": [
+                    ["billing", "management"],
+                    ["invoice", "management"],
+                    ["payment", "processing"],
+                    ["subscription", "management"]
+                ],
+                "keywords": ["billing", "invoice", "payment", "subscription"]
+            },
+            "rate_limit_service": {
+                "patterns": [
+                    ["rate", "limit"],
+                    ["throttle", "request"],
+                    ["limit", "api", "call"]
+                ],
+                "keywords": ["rate", "limit", "throttle", "api"]
             }
         }
     

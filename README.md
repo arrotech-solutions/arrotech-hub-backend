@@ -560,14 +560,11 @@ ENABLE_SALESFORCE=true
 
 ### Platform-Specific Endpoints
 
-- `POST /hubspot/*`: HubSpot operations
-- `POST /slack/*`: Slack operations
-- `POST /ga4/*`: Google Analytics operations
-- `POST /asana/*`: Asana operations
-- `POST /powerbi/*`: Power BI operations
-- `POST /whatsapp/*`: WhatsApp operations
-- `POST /zoom/*`: Zoom operations
-- `POST /salesforce/*`: Salesforce operations
+All platform operations are accessed through the MCP protocol:
+
+- `GET /mcp/tools`: List available tools for the user
+- `POST /mcp/call`: Execute tool calls for any platform
+- `POST /connections/test`: Test platform connections
 
 ## 🚀 Deployment
 
@@ -697,14 +694,14 @@ POST /mcp/tools/call
 #### HubSpot Connector
 ```python
 # Read contacts
-GET /mcp/tools/call
+POST /mcp/call
 {
   "name": "hubspot_read_contacts",
   "arguments": {"limit": 10}
 }
 
 # Add deal note
-POST /mcp/tools/call
+POST /mcp/call
 {
   "name": "hubspot_add_deal_note",
   "arguments": {
@@ -717,7 +714,7 @@ POST /mcp/tools/call
 #### GA4 Connector
 ```python
 # Get last 24h traffic
-GET /mcp/tools/call
+POST /mcp/call
 {
   "name": "ga4_get_traffic",
   "arguments": {"hours": 24}
@@ -727,7 +724,7 @@ GET /mcp/tools/call
 #### Slack Connector
 ```python
 # Send campaign report
-POST /mcp/tools/call
+POST /mcp/call
 {
   "name": "slack_send_report",
   "arguments": {
@@ -740,7 +737,7 @@ POST /mcp/tools/call
 #### Power BI Connector
 ```python
 # List workspaces
-POST /mcp/tools/call
+POST /mcp/call
 {
   "name": "powerbi_workspace_management",
   "arguments": {
@@ -749,7 +746,7 @@ POST /mcp/tools/call
 }
 
 # Execute DAX query
-POST /mcp/tools/call
+POST /mcp/call
 {
   "name": "powerbi_dataset_operations",
   "arguments": {
@@ -764,7 +761,7 @@ POST /mcp/tools/call
 #### Asana Connector
 ```python
 # Create project
-POST /mcp/tools/call
+POST /mcp/call
 {
   "name": "asana_project_management",
   "arguments": {
