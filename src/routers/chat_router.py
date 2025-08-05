@@ -1222,29 +1222,38 @@ async def delete_conversation(
 
 
 @router.get("/ollama/status")
-def check_ollama_status():
+async def check_ollama_status():
     """Check Ollama service status."""
+    import os
+
+    import aiohttp
+    
+    ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     try:
-        import requests
-        response = requests.get("http://localhost:11434/api/tags", timeout=5)
-        if response.status_code == 200:
-            models = response.json()
-            return {
-                "status": "running",
-                "models": [model["name"] for model in models],
-                "total_models": len(models)
-            }
-        else:
-            return {
-                "status": "error",
-                "message": f"Ollama returned status {response.status_code}",
-                "models": []
-            }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{ollama_base_url}/api/tags", timeout=aiohttp.ClientTimeout(total=5)) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    models = [model["name"] for model in data.get("models", [])]
+                    return {
+                        "status": "running",
+                        "models": models,
+                        "total_models": len(models),
+                        "base_url": ollama_base_url
+                    }
+                else:
+                    return {
+                        "status": "error",
+                        "message": f"Ollama returned status {response.status}",
+                        "models": [],
+                        "base_url": ollama_base_url
+                    }
     except Exception as e:
         return {
             "status": "error",
             "message": f"Cannot connect to Ollama: {str(e)}",
-            "models": []
+            "models": [],
+            "base_url": ollama_base_url
         }
 
 
@@ -1258,14 +1267,18 @@ async def ollama_diagnostic():
         # Get system info
         import os
         import platform
+
+        from ..config import settings
+        
         system_info = {
             "platform": platform.system(),
             "python_version": platform.python_version(),
-            "ollama_url": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+            "ollama_url": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+            "configured_model": settings.OLLAMA_MODEL
         }
 
         # Test model availability
-        current_model = "mistral:latest"  # Current model in use
+        current_model = settings.OLLAMA_MODEL
         model_test = {
             "current_model": current_model,
             "available": current_model in connection_test.get("models", [])
@@ -1286,8 +1299,51 @@ async def ollama_diagnostic():
             "recommendations": [
                 "Check if Ollama is installed and running",
                 "Verify the model is available: ollama list",
-                "Check network connectivity to localhost:11434"
+                "Check network connectivity to localhost:11434",
+                f"Try pulling the configured model: ollama pull {settings.OLLAMA_MODEL}"
             ]
+        }
+
+
+@router.post("/test/direct-response")
+async def test_direct_response(
+    data: MessageCreate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Test direct response generation without tools."""
+    try:
+        from ..services.execution_orchestrator import ExecutionOrchestrator
+
+        # Create a temporary conversation for testing
+        conversation = Conversation(
+            user_id=user.id,
+            title="Test Conversation"
+        )
+        db.add(conversation)
+        await db.commit()
+        await db.refresh(conversation)
+        
+        # Test the orchestrator
+        orchestrator = ExecutionOrchestrator(db, user, conversation.id)
+        response, tools_called = await orchestrator.process_message(data.content, data.provider or "ollama")
+        
+        # Clean up test conversation
+        await db.delete(conversation)
+        await db.commit()
+        
+        return {
+            "success": True,
+            "response": response,
+            "tools_called": tools_called,
+            "conversation_id": conversation.id
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "response": "I apologize, but I encountered an issue processing your request. Please try again."
         }
 
 

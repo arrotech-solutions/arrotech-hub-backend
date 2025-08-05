@@ -38,27 +38,37 @@ class ExecutionOrchestrator:
         Returns:
             Tuple of (response_content, tools_called)
         """
-        print(f"🎯 Orchestrating message processing for: '{content[:50]}...'")
-        
-        # Step 1: Classify intent
-        intent_classifier = await self.intent_processor.classify_intent(content)
-        print(f"🧠 Intent classified: {intent_classifier.intent_type} (confidence: {intent_classifier.confidence:.1%})")
-        
-        # Step 2: Determine if tools are needed
-        if not intent_classifier.requires_tools:
-            print(f"💬 No tools required - generating direct response")
-            return await self._generate_direct_response(content, provider)
-        
-        # Step 3: Get relevant tools
-        relevant_tools = await self.tool_router.get_relevant_tools(content)
-        if not relevant_tools:
-            print(f"⚠️ No relevant tools found - generating direct response")
-            return await self._generate_direct_response(content, provider)
-        
-        print(f"🔧 Found {len(relevant_tools)} relevant tools")
-        
-        # Step 4: Execute with function calling loop
-        return await self._execute_with_function_calling(content, provider, relevant_tools)
+        try:
+            print(f"🎯 Orchestrating message processing for: '{content[:50]}...'")
+            
+            # Step 1: Classify intent
+            intent_classifier = await self.intent_processor.classify_intent(content)
+            print(f"🧠 Intent classified: {intent_classifier.intent_type} (confidence: {intent_classifier.confidence:.1%})")
+            
+            # Step 2: Determine if tools are needed
+            if not intent_classifier.requires_tools:
+                print(f"💬 No tools required - generating direct response")
+                return await self._generate_direct_response(content, provider)
+            
+            # Step 3: Get relevant tools
+            relevant_tools = await self.tool_router.get_relevant_tools(content)
+            if not relevant_tools:
+                print(f"⚠️ No relevant tools found - generating direct response")
+                return await self._generate_direct_response(content, provider)
+            
+            print(f"🔧 Found {len(relevant_tools)} relevant tools")
+            
+            # Step 4: Execute with function calling loop
+            return await self._execute_with_function_calling(content, provider, relevant_tools)
+            
+        except Exception as e:
+            print(f"❌ Error in process_message: {e}")
+            import traceback
+            print(f"❌ Traceback: {traceback.format_exc()}")
+            
+            # Return a helpful error message
+            error_response = f"I apologize, but I encountered an issue processing your request: '{content[:100]}...'. Please try again or rephrase your question."
+            return error_response, []
     
     async def _generate_direct_response(self, content: str, provider: str) -> Tuple[str, List[Dict[str, Any]]]:
         """Generate a direct response without tool usage."""
@@ -87,9 +97,13 @@ class ExecutionOrchestrator:
         if response:
             assistant_message = response.get('choices', [{}])[0].get('message', {})
             content = assistant_message.get('content', '')
-            return content, []
-        else:
-            return "I apologize, but I encountered an issue processing your request. Please try again.", []
+            if content:
+                return content, []
+        
+        # Fallback response when LLM is not available
+        print(f"⚠️ LLM not available, providing fallback response")
+        fallback_response = f"I understand you're asking about: '{content[:100]}...'. I'm here to help with your questions and can assist with various tasks when you need them. How can I be of assistance?"
+        return fallback_response, []
     
     async def _execute_with_function_calling(self, content: str, provider: str, relevant_tools: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
         """Execute using function calling loop with relevant tools."""
@@ -273,33 +287,63 @@ Always use the exact tool names provided above and include all required paramete
         import os
 
         import aiohttp
+
+        from ..config import settings
         
         ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         ollama_url = f"{ollama_base_url}/v1/chat/completions"
         
-        payload = {
-            "model": "mistral:latest",
-            "messages": messages,
-            "temperature": 0.7,
-            "max_tokens": 1000,
-            "stream": False
-        }
-        
+        # Check if Ollama is available
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    ollama_url,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=30)
-                ) as response:
-                    if response.status == 200:
-                        return await response.json()
-                    else:
-                        print(f"❌ Ollama error {response.status}: {await response.text()}")
+                async with session.get(f"{ollama_base_url}/api/tags", timeout=aiohttp.ClientTimeout(total=5)) as response:
+                    if response.status != 200:
+                        print(f"❌ Ollama not available (status {response.status})")
                         return None
         except Exception as e:
-            print(f"❌ Error calling Ollama: {e}")
+            print(f"❌ Ollama not available: {e}")
             return None
+        
+        # Try multiple models in order of preference
+        models_to_try = [
+            settings.OLLAMA_MODEL,  # Use configured model first
+            "qwen3",  # Fallback to qwen3
+            "mistral:latest",  # Fallback to mistral
+            "llama3.1:8b"  # Final fallback
+        ]
+        
+        for model in models_to_try:
+            payload = {
+                "model": model,
+                "messages": messages,
+                "temperature": settings.LLM_TEMPERATURE,
+                "max_tokens": settings.LLM_MAX_TOKENS or 1000,
+                "stream": False
+            }
+            
+            print(f"📤 Trying Ollama direct call with model '{model}'")
+            
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        ollama_url,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=30)
+                    ) as response:
+                        if response.status == 200:
+                            result = await response.json()
+                            print(f"✅ Ollama direct response received with model '{model}'")
+                            return result
+                        else:
+                            error_text = await response.text()
+                            print(f"❌ Ollama error {response.status} with model '{model}': {error_text}")
+                            continue
+            except Exception as e:
+                print(f"❌ Error calling Ollama with model '{model}': {e}")
+                continue
+        
+        print(f"❌ All models failed for direct response")
+        return None
     
     async def _call_ollama_with_functions(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """Call Ollama with function calling support."""

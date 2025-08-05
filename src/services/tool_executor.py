@@ -924,8 +924,22 @@ class ToolExecutor:
 
         # Initialize Teams service with user's connection config
         teams_service = TeamsService()
-        await teams_service.initialize()
-        print(f"🔧 Initialized Teams service with user config for user {user.id}")
+        webhook_url = connection.config.get("webhook_url")
+        access_token = connection.config.get("access_token")
+        
+        if not webhook_url and not access_token:
+            return {
+                "success": False,
+                "error": "No webhook URL or access token found in Teams connection",
+                "result": None
+            }
+        
+        # Initialize the service with the user's credentials
+        if webhook_url:
+            teams_service.webhook_url = webhook_url
+        if access_token:
+            teams_service.access_token = access_token
+        print(f"🔧 Initialized Teams service with user credentials for user {user.id}")
 
         if tool_name == "teams_team_communication":
             action = arguments.get("action", "send_message")
@@ -1132,8 +1146,20 @@ class ToolExecutor:
 
         # Initialize Zoom service with user's connection config
         zoom_service = ZoomService()
-        await zoom_service.initialize(connection.config)
-        print(f"🔧 Initialized Zoom service with user config for user {user.id}")
+        client_id = connection.config.get("client_id")
+        client_secret = connection.config.get("client_secret")
+        account_id = connection.config.get("account_id")
+        
+        if not client_id or not client_secret:
+            return {
+                "success": False,
+                "error": "Missing required Zoom credentials (client_id, client_secret)",
+                "result": None
+            }
+        
+        # Initialize the service with the user's credentials
+        await zoom_service.initialize(client_id, client_secret, account_id)
+        print(f"🔧 Initialized Zoom service with user credentials for user {user.id}")
 
         if tool_name == "zoom_meeting_management":
             action = arguments.get("action")
@@ -1517,26 +1543,35 @@ class ToolExecutor:
 
         # Initialize HubSpot service with user's connection config
         hubspot_service = HubSpotService()
-        print(
-            f"🔧 Initialized HubSpot service with user config for user {user.id}")
+        api_key = connection.config.get("api_key")
+        if not api_key:
+            return {
+                "success": False,
+                "error": "No API key found in HubSpot connection",
+                "result": None
+            }
+
+        # Initialize the service with the user's API key
+        hubspot_service.api_key = api_key
+        print(f"🔧 Initialized HubSpot service with user API key for user {user.id}")
 
         if tool_name == "hubspot_contact_operations":
             operation = arguments.get("operation")
 
             if operation == "create":
                 contact_data = arguments.get("contact_data", {})
-                result = await hubspot_service.create_contact(connection, contact_data)
+                result = await hubspot_service.create_contact(contact_data)
                 return {
-                    "success": True,
-                    "result": "Contact created successfully",
+                    "success": result.get("success", False),
+                    "result": result.get("message", "Contact created successfully"),
                     "data": result
                 }
             elif operation == "read":
                 contact_id = arguments.get("contact_id")
-                result = await hubspot_service.get_contact(connection, contact_id)
+                result = await hubspot_service.get_contact(contact_id)
                 return {
-                    "success": True,
-                    "result": "Contact retrieved successfully",
+                    "success": result.get("success", False),
+                    "result": result.get("message", "Contact retrieved successfully"),
                     "data": result
                 }
             else:
@@ -1580,8 +1615,23 @@ class ToolExecutor:
 
         # Initialize Salesforce service with user's connection config
         salesforce_service = SalesforceService()
-        await salesforce_service.initialize(connection)
-        print(f"🔧 Initialized Salesforce service with user config for user {user.id}")
+        client_id = connection.config.get("client_id")
+        client_secret = connection.config.get("client_secret")
+        username = connection.config.get("username")
+        password = connection.config.get("password")
+        security_token = connection.config.get("security_token")
+        instance_url = connection.config.get("instance_url")
+        
+        if not client_id or not client_secret or not username or not password:
+            return {
+                "success": False,
+                "error": "Missing required Salesforce credentials (client_id, client_secret, username, password)",
+                "result": None
+            }
+        
+        # Initialize the service with the user's credentials
+        await salesforce_service.initialize(client_id, client_secret, username, password, security_token, instance_url)
+        print(f"🔧 Initialized Salesforce service with user credentials for user {user.id}")
 
         if tool_name == "salesforce_create_contact":
             result = await salesforce_service.create_contact(arguments)
@@ -1682,7 +1732,31 @@ class ToolExecutor:
 
         # Initialize GA4 service with user's connection config
         ga4_service = GA4Service()
-        await ga4_service.initialize()
+        
+        # Extract configuration from user's connection
+        property_id = connection.config.get("property_id")
+        credentials_file = connection.config.get("credentials_file")
+        
+        if not property_id:
+            return {
+                "success": False,
+                "error": "No property ID found in GA4 connection",
+                "result": None
+            }
+        
+        if not credentials_file:
+            return {
+                "success": False,
+                "error": "No credentials file found in GA4 connection",
+                "result": None
+            }
+        
+        # Initialize the service with the user's configuration
+        config = {
+            "property_id": property_id,
+            "credentials_file": credentials_file
+        }
+        await ga4_service.initialize(config)
         print(f"🔧 Initialized GA4 service with user config for user {user.id}")
 
         if tool_name == "ga4_analytics_dashboard":
@@ -1816,8 +1890,20 @@ class ToolExecutor:
 
         # Initialize WhatsApp service with user's connection config
         whatsapp_service = WhatsAppService()
-        print(
-            f"🔧 Initialized WhatsApp service with user config for user {user.id}")
+        access_token = connection.config.get("access_token")
+        phone_number_id = connection.config.get("phone_number_id")
+        
+        if not access_token or not phone_number_id:
+            return {
+                "success": False,
+                "error": "Missing required WhatsApp credentials (access_token, phone_number_id)",
+                "result": None
+            }
+        
+        # Initialize the service with the user's credentials
+        whatsapp_service.access_token = access_token
+        whatsapp_service.phone_number_id = phone_number_id
+        print(f"🔧 Initialized WhatsApp service with user credentials for user {user.id}")
 
         if tool_name == "whatsapp_messaging":
             action = arguments.get("action", "send_message")
@@ -1833,7 +1919,7 @@ class ToolExecutor:
                     }
 
                 result = await whatsapp_service.send_message(
-                    to_number, message, config=connection.config
+                    to_number, message
                 )
                 return {
                     "success": True,
@@ -1857,7 +1943,7 @@ class ToolExecutor:
                     }
 
                 result = await whatsapp_service.send_media_message(
-                    to_number, media_url, media_type, caption, config=connection.config
+                    to_number, media_url, media_type, caption
                 )
                 return {
                     "success": True,
@@ -2081,9 +2167,23 @@ class ToolExecutor:
                     "error": "No active Asana connection found. Please create an Asana connection first."
                 }
 
-            # Initialize Asana service with connection config
+            # Initialize Asana service with user's connection config
             asana_service = AsanaService()
-            await asana_service.initialize(connection.config)
+            access_token = connection.config.get("access_token")
+            workspace_id = connection.config.get("workspace_id")
+            
+            if not access_token:
+                return {
+                    "success": False,
+                    "error": "No access token found in Asana connection",
+                    "result": None
+                }
+            
+            # Initialize the service with the user's credentials
+            asana_service.access_token = access_token
+            if workspace_id:
+                asana_service.workspace_id = workspace_id
+            print(f"🔧 Initialized Asana service with user access token for user {user.id}")
             
             # Route to specific Asana tool
             if tool_name == "asana_create_project":
@@ -2470,8 +2570,22 @@ class ToolExecutor:
                     "result": None
                 }
 
-            # Initialize Power BI service
+            # Initialize Power BI service with user's connection config
             powerbi_service = PowerBIService()
+            client_id = connection.config.get("client_id")
+            client_secret = connection.config.get("client_secret")
+            tenant_id = connection.config.get("tenant_id")
+            
+            if not client_id or not client_secret or not tenant_id:
+                return {
+                    "success": False,
+                    "error": "Missing required Power BI credentials (client_id, client_secret, tenant_id)",
+                    "result": None
+                }
+            
+            # Initialize the service with the user's credentials
+            await powerbi_service.initialize(client_id, client_secret, tenant_id)
+            print(f"🔧 Initialized Power BI service with user credentials for user {user.id}")
             
             # Route to specific Power BI tool
             if tool_name == "powerbi_workspace_management":

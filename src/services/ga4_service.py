@@ -26,20 +26,24 @@ class GA4Service:
         self.property_id: Optional[str] = None
         self.initialized: bool = False
 
-    async def initialize(self):
-        """Initialize GA4 client."""
+    async def initialize(self, config: Optional[Dict[str, Any]] = None):
+        """Initialize GA4 client with optional user-specific configuration."""
         try:
-            if not settings.GA4_PROPERTY_ID:
+            # Use config if provided, otherwise fall back to settings
+            property_id = config.get("property_id") if config else settings.GA4_PROPERTY_ID
+            credentials_file = config.get("credentials_file") if config else settings.GA4_CREDENTIALS_FILE
+            
+            if not property_id:
                 logger.warning(
                     "GA4 property ID not configured - GA4 service will be disabled")
                 return
 
             # Set up credentials
-            if settings.GA4_CREDENTIALS_FILE and os.path.exists(settings.GA4_CREDENTIALS_FILE):
+            if credentials_file and os.path.exists(credentials_file):
                 # Use service account file
-                os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = settings.GA4_CREDENTIALS_FILE
+                os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = credentials_file
                 logger.info(
-                    f"Using GA4 credentials from file: {settings.GA4_CREDENTIALS_FILE}")
+                    f"Using GA4 credentials from file: {credentials_file}")
             else:
                 # Try to use default credentials
                 try:
@@ -50,10 +54,10 @@ class GA4Service:
                         "No GA4 credentials found - GA4 service will be disabled")
                     return
 
-            self.property_id = settings.GA4_PROPERTY_ID
+            self.property_id = property_id
             self.client = BetaAnalyticsDataClient()
             self.initialized = True
-            logger.info("GA4 client initialized successfully")
+            logger.info(f"GA4 client initialized successfully with property ID: {property_id}")
 
         except Exception as e:
             logger.warning(f"Failed to initialize GA4 service: {e}")
