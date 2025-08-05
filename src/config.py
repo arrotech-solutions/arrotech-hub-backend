@@ -47,6 +47,11 @@ class BaseConfig(BaseSettings):
     ASANA_ACCESS_TOKEN: Optional[str] = None
     ASANA_WORKSPACE_ID: Optional[str] = None
 
+    # Power BI Configuration
+    POWERBI_CLIENT_ID: Optional[str] = None
+    POWERBI_CLIENT_SECRET: Optional[str] = None
+    POWERBI_TENANT_ID: Optional[str] = None
+
     # LLM API Keys
     OPENAI_API_KEY: Optional[str] = None
     GEMINI_API_KEY: Optional[str] = None

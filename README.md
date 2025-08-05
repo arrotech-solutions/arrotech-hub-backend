@@ -16,6 +16,7 @@ A comprehensive MCP (Model Context Protocol) server that connects AI models to m
 - **Google Analytics 4**: Advanced web analytics and reporting
 - **Slack Integration**: Team communication and notifications
 - **Asana Integration**: Project management and team collaboration
+- **Power BI Integration**: Business intelligence and data analytics
 - **Connection Management**: Easy setup and testing of integrations
 - **Real-time Sync**: Live data synchronization
 
@@ -149,6 +150,31 @@ A comprehensive MCP (Model Context Protocol) server that connects AI models to m
    - Enter your access token and workspace ID
    - Test the connection to verify it works
 
+#### Power BI Integration
+1. **Set Up Power BI App Registration**
+   - Go to Azure Portal (portal.azure.com)
+   - Navigate to Azure Active Directory → App registrations
+   - Create a new app registration
+   - Add API permissions for Power BI Service
+   - Generate a client secret
+
+2. **Get Your Tenant ID**
+   - In Azure Portal, go to Azure Active Directory → Overview
+   - Copy your Tenant ID (Directory ID)
+
+3. **Configure Power BI in Mini-Hub**
+   - Add a new Power BI connection
+   - Enter your Client ID, Client Secret, and Tenant ID
+   - Test the connection to verify it works
+
+4. **Power BI Features Available**
+   - **Workspace Management**: Create, list, and manage workspaces
+   - **Dataset Operations**: Refresh datasets, execute DAX queries, get schema
+   - **Report Management**: List reports, generate embed tokens
+   - **Dashboard Operations**: List and manage dashboards
+   - **Analytics Summary**: Get comprehensive Power BI analytics
+   - **User Management**: Manage workspace users and permissions
+
 ### Step 3: Using AI-Powered Marketing Automation
 
 #### Natural Language Commands
@@ -186,6 +212,14 @@ Once your tools are connected, you can use natural language to automate marketin
 - Add comments to tasks
 - Manage team members
 - Create portfolios for project organization
+
+**Power BI Actions:**
+- List and manage workspaces
+- Refresh datasets and execute DAX queries
+- Generate report embed tokens
+- Get comprehensive analytics summaries
+- Manage workspace users and permissions
+- List reports and dashboards
 
 ### Step 4: Dashboard and Monitoring
 

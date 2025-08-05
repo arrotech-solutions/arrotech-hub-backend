@@ -82,6 +82,11 @@ services:
       - ASANA_ACCESS_TOKEN=${ASANA_ACCESS_TOKEN}
       - ASANA_WORKSPACE_ID=${ASANA_WORKSPACE_ID}
 
+      # Power BI Configuration
+      - POWERBI_CLIENT_ID=${POWERBI_CLIENT_ID}
+      - POWERBI_CLIENT_SECRET=${POWERBI_CLIENT_SECRET}
+      - POWERBI_TENANT_ID=${POWERBI_TENANT_ID}
+
       # Security
       - SECRET_KEY=${SECRET_KEY}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
@@ -93,8 +98,9 @@ services:
       - ENABLE_HUBSPOT=${ENABLE_HUBSPOT:-true}
       - ENABLE_SLACK=${ENABLE_SLACK:-true}
       - ENABLE_WHATSAPP=${ENABLE_WHATSAPP:-true}
-      - ENABLE_GA4=${ENABLE_GA4:-true}
-      - ENABLE_GEMINI=${ENABLE_GEMINI:-true}
+                  - ENABLE_GA4=${ENABLE_GA4:-true}
+            - ENABLE_GEMINI=${ENABLE_GEMINI:-true}
+            - ENABLE_POWERBI=${ENABLE_POWERBI:-true}
       
       # Development
       - ENABLE_DEBUG_TOOLBAR=${ENABLE_DEBUG_TOOLBAR:-false}
