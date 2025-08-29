@@ -205,3 +205,6 @@ media/
 
 docs/
 postman-collection/
+
+bin/
+obj/

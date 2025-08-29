@@ -2,6 +2,7 @@
 Connection management router for Mini-Hub.
 """
 
+import logging
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -10,12 +11,14 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from ..database import get_db
+from ..database import DatabaseTransaction, get_db
 from ..models import Connection, ConnectionStatus, User
 from ..routers.auth_router import get_current_user
+from ..services.acc_service import acc_service
 from ..services.asana_service import AsanaService
 from ..services.ga4_service import GA4Service
 from ..services.hubspot_service import HubSpotService
+from ..services.mcp_client_service import mcp_client_service
 from ..services.platform_registry import platform_registry
 from ..services.powerbi_service import PowerBIService
 from ..services.slack_service import SlackService
@@ -24,6 +27,7 @@ from ..services.whatsapp_service import WhatsAppService
 from ..services.zoom_service import ZoomService
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Initialize services
 hubspot_service = HubSpotService()
@@ -125,18 +129,19 @@ async def create_connection(
                 detail=f"Connection test failed: {test_result['error']}"
             )
 
-        # Create connection
-        connection = Connection(
-            user_id=current_user.id,
-            platform=connection_data.platform,
-            name=connection_data.name,
-            status=ConnectionStatus.ACTIVE,
-            config=connection_data.config
-        )
-
-        db.add(connection)
-        await db.commit()
-        await db.refresh(connection)
+        # Create connection with improved transaction handling
+        async with DatabaseTransaction(db) as tx:
+            connection = Connection(
+                user_id=current_user.id,
+                platform=connection_data.platform,
+                name=connection_data.name,
+                status=ConnectionStatus.ACTIVE,
+                config=connection_data.config
+            )
+            
+            tx.session.add(connection)
+            await tx.commit()
+            await tx.session.refresh(connection)
 
         return {
             "success": True,
@@ -334,6 +339,10 @@ async def test_platform_connection(platform: str, config: Dict[str, Any]) -> Dic
             return await test_asana_connection(config)
         elif platform == "powerbi":
             return await test_powerbi_connection(config)
+        elif platform == "acc":
+            return await test_acc_connection(config)
+        elif platform == "mcp_remote":
+            return await mcp_client_service.test_connection(config)
         else:
             return {
                 "success": False,
@@ -695,6 +704,82 @@ async def test_powerbi_connection(config: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "success": False,
             "error": f"Power BI connection test failed: {str(e)}"
+        }
+
+
+async def test_acc_connection(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Test ACC (Autodesk Construction Cloud) connection with automatic OAuth."""
+    try:
+        logger.info("[DEBUG] ===== Starting ACC Connection Test =====")
+        logger.info(f"[DEBUG] Config keys: {list(config.keys())}")
+        
+        env_vars = config.get('env', {})
+        client_id = env_vars.get('APS_CLIENT_ID')
+        client_secret = env_vars.get('APS_CLIENT_SECRET')
+        redirect_uri = env_vars.get('APS_REDIRECT_URI', 'http://localhost:8000/api/aps/callback/oauth')
+        
+        if not client_id or not client_secret:
+            return {
+                "success": False,
+                "error": "APS_CLIENT_ID and APS_CLIENT_SECRET are required"
+            }
+        
+        logger.info("[DEBUG] Starting automatic OAuth flow...")
+        
+        # Generate OAuth URL
+        scopes = "account:read data:create data:write data:read bucket:read"
+        oauth_url = (
+            f"https://developer.api.autodesk.com/authentication/v2/authorize"
+            f"?response_type=code"
+            f"&client_id={client_id}"
+            f"&redirect_uri={redirect_uri}"
+            f"&scope={scopes.replace(' ', '%20')}"
+            f"&state=acc_connection_test"
+        )
+        
+        logger.info(f"[DEBUG] Generated OAuth URL: {oauth_url}")
+        
+        # Try to open browser automatically
+        import asyncio
+        import webbrowser
+        
+        try:
+            logger.info("[DEBUG] Opening browser for OAuth...")
+            webbrowser.open(oauth_url)
+            
+            return {
+                "success": True,
+                "message": "OAuth flow initiated. Please complete authentication in your browser.",
+                "oauth_url": oauth_url,
+                "redirect_uri": redirect_uri,
+                "status": "pending_oauth",
+                "next_steps": [
+                    "1. Complete authentication in the opened browser window",
+                    "2. Grant permissions to the application",
+                    "3. You'll be redirected back automatically",
+                    "4. The connection will be established with the obtained token"
+                ]
+            }
+            
+        except Exception as browser_error:
+            logger.warning(f"[DEBUG] Failed to open browser automatically: {browser_error}")
+            return {
+                "success": False,
+                "error": "Please manually open the OAuth URL",
+                "oauth_url": oauth_url,
+                "instructions": [
+                    "1. Copy and open the oauth_url in your browser",
+                    "2. Complete the Autodesk login process",
+                    "3. Grant the requested permissions",
+                    "4. You'll be redirected to complete the connection"
+                ]
+            }
+        
+    except Exception as e:
+        logger.error(f"[DEBUG] ACC connection test failed: {e}")
+        return {
+            "success": False,
+            "error": f"ACC connection test failed: {str(e)}"
         }
 
 

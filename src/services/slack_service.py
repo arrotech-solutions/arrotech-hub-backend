@@ -1788,3 +1788,7 @@ class SlackService:
                 "success": False,
                 "error": str(e)
             }
+
+
+# Global instance
+slack_service = SlackService()
