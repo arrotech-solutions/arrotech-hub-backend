@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "mini-hub-466619",
+  "private_key_id": "9e3676951f8a7ab1510d505f073c31395d1e7275",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCbxB0kgbt/nkh2\nqPhjawNFkbQVXWe/FuEOQRHfMb+efzDCEBkb1lsXWUnShi51iNEyNS+ByAKgzB/y\nACFvkHhQKqepcEghhaRUSVhWFgfVavg5oSkt9vReIt/52+lrVSXGb68Dw1EOgVhZ\nZ8hg4Z21S+tyiLTg2b1uuekETDz7vnSS6LmEsAM9xYh08elQ7aFI2zZ5N+/M87Xg\nnZt3CMRb6+QzHZMoazKeOf40mQ/s8pDYnk7OY+Rm0XrijO/NGqzPJ2sSpYLbzUg7\nB2E7jUdHWndx90gOotLRayZ0JckU3w86nVX2WQkwHlW2ZdHlr9i2K2WEz8EUbWiz\nn9QAohA/AgMBAAECggEAI3V+iNv7me6nYlPOz5sB0Kl9jEuKHYcQzpTjg6Kok2Uy\n7UqK3LpsXCFYW9Nt6hWuQba3zNyCNKajMwzyj5ocuWssZbcIxJDOut1Dfb1gJSZH\nwZ69aBhKws8/m3qDZYqpocW02q9w2VN6kEe+5scVhrr0q0sRmgoXRIiP0gmk7E2w\nzbSJhIRKkLPlhwBXk6AKpiIlDP7E/LqsetZYlnqsKPYhb1j7WT3WuE0MZXLtoAr/\nd7P/iTHgHRDWpB/y1FSIsNiT3c8+pl9+7dLdfB4+QNON8PwKzITFEY6kHlxge5Kh\nREMBNC6DVj25rOz9ZbYF/H5pm8U1zbAaJE+EDa4lWQKBgQDVrxy+YQv1KeqiCknA\nKptCJbCDfK5n3ziGFCI1ykX6i6UsOIDh1SwOmLhr4URqc6dV2U4lrgYulDcQ/w+V\nMQ991RfQmSguGx+ZoZ4TYOuB7mBBUfuEs6l5nNXSJb0VYK4WLLAMrWRcVbLiT4z7\nX9llW2ZjO6mOxYe+ffessFpttQKBgQC6nM2FgtgUplG1EXKhgXqJcwM/KJr/3SB1\nHRl6j40ewi72npRXX0WpczWuWvYC7IrZNiESRFMvsHCVj0u/QulyqfB/nRN8BQ5N\nD2cEQgnni39sWze9GYkmlGxS98NXGImAJtIHfjBYsOA9FNBj2ibC7j9Ecu9uZuMy\nZWZkjUceowKBgQCnrMtfUIOzk3q8QFpy4nwGQdDqvJGWjICsJWxazShwW9f2hTgM\n/duecJR2gsPOzIYIRYae5pmPP1qeiabOqTrAwM/5LdVrqHj5cuq5xhnHUShS2WQG\nU3yvIzRdvKNM/Rpd6B8VM5JHKjA+ibHVJvdOI5SKVazNjY7hGbOZ3KB46QKBgHvq\n6fLxawlzVCiXuHYU48joDczf6uVi8k2ykBu5vW0iZ0svDLRkOH8IWSo5jslsR9tr\nPVTC+DZfxLMb36HXDewtet1S8gBV3yQ+yRqju639DRVoEUBJ97AduTzy980bJxtp\nK+j726DZe140NxlHYJvq1ypd5C58tfveJ7s3sXVfAoGASLCWw6bAPbmx9/A5W07m\nTnIAgJdR2i0TXjrKvfBIfEdz5I+o9lXrcpT7NvNFcDec0/v3lR8K7nAS4s9kDK1v\nM5jSUCCJW0BQSmjtJ4PFF5t7NCw0sGQzx47Uf8ob+ez4H1OAcfY2FLvkB7PT9wks\nx82eRhF4+58vELLkn3YbvCk=\n-----END PRIVATE KEY-----\n",
+  "client_email": "ga4-api-service@mini-hub-466619.iam.gserviceaccount.com",
+  "client_id": "117979421232902599800",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/ga4-api-service%40mini-hub-466619.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
