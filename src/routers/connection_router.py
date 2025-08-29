@@ -716,7 +716,7 @@ async def test_acc_connection(config: Dict[str, Any]) -> Dict[str, Any]:
         env_vars = config.get('env', {})
         client_id = env_vars.get('APS_CLIENT_ID')
         client_secret = env_vars.get('APS_CLIENT_SECRET')
-        redirect_uri = env_vars.get('APS_REDIRECT_URI', 'http://localhost:8000/api/aps/callback/oauth')
+        redirect_uri = env_vars.get('APS_REDIRECT_URI', 'https://arrotech-hub.onrender.com/api/aps/callback/oauth')
         
         if not client_id or not client_secret:
             return {
