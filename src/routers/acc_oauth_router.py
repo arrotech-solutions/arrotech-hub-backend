@@ -91,7 +91,7 @@ async def handle_oauth_callback(
         env_vars = connection.config.get('env', {})
         client_id = env_vars.get('APS_CLIENT_ID')
         client_secret = env_vars.get('APS_CLIENT_SECRET')
-        redirect_uri = env_vars.get('APS_REDIRECT_URI', 'http://localhost:8000/api/aps/callback/oauth')
+        redirect_uri = env_vars.get('APS_REDIRECT_URI', 'https://arrotech-hub.onrender.com/api/aps/callback/oauth')
         
         token_result = await exchange_code_for_token(code, client_id, client_secret, redirect_uri)
         

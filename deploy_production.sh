@@ -205,7 +205,7 @@ sudo chmod +x /opt/$PROJECT_NAME/backup.sh
 echo -e "${YELLOW}Creating health check script...${NC}"
 sudo tee /opt/$PROJECT_NAME/health_check.sh > /dev/null <<EOF
 #!/bin/bash
-HEALTH_URL="http://localhost:8000/health"
+HEALTH_URL="https://arrotech-hub.onrender.com/health"
 RESPONSE=\$(curl -s -o /dev/null -w "%{http_code}" \$HEALTH_URL)
 
 if [ \$RESPONSE -ne 200 ]; then

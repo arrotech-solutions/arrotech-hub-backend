@@ -77,7 +77,7 @@ EXPOSE 8000
 
 # Health check with curl
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f https://arrotech-hub.onrender.com/health || exit 1
 
 # Run the application with optimized settings
 CMD ["python", "-m", "src.main"] 
