@@ -12,11 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
 from ..models import Connection, ConnectionStatus, User
+from .acc_ambient_agent_service import acc_ambient_agent_service
+from .acc_service import acc_service
 from .asana_service import AsanaService
 from .content_creation_service import ContentCreationService
 from .file_management_service import FileManagementService
 from .ga4_service import GA4Service
 from .hubspot_service import HubSpotService
+from .mcp_client_service import mcp_client_service
 from .powerbi_service import PowerBIService
 from .salesforce_service import SalesforceService
 from .slack_service import SlackService
@@ -105,12 +108,22 @@ class ToolExecutor:
                 return await self._execute_asana_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("powerbi_"):
                 return await self._execute_powerbi_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("acc_"):
+                return await self._execute_acc_tool(tool_name, arguments, user, db)
             elif tool_name == "file_management":
                 return await self._execute_file_management_tool(arguments, user, db, getattr(self, '_tools_called', []))
             elif tool_name == "web_tools":
                 return await self._execute_web_tools_tool(arguments, user, db)
             elif tool_name == "content_creation":
                 return await self._execute_content_creation_tool(arguments, user, db)
+            elif tool_name == "lead_scoring_engine":
+                return await self._execute_lead_scoring_engine(arguments, user, db)
+            elif tool_name == "customer_journey_mapping":
+                return await self._execute_customer_journey_mapping(arguments, user, db)
+            elif tool_name == "predictive_analytics_engine":
+                return await self._execute_predictive_analytics_engine(arguments, user, db)
+            elif await self._is_mcp_remote_tool(tool_name, user, db):
+                return await self._execute_mcp_remote_tool(tool_name, arguments, user, db)
             else:
                 return {
                     "success": False,
@@ -125,6 +138,58 @@ class ToolExecutor:
                 "error": str(e),
                 "result": None
             }
+
+    async def _is_mcp_remote_tool(self, tool_name: str, user: User, db: AsyncSession) -> bool:
+        """Detect if a tool name matches any active `mcp_remote` connection namespace."""
+        try:
+            result = await db.execute(
+                select(Connection)
+                .filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == "mcp_remote",
+                    Connection.status == ConnectionStatus.ACTIVE
+                )
+            )
+            connections = result.scalars().all()
+            for conn in connections:
+                namespace = (conn.config or {}).get("namespace") or "mcp_"
+                if tool_name.startswith(namespace):
+                    return True
+        except Exception as e:
+            logger.error(f"Failed to resolve mcp_remote tool: {e}")
+        return False
+
+    async def _execute_mcp_remote_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Route a namespaced tool call to the matching remote MCP connection."""
+        result = await db.execute(
+            select(Connection)
+            .filter(
+                Connection.user_id == user.id,
+                Connection.platform == "mcp_remote",
+                Connection.status == ConnectionStatus.ACTIVE
+            )
+        )
+        connections = result.scalars().all()
+
+        # Find the best matching namespace (longest prefix wins)
+        selected = None
+        selected_ns = ""
+        for conn in connections:
+            ns = (conn.config or {}).get("namespace") or "mcp_"
+            if tool_name.startswith(ns) and len(ns) > len(selected_ns):
+                selected = conn
+                selected_ns = ns
+
+        if not selected:
+            return {"success": False, "error": "No matching remote MCP connection for tool", "result": None}
+
+        remote_name = tool_name[len(selected_ns):]
+        try:
+            remote_result = await mcp_client_service.call_tool(selected, remote_name, arguments)
+            return {"success": True, "data": remote_result, "routed_via": "mcp_remote", "connection_id": selected.id}
+        except Exception as e:
+            logger.error(f"Remote MCP call failed: {e}")
+            return {"success": False, "error": str(e), "result": None}
 
     async def _execute_slack_tool(
         self,
@@ -3247,6 +3312,730 @@ class ToolExecutor:
         except Exception as e:
             logger.error(f"Error executing content creation tool: {e}")
             return {"success": False, "error": str(e)}
+
+    async def _execute_lead_scoring_engine(self, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute lead scoring engine tools."""
+        try:
+            import json
+
+            from .lead_scoring_service import LeadScoringService
+            
+            lead_scoring_service = LeadScoringService()
+            operation = arguments.get("operation")
+            
+            if operation == "score_lead":
+                lead_data = arguments.get("lead_data", {})
+                rule_id = arguments.get("rule_id")
+                
+                # Parse lead_data if it's a string
+                if isinstance(lead_data, str):
+                    try:
+                        lead_data = json.loads(lead_data)
+                    except json.JSONDecodeError:
+                        return {
+                            "success": False,
+                            "error": "Invalid JSON in lead_data parameter"
+                        }
+                
+                # If no lead_data provided, create a default lead for demonstration
+                if not lead_data:
+                    lead_data = {
+                        "name": "John Smith",
+                        "email": "john.smith@example.com",
+                        "company": "TechStart Inc.",
+                        "title": "CEO",
+                        "industry": "Technology",
+                        "company_size": "50-100 employees",
+                        "revenue": "$5M - $10M",
+                        "budget": "$50K - $100K",
+                        "decision_maker": True,
+                        "pain_points": ["Manual processes", "Data silos", "Inefficient workflows"],
+                        "source": "Website",
+                        "engagement_level": "High",
+                        "last_activity": "2024-01-15"
+                    }
+                
+                result = await lead_scoring_service.score_lead(
+                    lead_data=lead_data,
+                    rule_id=rule_id
+                )
+                
+                return {
+                    "success": True,
+                    "result": result,
+                    "tool": "lead_scoring_engine",
+                    "operation": operation
+                }
+            
+            elif operation == "create_rule":
+                rule_config = arguments.get("rule_config", {})
+                
+                # Parse rule_config if it's a string
+                if isinstance(rule_config, str):
+                    try:
+                        rule_config = json.loads(rule_config)
+                    except json.JSONDecodeError:
+                        return {
+                            "success": False,
+                            "error": "Invalid JSON in rule_config parameter"
+                        }
+                
+                if not rule_config:
+                    return {
+                        "success": False,
+                        "error": "Missing required 'rule_config' parameter"
+                    }
+                
+                result = await lead_scoring_service.create_scoring_rule(
+                    rule_name=rule_config.get("rule_name", "Custom Rule"),
+                    criteria=rule_config.get("criteria", {}),
+                    weights=rule_config.get("weights", {}),
+                    threshold=rule_config.get("threshold", 70.0)
+                )
+                
+                return {
+                    "success": True,
+                    "result": result,
+                    "tool": "lead_scoring_engine",
+                    "operation": operation
+                }
+            
+            elif operation == "get_analytics":
+                date_range = arguments.get("date_range", "last_30_days")
+                
+                result = await lead_scoring_service.get_lead_analytics(
+                    date_range=date_range
+                )
+                
+                return {
+                    "success": True,
+                    "result": result,
+                    "tool": "lead_scoring_engine",
+                    "operation": operation
+                }
+            
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown lead scoring operation: {operation}"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error executing lead scoring engine: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_customer_journey_mapping(self, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute customer journey mapping tools."""
+        try:
+            import json
+
+            from .customer_journey_service import CustomerJourneyService
+            
+            customer_journey_service = CustomerJourneyService()
+            operation = arguments.get("operation")
+            
+            if operation == "create_map":
+                journey_data = arguments.get("journey_data", {})
+                
+                # Parse journey_data if it's a string
+                if isinstance(journey_data, str):
+                    try:
+                        journey_data = json.loads(journey_data)
+                    except json.JSONDecodeError:
+                        return {
+                            "success": False,
+                            "error": "Invalid JSON in journey_data parameter"
+                        }
+                
+                # If no journey_data provided, create a default B2C e-commerce journey
+                if not journey_data:
+                    journey_data = {
+                        "journey_name": "B2C E-commerce Customer Journey",
+                        "stages": [
+                            {
+                                "name": "Awareness",
+                                "description": "Customer discovers the brand",
+                                "touchpoints": ["Social Media", "Google Ads", "Influencer Marketing"]
+                            },
+                            {
+                                "name": "Consideration", 
+                                "description": "Customer researches products",
+                                "touchpoints": ["Website", "Product Reviews", "Email Marketing"]
+                            },
+                            {
+                                "name": "Purchase",
+                                "description": "Customer makes a purchase",
+                                "touchpoints": ["E-commerce Platform", "Payment Gateway", "Order Confirmation"]
+                            },
+                            {
+                                "name": "Post-Purchase",
+                                "description": "Customer receives and uses product",
+                                "touchpoints": ["Shipping Updates", "Customer Support", "Product Usage"]
+                            },
+                            {
+                                "name": "Retention",
+                                "description": "Customer becomes loyal",
+                                "touchpoints": ["Loyalty Program", "Personalized Offers", "Community Engagement"]
+                            }
+                        ],
+                        "touchpoints": [
+                            {
+                                "name": "Social Media",
+                                "type": "awareness",
+                                "channels": ["Instagram", "Facebook", "TikTok"]
+                            },
+                            {
+                                "name": "Website",
+                                "type": "consideration", 
+                                "channels": ["Desktop", "Mobile", "Tablet"]
+                            },
+                            {
+                                "name": "E-commerce Platform",
+                                "type": "purchase",
+                                "channels": ["Web", "Mobile App"]
+                            },
+                            {
+                                "name": "Email Marketing",
+                                "type": "retention",
+                                "channels": ["Newsletter", "Promotional", "Abandoned Cart"]
+                            }
+                        ]
+                    }
+                
+                result = await customer_journey_service.create_journey_map(
+                    journey_name=journey_data.get("journey_name", "Customer Journey"),
+                    stages=journey_data.get("stages", []),
+                    touchpoints=journey_data.get("touchpoints", [])
+                )
+                
+                return {
+                    "success": True,
+                    "result": result,
+                    "tool": "customer_journey_mapping",
+                    "operation": operation,
+                    "message": f"Successfully created customer journey map: {journey_data.get('journey_name', 'Customer Journey')}"
+                }
+            
+            elif operation == "track_touchpoint":
+                touchpoint_data = arguments.get("touchpoint_data", {})
+                
+                # Parse touchpoint_data if it's a string
+                if isinstance(touchpoint_data, str):
+                    try:
+                        touchpoint_data = json.loads(touchpoint_data)
+                    except json.JSONDecodeError:
+                        return {
+                            "success": False,
+                            "error": "Invalid JSON in touchpoint_data parameter"
+                        }
+                
+                if not touchpoint_data:
+                    return {
+                        "success": False,
+                        "error": "Missing required 'touchpoint_data' parameter"
+                    }
+                
+                result = await customer_journey_service.track_customer_touchpoint(
+                    customer_id=touchpoint_data.get("customer_id"),
+                    touchpoint_type=touchpoint_data.get("touchpoint_type"),
+                    channel=touchpoint_data.get("channel"),
+                    interaction_data=touchpoint_data.get("interaction_data", {}),
+                    journey_id=touchpoint_data.get("journey_id")
+                )
+                
+                return {
+                    "success": True,
+                    "result": result,
+                    "tool": "customer_journey_mapping",
+                    "operation": operation
+                }
+            
+            elif operation == "get_journey":
+                customer_id = arguments.get("customer_id")
+                journey_id = arguments.get("journey_id")
+                
+                if not customer_id:
+                    return {
+                        "success": False,
+                        "error": "Missing required 'customer_id' parameter"
+                    }
+                
+                result = await customer_journey_service.get_customer_journey(
+                    customer_id=customer_id,
+                    journey_id=journey_id
+                )
+                
+                return {
+                    "success": True,
+                    "result": result,
+                    "tool": "customer_journey_mapping",
+                    "operation": operation
+                }
+            
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown operation: {operation}"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error executing customer journey mapping tool: {str(e)}")
+            return {
+                "success": False,
+                "error": f"Error executing customer journey mapping: {str(e)}"
+            }
+
+    async def _execute_predictive_analytics_engine(self, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute predictive analytics engine tools."""
+        try:
+            import json
+
+            from .predictive_analytics_service import \
+                PredictiveAnalyticsService
+            
+            predictive_analytics_service = PredictiveAnalyticsService()
+            operation = arguments.get("operation")
+            
+            if operation == "predict_behavior":
+                lead_data = arguments.get("lead_data", {})
+                
+                # Parse lead_data if it's a string
+                if isinstance(lead_data, str):
+                    try:
+                        lead_data = json.loads(lead_data)
+                    except json.JSONDecodeError:
+                        return {
+                            "success": False,
+                            "error": "Invalid JSON in lead_data parameter"
+                        }
+                
+                # If no lead_data provided, create a default lead for demonstration
+                if not lead_data:
+                    lead_data = {
+                        "name": "Sarah Johnson",
+                        "email": "sarah.johnson@example.com",
+                        "company": "Digital Solutions Ltd.",
+                        "title": "VP of Technology",
+                        "industry": "Technology",
+                        "company_size": "100-500 employees",
+                        "revenue": "$10M - $50M",
+                        "budget": "$100K - $500K",
+                        "decision_maker": True,
+                        "pain_points": ["Legacy systems", "Digital transformation", "Data integration"],
+                        "source": "LinkedIn",
+                        "engagement_level": "Medium",
+                        "last_activity": "2024-01-10"
+                    }
+                
+                result = await predictive_analytics_service.predict_lead_behavior(
+                    lead_data=lead_data
+                )
+                
+                return {
+                    "success": True,
+                    "result": result,
+                    "tool": "predictive_analytics_engine",
+                    "operation": operation
+                }
+            
+            elif operation == "forecast_trends":
+                historical_data = arguments.get("historical_data", {})
+                forecast_periods = arguments.get("forecast_periods", 3)
+                
+                # Convert string parameters to proper types
+                if isinstance(forecast_periods, str):
+                    try:
+                        forecast_periods = int(forecast_periods)
+                    except ValueError:
+                        forecast_periods = 3
+                
+                # Parse historical_data if it's a string
+                if isinstance(historical_data, str):
+                    try:
+                        historical_data = json.loads(historical_data)
+                    except json.JSONDecodeError:
+                        return {
+                            "success": False,
+                            "error": "Invalid JSON in historical_data parameter"
+                        }
+                
+                # If no historical_data provided, create default data for demonstration
+                if not historical_data:
+                    historical_data = {
+                        "leads": [120, 135, 150, 165, 180, 195, 210, 225, 240, 255, 270, 285],
+                        "conversions": [12, 14, 15, 17, 18, 20, 21, 23, 24, 26, 27, 29],
+                        "revenue": [12000, 14000, 15000, 17000, 18000, 20000, 21000, 23000, 24000, 26000, 27000, 29000],
+                        "periods": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+                    }
+                
+                result = await predictive_analytics_service.forecast_lead_trends(
+                    historical_data=historical_data,
+                    forecast_periods=forecast_periods
+                )
+                
+                return {
+                    "success": True,
+                    "result": result,
+                    "tool": "predictive_analytics_engine",
+                    "operation": operation
+                }
+            
+            elif operation == "generate_forecast":
+                metric = arguments.get("metric", "leads")
+                historical_data = arguments.get("historical_data", {})
+                forecast_periods = arguments.get("forecast_periods", 12)
+                confidence_level = arguments.get("confidence_level", 0.95)
+                
+                # Convert string parameters to proper types
+                if isinstance(forecast_periods, str):
+                    try:
+                        forecast_periods = int(forecast_periods)
+                    except ValueError:
+                        forecast_periods = 12
+                
+                if isinstance(confidence_level, str):
+                    try:
+                        confidence_level = float(confidence_level)
+                    except ValueError:
+                        confidence_level = 0.95
+                
+                # Parse historical_data if it's a string
+                if isinstance(historical_data, str):
+                    try:
+                        historical_data = json.loads(historical_data)
+                    except json.JSONDecodeError:
+                        return {
+                            "success": False,
+                            "error": "Invalid JSON in historical_data parameter"
+                        }
+                
+                # Convert historical_data to the expected format (list of dicts)
+                if isinstance(historical_data, dict):
+                    # Convert dictionary format to list format
+                    formatted_data = []
+                    if "leads" in historical_data:
+                        for i, value in enumerate(historical_data["leads"]):
+                            formatted_data.append({
+                                "date": f"2024-{i+1:02d}-01",
+                                "value": value
+                            })
+                    elif "conversions" in historical_data:
+                        for i, value in enumerate(historical_data["conversions"]):
+                            formatted_data.append({
+                                "date": f"2024-{i+1:02d}-01",
+                                "value": value
+                            })
+                    elif "revenue" in historical_data:
+                        for i, value in enumerate(historical_data["revenue"]):
+                            formatted_data.append({
+                                "date": f"2024-{i+1:02d}-01",
+                                "value": value
+                            })
+                    else:
+                        # Create default data
+                        formatted_data = [
+                            {"date": "2024-01-01", "value": 100},
+                            {"date": "2024-02-01", "value": 110},
+                            {"date": "2024-03-01", "value": 120},
+                            {"date": "2024-04-01", "value": 130},
+                            {"date": "2024-05-01", "value": 140},
+                            {"date": "2024-06-01", "value": 150}
+                        ]
+                    historical_data = formatted_data
+                
+                result = await predictive_analytics_service.generate_forecast(
+                    metric=metric,
+                    historical_data=historical_data,
+                    forecast_periods=forecast_periods,
+                    confidence_level=confidence_level
+                )
+                
+                return {
+                    "success": True,
+                    "result": result,
+                    "tool": "predictive_analytics_engine",
+                    "operation": operation
+                }
+            
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown predictive analytics operation: {operation}"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error executing predictive analytics engine: {e}")
+            return {"success": False, "error": str(e)}
+
+
+    async def _execute_acc_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute ACC (Autodesk Construction Cloud) tools."""
+        try:
+            # Get ACC connection for user
+            result = await db.execute(
+                select(Connection).where(
+                    Connection.user_id == user.id,
+                    Connection.platform == "acc",
+                    Connection.status == ConnectionStatus.ACTIVE
+                )
+            )
+            connection = result.scalar_one_or_none()
+            
+            if not connection:
+                return {
+                    "success": False,
+                    "error": "No active ACC connection found. Please add an ACC connection first."
+                }
+
+            # Handle different ACC tools
+            if tool_name == "acc_get_hubs":
+                logger.info(f"[TOOL EXECUTOR DEBUG] Calling acc_service.get_hubs...")
+                try:
+                    result = await acc_service.get_hubs(connection)
+                    logger.info(f"[TOOL EXECUTOR DEBUG] get_hubs result: {result}")
+                    return result
+                except Exception as hubs_error:
+                    logger.error(f"[TOOL EXECUTOR DEBUG] get_hubs FAILED: {hubs_error}")
+                    return {"success": False, "error": f"get_hubs failed: {str(hubs_error)}"}
+                
+            elif tool_name == "acc_get_projects":
+                hub_id = arguments.get("hub_id")
+                if not hub_id:
+                    return {"success": False, "error": "hub_id is required"}
+                return await acc_service.get_projects(connection, hub_id)
+                
+            elif tool_name == "acc_get_issues":
+                project_id = arguments.get("project_id")
+                if not project_id:
+                    return {"success": False, "error": "project_id is required"}
+                
+                issue_type_id = arguments.get("issue_type_id")
+                created_at_start = arguments.get("created_at_start")
+                
+                return await acc_service.get_issues(
+                    connection, project_id, issue_type_id, created_at_start
+                )
+                
+            elif tool_name == "acc_get_issue_by_id":
+                project_id = arguments.get("project_id")
+                issue_id = arguments.get("issue_id")
+                if not project_id or not issue_id:
+                    return {"success": False, "error": "project_id and issue_id are required"}
+                
+                logger.info(f"[TOOL EXECUTOR DEBUG] Calling acc_service.get_issue_by_id...")
+                logger.info(f"[TOOL EXECUTOR DEBUG] Arguments: project_id={project_id}, issue_id={issue_id}")
+                try:
+                    result = await acc_service.get_issue_by_id(connection, project_id, issue_id)
+                    logger.info(f"[TOOL EXECUTOR DEBUG] get_issue_by_id result: {result}")
+                    return result
+                except Exception as issue_error:
+                    logger.error(f"[TOOL EXECUTOR DEBUG] get_issue_by_id FAILED: {issue_error}")
+                    return {"success": False, "error": f"get_issue_by_id failed: {str(issue_error)}"}
+                
+            elif tool_name == "acc_create_issue":
+                project_id = arguments.get("project_id")
+                title = arguments.get("title")
+                description = arguments.get("description")
+                
+                if not all([project_id, title, description]):
+                    return {
+                        "success": False, 
+                        "error": "project_id, title, and description are required"
+                    }
+                
+                # Remove required fields from kwargs
+                kwargs = {k: v for k, v in arguments.items() 
+                         if k not in ["project_id", "title", "description"]}
+                
+                return await acc_service.create_issue(
+                    connection, project_id, title, description, **kwargs
+                )
+                
+            elif tool_name == "acc_update_issue":
+                project_id = arguments.get("project_id")
+                issue_id = arguments.get("issue_id")
+                
+                if not all([project_id, issue_id]):
+                    return {
+                        "success": False,
+                        "error": "project_id and issue_id are required"
+                    }
+                
+                # Remove required fields from kwargs
+                kwargs = {k: v for k, v in arguments.items() 
+                         if k not in ["project_id", "issue_id"]}
+                
+                return await acc_service.update_issue(
+                    connection, project_id, issue_id, **kwargs
+                )
+                
+            elif tool_name == "acc_post_comment":
+                project_id = arguments.get("project_id")
+                issue_id = arguments.get("issue_id")
+                body = arguments.get("body")
+                
+                if not all([project_id, issue_id, body]):
+                    return {
+                        "success": False,
+                        "error": "project_id, issue_id, and body are required"
+                    }
+                
+                return await acc_service.post_comment(
+                    connection, project_id, issue_id, body
+                )
+                
+            elif tool_name == "acc_get_comments":
+                project_id = arguments.get("project_id")
+                issue_id = arguments.get("issue_id")
+                
+                if not all([project_id, issue_id]):
+                    return {
+                        "success": False,
+                        "error": "project_id and issue_id are required"
+                    }
+                
+                return await acc_service.get_comments(
+                    connection, project_id, issue_id
+                )
+                
+            elif tool_name == "acc_analytics_summary":
+                return await acc_service.get_analytics_summary(connection)
+                
+            elif tool_name == "acc_ambient_agent_start":
+                logger.info(f"[TOOL EXECUTOR DEBUG] Starting acc_ambient_agent_start for user {user.id}")
+                logger.info(f"[TOOL EXECUTOR DEBUG] Arguments: {arguments}")
+                
+                # Extract required arguments
+                project_id = arguments.get("project_id")
+                callback_url = arguments.get("callback_url")
+                
+                if not project_id:
+                    return {
+                        "success": False,
+                        "error": "project_id is required for ambient agent monitoring"
+                    }
+                    
+                if not callback_url:
+                    return {
+                        "success": False,
+                        "error": "callback_url is required for ambient agent monitoring"
+                    }
+                
+                logger.info(f"[TOOL EXECUTOR DEBUG] Project ID: {project_id}")
+                logger.info(f"[TOOL EXECUTOR DEBUG] Callback URL: {callback_url}")
+                
+                try:
+                    # Ensure clean database state before starting ambient agent
+                    logger.info(f"[TOOL EXECUTOR DEBUG] Committing any pending DB changes...")
+                    await db.commit()
+                    logger.info(f"[TOOL EXECUTOR DEBUG] DB committed, starting ambient agent...")
+                    
+                    result = await acc_ambient_agent_service.start_monitoring(
+                        user.id, db, project_id=project_id, callback_url=callback_url
+                    )
+                    logger.info(f"[TOOL EXECUTOR DEBUG] Ambient agent start result: {result}")
+                    
+                    # Ensure final commit after ambient agent starts
+                    logger.info(f"[TOOL EXECUTOR DEBUG] Committing final DB state...")
+                    await db.commit()
+                    logger.info(f"[TOOL EXECUTOR DEBUG] Final DB commit successful")
+                    
+                    if isinstance(result, dict) and result.get('success'):
+                        return result
+                    elif isinstance(result, bool) and result:
+                        return {
+                            "success": True,
+                            "message": "Ambient agent monitoring started successfully"
+                        }
+                    else:
+                        return {
+                            "success": False,
+                            "message": f"Failed to start monitoring: {result}",
+                            "debug_result": result
+                        }
+                except Exception as e:
+                    import traceback
+                    logger.error(f"[TOOL EXECUTOR DEBUG] Exception in acc_ambient_agent_start: {e}")
+                    logger.error(f"[TOOL EXECUTOR DEBUG] Exception traceback:\n{traceback.format_exc()}")
+                    # Rollback the transaction on error
+                    try:
+                        logger.info(f"[TOOL EXECUTOR DEBUG] Rolling back DB transaction...")
+                        await db.rollback()
+                        logger.info(f"[TOOL EXECUTOR DEBUG] DB rollback successful")
+                    except Exception as rollback_error:
+                        logger.error(f"[TOOL EXECUTOR DEBUG] Error during rollback: {rollback_error}")
+                    return {
+                        "success": False,
+                        "error": f"Exception starting ambient agent: {str(e)}",
+                        "exception_type": type(e).__name__
+                    }
+                
+            elif tool_name == "acc_ambient_agent_stop":
+                result = await acc_ambient_agent_service.stop_monitoring(user.id, db)
+                return result
+                
+            elif tool_name == "acc_ambient_agent_status":
+                status = await acc_ambient_agent_service.get_monitoring_status(user.id)
+                return {
+                    "success": True,
+                    "status": status
+                }
+                
+            elif tool_name == "acc_weekly_summary":
+                summary = await acc_ambient_agent_service.generate_weekly_summary(user.id, db)
+                return {
+                    "success": True,
+                    "summary": summary
+                }
+            elif tool_name == "acc_get_oauth_url":
+                return await acc_service.get_oauth_url(connection)
+                
+            elif tool_name == "acc_webhook_register":
+                from .acc_webhook_service import acc_webhook_service
+
+                # Get callback URL from arguments or use default
+                callback_url = arguments.get("callback_url", "https://15a2e6bfcc71.ngrok-free.app/api/acc/webhooks/events")
+                
+                result = await acc_webhook_service.register_webhooks_for_user(
+                    user.id, connection, callback_url, db
+                )
+                return result
+                
+            elif tool_name == "acc_webhook_unregister":
+                from .acc_webhook_service import acc_webhook_service
+                
+                result = await acc_webhook_service.unregister_webhooks_for_user(
+                    user.id, connection
+                )
+                return result
+                
+            elif tool_name == "acc_webhook_status":
+                from .acc_webhook_service import acc_webhook_service
+                
+                status = acc_webhook_service.get_webhook_status(user.id)
+                return {
+                    "success": True,
+                    "webhook_status": status
+                }
+                
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown ACC tool: {tool_name}"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error executing ACC tool {tool_name}: {e}")
+            return {
+                "success": False,
+                "error": f"ACC tool execution failed: {str(e)}"
+            }
 
 
 # Global tool executor instance

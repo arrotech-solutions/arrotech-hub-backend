@@ -99,6 +99,12 @@ class BaseConfig(BaseSettings):
     MPESA_CALLBACK_URL: Optional[str] = None
     MPESA_ENVIRONMENT: str = "sandbox"  # sandbox or live
 
+    # ACC-MCP
+    APS_PORT: Optional[int] = None
+    APS_CLIENT_ID: Optional[str] = None
+    APS_CLIENT_SECRET: Optional[str] = None
+    APS_REDIRECT_URI: Optional[str] = None
+
     # Server Settings
     HOST: str = "0.0.0.0"
     PORT: int = 8000

@@ -1364,6 +1364,204 @@ class PlatformRegistry:
             },
             test_function="test_powerbi_connection"
         )
+
+        # Remote MCP Platform (tools are fetched dynamically per connection)
+        self.platforms["mcp_remote"] = Platform(
+            id="mcp_remote",
+            name="Remote MCP",
+            description="Connect to external MCP servers and proxy their tools",
+            icon="mcp_remote",
+            features=[
+                "Remote tool discovery",
+                "Namespaced tool routing"
+            ],
+            capabilities=[],
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "transport": {"type": "string", "enum": ["http", "ws", "stdio"], "default": "http"},
+                    # HTTP/WS fields
+                    "url": {"type": "string", "description": "Base URL for remote MCP (when transport=http/ws)"},
+                    "headers": {"type": "object", "description": "Optional HTTP headers"},
+                    "apiKey": {"type": "string", "description": "Optional API key for Authorization header"},
+                    "timeoutMs": {"type": "integer", "default": 15000},
+                    "maxRetries": {"type": "integer", "default": 0},
+                    # STDIO fields
+                    "command": {"type": "string", "description": "Executable command to start the MCP server (when transport=stdio)"},
+                    "cwd": {"type": "string", "description": "Working directory for the MCP process (stdio)"},
+                    "env": {"type": "object", "description": "Environment variables for the MCP process (stdio)"},
+                    # Common
+                    "namespace": {"type": "string", "description": "Prefix for remote tools (e.g., 'acme_')", "default": "mcp_"}
+                },
+                "anyOf": [
+                    {"required": ["transport", "url"]},
+                    {"required": ["transport", "command"]}
+                ]
+            },
+            test_function="test_mcp_remote_connection"
+        )
+
+        # ACC (Autodesk Construction Cloud) Platform
+        acc_capabilities = [
+            PlatformCapability(
+                name="Hub Management",
+                description="Manage ACC hubs and projects",
+                tool_name="acc_hub_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["list_hubs", "get_projects"],
+                            "description": "Hub management operation"
+                        },
+                        "hub_id": {
+                            "type": "string",
+                            "description": "Hub ID for project operations"
+                        }
+                    },
+                    "required": ["operation"]
+                },
+                operations=["list_hubs", "get_projects"]
+            ),
+            PlatformCapability(
+                name="Issue Management", 
+                description="Manage construction issues and defects",
+                tool_name="acc_issue_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string", 
+                            "enum": ["list_issues", "create_issue", "update_issue", "add_comment"],
+                            "description": "Issue management operation"
+                        },
+                        "project_id": {
+                            "type": "string",
+                            "description": "Project ID"
+                        },
+                        "issue_id": {
+                            "type": "string",
+                            "description": "Issue ID for updates and comments"
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "Issue title"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Issue description"
+                        }
+                    },
+                    "required": ["operation", "project_id"]
+                },
+                operations=["list_issues", "create_issue", "update_issue", "add_comment"]
+            ),
+            PlatformCapability(
+                name="Ambient Monitoring",
+                description="Intelligent issue monitoring and analysis",
+                tool_name="acc_ambient_monitoring",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["start_monitoring", "stop_monitoring", "weekly_summary"],
+                            "description": "Monitoring operation"
+                        }
+                    },
+                    "required": ["operation"]
+                },
+                operations=["start_monitoring", "stop_monitoring", "weekly_summary"]
+            ),
+            PlatformCapability(
+                name="Analytics",
+                description="Construction project analytics and reporting",
+                tool_name="acc_analytics",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["summary", "project_breakdown", "issue_trends"],
+                            "description": "Analytics operation"
+                        },
+                        "project_id": {
+                            "type": "string",
+                            "description": "Project ID for specific analytics"
+                        }
+                    },
+                    "required": ["operation"]
+                },
+                operations=["summary", "project_breakdown", "issue_trends"]
+            )
+        ]
+
+        self.platforms["acc"] = Platform(
+            id="acc",
+            name="Autodesk Construction Cloud",
+            description="Autodesk Construction Cloud for construction project management and issue tracking",
+            icon="acc",
+            features=[
+                "Project management",
+                "Issue tracking",
+                "Ambient monitoring", 
+                "Duplicate detection",
+                "Analytics and reporting",
+                "Weekly summaries"
+            ],
+            capabilities=acc_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "transport": {
+                        "type": "string",
+                        "enum": ["stdio"],
+                        "default": "stdio",
+                        "description": "Transport method (STDIO for ACC-MCP server)"
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Command to run ACC-MCP server"
+                    },
+                    "cwd": {
+                        "type": "string", 
+                        "description": "Working directory for ACC-MCP server"
+                    },
+                    "env": {
+                        "type": "object",
+                        "properties": {
+                            "APS_CLIENT_ID": {
+                                "type": "string",
+                                "description": "Autodesk APS Client ID"
+                            },
+                            "APS_CLIENT_SECRET": {
+                                "type": "string",
+                                "description": "Autodesk APS Client Secret"
+                            },
+                            "APS_REDIRECT_URI": {
+                                "type": "string",
+                                "description": "OAuth redirect URI"
+                            }
+                        },
+                        "required": ["APS_CLIENT_ID", "APS_CLIENT_SECRET"],
+                        "description": "Environment variables for ACC-MCP server"
+                    },
+                    "timeoutMs": {
+                        "type": "integer",
+                        "default": 30000,
+                        "description": "Request timeout in milliseconds"
+                    },
+                    "maxRetries": {
+                        "type": "integer",
+                        "default": 3,
+                        "description": "Maximum retry attempts"
+                    }
+                },
+                "required": ["transport", "command", "cwd", "env"]
+            },
+            test_function="test_acc_connection"
+        )
     
     def get_platform(self, platform_id: str) -> Optional[Platform]:
         """Get a platform by ID."""
@@ -1453,12 +1651,21 @@ class PlatformRegistry:
         if not schema:
             return False
         
-        # Simple validation - in production, use a proper JSON schema validator
+        # Handle anyOf blocks by checking if at least one set of requirements is satisfied
+        any_of = schema.get("anyOf") or []
+        if any_of and isinstance(any_of, list):
+            for clause in any_of:
+                clause_required = clause.get("required", []) if isinstance(clause, dict) else []
+                if all(field in config for field in clause_required):
+                    return True
+            return False
+
+        # Handle top-level required (fallback for schemas without anyOf)
         required_fields = schema.get("required", [])
-        for field in required_fields:
-            if field not in config:
-                return False
-        
+        if required_fields:
+            return all(field in config for field in required_fields)
+
+        # If no requirements specified, accept
         return True
 
 

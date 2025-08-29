@@ -16,9 +16,10 @@ from mcp.server.stdio import stdio_server
 
 from .config import settings
 from .database import init_db
-from .routers import (agent_router, api_router, auth_router, chat_router,
-                      connection_router, mcp_router, payment_router,
-                      settings_router, workflow_router)
+from .routers import (acc_oauth_router, acc_webhook_router, agent_router,
+                      api_router, auth_router, chat_router, connection_router,
+                      mcp_router, payment_router, settings_router,
+                      workflow_router)
 from .services import (BillingService, ContentCreationService,
                        FileManagementService, GA4Service, HubSpotService,
                        RateLimitService, SlackService, SocialMediaService,
@@ -94,6 +95,8 @@ app.include_router(settings_router, prefix="/settings", tags=["settings"])
 app.include_router(chat_router, prefix="/chat", tags=["chat"])
 app.include_router(workflow_router, prefix="/workflows", tags=["workflows"])
 app.include_router(agent_router, prefix="/agents", tags=["agents"])
+app.include_router(acc_oauth_router, prefix="/api/aps", tags=["acc-oauth"])
+app.include_router(acc_webhook_router, tags=["acc-webhooks"])
 
 
 @app.get("/")

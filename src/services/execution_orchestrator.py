@@ -126,15 +126,40 @@ class ExecutionOrchestrator:
 
 {chr(10).join([f"- {tool['function']['name']}: {tool['function']['description']}" for tool in openai_tools])}
 
+IMPORTANT: Choose the MOST SPECIFIC tool for the user's request. Pay close attention to the platform/context mentioned.
+
+Tool Selection Guidelines:
+- For Google Analytics 4 (GA4) requests: Use ga4_get_traffic or ga4_get_conversions
+- For Slack requests: Use slack_* tools (slack_send_message, slack_list_channels, etc.)
+- For HubSpot requests: Use hubspot_* tools
+- For Salesforce requests: Use salesforce_* tools
+- For Asana requests: Use asana_* tools
+- For Power BI requests: Use powerbi_* tools
+- For WhatsApp requests: Use whatsapp_* tools
+- For Zoom requests: Use zoom_* tools
+- For Lead Generation requests: Use lead_scoring_engine, customer_journey_mapping, or predictive_analytics_engine
+
+Multi-Step Request Examples:
+- "Show user behavior from Google Analytics and then send a message to Slack" → First call ga4_get_traffic, then call slack_send_message
+- "Get GA4 data and post to Slack channel general" → First call ga4_get_traffic, then call slack_send_message with channel="general"
+- "Create Asana project and notify Slack" → First call asana_create_project, then call slack_send_message
+- "Score this lead and then create a journey map" → First call lead_scoring_engine, then call customer_journey_mapping
+
+Specific Examples:
+- "Show user behavior from GA4" → Use ga4_get_traffic or ga4_get_conversions
+- "Get GA4 traffic data" → Use ga4_get_traffic
+- "Send a Slack message" → Use slack_send_message
+- "List Slack channels" → Use slack_list_channels
+- "Create Asana project" → Use asana_create_project
+- "Get HubSpot contacts" → Use hubspot_crm_management
+- "Score this lead" → Use lead_scoring_engine with operation="score_lead"
+- "Qualify this prospect" → Use lead_scoring_engine with operation="score_lead"
+- "Create customer journey map" → Use customer_journey_mapping with operation="create_map"
+- "Predict lead behavior" → Use predictive_analytics_engine with operation="predict_behavior"
+
 When the user asks for something that requires using these tools, you MUST call the appropriate tool using the function calling format. Do not provide instructions or code examples - actually call the tools.
 
-For example:
-- If asked to "list slack channels", call the slack_list_channels tool
-- If asked to "send a message", call the slack_send_message tool
-- If asked to "get campaign performance", call the campaign_performance_tracking tool
-- If asked to "create a slack channel", call the slack_create_channel tool with channel_name (without # prefix, e.g., "projects" not "#projects")
-- If asked to "create an image", call the content_creation tool with operation="generate_image" and text="description of the image"
-- If asked to "generate content", call the content_creation tool with the appropriate operation and required parameters
+For multi-step requests, call each tool in sequence and use the results from previous tools in subsequent calls.
 
 Always use the exact tool names provided above and include all required parameters."""
         

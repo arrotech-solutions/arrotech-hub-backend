@@ -37,6 +37,7 @@ class ConnectionPlatform(str, Enum):
     GA4 = "ga4"
     SLACK = "slack"
     POWERBI = "powerbi"
+    ACC = "acc"
 
 
 class MessageRole(str, Enum):
@@ -91,6 +92,15 @@ class User(Base):
     api_key = Column(String, unique=True, index=True, nullable=True)
     subscription_tier = Column(String, default=SubscriptionTier.FREE)
     stripe_customer_id = Column(String, nullable=True)
+    
+    # Password reset fields
+    password_reset_token = Column(String, nullable=True)
+    password_reset_expires = Column(DateTime(timezone=True), nullable=True)
+    
+    # Remember me functionality
+    remember_me_token = Column(String, nullable=True)
+    remember_me_expires = Column(DateTime(timezone=True), nullable=True)
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
