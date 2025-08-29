@@ -76,9 +76,20 @@ app = FastAPI(
 )
 
 # Add CORS middleware
+def get_allowed_origins():
+    """Build allowed origins list from config and environment."""
+    origins = settings.ALLOWED_ORIGINS.copy()
+    
+    # Add additional origins from environment variable
+    if settings.ADDITIONAL_CORS_ORIGINS:
+        additional_origins = [origin.strip() for origin in settings.ADDITIONAL_CORS_ORIGINS.split(",")]
+        origins.extend(additional_origins)
+    
+    return origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_origins=get_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -119,6 +130,16 @@ async def root():
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "timestamp": "2024-01-01T00:00:00Z"}
+
+
+@app.get("/cors-test")
+async def cors_test():
+    """Test CORS configuration."""
+    return {
+        "message": "CORS test successful",
+        "allowed_origins": get_allowed_origins(),
+        "timestamp": "2024-01-01T00:00:00Z"
+    }
 
 
 async def run_mcp_server():

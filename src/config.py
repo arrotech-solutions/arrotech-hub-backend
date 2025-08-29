@@ -112,7 +112,17 @@ class BaseConfig(BaseSettings):
     RELOAD: bool = True
 
     # CORS
-    ALLOWED_ORIGINS: list = ["http://localhost:3000", "http://localhost:5173"]
+    ALLOWED_ORIGINS: list = [
+        "http://localhost:3000", 
+        "http://localhost:5173",
+        "https://arrotech-hub-frontend.vercel.app"
+    ]
+    
+    # Additional CORS origins from environment (comma-separated)
+    ADDITIONAL_CORS_ORIGINS: Optional[str] = None
+    
+    # Allowed hosts for TrustedHostMiddleware
+    ALLOWED_HOSTS: list = ["*"]  # Allow all hosts in development
 
     # JWT Settings
     JWT_ALGORITHM: str = "HS256"
