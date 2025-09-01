@@ -117,7 +117,6 @@ class BaseConfig(BaseSettings):
         "http://localhost:5173",
         "https://arrotech-hub-frontend.vercel.app"
     ]
-    
     # Additional CORS origins from environment (comma-separated)
     ADDITIONAL_CORS_ORIGINS: Optional[str] = None
     
@@ -181,7 +180,8 @@ class StagingConfig(BaseConfig):
     # Staging-specific overrides
     ALLOWED_ORIGINS: list = [
         "https://staging.minihub.com",
-        "https://staging-frontend.minihub.com"
+        "https://staging-frontend.minihub.com",
+        "https://arrotech-hub-frontend.vercel.app"
     ]
 
     class Config:
@@ -200,7 +200,8 @@ class ProductionConfig(BaseConfig):
     # Production-specific overrides
     ALLOWED_ORIGINS: list = [
         "https://minihub.com",
-        "https://app.minihub.com"
+        "https://app.minihub.com",
+        "https://arrotech-hub-frontend.vercel.app"
     ]
 
     class Config:
@@ -219,7 +220,8 @@ class ReleaseConfig(BaseConfig):
     # Release-specific overrides
     ALLOWED_ORIGINS: list = [
         "https://release.minihub.com",
-        "https://release-frontend.minihub.com"
+        "https://release-frontend.minihub.com",
+        "https://arrotech-hub-frontend.vercel.app"
     ]
 
     class Config:
