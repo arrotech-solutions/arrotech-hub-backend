@@ -107,37 +107,26 @@ class IntentProcessor:
         return explanations.get(intent_type, f"Detected {intent_type} intent with {confidence:.1%} confidence.")
     
     def _suggest_tools(self, intent_type: str, user_input: str) -> List[str]:
-        """Suggest relevant tools based on intent type and content."""
-        user_input_lower = user_input.lower()
-        
-        # Base tool suggestions by intent type
+        """Suggest relevant tools based on intent type."""
         tool_suggestions = {
             'chat': [],
             'action': [
                 'slack_team_communication',
                 'file_management',
                 'web_tools',
-                'content_creation',
-                'lead_scoring_engine',
-                'customer_journey_mapping',
-                'predictive_analytics_engine'
+                'content_creation'
             ],
             'query': [
                 'ga4_get_traffic',
                 'ga4_get_conversions',
                 'hubspot_crm_management',
-                'web_tools',
-                'lead_scoring_engine',
-                'customer_journey_mapping',
-                'predictive_analytics_engine'
+                'web_tools'
             ],
             'analysis': [
                 'ga4_get_traffic',
                 'ga4_get_conversions',
                 'hubspot_crm_management',
-                'predictive_analytics_engine',
-                'lead_scoring_engine',
-                'customer_journey_mapping'
+                'predictive_analytics_engine'
             ],
             'automation': [
                 'workflow_builder',
@@ -145,46 +134,6 @@ class IntentProcessor:
                 'api_management'
             ]
         }
-        
-        # Add lead generation tools based on content keywords
-        lead_generation_keywords = [
-            'score', 'qualify', 'rate', 'assess', 'evaluate', 'rank',
-            'lead', 'prospect', 'customer', 'client',
-            'journey', 'map', 'track', 'trace', 'follow',
-            'predict', 'forecast', 'project', 'estimate', 'anticipate',
-            'behavior', 'conversion', 'engagement', 'interaction',
-            'hot', 'warm', 'cold', 'lukewarm', 'qualified', 'unqualified',
-            'enterprise', 'b2b', 'b2c', 'startup', 'mid-market',
-            'revenue', 'budget', 'deal', 'opportunity', 'pipeline',
-            'sales', 'marketing', 'campaign', 'strategy',
-            'customer success', 'retention', 'churn', 'upsell',
-            'analytics', 'metrics', 'kpi', 'performance', 'trends',
-            'conversion rate', 'engagement rate', 'response time',
-            'deal size', 'sales cycle', 'lifetime value',
-            'forecast', 'prediction', 'projection', 'timeline',
-            'quarter', 'monthly', 'annual', 'seasonal',
-            'trend', 'growth', 'decline', 'stable',
-            'awareness', 'consideration', 'evaluation', 'decision', 'onboarding',
-            'touchpoint', 'interaction', 'engagement', 'contact',
-            'webinar', 'demo', 'presentation', 'proposal',
-            'cto', 'vp', 'director', 'manager', 'founder', 'ceo',
-            'technology', 'digital transformation', 'automation',
-            'saas', 'software', 'platform', 'solution'
-        ]
-        
-        # Check if any lead generation keywords are present
-        has_lead_generation_content = any(keyword in user_input_lower for keyword in lead_generation_keywords)
-        
-        if has_lead_generation_content:
-            # Add lead generation tools to all intent types
-            for intent_type in tool_suggestions:
-                if intent_type in ['action', 'query', 'analysis']:
-                    if 'lead_scoring_engine' not in tool_suggestions[intent_type]:
-                        tool_suggestions[intent_type].append('lead_scoring_engine')
-                    if 'customer_journey_mapping' not in tool_suggestions[intent_type]:
-                        tool_suggestions[intent_type].append('customer_journey_mapping')
-                    if 'predictive_analytics_engine' not in tool_suggestions[intent_type]:
-                        tool_suggestions[intent_type].append('predictive_analytics_engine')
         
         return tool_suggestions.get(intent_type, [])
     
@@ -198,50 +147,11 @@ class IntentProcessor:
         Returns:
             True if tools should be used, False otherwise
         """
-        # Comprehensive keyword-based check for performance
+        # Simple keyword-based check for performance
         command_words = [
-            # General action words
             'send', 'create', 'get', 'list', 'find', 'scrape', 'generate',
             'download', 'upload', 'execute', 'run', 'call', 'manage', 'analyze',
-            'report', 'automate', 'workflow', 'sync', 'connect',
-            
-            # Lead Generation Core Terms
-            'score', 'qualify', 'rate', 'assess', 'evaluate', 'rank',
-            'lead', 'prospect', 'customer', 'client',
-            'journey', 'map', 'track', 'trace', 'follow',
-            'predict', 'forecast', 'project', 'estimate', 'anticipate',
-            'behavior', 'conversion', 'engagement', 'interaction',
-            
-            # Business Context Terms
-            'enterprise', 'b2b', 'b2c', 'startup', 'mid-market', 'sme',
-            'revenue', 'budget', 'deal', 'opportunity', 'pipeline',
-            'sales', 'marketing', 'campaign', 'strategy',
-            'customer success', 'retention', 'churn', 'upsell',
-            
-            # Analytics and Metrics
-            'analytics', 'metrics', 'kpi', 'performance', 'trends',
-            'conversion rate', 'engagement rate', 'response time',
-            'deal size', 'sales cycle', 'lifetime value',
-            
-            # Time and Forecasting
-            'forecast', 'prediction', 'projection', 'timeline',
-            'quarter', 'monthly', 'annual', 'seasonal',
-            'trend', 'growth', 'decline', 'stable',
-            
-            # Qualification Terms
-            'hot', 'warm', 'cold', 'lukewarm', 'qualified', 'unqualified',
-            'decision maker', 'influencer', 'stakeholder',
-            'budget authority', 'technical evaluator',
-            
-            # Journey and Process Terms
-            'awareness', 'consideration', 'evaluation', 'decision', 'onboarding',
-            'touchpoint', 'interaction', 'engagement', 'contact',
-            'webinar', 'demo', 'presentation', 'proposal',
-            
-            # Industry and Role Terms
-            'cto', 'vp', 'director', 'manager', 'founder', 'ceo',
-            'technology', 'digital transformation', 'automation',
-            'saas', 'software', 'platform', 'solution'
+            'report', 'automate', 'workflow', 'sync', 'connect'
         ]
         
         user_input_lower = user_input.lower()

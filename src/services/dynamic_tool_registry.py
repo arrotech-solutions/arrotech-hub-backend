@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
 from ..models import Connection, ConnectionStatus
-from .mcp_client_service import mcp_client_service
 from .platform_registry import platform_registry
 
 logger = logging.getLogger(__name__)
@@ -367,9 +366,6 @@ class DynamicToolRegistry:
     
     async def get_user_tools(self, user_id: int, db: AsyncSession) -> List[Dict[str, Any]]:
         """Get tools available for a specific user based on their connections."""
-        logger.info(f"[DEBUG] ===== Dynamic Tool Registry =====")
-        logger.info(f"[DEBUG] Getting tools for user ID: {user_id}")
-        
         tools = []
         
         # Add base tools that are always available
@@ -380,16 +376,11 @@ class DynamicToolRegistry:
             tools.append(tool_config)
         
         # Get user's active connections
-        logger.info(f"[DEBUG] Querying active connections for user {user_id}...")
         result = await db.execute(
             select(Connection)
             .filter(Connection.user_id == user_id, Connection.status == ConnectionStatus.ACTIVE)
         )
         connections = result.scalars().all()
-        logger.info(f"[DEBUG] Found {len(connections)} active connections")
-        
-        for conn in connections:
-            logger.info(f"[DEBUG] Connection: ID={conn.id}, Platform={conn.platform}, Name={conn.name}, Status={conn.status}")
         
         # Generate tools based on user's connections
         for connection in connections:
@@ -405,47 +396,8 @@ class DynamicToolRegistry:
                 tools.extend(self._get_asana_tools(connection))
             elif connection.platform == "powerbi":
                 tools.extend(self._get_powerbi_tools(connection))
-            elif connection.platform == "acc":
-                logger.info(f"[DEBUG] Adding ACC tools for connection ID: {connection.id}")
-                acc_tools = self._get_acc_tools(connection)
-                logger.info(f"[DEBUG] ACC tools to add: {[tool['name'] for tool in acc_tools]}")
-                tools.extend(acc_tools)
-            elif connection.platform == "mcp_remote":
-                tools.extend(await self._get_mcp_remote_tools(connection))
-        
-        logger.info(f"[DEBUG] Total tools returned: {len(tools)}")
-        tool_names = [tool.get('name', 'unnamed') for tool in tools]
-        logger.info(f"[DEBUG] Final tool names: {tool_names}")
         
         return tools
-
-    async def _get_mcp_remote_tools(self, connection: Connection) -> List[Dict[str, Any]]:
-        """Fetch tools from a remote MCP server and namespace them locally."""
-        try:
-            remote_tools = await mcp_client_service.get_tools_for_connection(connection)
-            namespace = (connection.config or {}).get("namespace") or "mcp_"
-            namespaced: List[Dict[str, Any]] = []
-            for t in remote_tools:
-                # Support both minimal MCP shape and Mini-Hub shape
-                name = t.get("name")
-                desc = t.get("description", "Remote MCP tool")
-                params = t.get("inputSchema") or t.get("parameters") or {"type": "object", "properties": {}}
-                if not name:
-                    # Skip invalid entries
-                    continue
-                namespaced.append({
-                    "name": f"{namespace}{name}",
-                    "description": desc,
-                    "inputSchema": params,
-                    "connection_id": connection.id,
-                    "platform": "mcp_remote",
-                    "status": "available",
-                    "id": f"{namespace}{name}"
-                })
-            return namespaced
-        except Exception as e:
-            logger.error(f"Failed to get remote MCP tools for connection {connection.id}: {e}")
-            return []
     
     def _get_slack_tools(self, connection: Connection) -> List[Dict[str, Any]]:
         """Get Slack tools for a connection."""
@@ -964,318 +916,6 @@ class DynamicToolRegistry:
             }
         ]
     
-    def _get_acc_tools(self, connection: Connection) -> List[Dict[str, Any]]:
-        """Get ACC (Autodesk Construction Cloud) tools."""
-        return [
-            {
-                "name": "acc_get_hubs",
-                "description": "Get all ACC hubs for the authenticated user",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                },
-                "connection_id": connection.id,
-                "platform": "acc",
-                "status": "available",
-                "id": "acc_get_hubs"
-            },
-            {
-                "name": "acc_get_projects",
-                "description": "Get projects for a specific ACC hub",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "hub_id": {"type": "string", "description": "The unique ID of the hub"}
-                    },
-                    "required": ["hub_id"]
-                },
-                "connection_id": connection.id,
-                "platform": "acc",
-                "status": "available", 
-                "id": "acc_get_projects"
-            },
-            {
-                "name": "acc_get_issues",
-                "description": "Get issues for a specific ACC project with optional filters",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "project_id": {"type": "string", "description": "The unique ID of the project"},
-                        "issue_type_id": {"type": "string", "description": "Optional: The ID of the issue type to filter by"},
-                        "created_at_start": {"type": "string", "description": "Optional: The start date (YYYY-MM-DD) to filter issues created after this date"}
-                    },
-                    "required": ["project_id"]
-                },
-                "connection_id": connection.id,
-                "platform": "acc",
-                "status": "available",
-                "id": "acc_get_issues"
-            },
-            {
-                "name": "acc_get_issue_by_id",
-                "description": "Get a single ACC issue by its ID (much more efficient than fetching all issues)",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "project_id": {"type": "string", "description": "The unique ID of the project"},
-                        "issue_id": {"type": "string", "description": "The unique ID of the issue to retrieve"}
-                    },
-                    "required": ["project_id", "issue_id"]
-                },
-                "connection_id": connection.id,
-                "platform": "acc",
-                "status": "available",
-                "id": "acc_get_issue_by_id"
-            },
-            {
-                "name": "acc_create_issue",
-                "description": "Create a new issue in an ACC project",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "project_id": {"type": "string", "description": "The unique ID of the project"},
-                        "title": {"type": "string", "description": "The title of the issue"},
-                        "description": {"type": "string", "description": "The description of the issue"},
-                        "issue_subtype_id": {"type": "string", "description": "Optional: The ID of the issue subtype"},
-                        "status": {"type": "string", "description": "Optional: The initial status of the issue"},
-                        "assigned_to": {"type": "string", "description": "Optional: The user/role ID to assign the issue to"},
-                        "assigned_to_type": {"type": "string", "description": "Optional: The type of assignee (user or role)"},
-                        "due_date": {"type": "string", "description": "Optional: The due date for the issue (YYYY-MM-DD)"},
-                        "start_date": {"type": "string", "description": "Optional: The start date for the issue (YYYY-MM-DD)"},
-                        "location_id": {"type": "string", "description": "Optional: The location ID for the issue"},
-                        "location_details": {"type": "string", "description": "Optional: Location details text"}
-                    },
-                    "required": ["project_id", "title", "description"]
-                },
-                "connection_id": connection.id,
-                "platform": "acc",
-                "status": "available",
-                "id": "acc_create_issue"
-            },
-            {
-                "name": "acc_update_issue",
-                "description": "Update an existing ACC issue",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "project_id": {"type": "string", "description": "The unique ID of the project"},
-                        "issue_id": {"type": "string", "description": "The unique ID of the issue"},
-                        "title": {"type": "string", "description": "Optional: The new title for the issue"},
-                        "description": {"type": "string", "description": "Optional: The new description for the issue"},
-                        "status": {"type": "string", "description": "Optional: The new status for the issue"},
-                        "assigned_to": {"type": "string", "description": "Optional: The user ID to assign the issue to"},
-                        "due_date": {"type": "string", "description": "Optional: The due date for the issue (YYYY-MM-DD)"},
-                        "start_date": {"type": "string", "description": "Optional: The start date for the issue (YYYY-MM-DD)"}
-                    },
-                    "required": ["project_id", "issue_id"]
-                },
-                "connection_id": connection.id,
-                "platform": "acc",
-                "status": "available",
-                "id": "acc_update_issue"
-            },
-            {
-                "name": "acc_post_comment",
-                "description": "Post a comment on an ACC issue",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "project_id": {"type": "string", "description": "The unique ID of the project"},
-                        "issue_id": {"type": "string", "description": "The unique ID of the issue"},
-                        "body": {"type": "string", "description": "The content of the comment"}
-                    },
-                    "required": ["project_id", "issue_id", "body"]
-                },
-                "connection_id": connection.id,
-                "platform": "acc",
-                "status": "available",
-                "id": "acc_post_comment"
-            },
-            {
-                "name": "acc_get_comments",
-                "description": "Get comments for an ACC issue",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "project_id": {"type": "string", "description": "The unique ID of the project"},
-                        "issue_id": {"type": "string", "description": "The unique ID of the issue"}
-                    },
-                    "required": ["project_id", "issue_id"]
-                },
-                "connection_id": connection.id,
-                "platform": "acc",
-                "status": "available",
-                "id": "acc_get_comments"
-            },
-            {
-                "name": "acc_analytics_summary",
-                "description": "Get comprehensive ACC analytics summary across all hubs and projects",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                },
-                "connection_id": connection.id,
-                "platform": "acc",
-                "status": "available",
-                "id": "acc_analytics_summary"
-            },
-            {
-                "name": "acc_ambient_agent_start",
-                "description": "Start ambient agent monitoring for ACC issues (detects duplicates and incomplete info)",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "project_id": {
-                            "type": "string",
-                            "description": "Specific ACC project ID to monitor (without 'b.' prefix). Example: 'a9d0e667-0611-44ea-ab8e-82b4884a8223'"
-                        },
-                        "callback_url": {
-                            "type": "string",
-                            "description": "Webhook callback URL for real-time notifications. Example: 'https://15a2e6bfcc71.ngrok-free.app/api/acc/webhooks/events'"
-                        }
-                    },
-                    "required": ["project_id", "callback_url"]
-                },
-                "connection_id": connection.id,
-                "platform": "acc",
-                "status": "available",
-                "id": "acc_ambient_agent_start"
-            },
-            {
-                "name": "acc_ambient_agent_stop",
-                "description": "Stop ambient agent monitoring for ACC issues",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                },
-                "connection_id": connection.id,
-                "platform": "acc",
-                "status": "available",
-                "id": "acc_ambient_agent_stop"
-            },
-            {
-                "name": "acc_weekly_summary",
-                "description": "Generate weekly summary of ACC issues and activity",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                },
-                "connection_id": connection.id,
-                "platform": "acc",
-                "status": "available",
-                "id": "acc_weekly_summary"
-            },
-            {
-                "name": "acc_get_oauth_url",
-                "description": "Get OAuth URL for Autodesk authentication (required before using other ACC tools)",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                },
-                "connection_id": connection.id,
-                "platform": "acc",
-                "status": "available",
-                "id": "acc_get_oauth_url"
-            },
-            {
-                "name": "acc_ambient_agent_start",
-                "description": "Start ambient agent monitoring for ACC issues (duplicate detection, info validation, alerts)",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "project_id": {
-                            "type": "string",
-                            "description": "Specific ACC project ID to monitor (without 'b.' prefix). Example: 'a9d0e667-0611-44ea-ab8e-82b4884a8223'"
-                        },
-                        "callback_url": {
-                            "type": "string",
-                            "description": "Webhook callback URL for real-time notifications. Example: 'https://15a2e6bfcc71.ngrok-free.app/api/acc/webhooks/events'"
-                        }
-                    },
-                    "required": ["project_id", "callback_url"]
-                },
-                "connection_id": connection.id,
-                "platform": "acc",
-                "status": "available",
-                "id": "acc_ambient_agent_start"
-            },
-            {
-                "name": "acc_ambient_agent_stop",
-                "description": "Stop ambient agent monitoring for ACC issues",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                },
-                "connection_id": connection.id,
-                "platform": "acc",
-                "status": "available",
-                "id": "acc_ambient_agent_stop"
-            },
-            {
-                "name": "acc_ambient_agent_status",
-                "description": "Get current status of ambient agent monitoring",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                },
-                "connection_id": connection.id,
-                "platform": "acc",
-                "status": "available",
-                "id": "acc_ambient_agent_status"
-            },
-            {
-                "name": "acc_webhook_register",
-                "description": "Register real-time webhooks for ACC projects to replace polling",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "callback_url": {
-                            "type": "string",
-                            "description": "Callback URL for webhook notifications (defaults to Mini-Hub webhook endpoint)"
-                        }
-                    },
-                    "required": []
-                },
-                "connection_id": connection.id,
-                "platform": "acc",
-                "status": "available",
-                "id": "acc_webhook_register"
-            },
-            {
-                "name": "acc_webhook_unregister",
-                "description": "Unregister ACC webhooks and return to polling mode",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                },
-                "connection_id": connection.id,
-                "platform": "acc",
-                "status": "available",
-                "id": "acc_webhook_unregister"
-            },
-            {
-                "name": "acc_webhook_status",
-                "description": "Get status of registered ACC webhooks",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                },
-                "connection_id": connection.id,
-                "platform": "acc",
-                "status": "available",
-                "id": "acc_webhook_status"
-            }
-        ]
-    
     async def get_all_tools(self, db: AsyncSession) -> List[Dict[str, Any]]:
         """Get all tools (base tools + all platform tools)."""
         tools = []
@@ -1290,7 +930,7 @@ class DynamicToolRegistry:
         
         return tools
     
-    def get_tool(self, tool_name: str, user_id: int = None, db: AsyncSession = None) -> Optional[Dict[str, Any]]:
+    def get_tool(self, tool_name: str) -> Optional[Dict[str, Any]]:
         """Get a specific tool by name."""
         # Check base tools first
         if tool_name in self.base_tools:
@@ -1302,19 +942,6 @@ class DynamicToolRegistry:
             for tool in platform_tools:
                 if tool["name"] == tool_name:
                     return tool
-        
-        # For dynamic tools (like ACC tools), we need to check user-specific tools
-        # This is a temporary solution - ideally we'd cache user tools or restructure this
-        if user_id and db and tool_name.startswith(('acc_', 'slack_', 'ga4_', 'hubspot_')):
-            logger.info(f"[DEBUG] Looking for dynamic tool '{tool_name}' for user {user_id}")
-            # Create a temporary generic tool definition for dynamic tools
-            # The actual execution will be handled by the tool executor
-            return {
-                "name": tool_name,
-                "description": f"Dynamic tool: {tool_name}",
-                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": True},
-                "dynamic": True
-            }
         
         return None
     

@@ -16,10 +16,9 @@ from mcp.server.stdio import stdio_server
 
 from .config import settings
 from .database import init_db
-from .routers import (acc_oauth_router, acc_webhook_router, agent_router,
-                      api_router, auth_router, chat_router, connection_router,
-                      mcp_router, payment_router, settings_router,
-                      workflow_router)
+from .routers import (agent_router, api_router, auth_router, chat_router,
+                      connection_router, mcp_router, payment_router,
+                      settings_router, workflow_router)
 from .services import (BillingService, ContentCreationService,
                        FileManagementService, GA4Service, HubSpotService,
                        RateLimitService, SlackService, SocialMediaService,
@@ -76,20 +75,9 @@ app = FastAPI(
 )
 
 # Add CORS middleware
-def get_allowed_origins():
-    """Build allowed origins list from config and environment."""
-    origins = settings.ALLOWED_ORIGINS.copy()
-    
-    # Add additional origins from environment variable
-    if settings.ADDITIONAL_CORS_ORIGINS:
-        additional_origins = [origin.strip() for origin in settings.ADDITIONAL_CORS_ORIGINS.split(",")]
-        origins.extend(additional_origins)
-    
-    return origins
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=get_allowed_origins(),
+    allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -106,8 +94,6 @@ app.include_router(settings_router, prefix="/settings", tags=["settings"])
 app.include_router(chat_router, prefix="/chat", tags=["chat"])
 app.include_router(workflow_router, prefix="/workflows", tags=["workflows"])
 app.include_router(agent_router, prefix="/agents", tags=["agents"])
-app.include_router(acc_oauth_router, prefix="/api/aps", tags=["acc-oauth"])
-app.include_router(acc_webhook_router, tags=["acc-webhooks"])
 
 
 @app.get("/")
@@ -130,16 +116,6 @@ async def root():
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "timestamp": "2024-01-01T00:00:00Z"}
-
-
-@app.get("/cors-test")
-async def cors_test():
-    """Test CORS configuration."""
-    return {
-        "message": "CORS test successful",
-        "allowed_origins": get_allowed_origins(),
-        "timestamp": "2024-01-01T00:00:00Z"
-    }
 
 
 async def run_mcp_server():

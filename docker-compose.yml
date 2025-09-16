@@ -9,8 +9,6 @@ services:
         - BUILDKIT_INLINE_CACHE=1
     ports:
       - "8000:8000"
-    networks:
-      - app-network
     env_file:
       - .env
     environment:
@@ -100,15 +98,9 @@ services:
       - ENABLE_HUBSPOT=${ENABLE_HUBSPOT:-true}
       - ENABLE_SLACK=${ENABLE_SLACK:-true}
       - ENABLE_WHATSAPP=${ENABLE_WHATSAPP:-true}
-      - ENABLE_GA4=${ENABLE_GA4:-true}
-      - ENABLE_GEMINI=${ENABLE_GEMINI:-true}
-      - ENABLE_POWERBI=${ENABLE_POWERBI:-true}
-
-      # ACC-MCP
-      - APS_PORT=${APS_PORT}
-      - APS_CLIENT_ID=${APS_CLIENT_ID}
-      - APS_CLIENT_SECRET=${APS_CLIENT_SECRET}
-      - APS_REDIRECT_URI=${APS_REDIRECT_URI}
+                  - ENABLE_GA4=${ENABLE_GA4:-true}
+            - ENABLE_GEMINI=${ENABLE_GEMINI:-true}
+            - ENABLE_POWERBI=${ENABLE_POWERBI:-true}
       
       # Development
       - ENABLE_DEBUG_TOOLBAR=${ENABLE_DEBUG_TOOLBAR:-false}
@@ -134,7 +126,7 @@ services:
           memory: 256M
           cpus: '0.25'
     healthcheck:
-      test: ["CMD", "curl", "-f", "https://arrotech-hub.onrender.com/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -142,8 +134,6 @@ services:
 
   postgres:
     image: postgres:15-alpine
-    networks:
-      - app-network
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -169,8 +159,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    networks:
-      - app-network
     command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
     ports:
       - "6379:6379"
@@ -191,8 +179,6 @@ services:
 
   nginx:
     image: nginx:alpine
-    networks:
-      - app-network
     ports:
       - "80:80"
     volumes:
@@ -215,5 +201,5 @@ volumes:
     driver: local
 
 networks:
-  app-network:
+  default:
     driver: bridge 

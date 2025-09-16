@@ -98,15 +98,9 @@ services:
       - ENABLE_HUBSPOT=${ENABLE_HUBSPOT:-true}
       - ENABLE_SLACK=${ENABLE_SLACK:-true}
       - ENABLE_WHATSAPP=${ENABLE_WHATSAPP:-true}
-      - ENABLE_GA4=${ENABLE_GA4:-true}
-      - ENABLE_GEMINI=${ENABLE_GEMINI:-true}
-      - ENABLE_POWERBI=${ENABLE_POWERBI:-true}
-
-      # ACC-MCP
-      - APS_PORT=${APS_PORT}
-      - APS_CLIENT_ID=${APS_CLIENT_ID}
-      - APS_CLIENT_SECRET=${APS_CLIENT_SECRET}
-      - APS_REDIRECT_URI=${APS_REDIRECT_URI}
+                  - ENABLE_GA4=${ENABLE_GA4:-true}
+            - ENABLE_GEMINI=${ENABLE_GEMINI:-true}
+            - ENABLE_POWERBI=${ENABLE_POWERBI:-true}
       
       # Production Settings
       - ENABLE_DEBUG_TOOLBAR=${ENABLE_DEBUG_TOOLBAR:-false}
@@ -131,7 +125,7 @@ services:
           memory: 512M
           cpus: '0.5'
     healthcheck:
-      test: ["CMD", "curl", "-f", "https://arrotech-hub.onrender.com/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
