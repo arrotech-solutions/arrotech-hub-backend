@@ -59,30 +59,9 @@ async def call_tool(
     db: AsyncSession = Depends(get_db)
 ):
     """Execute a tool call."""
-    import logging
-    logger = logging.getLogger(__name__)
-    
-    logger.info(f"[DEBUG] ===== MCP Tool Call Request =====")
-    logger.info(f"[DEBUG] Requested tool: {request.name}")
-    logger.info(f"[DEBUG] Arguments: {request.arguments}")
-    logger.info(f"[DEBUG] User ID: {current_user.id}")
-    
-    # First, let's see what tools are available
-    logger.info(f"[DEBUG] Checking available tools for user...")
-    available_tools = await dynamic_tool_registry.get_user_tools(current_user.id, db)
-    logger.info(f"[DEBUG] Available tools count: {len(available_tools)}")
-    
-    tool_names = [tool.get('name', 'unnamed') for tool in available_tools]
-    logger.info(f"[DEBUG] Available tool names: {tool_names}")
-    
-    if request.name not in tool_names:
-        logger.error(f"[DEBUG] Tool '{request.name}' not found in available tools")
-    else:
-        logger.info(f"[DEBUG] Tool '{request.name}' found - proceeding with execution")
-        
     try:
         # Get the tool definition
-        tool = dynamic_tool_registry.get_tool(request.name, current_user.id, db)
+        tool = dynamic_tool_registry.get_tool(request.name)
         if not tool:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

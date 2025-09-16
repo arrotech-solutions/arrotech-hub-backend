@@ -99,12 +99,6 @@ class BaseConfig(BaseSettings):
     MPESA_CALLBACK_URL: Optional[str] = None
     MPESA_ENVIRONMENT: str = "sandbox"  # sandbox or live
 
-    # ACC-MCP
-    APS_PORT: Optional[int] = None
-    APS_CLIENT_ID: Optional[str] = None
-    APS_CLIENT_SECRET: Optional[str] = None
-    APS_REDIRECT_URI: Optional[str] = None
-
     # Server Settings
     HOST: str = "0.0.0.0"
     PORT: int = 8000
@@ -112,16 +106,7 @@ class BaseConfig(BaseSettings):
     RELOAD: bool = True
 
     # CORS
-    ALLOWED_ORIGINS: list = [
-        "http://localhost:3000", 
-        "http://localhost:5173",
-        "https://arrotech-hub-frontend.vercel.app"
-    ]
-    # Additional CORS origins from environment (comma-separated)
-    ADDITIONAL_CORS_ORIGINS: Optional[str] = None
-    
-    # Allowed hosts for TrustedHostMiddleware
-    ALLOWED_HOSTS: list = ["*"]  # Allow all hosts in development
+    ALLOWED_ORIGINS: list = ["http://localhost:3000", "http://localhost:5173"]
 
     # JWT Settings
     JWT_ALGORITHM: str = "HS256"
@@ -180,8 +165,7 @@ class StagingConfig(BaseConfig):
     # Staging-specific overrides
     ALLOWED_ORIGINS: list = [
         "https://staging.minihub.com",
-        "https://staging-frontend.minihub.com",
-        "https://arrotech-hub-frontend.vercel.app"
+        "https://staging-frontend.minihub.com"
     ]
 
     class Config:
@@ -200,8 +184,7 @@ class ProductionConfig(BaseConfig):
     # Production-specific overrides
     ALLOWED_ORIGINS: list = [
         "https://minihub.com",
-        "https://app.minihub.com",
-        "https://arrotech-hub-frontend.vercel.app"
+        "https://app.minihub.com"
     ]
 
     class Config:
@@ -220,8 +203,7 @@ class ReleaseConfig(BaseConfig):
     # Release-specific overrides
     ALLOWED_ORIGINS: list = [
         "https://release.minihub.com",
-        "https://release-frontend.minihub.com",
-        "https://arrotech-hub-frontend.vercel.app"
+        "https://release-frontend.minihub.com"
     ]
 
     class Config:

@@ -4,7 +4,6 @@ Optimized Tool Router Service for 100% accuracy in tool selection.
 
 import logging
 import re
-import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -16,307 +15,9 @@ from .dynamic_tool_registry import dynamic_tool_registry
 
 logger = logging.getLogger(__name__)
 
-# Global pattern cache for performance
-PATTERN_CACHE = {}
-
-def compile_cached(pattern: str) -> re.Pattern:
-    """Compile regex pattern with caching for performance."""
-    if pattern not in PATTERN_CACHE:
-        PATTERN_CACHE[pattern] = re.compile(pattern, re.IGNORECASE)
-    return PATTERN_CACHE[pattern]
-
 
 class PrecisionToolRouter:
     """Optimized tool router for 100% accuracy in tool selection."""
-    
-    # Class-level command map for better performance and maintainability
-    _COMMAND_MAP = {
-        # Slack Tools
-        r'(send|post).*slack': 'slack_send_message',
-        r'create.*slack.*channel': 'slack_create_channel',
-        r'list.*slack.*channel': 'slack_list_channels',
-        r'get.*slack.*channel.*member': 'slack_get_channel_members',
-        r'list.*slack.*member': 'slack_get_channel_members',
-        
-        # WhatsApp Tools
-        r'whatsapp.*message': 'whatsapp_send_message',
-        r'send.*whatsapp': 'whatsapp_send_message',
-        r'whatsapp.*media': 'whatsapp_send_media_message',
-        
-        # HubSpot Tools
-        r'(hubspot|crm).*contact': 'hubspot_crm_management',
-        r'create.*hubspot.*contact': 'hubspot_crm_management',
-        r'get.*hubspot.*contact': 'hubspot_crm_management',
-        r'update.*hubspot.*contact': 'hubspot_crm_management',
-        
-        # Salesforce Tools
-        r'(salesforce|crm).*contact': 'salesforce_crm_management',
-        r'create.*salesforce.*contact': 'salesforce_crm_management',
-        r'get.*salesforce.*contact': 'salesforce_crm_management',
-        r'(salesforce|crm).*lead': 'salesforce_crm_management',
-        r'create.*salesforce.*lead': 'salesforce_crm_management',
-        r'get.*salesforce.*lead': 'salesforce_crm_management',
-        r'(salesforce|crm).*opportunity': 'salesforce_crm_management',
-        r'create.*salesforce.*opportunity': 'salesforce_crm_management',
-        r'get.*salesforce.*opportunity': 'salesforce_crm_management',
-        
-        # GA4 Tools
-        r'ga4.*traffic': 'ga4_get_traffic',
-        r'get.*ga4.*traffic': 'ga4_get_traffic',
-        r'show.*ga4.*traffic': 'ga4_get_traffic',
-        r'ga4.*conversion': 'ga4_get_conversions',
-        r'get.*ga4.*conversion': 'ga4_get_conversions',
-        r'show.*ga4.*conversion': 'ga4_get_conversions',
-        r'analytics.*traffic': 'ga4_get_traffic',
-        r'analytics.*conversion': 'ga4_get_conversions',
-        r'google.*analytics.*traffic': 'ga4_get_traffic',
-        r'google.*analytics.*conversion': 'ga4_get_conversions',
-        r'user.*behavior.*ga4': 'ga4_get_traffic',
-        r'user.*behavior.*analytics': 'ga4_get_traffic',
-        r'show.*user.*behavior.*ga4': 'ga4_get_traffic',
-        r'show.*user.*behavior.*analytics': 'ga4_get_traffic',
-        
-        # Asana Tools
-        r'list.*asana.*project': 'asana_list_projects',
-        r'get.*asana.*project': 'asana_list_projects',
-        r'show.*asana.*project': 'asana_list_projects',
-        r'create.*asana.*project': 'asana_create_project',
-        r'add.*asana.*project': 'asana_create_project',
-        r'list.*asana.*task': 'asana_list_tasks',
-        r'get.*asana.*task': 'asana_list_tasks',
-        r'show.*asana.*task': 'asana_list_tasks',
-        r'create.*asana.*task': 'asana_create_task',
-        r'add.*asana.*task': 'asana_create_task',
-        r'add.*asana.*comment': 'asana_add_comment',
-        r'comment.*asana.*task': 'asana_add_comment',
-        r'get.*asana.*team': 'asana_get_teams',
-        r'list.*asana.*team': 'asana_get_teams',
-        r'get.*asana.*workspace': 'asana_get_workspaces',
-        r'list.*asana.*workspace': 'asana_get_workspaces',
-        
-        # Power BI Tools
-        r'powerbi.*workspace': 'powerbi_list_workspaces',
-        r'power.*bi.*workspace': 'powerbi_list_workspaces',
-        r'list.*powerbi.*workspace': 'powerbi_list_workspaces',
-        r'list.*power.*bi.*workspace': 'powerbi_list_workspaces',
-        r'get.*powerbi.*workspace': 'powerbi_list_workspaces',
-        r'get.*power.*bi.*workspace': 'powerbi_list_workspaces',
-        r'powerbi.*dataset': 'powerbi_list_datasets',
-        r'power.*bi.*dataset': 'powerbi_list_datasets',
-        r'list.*powerbi.*dataset': 'powerbi_list_datasets',
-        r'list.*power.*bi.*dataset': 'powerbi_list_datasets',
-        r'powerbi.*report': 'powerbi_list_reports',
-        r'power.*bi.*report': 'powerbi_list_reports',
-        r'list.*powerbi.*report': 'powerbi_list_reports',
-        r'list.*power.*bi.*report': 'powerbi_list_reports',
-        r'powerbi.*dashboard': 'powerbi_list_dashboards',
-        r'power.*bi.*dashboard': 'powerbi_list_dashboards',
-        r'list.*powerbi.*dashboard': 'powerbi_list_dashboards',
-        r'list.*power.*bi.*dashboard': 'powerbi_list_dashboards',
-        r'powerbi.*dax': 'powerbi_execute_dax_query',
-        r'power.*bi.*dax': 'powerbi_execute_dax_query',
-        r'execute.*dax': 'powerbi_execute_dax_query',
-        r'powerbi.*refresh': 'powerbi_refresh_dataset',
-        r'power.*bi.*refresh': 'powerbi_refresh_dataset',
-        r'refresh.*dataset': 'powerbi_refresh_dataset',
-        r'powerbi.*embed': 'powerbi_get_embed_token',
-        r'power.*bi.*embed': 'powerbi_get_embed_token',
-        r'embed.*token': 'powerbi_get_embed_token',
-        
-        # Zoom Tools
-        r'zoom.*meeting': 'zoom_meeting_management',
-        r'create.*zoom.*meeting': 'zoom_meeting_management',
-        r'schedule.*zoom.*meeting': 'zoom_meeting_management',
-        r'list.*zoom.*meeting': 'zoom_meeting_management',
-        r'get.*zoom.*meeting': 'zoom_meeting_management',
-        
-        # Teams Tools
-        r'teams.*message': 'teams_send_message',
-        r'send.*teams.*message': 'teams_send_message',
-        r'teams.*notification': 'teams_send_message',
-        r'teams.*webhook': 'teams_send_message',
-        
-        # File Management Tools
-        r'(upload|download).*file': 'file_management',
-        r'upload.*document': 'file_management',
-        r'download.*document': 'file_management',
-        r'generate.*pdf': 'file_management',
-        r'create.*pdf': 'file_management',
-        
-        # Web Tools
-        r'scrape.*website': 'web_tools',
-        r'extract.*web.*data': 'web_tools',
-        r'web.*scraping': 'web_tools',
-        r'crawl.*website': 'web_tools',
-        
-        # Content Creation Tools
-        r'generate.*image': 'content_creation',
-        r'create.*image': 'content_creation',
-        r'design.*image': 'content_creation',
-        r'generate.*content': 'content_creation',
-        r'create.*content': 'content_creation',
-        
-        # Marketing Tools
-        r'campaign.*automation': 'marketing_campaign_automation',
-        r'automate.*campaign': 'marketing_campaign_automation',
-        r'marketing.*automation': 'marketing_campaign_automation',
-        r'track.*performance': 'campaign_performance_tracking',
-        r'campaign.*performance': 'campaign_performance_tracking',
-        r'performance.*tracking': 'campaign_performance_tracking',
-        
-        # Lead Scoring Engine - Comprehensive Patterns
-        r'score.*lead': 'lead_scoring_engine',
-        r'lead.*scoring': 'lead_scoring_engine',
-        r'qualify.*lead': 'lead_scoring_engine',
-        r'qualify.*prospect': 'lead_scoring_engine',
-        r'rate.*lead': 'lead_scoring_engine',
-        r'assess.*lead': 'lead_scoring_engine',
-        r'evaluate.*lead': 'lead_scoring_engine',
-        r'rank.*lead': 'lead_scoring_engine',
-        r'score.*prospect': 'lead_scoring_engine',
-        r'qualify.*customer': 'lead_scoring_engine',
-        r'lead.*qualification': 'lead_scoring_engine',
-        r'prospect.*scoring': 'lead_scoring_engine',
-        r'customer.*scoring': 'lead_scoring_engine',
-        r'hot.*lead': 'lead_scoring_engine',
-        r'warm.*lead': 'lead_scoring_engine',
-        r'cold.*lead': 'lead_scoring_engine',
-        r'lukewarm.*lead': 'lead_scoring_engine',
-        
-        # Customer Journey Mapping - Comprehensive Patterns
-        r'journey.*map': 'customer_journey_mapping',
-        r'customer.*journey': 'customer_journey_mapping',
-        r'map.*journey': 'customer_journey_mapping',
-        r'create.*journey': 'customer_journey_mapping',
-        r'build.*journey': 'customer_journey_mapping',
-        r'design.*journey': 'customer_journey_mapping',
-        r'customer.*path': 'customer_journey_mapping',
-        r'buyer.*journey': 'customer_journey_mapping',
-        r'sales.*journey': 'customer_journey_mapping',
-        r'customer.*experience': 'customer_journey_mapping',
-        r'cx.*journey': 'customer_journey_mapping',
-        r'user.*journey': 'customer_journey_mapping',
-        r'client.*journey': 'customer_journey_mapping',
-        r'prospect.*journey': 'customer_journey_mapping',
-        r'awareness.*stage': 'customer_journey_mapping',
-        r'consideration.*stage': 'customer_journey_mapping',
-        r'evaluation.*stage': 'customer_journey_mapping',
-        r'decision.*stage': 'customer_journey_mapping',
-        r'onboarding.*stage': 'customer_journey_mapping',
-        r'touchpoint': 'customer_journey_mapping',
-        r'interaction.*point': 'customer_journey_mapping',
-        r'engagement.*point': 'customer_journey_mapping',
-        
-        # Predictive Analytics Engine - Comprehensive Patterns
-        r'predict.*behavior': 'predictive_analytics_engine',
-        r'predictive.*analysis': 'predictive_analytics_engine',
-        r'forecast.*trend': 'predictive_analytics_engine',
-        r'predict.*trend': 'predictive_analytics_engine',
-        r'predict.*conversion': 'predictive_analytics_engine',
-        r'forecast.*conversion': 'predictive_analytics_engine',
-        r'predict.*revenue': 'predictive_analytics_engine',
-        r'forecast.*revenue': 'predictive_analytics_engine',
-        r'predict.*sales': 'predictive_analytics_engine',
-        r'forecast.*sales': 'predictive_analytics_engine',
-        r'predict.*performance': 'predictive_analytics_engine',
-        r'forecast.*performance': 'predictive_analytics_engine',
-        r'predict.*churn': 'predictive_analytics_engine',
-        r'forecast.*churn': 'predictive_analytics_engine',
-        r'predict.*retention': 'predictive_analytics_engine',
-        r'forecast.*retention': 'predictive_analytics_engine',
-        r'predict.*growth': 'predictive_analytics_engine',
-        r'forecast.*growth': 'predictive_analytics_engine',
-        r'predict.*demand': 'predictive_analytics_engine',
-        r'forecast.*demand': 'predictive_analytics_engine',
-        r'predict.*market': 'predictive_analytics_engine',
-        r'forecast.*market': 'predictive_analytics_engine',
-        r'predict.*campaign': 'predictive_analytics_engine',
-        r'forecast.*campaign': 'predictive_analytics_engine',
-        r'predict.*quarter': 'predictive_analytics_engine',
-        r'forecast.*quarter': 'predictive_analytics_engine',
-        r'predict.*monthly': 'predictive_analytics_engine',
-        r'forecast.*monthly': 'predictive_analytics_engine',
-        r'predict.*annual': 'predictive_analytics_engine',
-        r'forecast.*annual': 'predictive_analytics_engine',
-        r'predict.*seasonal': 'predictive_analytics_engine',
-        r'forecast.*seasonal': 'predictive_analytics_engine',
-        r'project.*trend': 'predictive_analytics_engine',
-        r'estimate.*trend': 'predictive_analytics_engine',
-        r'anticipate.*trend': 'predictive_analytics_engine',
-        r'predictive.*analytics': 'predictive_analytics_engine',
-        r'predictive.*model': 'predictive_analytics_engine',
-        r'predictive.*insight': 'predictive_analytics_engine',
-        r'behavior.*prediction': 'predictive_analytics_engine',
-        r'conversion.*prediction': 'predictive_analytics_engine',
-        r'revenue.*prediction': 'predictive_analytics_engine',
-        r'sales.*prediction': 'predictive_analytics_engine',
-        r'performance.*prediction': 'predictive_analytics_engine',
-        r'churn.*prediction': 'predictive_analytics_engine',
-        r'retention.*prediction': 'predictive_analytics_engine',
-        r'growth.*prediction': 'predictive_analytics_engine',
-        r'demand.*prediction': 'predictive_analytics_engine',
-        r'market.*prediction': 'predictive_analytics_engine',
-        r'campaign.*prediction': 'predictive_analytics_engine',
-        
-        # A/B Testing Tools
-        r'ab.*test': 'ab_testing_platform',
-        r'a/b.*test': 'ab_testing_platform',
-        r'create.*ab.*test': 'ab_testing_platform',
-        r'run.*ab.*test': 'ab_testing_platform',
-        
-        # Workflow Tools
-        r'workflow.*builder': 'workflow_builder',
-        r'create.*workflow': 'workflow_builder',
-        r'build.*workflow': 'workflow_builder',
-        r'automate.*workflow': 'workflow_builder',
-        
-        # API Management Tools
-        r'api.*management': 'api_management',
-        r'manage.*api': 'api_management',
-        r'api.*endpoint': 'api_management',
-        r'create.*api': 'api_management',
-        
-        # Multi-tenant Tools
-        r'multi.*tenant': 'multi_tenant_service',
-        r'tenant.*management': 'multi_tenant_service',
-        r'manage.*tenant': 'multi_tenant_service',
-        
-        # Enterprise Security Tools
-        r'enterprise.*security': 'enterprise_security_service',
-        r'security.*audit': 'enterprise_security_service',
-        r'compliance.*check': 'enterprise_security_service',
-        
-        # White Label Tools
-        r'white.*label': 'white_label_service',
-        r'brand.*customization': 'white_label_service',
-        r'custom.*branding': 'white_label_service',
-        
-        # Billing Tools
-        r'billing.*management': 'billing_service',
-        r'invoice.*management': 'billing_service',
-        r'payment.*processing': 'billing_service',
-        r'subscription.*management': 'billing_service',
-        
-        # Rate Limiting Tools
-        r'rate.*limit': 'rate_limit_service',
-        r'throttle.*request': 'rate_limit_service',
-        r'limit.*api.*call': 'rate_limit_service',
-        
-        # File Management Tools (Extended)
-        r'file.*management': 'file_management',
-        r'manage.*file': 'file_management',
-        r'organize.*file': 'file_management',
-        r'backup.*file': 'file_management',
-        
-        # Web Tools (Extended)
-        r'web.*tool': 'web_tools',
-        r'web.*utility': 'web_tools',
-        r'web.*service': 'web_tools',
-        r'web.*integration': 'web_tools'
-    }
-    
-    # Class-level compiled patterns for performance
-    _compiled_patterns = None
     
     def __init__(self, user: User, db: AsyncSession):
         self.user = user
@@ -327,20 +28,6 @@ class PrecisionToolRouter:
         self._connection_cache = None
         self._usage_patterns = None
         self._domain_knowledge = self._load_domain_knowledge()
-        
-        # Initialize compiled patterns if not already done
-        if PrecisionToolRouter._compiled_patterns is None:
-            PrecisionToolRouter._compiled_patterns = self._precompile_patterns()
-    
-    def _precompile_patterns(self) -> List[Tuple[re.Pattern, str]]:
-        """Precompile regex patterns during initialization for better performance."""
-        logger.info("Precompiling regex patterns for tool router")
-        patterns_items = sorted(self._COMMAND_MAP.items(), key=lambda x: len(x[0]), reverse=True)
-        compiled = []
-        for pattern, tool_name in patterns_items:
-            compiled.append((compile_cached(pattern), tool_name))
-        logger.info(f"Precompiled {len(compiled)} regex patterns")
-        return compiled
     
     async def get_relevant_tools(self, user_input: str) -> List[Dict[str, Any]]:
         """
@@ -352,11 +39,11 @@ class PrecisionToolRouter:
         Returns:
             List of relevant tools with confidence scores
         """
-        logger.info(f"🎯 ToolRouter: Processing input: '{user_input}'")
+        print(f"🎯 ToolRouter: Processing input: '{user_input}'")
         
         # Load tools with cache
         all_tools = await self._get_all_tools()
-        logger.info(f"📦 Loaded {len(all_tools)} tools for user {self.user.id}")
+        print(f"📦 Loaded {len(all_tools)} tools for user {self.user.id}")
         
         # Multi-stage matching process
         results = await self._match_tools(user_input, all_tools)
@@ -364,20 +51,13 @@ class PrecisionToolRouter:
         # Sort by confidence score
         results.sort(key=lambda x: x[1], reverse=True)
         
-        logger.info(f"🔍 Found {len(results)} potential matches:")
+        print(f"🔍 Found {len(results)} potential matches:")
         for tool, confidence in results:
-            logger.info(f"   - {tool['name']}: {confidence:.3f}")
+            print(f"   - {tool['name']}: {confidence:.3f}")
         
         # Return tools with confidence > 80%
         final_results = [tool for tool, confidence in results if confidence > 0.8]
-        logger.info(f"✅ Final selection: {len(final_results)} tools with confidence > 0.8")
-        
-        # For multi-step requests, ensure we return all relevant tools
-        # If we have exact matches, prioritize them
-        exact_matches = [tool for tool, confidence in results if confidence == 1.0]
-        if exact_matches:
-            logger.info(f"🎯 Prioritizing {len(exact_matches)} exact matches")
-            return exact_matches
+        print(f"✅ Final selection: {len(final_results)} tools with confidence > 0.8")
         
         return final_results
     
@@ -385,53 +65,50 @@ class PrecisionToolRouter:
         """Execute multi-stage matching pipeline"""
         results = []
         
-        logger.info(f"🔍 Stage 1: Exact command matching")
+        print(f"🔍 Stage 1: Exact command matching")
         # Stage 1: Exact command matching (100% confidence)
-        exact_matches = self._exact_command_match(user_input, tools)
-        if exact_matches:
-            logger.info(f"   ✅ Found {len(exact_matches)} exact matches")
-            for tool, confidence in exact_matches:
-                logger.debug(f"      - {tool['name']} ({confidence:.3f})")
-            results.extend(exact_matches)
+        if exact_match := self._exact_command_match(user_input, tools):
+            print(f"   ✅ Exact match found: {exact_match['name']} (100% confidence)")
+            return [(exact_match, 1.0)]
         else:
-            logger.info(f"   ❌ No exact matches found")
+            print(f"   ❌ No exact match found")
         
-        logger.info(f"🧠 Stage 2: Semantic pattern matching")
+        print(f"🧠 Stage 2: Semantic pattern matching")
         # Stage 2: Semantic pattern matching
         semantic_results = await self._semantic_pattern_match(user_input, tools)
         results.extend(semantic_results)
         if semantic_results:
             for tool, confidence in semantic_results:
-                logger.debug(f"   ✅ Semantic match: {tool['name']} ({confidence:.3f})")
+                print(f"   ✅ Semantic match: {tool['name']} ({confidence:.3f})")
         else:
-            logger.info(f"   ❌ No semantic matches")
+            print(f"   ❌ No semantic matches")
         
-        logger.info(f"📊 Stage 3: Usage-based matching")
+        print(f"📊 Stage 3: Usage-based matching")
         # Stage 3: Usage-based matching
         usage_results = await self._usage_based_match(user_input, tools)
         results.extend(usage_results)
         if usage_results:
             for tool, confidence in usage_results:
-                logger.debug(f"   ✅ Usage match: {tool['name']} ({confidence:.3f})")
+                print(f"   ✅ Usage match: {tool['name']} ({confidence:.3f})")
         else:
-            logger.info(f"   ❌ No usage matches")
+            print(f"   ❌ No usage matches")
         
-        logger.info(f"🔍 Stage 4: Fuzzy matching")
+        print(f"🔍 Stage 4: Fuzzy matching")
         # Stage 4: Fuzzy matching
         fuzzy_results = self._fuzzy_match(user_input, tools)
         results.extend(fuzzy_results)
         if fuzzy_results:
             for tool, confidence in fuzzy_results:
-                logger.debug(f"   ✅ Fuzzy match: {tool['name']} ({confidence:.3f})")
+                print(f"   ✅ Fuzzy match: {tool['name']} ({confidence:.3f})")
         else:
-            logger.info(f"   ❌ No fuzzy matches")
+            print(f"   ❌ No fuzzy matches")
         
-        logger.info(f"🚀 Stage 5: Contextual boost")
+        print(f"🚀 Stage 5: Contextual boost")
         # Stage 5: Contextual boost
         results = self._apply_contextual_boost(user_input, results)
         if results:
             for tool, confidence in results:
-                logger.debug(f"   ✅ Boosted: {tool['name']} ({confidence:.3f})")
+                print(f"   ✅ Boosted: {tool['name']} ({confidence:.3f})")
         
         # Deduplicate results
         seen = set()
@@ -441,73 +118,269 @@ class PrecisionToolRouter:
                 seen.add(tool['name'])
                 deduped.append((tool, confidence))
         
-        logger.info(f"📋 Final results after deduplication: {len(deduped)} unique tools")
+        print(f"📋 Final results after deduplication: {len(deduped)} unique tools")
         return deduped
     
-    def _exact_command_match(self, user_input: str, tools: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], float]]:
-        """Match predefined exact commands for all available tools - returns multiple matches for multi-step requests"""
-        user_input = user_input.lower()
-        logger.debug(f"   🔍 Testing exact patterns on: '{user_input}'")
+    def _exact_command_match(self, user_input: str, tools: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Match predefined exact commands for all available tools"""
+        command_map = {
+            # Slack Tools
+            r'(send|post).*slack': 'slack_send_message',
+            r'create.*slack.*channel': 'slack_create_channel',
+            r'list.*slack.*channel': 'slack_list_channels',
+            r'get.*slack.*channel.*member': 'slack_get_channel_members',
+            r'list.*slack.*member': 'slack_get_channel_members',
+            
+            # WhatsApp Tools
+            r'whatsapp.*message': 'whatsapp_send_message',
+            r'send.*whatsapp': 'whatsapp_send_message',
+            r'whatsapp.*media': 'whatsapp_send_media_message',
+            
+            # HubSpot Tools
+            r'(hubspot|crm).*contact': 'hubspot_crm_management',
+            r'create.*hubspot.*contact': 'hubspot_crm_management',
+            r'get.*hubspot.*contact': 'hubspot_crm_management',
+            r'update.*hubspot.*contact': 'hubspot_crm_management',
+            
+            # Salesforce Tools
+            r'(salesforce|crm).*contact': 'salesforce_crm_management',
+            r'create.*salesforce.*contact': 'salesforce_crm_management',
+            r'get.*salesforce.*contact': 'salesforce_crm_management',
+            r'(salesforce|crm).*lead': 'salesforce_crm_management',
+            r'create.*salesforce.*lead': 'salesforce_crm_management',
+            r'get.*salesforce.*lead': 'salesforce_crm_management',
+            r'(salesforce|crm).*opportunity': 'salesforce_crm_management',
+            r'create.*salesforce.*opportunity': 'salesforce_crm_management',
+            r'get.*salesforce.*opportunity': 'salesforce_crm_management',
+            
+            # GA4 Tools
+            r'ga4.*traffic': 'ga4_get_traffic',
+            r'get.*ga4.*traffic': 'ga4_get_traffic',
+            r'show.*ga4.*traffic': 'ga4_get_traffic',
+            r'ga4.*conversion': 'ga4_get_conversions',
+            r'get.*ga4.*conversion': 'ga4_get_conversions',
+            r'show.*ga4.*conversion': 'ga4_get_conversions',
+            r'analytics.*traffic': 'ga4_get_traffic',
+            r'analytics.*conversion': 'ga4_get_conversions',
+            r'google.*analytics.*traffic': 'ga4_get_traffic',
+            r'google.*analytics.*conversion': 'ga4_get_conversions',
+            r'user.*behavior.*ga4': 'ga4_get_traffic',
+            r'user.*behavior.*analytics': 'ga4_get_traffic',
+            r'show.*user.*behavior.*ga4': 'ga4_get_traffic',
+            r'show.*user.*behavior.*analytics': 'ga4_get_traffic',
+            
+            # Asana Tools
+            r'list.*asana.*project': 'asana_list_projects',
+            r'get.*asana.*project': 'asana_list_projects',
+            r'show.*asana.*project': 'asana_list_projects',
+            r'create.*asana.*project': 'asana_create_project',
+            r'add.*asana.*project': 'asana_create_project',
+            r'list.*asana.*task': 'asana_list_tasks',
+            r'get.*asana.*task': 'asana_list_tasks',
+            r'show.*asana.*task': 'asana_list_tasks',
+            r'create.*asana.*task': 'asana_create_task',
+            r'add.*asana.*task': 'asana_create_task',
+            r'add.*asana.*comment': 'asana_add_comment',
+            r'comment.*asana.*task': 'asana_add_comment',
+            r'get.*asana.*team': 'asana_get_teams',
+            r'list.*asana.*team': 'asana_get_teams',
+            r'get.*asana.*workspace': 'asana_get_workspaces',
+            r'list.*asana.*workspace': 'asana_get_workspaces',
+            
+            # Power BI Tools
+            r'powerbi.*workspace': 'powerbi_list_workspaces',
+            r'power.*bi.*workspace': 'powerbi_list_workspaces',
+            r'list.*powerbi.*workspace': 'powerbi_list_workspaces',
+            r'list.*power.*bi.*workspace': 'powerbi_list_workspaces',
+            r'get.*powerbi.*workspace': 'powerbi_list_workspaces',
+            r'get.*power.*bi.*workspace': 'powerbi_list_workspaces',
+            r'powerbi.*dataset': 'powerbi_list_datasets',
+            r'power.*bi.*dataset': 'powerbi_list_datasets',
+            r'list.*powerbi.*dataset': 'powerbi_list_datasets',
+            r'list.*power.*bi.*dataset': 'powerbi_list_datasets',
+            r'powerbi.*report': 'powerbi_list_reports',
+            r'power.*bi.*report': 'powerbi_list_reports',
+            r'list.*powerbi.*report': 'powerbi_list_reports',
+            r'list.*power.*bi.*report': 'powerbi_list_reports',
+            r'powerbi.*dashboard': 'powerbi_list_dashboards',
+            r'power.*bi.*dashboard': 'powerbi_list_dashboards',
+            r'list.*powerbi.*dashboard': 'powerbi_list_dashboards',
+            r'list.*power.*bi.*dashboard': 'powerbi_list_dashboards',
+            r'powerbi.*dax': 'powerbi_execute_dax_query',
+            r'power.*bi.*dax': 'powerbi_execute_dax_query',
+            r'execute.*dax': 'powerbi_execute_dax_query',
+            r'powerbi.*refresh': 'powerbi_refresh_dataset',
+            r'power.*bi.*refresh': 'powerbi_refresh_dataset',
+            r'refresh.*dataset': 'powerbi_refresh_dataset',
+            r'powerbi.*embed': 'powerbi_get_embed_token',
+            r'power.*bi.*embed': 'powerbi_get_embed_token',
+            r'embed.*token': 'powerbi_get_embed_token',
+            
+            # Zoom Tools
+            r'zoom.*meeting': 'zoom_meeting_management',
+            r'create.*zoom.*meeting': 'zoom_meeting_management',
+            r'schedule.*zoom.*meeting': 'zoom_meeting_management',
+            r'list.*zoom.*meeting': 'zoom_meeting_management',
+            r'get.*zoom.*meeting': 'zoom_meeting_management',
+            
+            # Teams Tools
+            r'teams.*message': 'teams_send_message',
+            r'send.*teams.*message': 'teams_send_message',
+            r'teams.*notification': 'teams_send_message',
+            r'teams.*webhook': 'teams_send_message',
+            
+            # File Management Tools
+            r'(upload|download).*file': 'file_management',
+            r'upload.*document': 'file_management',
+            r'download.*document': 'file_management',
+            r'generate.*pdf': 'file_management',
+            r'create.*pdf': 'file_management',
+            
+            # Web Tools
+            r'scrape.*website': 'web_tools',
+            r'extract.*web.*data': 'web_tools',
+            r'web.*scraping': 'web_tools',
+            r'crawl.*website': 'web_tools',
+            
+            # Content Creation Tools
+            r'generate.*image': 'content_creation',
+            r'create.*image': 'content_creation',
+            r'design.*image': 'content_creation',
+            r'generate.*content': 'content_creation',
+            r'create.*content': 'content_creation',
+            
+            # Marketing Tools
+            r'campaign.*automation': 'marketing_campaign_automation',
+            r'automate.*campaign': 'marketing_campaign_automation',
+            r'marketing.*automation': 'marketing_campaign_automation',
+            r'track.*performance': 'campaign_performance_tracking',
+            r'campaign.*performance': 'campaign_performance_tracking',
+            r'performance.*tracking': 'campaign_performance_tracking',
+            
+            # Advanced Analytics Tools
+            r'score.*lead': 'lead_scoring_engine',
+            r'lead.*scoring': 'lead_scoring_engine',
+            r'qualify.*lead': 'lead_scoring_engine',
+            r'journey.*map': 'customer_journey_mapping',
+            r'customer.*journey': 'customer_journey_mapping',
+            r'map.*journey': 'customer_journey_mapping',
+            r'predict.*behavior': 'predictive_analytics_engine',
+            r'predictive.*analysis': 'predictive_analytics_engine',
+            r'forecast.*trend': 'predictive_analytics_engine',
+            r'predict.*trend': 'predictive_analytics_engine',
+            
+            # A/B Testing Tools
+            r'ab.*test': 'ab_testing_platform',
+            r'a/b.*test': 'ab_testing_platform',
+            r'create.*ab.*test': 'ab_testing_platform',
+            r'run.*ab.*test': 'ab_testing_platform',
+            
+            # Workflow Tools
+            r'workflow.*builder': 'workflow_builder',
+            r'create.*workflow': 'workflow_builder',
+            r'build.*workflow': 'workflow_builder',
+            r'automate.*workflow': 'workflow_builder',
+            
+            # API Management Tools
+            r'api.*management': 'api_management',
+            r'manage.*api': 'api_management',
+            r'api.*endpoint': 'api_management',
+            r'create.*api': 'api_management',
+            
+            # Multi-tenant Tools
+            r'multi.*tenant': 'multi_tenant_service',
+            r'tenant.*management': 'multi_tenant_service',
+            r'manage.*tenant': 'multi_tenant_service',
+            
+            # Enterprise Security Tools
+            r'enterprise.*security': 'enterprise_security_service',
+            r'security.*audit': 'enterprise_security_service',
+            r'compliance.*check': 'enterprise_security_service',
+            
+            # White Label Tools
+            r'white.*label': 'white_label_service',
+            r'brand.*customization': 'white_label_service',
+            r'custom.*branding': 'white_label_service',
+            
+            # Billing Tools
+            r'billing.*management': 'billing_service',
+            r'invoice.*management': 'billing_service',
+            r'payment.*processing': 'billing_service',
+            r'subscription.*management': 'billing_service',
+            
+            # Rate Limiting Tools
+            r'rate.*limit': 'rate_limit_service',
+            r'throttle.*request': 'rate_limit_service',
+            r'limit.*api.*call': 'rate_limit_service',
+            
+            # File Management Tools (Extended)
+            r'file.*management': 'file_management',
+            r'manage.*file': 'file_management',
+            r'organize.*file': 'file_management',
+            r'backup.*file': 'file_management',
+            
+            # Web Tools (Extended)
+            r'web.*tool': 'web_tools',
+            r'web.*utility': 'web_tools',
+            r'web.*service': 'web_tools',
+            r'web.*integration': 'web_tools'
+        }
         
-        matches = []
-        for pattern, tool_name in self._compiled_patterns:
-            if pattern.search(user_input):
-                logger.debug(f"   ✅ Pattern '{pattern.pattern}' matched for tool '{tool_name}'")
+        user_input = user_input.lower()
+        print(f"   🔍 Testing exact patterns on: '{user_input}'")
+        
+        # Sort patterns by specificity (longer patterns first) to ensure more specific matches
+        sorted_patterns = sorted(command_map.items(), key=lambda x: len(x[0]), reverse=True)
+        
+        for pattern, tool_name in sorted_patterns:
+            if re.search(pattern, user_input):
+                print(f"   ✅ Pattern '{pattern}' matched for tool '{tool_name}'")
                 tool = next((t for t in tools if t['name'] == tool_name), None)
                 if tool:
-                    logger.debug(f"   🎯 Found matching tool: {tool_name}")
-                    matches.append((tool, 1.0))  # Exact matches get 100% confidence
+                    print(f"   🎯 Found matching tool: {tool_name}")
+                    return tool
                 else:
-                    logger.warning(f"   ⚠️  Tool '{tool_name}' not found in available tools")
+                    print(f"   ⚠️  Tool '{tool_name}' not found in available tools")
             else:
-                logger.debug(f"   ❌ Pattern '{pattern.pattern}' did not match")
+                print(f"   ❌ Pattern '{pattern}' did not match")
         
-        # Remove duplicates while preserving order
-        seen_tools = set()
-        unique_matches = []
-        for tool, confidence in matches:
-            if tool['name'] not in seen_tools:
-                seen_tools.add(tool['name'])
-                unique_matches.append((tool, confidence))
-        
-        logger.debug(f"   �� Found {len(unique_matches)} unique exact matches")
-        return unique_matches
+        return None
     
     async def _semantic_pattern_match(self, user_input: str, tools: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], float]]:
         """Semantic matching with domain-specific patterns"""
         results = []
         user_tokens = self._tokenize(user_input)
-        logger.debug(f"   🔍 User tokens: {user_tokens}")
+        print(f"   🔍 User tokens: {user_tokens}")
         
         for tool in tools:
             tool_name = tool['name']
-            logger.debug(f"   📋 Testing tool: {tool_name}")
+            print(f"   📋 Testing tool: {tool_name}")
             
             # Match against predefined patterns
             tool_patterns = self._domain_knowledge.get(tool_name, {}).get('patterns', [])
-            logger.debug(f"      Patterns: {tool_patterns}")
+            print(f"      Patterns: {tool_patterns}")
             
             pattern_matched = False
             for pattern in tool_patterns:
                 if self._pattern_match(user_tokens, pattern):
-                    logger.debug(f"      ✅ Pattern matched: {pattern}")
+                    print(f"      ✅ Pattern matched: {pattern}")
                     results.append((tool, 0.95))
                     pattern_matched = True
                     break
                 else:
-                    logger.debug(f"      ❌ Pattern not matched: {pattern}")
+                    print(f"      ❌ Pattern not matched: {pattern}")
             
             if not pattern_matched:
                 # Match against tool keywords
                 tool_keywords = self._domain_knowledge.get(tool_name, {}).get('keywords', [])
-                logger.debug(f"      Keywords: {tool_keywords}")
+                print(f"      Keywords: {tool_keywords}")
                 
                 matched_keywords = [kw for kw in tool_keywords if kw in user_tokens]
                 if matched_keywords:
-                    logger.debug(f"      ✅ Keywords matched: {matched_keywords}")
+                    print(f"      ✅ Keywords matched: {matched_keywords}")
                     results.append((tool, 0.85))
                 else:
-                    logger.debug(f"      ❌ No keywords matched")
+                    print(f"      ❌ No keywords matched")
         
         return results
     
@@ -540,26 +413,26 @@ class PrecisionToolRouter:
         
         for tool in tools:
             tool_name = tool['name']
-            logger.debug(f"   🔍 Fuzzy matching for: {tool_name}")
+            print(f"   🔍 Fuzzy matching for: {tool_name}")
             
             # Match tool name
             name_score = self._fuzzy_ratio(user_input_lower, tool['name'])
-            logger.debug(f"      Name score: {name_score:.2f}")
+            print(f"      Name score: {name_score:.2f}")
             
             # Match description
             desc_score = self._fuzzy_ratio(user_input_lower, tool['description'])
-            logger.debug(f"      Description score: {desc_score:.2f}")
+            print(f"      Description score: {desc_score:.2f}")
             
             # Weighted average
             score = (name_score * 0.7 + desc_score * 0.3) / 100
-            logger.debug(f"      Weighted score: {score:.3f}")
+            print(f"      Weighted score: {score:.3f}")
             
             if score > 0.6:
                 final_score = score * 0.8  # Cap at 80% confidence
-                logger.debug(f"      ✅ Above threshold, final score: {final_score:.3f}")
+                print(f"      ✅ Above threshold, final score: {final_score:.3f}")
                 results.append((tool, final_score))
             else:
-                logger.debug(f"      ❌ Below threshold (0.6)")
+                print(f"      ❌ Below threshold (0.6)")
         
         return results
     
@@ -582,13 +455,13 @@ class PrecisionToolRouter:
         
         # Boost for active connections
         active_platforms = self._get_active_connections()
-        logger.debug(f"   🔗 Active platforms: {active_platforms}")
+        print(f"   🔗 Active platforms: {active_platforms}")
         
         # Boost for command verbs
         command_verbs = {'send', 'create', 'get', 'list', 'find', 'scrape', 'generate', 
                          'download', 'upload', 'execute', 'run', 'call', 'manage'}
         has_command = any(verb in user_input.lower() for verb in command_verbs)
-        logger.debug(f"   🎯 Has command verb: {has_command}")
+        print(f"   🎯 Has command verb: {has_command}")
         
         for tool, confidence in matches:
             tool_name = tool['name']
@@ -606,9 +479,9 @@ class PrecisionToolRouter:
                 boost_reasons.append(f"command_boost(+0.1)")
             
             if boost_reasons:
-                logger.debug(f"   🚀 {tool_name}: {original_confidence:.3f} → {confidence:.3f} ({', '.join(boost_reasons)})")
+                print(f"   🚀 {tool_name}: {original_confidence:.3f} → {confidence:.3f} ({', '.join(boost_reasons)})")
             else:
-                logger.debug(f"   📊 {tool_name}: {confidence:.3f} (no boost)")
+                print(f"   📊 {tool_name}: {confidence:.3f} (no boost)")
             
             boosted.append((tool, confidence))
         
@@ -1137,6 +1010,7 @@ class PrecisionToolRouter:
     
     def _is_cache_valid(self, cache_key: str) -> bool:
         """Check if cached tools are still valid"""
+        import time
         current_time = time.time()
         return (cache_key in self._tool_cache and 
                 cache_key in self._cache_timestamp and
