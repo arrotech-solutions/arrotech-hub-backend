@@ -104,7 +104,7 @@ class BaseConfig(BaseSettings):
 
     # Server Settings
     HOST: str = "0.0.0.0"
-    PORT: int = 8000
+    PORT: int = os.getenv("PORT")
     DEBUG: bool = True
     RELOAD: bool = True
 
