@@ -24,6 +24,21 @@ def get_database_url() -> str:
     elif db_url.startswith("postgres://"):
         db_url = db_url.replace("postgres://", "postgresql+asyncpg://", 1)
 
+    # Remove sslmode parameter - asyncpg doesn't support it in URL
+    # We'll handle SSL via connect_args instead
+    if "?sslmode=" in db_url:
+        db_url = db_url.split("?sslmode=")[0]
+    elif "&sslmode=" in db_url:
+        # Handle case where sslmode is not the first parameter
+        parts = db_url.split("&sslmode=")
+        if len(parts) > 1:
+            # Remove sslmode and its value, keep other params
+            remainder = parts[1].split("&", 1)
+            if len(remainder) > 1:
+                db_url = parts[0] + "&" + remainder[1]
+            else:
+                db_url = parts[0]
+
     return db_url
 
 
