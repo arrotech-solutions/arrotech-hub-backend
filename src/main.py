@@ -330,27 +330,30 @@ async def run_mcp_server():
 def main():
     """Main entry point."""
     import os
-    
+
     # Check if we should run in MCP mode (for Claude Desktop integration)
     run_mode = os.getenv("RUN_MODE", "web").lower()
-    
+
     if run_mode == "mcp":
         # Run MCP server for Claude Desktop integration
         logger.info("Starting in MCP server mode...")
         asyncio.run(run_mcp_server())
     else:
-        # Run FastAPI web server (default for Railway, Fly.io, Docker, etc.)
-        logger.info(f"Starting FastAPI server in {settings.ENVIRONMENT} mode...")
-        
-        # Get port from environment (Railway provides PORT)
+        # Run FastAPI web server (Railway, Fly.io, Docker, etc.)
         port = int(os.getenv("PORT", settings.PORT))
-        
+
+        # Detect production: Railway sets PORT env var
+        is_prod = os.getenv("PORT") or settings.ENVIRONMENT == "production"
+
+        logger.info(f"Starting server on port {port}...")
+
         uvicorn.run(
             "src.main:app",
-            host=settings.HOST,
+            host="0.0.0.0",
             port=port,
-            reload=settings.RELOAD if settings.ENVIRONMENT == "development" else False,
-            log_level=settings.LOG_LEVEL.lower()
+            reload=False if is_prod else settings.RELOAD,
+            log_level="info" if is_prod else settings.LOG_LEVEL.lower(),
+            workers=1
         )
 
 
