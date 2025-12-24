@@ -969,6 +969,93 @@ class DynamicToolRegistry:
             openai_tools.append(openai_tool)
         return openai_tools
     
+    async def get_available_tools(self, user_id: int = None, db: AsyncSession = None) -> List[Dict[str, Any]]:
+        """Get all available tools for workflow creation."""
+        # For workflow creation, return all possible tools (base + platform tools)
+        # This gives the LLM the full context of what's possible
+        # User-specific filtering happens during execution
+        tools = []
+        
+        # Add base tools that are always available
+        for tool_name, tool_config in self.base_tools.items():
+            tools.append({
+                "name": tool_name,
+                "description": tool_config["description"],
+                "inputSchema": tool_config.get("inputSchema", {}),
+                "category": tool_config.get("category", "general"),
+                "always_available": tool_config.get("always_available", False)
+            })
+        
+        # Add all platform tools (without requiring active connections for workflow design)
+        # This allows users to design workflows even before setting up connections
+        platform_tools = [
+            # Slack tools
+            {
+                "name": "slack_send_message",
+                "description": "Send a message to a Slack channel",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "channel": {"type": "string", "description": "Channel name (e.g., #general)"},
+                        "message": {"type": "string", "description": "Message content"}
+                    },
+                    "required": ["channel", "message"]
+                },
+                "category": "communication",
+                "platform": "slack"
+            },
+            # Asana tools
+            {
+                "name": "asana_create_task",
+                "description": "Create a new task in Asana",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Task name"},
+                        "notes": {"type": "string", "description": "Task description"},
+                        "priority": {"type": "string", "enum": ["low", "normal", "high"], "description": "Task priority"}
+                    },
+                    "required": ["name"]
+                },
+                "category": "productivity",
+                "platform": "asana"
+            },
+            # GA4 tools
+            {
+                "name": "ga4_get_traffic_data",
+                "description": "Get website traffic data from Google Analytics 4",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "date_range": {"type": "string", "description": "Date range (e.g., last_7_days, last_30_days)"},
+                        "metrics": {"type": "array", "items": {"type": "string"}, "description": "Metrics to retrieve"}
+                    },
+                    "required": ["date_range"]
+                },
+                "category": "analytics",
+                "platform": "ga4"
+            },
+            # HubSpot tools
+            {
+                "name": "hubspot_contact_create",
+                "description": "Create a new contact in HubSpot",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "email": {"type": "string", "description": "Contact email"},
+                        "first_name": {"type": "string", "description": "First name"},
+                        "last_name": {"type": "string", "description": "Last name"}
+                    },
+                    "required": ["email"]
+                },
+                "category": "crm",
+                "platform": "hubspot"
+            }
+        ]
+        
+        tools.extend(platform_tools)
+        return tools
+
     async def get_tool_descriptions(self, user_id: int = None, db: AsyncSession = None) -> str:
         """Get a human-readable description of all available tools."""
         tools = await self.get_tools_for_llm(user_id, db)

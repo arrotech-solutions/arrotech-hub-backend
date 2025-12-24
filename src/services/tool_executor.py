@@ -1543,17 +1543,21 @@ class ToolExecutor:
 
         # Initialize HubSpot service with user's connection config
         hubspot_service = HubSpotService()
-        api_key = connection.config.get("api_key")
-        if not api_key:
+        access_token = connection.config.get("api_key")  # Keep same key name for compatibility
+        if not access_token:
             return {
                 "success": False,
-                "error": "No API key found in HubSpot connection",
+                "error": "No access token found in HubSpot connection",
                 "result": None
             }
 
-        # Initialize the service with the user's API key
-        hubspot_service.api_key = api_key
-        print(f"🔧 Initialized HubSpot service with user API key for user {user.id}")
+        # Initialize the service with the user's access token
+        hubspot_service.api_key = access_token
+        hubspot_service.headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+        print(f"🔧 Initialized HubSpot service with user access token for user {user.id}")
 
         if tool_name == "hubspot_contact_operations":
             operation = arguments.get("operation")
@@ -2180,9 +2184,10 @@ class ToolExecutor:
                 }
             
             # Initialize the service with the user's credentials
-            asana_service.access_token = access_token
+            config = {"access_token": access_token}
             if workspace_id:
-                asana_service.workspace_id = workspace_id
+                config["workspace_id"] = workspace_id
+            await asana_service.initialize(config)
             print(f"🔧 Initialized Asana service with user access token for user {user.id}")
             
             # Route to specific Asana tool

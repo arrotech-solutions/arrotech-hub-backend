@@ -67,8 +67,9 @@ class OpenAIProvider(LLMProvider):
         max_tokens: Optional[int] = None
     ) -> LLMResponse:
         try:
+            model = getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
             kwargs = {
-                "model": "gpt-4-turbo-preview",
+                "model": model,
                 "messages": messages,
                 "temperature": temperature,
             }

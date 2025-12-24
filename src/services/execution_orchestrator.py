@@ -395,7 +395,155 @@ Always use the exact tool names provided above and include all required paramete
         return None
     
     async def _call_llm_fallback(self, provider: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-        """Fallback LLM call for providers without function calling."""
-        # This would be implemented for other providers
-        # For now, return None to indicate fallback not implemented
-        return None 
+        """Call LLM for providers like OpenAI, Anthropic, etc."""
+        from ..config import settings
+        
+        if provider == "openai":
+            return await self._call_openai_with_functions(messages, tools)
+        elif provider == "anthropic":
+            return await self._call_anthropic(messages, tools)
+        
+        # For unknown providers, return None
+        print(f"⚠️ Unknown provider: {provider}")
+        return None
+    
+    async def _call_openai_with_functions(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Call OpenAI API with function calling support."""
+        from ..config import settings
+        
+        if not settings.OPENAI_API_KEY:
+            print("❌ OpenAI API key not configured")
+            return None
+        
+        try:
+            import openai
+            from openai import AsyncOpenAI
+            
+            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+            
+            # Build request parameters
+            model = getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
+            kwargs = {
+                "model": model,
+                "messages": messages,
+                "temperature": settings.LLM_TEMPERATURE or 0.7,
+            }
+            
+            if settings.LLM_MAX_TOKENS:
+                kwargs["max_tokens"] = settings.LLM_MAX_TOKENS
+            
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+            
+            print(f"📤 Calling OpenAI with {len(messages)} messages and {len(tools) if tools else 0} tools")
+            
+            response = await client.chat.completions.create(**kwargs)
+            
+            # Convert response to dict format matching our expected structure
+            message = response.choices[0].message
+            
+            result = {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": message.content or "",
+                        "tool_calls": []
+                    }
+                }]
+            }
+            
+            # Convert tool_calls to expected format
+            if message.tool_calls:
+                for tool_call in message.tool_calls:
+                    result["choices"][0]["message"]["tool_calls"].append({
+                        "id": tool_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_call.function.name,
+                            "arguments": tool_call.function.arguments
+                        }
+                    })
+            
+            print(f"✅ OpenAI response received with {len(result['choices'][0]['message']['tool_calls'])} tool calls")
+            return result
+            
+        except Exception as e:
+            print(f"❌ OpenAI API error: {e}")
+            import traceback
+            print(f"❌ Traceback: {traceback.format_exc()}")
+            return None
+    
+    async def _call_anthropic(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Call Anthropic Claude API."""
+        from ..config import settings
+        
+        if not settings.ANTHROPIC_API_KEY:
+            print("❌ Anthropic API key not configured")
+            return None
+        
+        try:
+            import aiohttp
+            
+            # Convert messages to Anthropic format
+            anthropic_messages = []
+            system_content = ""
+            
+            for msg in messages:
+                if msg.get("role") == "system":
+                    system_content = msg.get("content", "")
+                elif msg.get("role") in ["user", "assistant"]:
+                    anthropic_messages.append({
+                        "role": msg["role"],
+                        "content": msg.get("content", "")
+                    })
+            
+            payload = {
+                "model": "claude-3-sonnet-20240229",
+                "messages": anthropic_messages,
+                "max_tokens": settings.LLM_MAX_TOKENS or 1024,
+                "temperature": settings.LLM_TEMPERATURE or 0.7,
+            }
+            
+            if system_content:
+                payload["system"] = system_content
+            
+            headers = {
+                "x-api-key": settings.ANTHROPIC_API_KEY,
+                "Content-Type": "application/json",
+                "anthropic-version": "2023-06-01"
+            }
+            
+            print(f"📤 Calling Anthropic with {len(anthropic_messages)} messages")
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://api.anthropic.com/v1/messages",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=60)
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        content = result.get("content", [{}])[0].get("text", "")
+                        
+                        print(f"✅ Anthropic response received")
+                        return {
+                            "choices": [{
+                                "message": {
+                                    "role": "assistant",
+                                    "content": content,
+                                    "tool_calls": []
+                                }
+                            }]
+                        }
+                    else:
+                        error_text = await response.text()
+                        print(f"❌ Anthropic error {response.status}: {error_text}")
+                        return None
+                        
+        except Exception as e:
+            print(f"❌ Anthropic API error: {e}")
+            import traceback
+            print(f"❌ Traceback: {traceback.format_exc()}")
+            return None 

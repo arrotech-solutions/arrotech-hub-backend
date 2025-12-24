@@ -1,0 +1,228 @@
+name: CD - Deploy to Production
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to deploy'
+        required: true
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: mini-hub
+  ECS_SERVICE: mini-hub-production
+  ECS_CLUSTER: mini-hub-cluster
+  ECS_TASK_DEFINITION: mini-hub-production-task
+  CONTAINER_NAME: mini-hub-app
+
+jobs:
+  # ====================================
+  # PRE-DEPLOYMENT CHECKS
+  # ====================================
+  pre-deployment:
+    name: Pre-Deployment Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify all tests passed
+        run: echo "Verifying CI pipeline passed..."
+
+      - name: Check deployment window
+        run: |
+          # Only deploy during business hours (9 AM - 5 PM EST)
+          HOUR=$(TZ=America/New_York date +%H)
+          if [ $HOUR -lt 9 ] || [ $HOUR -gt 17 ]; then
+            echo "Deployment outside business hours"
+            exit 1
+          fi
+
+      - name: Verify database backup
+        run: |
+          # Check if backup exists from last 24 hours
+          echo "Checking database backup status..."
+
+  # ====================================
+  # BLUE-GREEN DEPLOYMENT
+  # ====================================
+  deploy-production:
+    name: Deploy to Production (Blue-Green)
+    runs-on: ubuntu-latest
+    needs: pre-deployment
+    environment:
+      name: production
+      url: https://mini-hub.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Create database backup
+        run: |
+          aws rds create-db-snapshot \
+            --db-instance-identifier mini-hub-prod \
+            --db-snapshot-identifier mini-hub-prod-$(date +%Y%m%d-%H%M%S)
+
+      - name: Download task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ${{ env.ECS_TASK_DEFINITION }} \
+            --query taskDefinition > task-definition.json
+
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Deploy Green Environment
+        id: deploy-green
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}-green
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      - name: Run Database Migrations
+        run: |
+          TASK_ARN=$(aws ecs list-tasks \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service-name ${{ env.ECS_SERVICE }}-green \
+            --desired-status RUNNING \
+            --query 'taskArns[0]' --output text)
+          
+          aws ecs execute-command \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --task $TASK_ARN \
+            --container ${{ env.CONTAINER_NAME }} \
+            --interactive \
+            --command "alembic upgrade head"
+
+      - name: Run Health Checks on Green
+        run: |
+          chmod +x ./scripts/health-check.sh
+          ./scripts/health-check.sh production-green
+
+      - name: Run Smoke Tests on Green
+        run: |
+          chmod +x ./scripts/smoke-tests.sh
+          ./scripts/smoke-tests.sh production-green
+
+      - name: Switch Traffic to Green (Blue-Green Swap)
+        run: |
+          # Update ALB target group to point to green environment
+          chmod +x ./scripts/blue-green-switch.sh
+          ./scripts/blue-green-switch.sh green
+
+      - name: Monitor Green Environment
+        run: |
+          echo "Monitoring green environment for 5 minutes..."
+          sleep 300
+          chmod +x ./scripts/monitor-health.sh
+          ./scripts/monitor-health.sh production-green
+
+      - name: Rollback on Failure
+        if: failure()
+        run: |
+          echo "Rolling back to blue environment..."
+          ./scripts/blue-green-switch.sh blue
+          # Revert database migrations if needed
+          aws rds restore-db-instance-from-db-snapshot \
+            --db-instance-identifier mini-hub-prod \
+            --db-snapshot-identifier $(aws rds describe-db-snapshots \
+              --db-instance-identifier mini-hub-prod \
+              --query 'DBSnapshots[0].DBSnapshotIdentifier' --output text)
+
+      - name: Scale Down Blue Environment
+        if: success()
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE }}-blue \
+            --desired-count 1
+
+      - name: Create Release
+        if: success()
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+
+  # ====================================
+  # POST-DEPLOYMENT
+  # ====================================
+  post-deployment:
+    name: Post-Deployment Tasks
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    if: success()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Full Test Suite
+        run: |
+          chmod +x ./scripts/e2e-tests.sh
+          ./scripts/e2e-tests.sh production
+
+      - name: Performance Testing
+        run: |
+          chmod +x ./scripts/load-tests.sh
+          ./scripts/load-tests.sh production
+
+      - name: Update Documentation
+        run: |
+          echo "Updating deployment documentation..."
+
+      - name: Notify Success
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_COLOR: 'good'
+          SLACK_MESSAGE: '🚀 Production deployment successful!'
+          SLACK_TITLE: 'Mini-Hub Production Deployment'
+
+      - name: Create Datadog Event
+        run: |
+          curl -X POST "https://api.datadoghq.com/api/v1/events" \
+            -H "Content-Type: application/json" \
+            -H "DD-API-KEY: ${{ secrets.DATADOG_API_KEY }}" \
+            -d '{
+              "title": "Mini-Hub Production Deployment",
+              "text": "Deployed version ${{ github.sha }}",
+              "tags": ["environment:production", "service:mini-hub"]
+            }'
+

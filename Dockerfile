@@ -39,8 +39,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY --chown=app:app src/ ./src/
 
-# Copy credentials file
-COPY --chown=app:app mini-hub-466619-9e3676951f8a.json ./
+# Note: Credentials should be passed via environment variables, not files
+# For Google Cloud, use GOOGLE_APPLICATION_CREDENTIALS with base64-encoded content
 
 # Switch to non-root user
 USER app
