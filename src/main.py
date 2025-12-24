@@ -365,9 +365,11 @@ def main():
 
         logger.info(f"Starting server on port {port}...")
 
+        # Use "::" for IPv6 dual-stack binding (accepts both IPv4 and IPv6)
+        # Railway's internal networking uses IPv6, so this is required
         uvicorn.run(
             "src.main:app",
-            host="0.0.0.0",
+            host="::",
             port=port,
             reload=False if is_prod else settings.RELOAD,
             log_level="info" if is_prod else settings.LOG_LEVEL.lower(),
