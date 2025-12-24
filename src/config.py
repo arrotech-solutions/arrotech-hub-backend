@@ -189,12 +189,13 @@ class ProductionConfig(BaseConfig):
     LOG_LEVEL: str = "WARNING"
     ENVIRONMENT: str = "production"
 
-    # Production-specific overrides - includes Railway domains
+    # Production-specific overrides
     ALLOWED_ORIGINS: list = [
-        "https://minihub.com",
-        "https://app.minihub.com",
-        "https://*.railway.app",
-        "https://*.up.railway.app"
+        "https://hub.arrotechsolutions.com",
+        "https://arrotechsolutions.com",
+        "https://mini-hub.fly.dev",
+        "http://localhost:3000",
+        "http://localhost:5173"
     ]
 
     class Config:
