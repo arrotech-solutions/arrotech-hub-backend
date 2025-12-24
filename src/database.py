@@ -28,14 +28,21 @@ def get_database_url() -> str:
 
 
 def get_connect_args() -> dict:
-    """Get connection arguments, including SSL for production."""
-    # Check if we're in production (Fly.io sets this)
+    """Get connection arguments, including SSL if needed."""
+    db_url = settings.DATABASE_URL
+    
+    # If sslmode=disable is in the URL (Fly.io internal), don't add SSL
+    if "sslmode=disable" in db_url:
+        return {}
+    
+    # For production with SSL required
     if settings.ENVIRONMENT == "production" or os.getenv("FLY_APP_NAME"):
-        # Create SSL context that doesn't verify certificates (Fly.io internal)
+        # Create SSL context that doesn't verify certificates
         ssl_context = ssl.create_default_context()
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
         return {"ssl": ssl_context}
+    
     return {}
 
 
