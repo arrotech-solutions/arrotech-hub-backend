@@ -31,7 +31,7 @@ class BaseConfig(BaseSettings):
     TEAMS_TENANT_ID: Optional[str] = None
     TEAMS_CLIENT_ID: Optional[str] = None
     TEAMS_CLIENT_SECRET: Optional[str] = None
-    
+
     # Zoom OAuth Configuration
     ZOOM_CLIENT_ID: Optional[str] = None
     ZOOM_CLIENT_SECRET: Optional[str] = None
@@ -63,6 +63,9 @@ class BaseConfig(BaseSettings):
     DEFAULT_LLM_PROVIDER: str = "ollama"
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_TOKENS: Optional[int] = None
+
+    # OpenAI Settings
+    OPENAI_MODEL: str = "gpt-4o"  # gpt-4o, gpt-4-turbo, gpt-3.5-turbo
 
     # Ollama Settings (Local LLM)
     OLLAMA_BASE_URL: str = "http://localhost:11434"
@@ -181,10 +184,12 @@ class ProductionConfig(BaseConfig):
     LOG_LEVEL: str = "WARNING"
     ENVIRONMENT: str = "production"
 
-    # Production-specific overrides
+    # Production-specific overrides - includes Railway domains
     ALLOWED_ORIGINS: list = [
         "https://minihub.com",
-        "https://app.minihub.com"
+        "https://app.minihub.com",
+        "https://*.railway.app",
+        "https://*.up.railway.app"
     ]
 
     class Config:

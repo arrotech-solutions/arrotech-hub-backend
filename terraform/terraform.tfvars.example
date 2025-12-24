@@ -1,0 +1,37 @@
+# AWS Configuration
+aws_region  = "us-east-1"
+environment = "production"
+
+# Networking
+vpc_cidr           = "10.0.0.0/16"
+availability_zones = ["us-east-1a", "us-east-1b", "us-east-1c"]
+
+# ECS Configuration
+task_cpu       = "2048"
+task_memory    = "4096"
+container_image = "123456789.dkr.ecr.us-east-1.amazonaws.com/mini-hub:latest"
+min_capacity   = 3
+max_capacity   = 20
+
+# RDS Configuration
+db_instance_class       = "db.r6g.large"
+db_allocated_storage    = 100
+db_max_allocated_storage = 500
+db_multi_az            = true
+
+# ElastiCache Configuration
+redis_node_type       = "cache.r6g.large"
+redis_num_cache_nodes = 3
+
+# DNS and Certificates
+domain_name             = "mini-hub.com"
+acm_certificate_arn     = "arn:aws:acm:us-east-1:123456789:certificate/xxxxx"
+cloudfront_certificate_arn = "arn:aws:acm:us-east-1:123456789:certificate/xxxxx"
+
+# Secrets (use AWS Secrets Manager or Parameter Store instead of committing these)
+# app_secret_key         = ""  # DO NOT COMMIT
+# jwt_secret_key         = ""  # DO NOT COMMIT
+# stripe_secret_key      = ""  # DO NOT COMMIT
+# mpesa_consumer_key     = ""  # DO NOT COMMIT
+# mpesa_consumer_secret  = ""  # DO NOT COMMIT
+

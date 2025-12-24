@@ -20,7 +20,7 @@ class HubSpotService:
         }
 
     async def test_connection(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Test HubSpot connection."""
+        """Test HubSpot connection with both Private App tokens and legacy API keys."""
         try:
             if config:
                 api_key = config.get("api_key")
@@ -33,66 +33,151 @@ class HubSpotService:
                     "error": "HubSpot API key not configured"
                 }
 
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-
-            response = requests.get(
-                f"{self.base_url}/crm/v3/objects/contacts",
-                headers=headers,
-                params={"limit": 1}
-            )
-
-            if response.status_code == 200:
-                return {
-                    "success": True,
-                    "message": "HubSpot connection successful",
-                    "account_info": response.json().get("paging", {})
-                }
+            # Determine authentication method based on key format
+            if api_key.startswith(('pat-', 'eu1-', 'na1-')):
+                # Private App Access Token - use Bearer authentication
+                return await self._test_private_app_connection(api_key)
             else:
-                return {
-                    "success": False,
-                    "error": f"Connection failed: {response.status_code} - {response.text}"
-                }
+                # Legacy API Key - use hapikey parameter
+                return await self._test_legacy_api_connection(api_key)
+
         except Exception as e:
             return {
                 "success": False,
                 "error": f"Connection error: {str(e)}"
             }
 
-    async def get_contacts(self, limit: int = 10, properties: List[str] = None) -> Dict[str, Any]:
-        """Get contacts from HubSpot."""
-        try:
-            if properties is None:
-                properties = ["email", "firstname", "lastname", "company"]
+    async def _test_private_app_connection(self, access_token: str) -> Dict[str, Any]:
+        """Test connection using Private App access token."""
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
 
-            params = {
-                "limit": limit,
-                "properties": ",".join(properties)
+        # Test with account info endpoint first
+        response = requests.get(
+            f"{self.base_url}/account-info/v3/details",
+            headers=headers
+        )
+
+        if response.status_code == 200:
+            account_data = response.json()
+            return {
+                "success": True,
+                "message": "HubSpot connection successful",
+                "method": "Private App Access Token",
+                "account_info": {
+                    "portalId": account_data.get("portalId"),
+                    "accountType": account_data.get("accountType"),
+                    "timeZone": account_data.get("timeZone")
+                }
             }
-
+        else:
+            # Try contacts endpoint as fallback
             response = requests.get(
                 f"{self.base_url}/crm/v3/objects/contacts",
-                headers=self.headers,
-                params=params
+                headers=headers,
+                params={"limit": 1}
             )
-
+            
             if response.status_code == 200:
-                data = response.json()
                 return {
                     "success": True,
-                    "data": {
-                        "contacts": data.get("results", []),
-                        "total": data.get("total", 0),
-                        "paging": data.get("paging", {})
-                    }
+                    "message": "HubSpot connection successful",
+                    "method": "Private App Access Token",
+                    "account_info": "Limited access"
                 }
             else:
                 return {
                     "success": False,
-                    "error": f"Failed to fetch contacts: {response.status_code}"
+                    "error": f"Private App authentication failed: {response.status_code} - {response.text}",
+                    "help": "Ensure your Private App has required scopes or use legacy API key for developer accounts"
                 }
+
+    async def _test_legacy_api_connection(self, api_key: str) -> Dict[str, Any]:
+        """Test connection using legacy API key (for developer accounts)."""
+        # Test with legacy contacts endpoint
+        response = requests.get(
+            f"{self.base_url}/contacts/v1/lists/all/contacts/all",
+            params={"count": 1, "hapikey": api_key}
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "success": True,
+                "message": "HubSpot connection successful",
+                "method": "Legacy API Key (Developer Account)",
+                "account_info": {
+                    "contacts_found": len(data.get("contacts", [])),
+                    "has_more": data.get("has-more", False)
+                }
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"Legacy API authentication failed: {response.status_code} - {response.text}",
+                "help": "Verify your API key is correct. Get it from Settings → Integrations → API Key"
+            }
+
+    async def get_contacts(self, limit: int = 10, properties: List[str] = None) -> Dict[str, Any]:
+        """Get contacts from HubSpot using appropriate authentication method."""
+        try:
+            if properties is None:
+                properties = ["email", "firstname", "lastname", "company"]
+
+            # Determine authentication method based on API key format
+            if self.api_key and self.api_key.startswith(('pat-', 'eu1-', 'na1-')):
+                # Private App Access Token - use v3 API
+                params = {
+                    "limit": limit,
+                    "properties": ",".join(properties)
+                }
+
+                response = requests.get(
+                    f"{self.base_url}/crm/v3/objects/contacts",
+                    headers=self.headers,
+                    params=params
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    return {
+                        "success": True,
+                        "data": {
+                            "contacts": data.get("results", []),
+                            "total": data.get("total", 0),
+                            "paging": data.get("paging", {})
+                        }
+                    }
+            else:
+                # Legacy API Key - use v1 API
+                params = {
+                    "count": limit,
+                    "property": properties,
+                    "hapikey": self.api_key
+                }
+
+                response = requests.get(
+                    f"{self.base_url}/contacts/v1/lists/all/contacts/all",
+                    params=params
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    return {
+                        "success": True,
+                        "data": {
+                            "contacts": data.get("contacts", []),
+                            "total": len(data.get("contacts", [])),
+                            "has_more": data.get("has-more", False)
+                        }
+                    }
+
+            return {
+                "success": False,
+                "error": f"Failed to fetch contacts: {response.status_code} - {response.text}"
+            }
 
         except Exception as e:
             return {
