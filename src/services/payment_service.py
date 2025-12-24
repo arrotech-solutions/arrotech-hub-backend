@@ -29,11 +29,23 @@ class PaymentService:
         self.mpesa_shortcode = settings.MPESA_BUSINESS_SHORT_CODE
         self.mpesa_callback_url = settings.MPESA_CALLBACK_URL
 
-        print(f"M-Pesa Consumer Key: {self.mpesa_consumer_key[:10]}...")
-        print(f"M-Pesa Consumer Secret: {self.mpesa_consumer_secret[:10]}...")
-        print(f"M-Pesa Passkey: {self.mpesa_passkey[:10]}...")
-        print(f"M-Pesa Short Code: {self.mpesa_shortcode}")
-        print(f"M-Pesa Callback URL: {self.mpesa_callback_url}")
+        # Only log M-Pesa config if credentials are provided
+        if self.mpesa_consumer_key:
+            key = self.mpesa_consumer_key[:10]
+            print(f"M-Pesa Consumer Key: {key}...")
+        if self.mpesa_consumer_secret:
+            secret = self.mpesa_consumer_secret[:10]
+            print(f"M-Pesa Consumer Secret: {secret}...")
+        if self.mpesa_passkey:
+            passkey = self.mpesa_passkey[:10]
+            print(f"M-Pesa Passkey: {passkey}...")
+        if self.mpesa_shortcode:
+            print(f"M-Pesa Short Code: {self.mpesa_shortcode}")
+        if self.mpesa_callback_url:
+            print(f"M-Pesa Callback URL: {self.mpesa_callback_url}")
+
+        if not self.mpesa_consumer_key:
+            print("M-Pesa not configured - payment features disabled")
 
         # Base URLs - use environment setting
         if settings.MPESA_ENVIRONMENT == "live":
