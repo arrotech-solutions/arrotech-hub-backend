@@ -3,12 +3,15 @@ Database connection and initialization.
 """
 
 import os
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
 from sqlalchemy import MetaData
-from sqlalchemy.ext.asyncio import (AsyncSession, async_sessionmaker,
-                                    create_async_engine)
+from sqlalchemy.ext.asyncio import (AsyncEngine, AsyncSession,
+                                    async_sessionmaker, create_async_engine)
 from sqlalchemy.ext.declarative import declarative_base
+
+# Global engine - lazily initialized
+_engine: Optional[AsyncEngine] = None
 
 
 def get_database_url() -> str:
@@ -17,6 +20,10 @@ def get_database_url() -> str:
     db_url = os.getenv(
         "DATABASE_URL", "postgresql://user:pass@localhost/minihub"
     )
+
+    # Log the URL for debugging (without password)
+    safe_url = db_url.split("@")[-1] if "@" in db_url else db_url
+    print(f"[Database] Connecting to: {safe_url}")
 
     # Convert to asyncpg format
     if db_url.startswith("postgresql://"):
@@ -42,24 +49,24 @@ def get_database_url() -> str:
     return db_url
 
 
-def create_engine():
-    """Create the database engine."""
-    db_url = get_database_url()
-    is_dev = os.getenv("ENVIRONMENT", "development") == "development"
+def get_engine() -> AsyncEngine:
+    """Get or create the database engine (lazy initialization)."""
+    global _engine
+    if _engine is None:
+        db_url = get_database_url()
+        is_dev = os.getenv("ENVIRONMENT", "development") == "development"
+        _engine = create_async_engine(
+            db_url,
+            echo=is_dev
+        )
+    return _engine
 
-    return create_async_engine(
-        db_url,
-        echo=is_dev
-    )
 
+# Property-like access to engine
+@property
+def engine() -> AsyncEngine:
+    return get_engine()
 
-# Create async engine
-engine = create_engine()
-
-# Create session factory
-AsyncSessionLocal = async_sessionmaker(
-    engine, class_=AsyncSession, expire_on_commit=False
-)
 
 # Create base class for models
 Base = declarative_base()
@@ -68,9 +75,17 @@ Base = declarative_base()
 metadata = MetaData()
 
 
+def get_session_maker() -> async_sessionmaker[AsyncSession]:
+    """Get the session factory."""
+    return async_sessionmaker(
+        get_engine(), class_=AsyncSession, expire_on_commit=False
+    )
+
+
 async def init_db():
     """Initialize database tables."""
-    async with engine.begin() as conn:
+    eng = get_engine()
+    async with eng.begin() as conn:
         # Import models to ensure they're registered with SQLAlchemy
         from .models import Subscription, UsageLog, User  # noqa: F401
 
@@ -80,7 +95,8 @@ async def init_db():
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Get database session."""
-    async with AsyncSessionLocal() as session:
+    session_maker = get_session_maker()
+    async with session_maker() as session:
         try:
             yield session
         finally:
