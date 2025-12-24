@@ -108,8 +108,13 @@ class BaseConfig(BaseSettings):
     DEBUG: bool = True
     RELOAD: bool = True
 
-    # CORS
-    ALLOWED_ORIGINS: list = ["http://localhost:3000", "http://localhost:5173"]
+    # CORS - Allow Railway and local development
+    ALLOWED_ORIGINS: list = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "https://*.railway.app",
+        "https://*.up.railway.app"
+    ]
 
     # JWT Settings
     JWT_ALGORITHM: str = "HS256"
