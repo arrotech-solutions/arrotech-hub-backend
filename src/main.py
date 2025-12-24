@@ -45,21 +45,32 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     # Startup
     logger.info("Starting Mini-Hub MCP Server...")
-    await init_db()
-    logger.info("Database initialized")
-
-    # Initialize services that need it
+    
+    # Initialize database with timeout
     try:
-        await ga4_service.initialize()
+        await asyncio.wait_for(init_db(), timeout=30.0)
+        logger.info("Database initialized")
+    except asyncio.TimeoutError:
+        logger.error("Database initialization timed out after 30s")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}")
+
+    # Initialize services that need it (with timeouts)
+    try:
+        await asyncio.wait_for(ga4_service.initialize(), timeout=10.0)
+    except asyncio.TimeoutError:
+        logger.warning("GA4 service initialization timed out")
     except Exception as e:
         logger.warning(f"GA4 service initialization failed: {e}")
 
     try:
-        await slack_service.initialize()
+        await asyncio.wait_for(slack_service.initialize(), timeout=10.0)
+    except asyncio.TimeoutError:
+        logger.warning("Slack service initialization timed out")
     except Exception as e:
         logger.warning(f"Slack service initialization failed: {e}")
 
-    logger.info("Services ready")
+    logger.info("Services ready - app is now accepting requests")
 
     yield
 
@@ -115,7 +126,14 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "timestamp": "2024-01-01T00:00:00Z"}
+    import datetime
+    import os
+    return {
+        "status": "healthy", 
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+        "port": os.getenv("PORT", "not set"),
+        "environment": settings.ENVIRONMENT
+    }
 
 
 async def run_mcp_server():
