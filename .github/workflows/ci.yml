@@ -76,7 +76,7 @@ jobs:
     with:
       environment: "staging"
       platform: "flyio"
-      flyio-app-name: "arrotech-hub-staging"
+      flyio-app-name: "mini-hub"  # Existing Fly.io app
       flyio-region: "lhr"
       flyio-vm-size: "shared-cpu-1x"
       flyio-vm-memory: 256
@@ -95,7 +95,7 @@ jobs:
     with:
       environment: "production"
       platform: "flyio"
-      flyio-app-name: "arrotech-hub"
+      flyio-app-name: "mini-hub"  # Existing Fly.io app
       flyio-region: "lhr"
       flyio-vm-size: "shared-cpu-1x"
       flyio-vm-memory: 512
