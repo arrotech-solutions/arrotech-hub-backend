@@ -9,8 +9,8 @@ primary_region = 'jnb'
 [build]
 
 [deploy]
-  # Run database migrations before deploying new version
-  release_command = "python -m alembic upgrade head"
+  # Stamp database to mark existing tables as migrated, then run any new migrations
+  release_command = "python -m alembic stamp head"
 
 [http_service]
   internal_port = 8000
