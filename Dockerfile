@@ -39,6 +39,10 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY --chown=app:app src/ ./src/
 
+# Copy Alembic configuration and migrations for database migrations
+COPY --chown=app:app alembic.ini ./
+COPY --chown=app:app alembic/ ./alembic/
+
 # Note: Credentials should be passed via environment variables, not files
 # For Google Cloud, use GOOGLE_APPLICATION_CREDENTIALS with base64-encoded content
 
