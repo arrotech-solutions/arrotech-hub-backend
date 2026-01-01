@@ -113,6 +113,8 @@ services:
         condition: service_healthy
     volumes:
       - ./src:/app/src:ro
+      - ./tests:/app/tests:ro
+      - ./pytest.ini:/app/pytest.ini:ro
       - ./mini-hub-466619-9e3676951f8a.json:/app/mini-hub-466619-9e3676951f8a.json:ro
       - app_logs:/app/logs
     command: python -m src.main
