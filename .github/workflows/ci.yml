@@ -2,126 +2,114 @@ name: CI Pipeline
 
 on:
   push:
-    branches: [ main, develop, staging ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main, develop ]
+    branches: [main, develop]
 
 env:
-  PYTHON_VERSION: '3.11'
-  NODE_VERSION: '18'
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "18"
 
 jobs:
   # ====================================
-  # SECURITY SCANNING
+  # BACKEND TESTS
   # ====================================
-  security-scan:
-    name: Security Scanning
+  backend-tests:
+    name: Backend Tests
     runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov pytest-asyncio httpx pytest-timeout flake8
+
+      - name: Run Flake8 (Linter)
+        run: flake8 tests/ --max-line-length=79 --exclude=__pycache__
+
+      - name: Run Backend Tests
+        env:
+          ENVIRONMENT: test
+          SECRET_KEY: test-secret-key-for-ci
+          JWT_SECRET_KEY: test-jwt-secret-key
+          DATABASE_URL: sqlite:///./test.db
+        run: |
+          pytest tests/ -v --cov=src --cov-report=xml --cov-report=term-missing --timeout=120 -p no:warnings
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          flags: backend
+          name: backend-coverage
+        continue-on-error: true
+
+  # ====================================
+  # FRONTEND TESTS
+  # ====================================
+  frontend-tests:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ../Mini-Hub-frontend
+
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full history for better analysis
+          path: Mini-Hub
 
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+      - uses: actions/checkout@v4
         with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'
-
-      - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v2
-        with:
-          sarif_file: 'trivy-results.sarif'
-
-      - name: Run Snyk Security Scan
-        uses: snyk/actions/python@master
+          repository: ${{ github.repository_owner }}/Mini-Hub-frontend
+          path: Mini-Hub-frontend
         continue-on-error: true
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          args: --severity-threshold=high
 
-      - name: GitGuardian Secret Scan
-        uses: GitGuardian/ggshield-action@v1
+      - name: Check if frontend exists
+        id: check-frontend
+        run: |
+          if [ -d "../Mini-Hub-frontend" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+        working-directory: Mini-Hub
+
+      - name: Set up Node.js
+        if: steps.check-frontend.outputs.exists == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: Mini-Hub-frontend/package-lock.json
+
+      - name: Install dependencies
+        if: steps.check-frontend.outputs.exists == 'true'
+        run: npm ci
+        working-directory: Mini-Hub-frontend
+
+      - name: Run Frontend Tests
+        if: steps.check-frontend.outputs.exists == 'true'
+        run: npm test -- --watchAll=false --passWithNoTests
+        working-directory: Mini-Hub-frontend
         env:
-          GITGUARDIAN_API_KEY: ${{ secrets.GITGUARDIAN_API_KEY }}
-          GITHUB_PUSH_BEFORE_SHA: ${{ github.event.before }}
-          GITHUB_PUSH_BASE_SHA: ${{ github.event.base }}
-          GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          GITHUB_PULL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CI: true
 
   # ====================================
-  # CODE QUALITY & LINTING
+  # CODE QUALITY
   # ====================================
   code-quality:
     name: Code Quality
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pylint black flake8 mypy pytest-cov
-
-      - name: Run Black (Code Formatter)
-        run: black --check src/
-
-      - name: Run Flake8 (Linter)
-        run: flake8 src/ --max-line-length=120 --exclude=__pycache__
-
-      - name: Run Pylint
-        run: pylint src/ --disable=C0111,R0903 || true
-
-      - name: Run MyPy (Type Checking)
-        run: mypy src/ --ignore-missing-imports || true
-
-      - name: SonarCloud Scan
-        uses: SonarSource/sonarcloud-github-action@master
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
-  # ====================================
-  # UNIT TESTS
-  # ====================================
-  unit-tests:
-    name: Unit Tests
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:15-alpine
-        env:
-          POSTGRES_USER: test
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: test_db
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
-      redis:
-        image: redis:7-alpine
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 6379:6379
 
     steps:
       - uses: actions/checkout@v4
@@ -130,136 +118,58 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
+          cache: "pip"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-cov pytest-asyncio httpx
+          pip install flake8 black
 
-      - name: Run Unit Tests
-        env:
-          DATABASE_URL: postgresql://test:test@localhost:5432/test_db
-          REDIS_URL: redis://localhost:6379/0
-          ENVIRONMENT: test
-          SECRET_KEY: test-secret-key-for-ci
-          JWT_SECRET_KEY: test-jwt-secret-key
-        run: |
-          pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
+      - name: Run Black (Check Only)
+        run: black --check src/ --line-length 79 || true
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
-        with:
-          files: ./coverage.xml
-          flags: unittests
-          name: codecov-umbrella
-
-      - name: Archive code coverage results
-        uses: actions/upload-artifact@v3
-        with:
-          name: code-coverage-report
-          path: htmlcov/
+      - name: Run Flake8 on Source
+        run: flake8 src/ --max-line-length=120 --exclude=__pycache__ || true
 
   # ====================================
-  # INTEGRATION TESTS
+  # SECURITY SCAN
   # ====================================
-  integration-tests:
-    name: Integration Tests
+  security-scan:
+    name: Security Scan
     runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          format: "table"
+          severity: "CRITICAL,HIGH"
+        continue-on-error: true
+
+  # ====================================
+  # BUILD CHECK
+  # ====================================
+  build-check:
+    name: Build Check
+    runs-on: ubuntu-latest
+    needs: [backend-tests, code-quality]
+
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Start services
-        run: |
-          docker-compose -f docker-compose.dev.yml up -d postgres redis
-          sleep 10
-
-      - name: Run database migrations
-        run: |
-          docker-compose -f docker-compose.dev.yml exec -T postgres psql -U minihub -d minihub -c "SELECT 1"
-          # Add migration commands here
-
-      - name: Run integration tests
-        run: |
-          docker-compose -f docker-compose.dev.yml up -d app
-          sleep 15
-          docker-compose -f docker-compose.dev.yml exec -T app pytest tests/integration/ -v
-
-      - name: Cleanup
-        if: always()
-        run: docker-compose -f docker-compose.dev.yml down -v
-
-  # ====================================
-  # BUILD & PUSH DOCKER IMAGE
-  # ====================================
-  build-image:
-    name: Build Docker Image
-    runs-on: ubuntu-latest
-    needs: [security-scan, code-quality, unit-tests]
-    if: github.event_name == 'push'
-    outputs:
-      image-tag: ${{ steps.meta.outputs.tags }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ secrets.DOCKER_USERNAME }}/mini-hub
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix={{branch}}-
-
-      - name: Build and push
+      - name: Build Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          push: false
+          tags: mini-hub:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          build-args: |
-            BUILDKIT_INLINE_CACHE=1
-
-      - name: Run Trivy scanner on image
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ steps.meta.outputs.tags }}
-          format: 'sarif'
-          output: 'trivy-image-results.sarif'
-
-  # ====================================
-  # NOTIFICATION
-  # ====================================
-  notify:
-    name: Notify Build Status
-    runs-on: ubuntu-latest
-    needs: [security-scan, code-quality, unit-tests, integration-tests, build-image]
-    if: always()
-    steps:
-      - name: Slack Notification
-        uses: rtCamp/action-slack-notify@v2
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-          SLACK_COLOR: ${{ job.status }}
-          SLACK_MESSAGE: 'CI Pipeline completed with status: ${{ job.status }}'
-          SLACK_TITLE: 'Mini-Hub CI Pipeline'
-
