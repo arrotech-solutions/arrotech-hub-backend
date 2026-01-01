@@ -366,3 +366,408 @@ async def mpesa_callback(request: Request):
             "ResultCode": 1,
             "ResultDesc": "Error processing callback"
         }
+
+
+# ================== Workflow Purchase Endpoints ==================
+
+class WorkflowPurchaseRequest(BaseModel):
+    workflow_id: int
+    payment_method: str = "stripe"  # stripe, mpesa
+    phone_number: str = None  # Required for M-Pesa
+
+
+class WorkflowPurchaseResponse(BaseModel):
+    success: bool
+    data: Dict[str, Any] = None
+    message: str = None
+
+
+@router.post("/workflow/purchase", response_model=WorkflowPurchaseResponse)
+async def purchase_workflow(
+    request: WorkflowPurchaseRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Purchase a paid workflow from the marketplace."""
+    from sqlalchemy import select
+    from ..models import Workflow, WorkflowDownload, Payment, Notification
+    
+    try:
+        # Get the workflow
+        result = await db.execute(
+            select(Workflow).where(Workflow.id == request.workflow_id)
+        )
+        workflow = result.scalar_one_or_none()
+        
+        if not workflow:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Workflow not found"
+            )
+        
+        # Check if workflow is available for purchase
+        if workflow.visibility not in ['public', 'marketplace']:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This workflow is not available for purchase"
+            )
+        
+        # Check if already purchased
+        result = await db.execute(
+            select(WorkflowDownload).where(
+                WorkflowDownload.workflow_id == request.workflow_id,
+                WorkflowDownload.user_id == current_user.id
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            return WorkflowPurchaseResponse(
+                success=True,
+                message="You already own this workflow"
+            )
+        
+        # If workflow is free, just add to downloads
+        if workflow.license_type == 'free' or not workflow.price or workflow.price == 0:
+            download = WorkflowDownload(
+                workflow_id=workflow.id,
+                user_id=current_user.id,
+            )
+            db.add(download)
+            
+            # Increment download count
+            workflow.downloads_count = (workflow.downloads_count or 0) + 1
+            
+            # Notify the creator
+            notification = Notification(
+                user_id=workflow.user_id,
+                notification_type="workflow_imported",
+                title="New Download!",
+                message=f"{current_user.name} downloaded your workflow '{workflow.name}'",
+                workflow_id=workflow.id,
+                actor_id=current_user.id,
+                action_url="/creator-profile",
+            )
+            db.add(notification)
+            
+            await db.commit()
+            
+            return WorkflowPurchaseResponse(
+                success=True,
+                message="Workflow added to your library"
+            )
+        
+        # Handle paid workflow
+        amount = int(workflow.price)  # Price in cents
+        currency = workflow.currency or "USD"
+        
+        if request.payment_method == "stripe":
+            # Create Stripe checkout session
+            try:
+                checkout_session = stripe.checkout.Session.create(
+                    payment_method_types=['card'],
+                    line_items=[{
+                        'price_data': {
+                            'currency': currency.lower(),
+                            'product_data': {
+                                'name': workflow.name,
+                                'description': workflow.description or f"Workflow by {workflow.author_name}",
+                            },
+                            'unit_amount': amount,
+                        },
+                        'quantity': 1,
+                    }],
+                    mode='payment',
+                    success_url=f"{settings.FRONTEND_URL}/marketplace?purchase=success&workflow_id={workflow.id}",
+                    cancel_url=f"{settings.FRONTEND_URL}/marketplace?purchase=cancelled",
+                    metadata={
+                        'workflow_id': str(workflow.id),
+                        'user_id': str(current_user.id),
+                        'type': 'workflow_purchase'
+                    }
+                )
+                
+                # Create pending payment record
+                payment = Payment(
+                    user_id=current_user.id,
+                    payment_method="stripe",
+                    amount=amount,
+                    currency=currency,
+                    status="pending",
+                    transaction_id=checkout_session.id,
+                    payment_metadata={
+                        'workflow_id': workflow.id,
+                        'type': 'workflow_purchase'
+                    }
+                )
+                db.add(payment)
+                await db.commit()
+                
+                return WorkflowPurchaseResponse(
+                    success=True,
+                    data={
+                        'checkout_url': checkout_session.url,
+                        'session_id': checkout_session.id
+                    },
+                    message="Redirecting to payment..."
+                )
+            except stripe.error.StripeError as e:
+                logger.error(f"Stripe error: {str(e)}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Payment error: {str(e)}"
+                )
+        
+        elif request.payment_method == "mpesa":
+            if not request.phone_number:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Phone number required for M-Pesa payment"
+                )
+            
+            # Convert to KES if needed (assuming 1 USD = 150 KES for simplicity)
+            if currency.upper() == "USD":
+                amount_kes = amount * 150 // 100  # Convert cents to KES
+            else:
+                amount_kes = amount // 100  # Convert cents to base unit
+            
+            result = await payment_service.initiate_mpesa_payment(
+                phone_number=request.phone_number,
+                amount=amount_kes,
+                reference=f"WF-{workflow.id}-{current_user.id}",
+                description=f"Purchase: {workflow.name}"
+            )
+            
+            if result["success"]:
+                # Create pending payment record
+                payment = Payment(
+                    user_id=current_user.id,
+                    payment_method="mpesa",
+                    amount=amount_kes * 100,  # Store in cents equivalent
+                    currency="KES",
+                    status="pending",
+                    transaction_id=result["checkout_request_id"],
+                    payment_metadata={
+                        'workflow_id': workflow.id,
+                        'type': 'workflow_purchase',
+                        'merchant_request_id': result.get("merchant_request_id")
+                    }
+                )
+                db.add(payment)
+                await db.commit()
+                
+                return WorkflowPurchaseResponse(
+                    success=True,
+                    data={
+                        'checkout_request_id': result["checkout_request_id"],
+                        'message': result["message"]
+                    },
+                    message="M-Pesa payment initiated. Please check your phone."
+                )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=result.get("error", "M-Pesa payment failed")
+                )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid payment method"
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Purchase error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to process purchase: {str(e)}"
+        )
+
+
+@router.post("/stripe/webhook")
+async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
+    """Handle Stripe webhook events."""
+    from sqlalchemy import select
+    from ..models import Payment, Workflow, WorkflowDownload, Notification, CreatorProfile
+    
+    payload = await request.body()
+    sig_header = request.headers.get('stripe-signature')
+    
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, settings.STRIPE_WEBHOOK_SECRET
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    except stripe.error.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+    
+    if event['type'] == 'checkout.session.completed':
+        session = event['data']['object']
+        metadata = session.get('metadata', {})
+        
+        if metadata.get('type') == 'workflow_purchase':
+            workflow_id = int(metadata.get('workflow_id'))
+            user_id = int(metadata.get('user_id'))
+            
+            # Update payment status
+            result = await db.execute(
+                select(Payment).where(Payment.transaction_id == session['id'])
+            )
+            payment = result.scalar_one_or_none()
+            if payment:
+                payment.status = "completed"
+            
+            # Get the workflow
+            result = await db.execute(
+                select(Workflow).where(Workflow.id == workflow_id)
+            )
+            workflow = result.scalar_one_or_none()
+            
+            if workflow:
+                # Add to user's downloads
+                download = WorkflowDownload(
+                    workflow_id=workflow_id,
+                    user_id=user_id,
+                )
+                db.add(download)
+                
+                # Increment download count
+                workflow.downloads_count = (workflow.downloads_count or 0) + 1
+                
+                # Get buyer info
+                result = await db.execute(
+                    select(User).where(User.id == user_id)
+                )
+                buyer = result.scalar_one_or_none()
+                
+                # Notify the creator
+                notification = Notification(
+                    user_id=workflow.user_id,
+                    notification_type="earnings_received",
+                    title="New Sale! 💰",
+                    message=f"{buyer.name if buyer else 'Someone'} purchased your workflow '{workflow.name}'",
+                    workflow_id=workflow.id,
+                    actor_id=user_id,
+                    action_url="/creator-profile",
+                    metadata={'amount': session.get('amount_total'), 'currency': session.get('currency')}
+                )
+                db.add(notification)
+                
+                # Update creator earnings
+                result = await db.execute(
+                    select(CreatorProfile).where(CreatorProfile.user_id == workflow.user_id)
+                )
+                creator_profile = result.scalar_one_or_none()
+                if creator_profile:
+                    amount = (session.get('amount_total') or 0) / 100  # Convert from cents
+                    creator_profile.total_earnings = (creator_profile.total_earnings or 0) + amount
+                
+                await db.commit()
+    
+    return {"status": "success"}
+
+
+@router.get("/my-purchases")
+async def get_my_purchases(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get list of workflows purchased by the current user."""
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+    from ..models import WorkflowDownload
+    
+    result = await db.execute(
+        select(WorkflowDownload)
+        .options(selectinload(WorkflowDownload.workflow))
+        .where(WorkflowDownload.user_id == current_user.id)
+        .order_by(WorkflowDownload.downloaded_at.desc())
+    )
+    downloads = result.scalars().all()
+    
+    data = [
+        {
+            "id": d.id,
+            "workflow_id": d.workflow_id,
+            "workflow_name": d.workflow.name if d.workflow else None,
+            "workflow_description": d.workflow.description if d.workflow else None,
+            "downloaded_at": d.downloaded_at.isoformat() if d.downloaded_at else None,
+        }
+        for d in downloads
+    ]
+    
+    return {"success": True, "data": data}
+
+
+@router.get("/creator/earnings")
+async def get_creator_earnings(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get earnings summary for a creator."""
+    from sqlalchemy import select, func
+    from ..models import Payment, Workflow, CreatorProfile
+    
+    # Get creator profile
+    result = await db.execute(
+        select(CreatorProfile).where(CreatorProfile.user_id == current_user.id)
+    )
+    profile = result.scalar_one_or_none()
+    
+    if not profile:
+        return {
+            "success": True,
+            "data": {
+                "total_earnings": 0,
+                "pending_earnings": 0,
+                "this_month": 0,
+                "transactions": []
+            }
+        }
+    
+    # Get user's workflow IDs
+    result = await db.execute(
+        select(Workflow.id).where(Workflow.user_id == current_user.id)
+    )
+    workflow_ids = [row[0] for row in result.all()]
+    
+    # Get completed payments for user's workflows
+    from datetime import datetime, timedelta
+    start_of_month = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    
+    result = await db.execute(
+        select(Payment)
+        .where(
+            Payment.status == "completed",
+            Payment.payment_metadata['workflow_id'].astext.in_([str(wid) for wid in workflow_ids])
+        )
+        .order_by(Payment.created_at.desc())
+        .limit(20)
+    )
+    payments = result.scalars().all()
+    
+    # Calculate this month's earnings
+    this_month_total = sum(
+        (p.amount or 0) / 100 for p in payments 
+        if p.created_at and p.created_at >= start_of_month
+    )
+    
+    return {
+        "success": True,
+        "data": {
+            "total_earnings": float(profile.total_earnings or 0),
+            "pending_earnings": 0,  # Could track pending payouts
+            "this_month": this_month_total,
+            "transactions": [
+                {
+                    "id": p.id,
+                    "amount": (p.amount or 0) / 100,
+                    "currency": p.currency,
+                    "status": p.status,
+                    "created_at": p.created_at.isoformat() if p.created_at else None,
+                }
+                for p in payments
+            ]
+        }
+    }

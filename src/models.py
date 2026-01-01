@@ -6,9 +6,9 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
-from sqlalchemy import JSON, Boolean, Column, DateTime
+from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Numeric
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -80,6 +80,22 @@ class WorkflowTriggerType(str, Enum):
     WEBHOOK = "webhook"
 
 
+class WorkflowVisibility(str, Enum):
+    """Workflow visibility options."""
+    PRIVATE = "private"      # Only visible to creator
+    UNLISTED = "unlisted"    # Shareable via link
+    PUBLIC = "public"        # Visible in gallery
+    MARKETPLACE = "marketplace"  # Listed for sale
+
+
+class WorkflowLicense(str, Enum):
+    """Workflow license types."""
+    FREE = "free"                # Free to use
+    PERSONAL = "personal"        # Personal use only
+    COMMERCIAL = "commercial"    # Commercial use allowed
+    ENTERPRISE = "enterprise"    # Enterprise licensing
+
+
 class User(Base):
     """User model."""
     __tablename__ = "users"
@@ -102,6 +118,9 @@ class User(Base):
     conversations = relationship("Conversation", back_populates="user")
     workflows = relationship("Workflow", back_populates="user")
     workflow_executions = relationship("WorkflowExecution", back_populates="user")
+    workflow_downloads = relationship("WorkflowDownload", back_populates="user")
+    workflow_reviews = relationship("WorkflowReview", back_populates="user")
+    creator_profile = relationship("CreatorProfile", back_populates="user", uselist=False)
 
 
 class Conversation(Base):
@@ -159,11 +178,29 @@ class Workflow(Base):
     workflow_metadata = Column(JSON, nullable=True)  # Additional workflow metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Sharing & Marketplace fields
+    visibility = Column(String, default=WorkflowVisibility.PRIVATE)  # Visibility level
+    share_code = Column(String, unique=True, nullable=True, index=True)  # Unique share code for unlisted
+    license_type = Column(String, default=WorkflowLicense.FREE)  # License type
+    price = Column(Integer, nullable=True)  # Price in cents (nullable for free)
+    currency = Column(String, default="USD")  # Currency code
+    category = Column(String, nullable=True)  # Category for marketplace
+    tags = Column(JSON, nullable=True)  # Tags for search/filtering
+    required_connections = Column(JSON, nullable=True)  # List of required platform connections
+    downloads_count = Column(Integer, default=0)  # Number of downloads/imports
+    rating_sum = Column(Integer, default=0)  # Sum of all ratings
+    rating_count = Column(Integer, default=0)  # Number of ratings
+    author_name = Column(String, nullable=True)  # Display name for marketplace
+    preview_image = Column(String, nullable=True)  # Preview image URL
 
     # Relationships
     user = relationship("User", back_populates="workflows")
-    steps = relationship("WorkflowStep", back_populates="workflow", order_by="WorkflowStep.step_number")
-    executions = relationship("WorkflowExecution", back_populates="workflow")
+    steps = relationship("WorkflowStep", back_populates="workflow", order_by="WorkflowStep.step_number", cascade="all, delete-orphan")
+    executions = relationship("WorkflowExecution", back_populates="workflow", cascade="all, delete-orphan")
+    downloads = relationship("WorkflowDownload", back_populates="workflow", cascade="all, delete-orphan")
+    reviews = relationship("WorkflowReview", back_populates="workflow", cascade="all, delete-orphan")
+    versions = relationship("WorkflowVersion", back_populates="workflow", cascade="all, delete-orphan", order_by="WorkflowVersion.version_number.desc()")
 
 
 class WorkflowStep(Base):
@@ -184,6 +221,7 @@ class WorkflowStep(Base):
 
     # Relationships
     workflow = relationship("Workflow", back_populates="steps")
+    step_executions = relationship("WorkflowStepExecution", back_populates="step", cascade="all, delete-orphan")
 
 
 class WorkflowExecution(Base):
@@ -206,7 +244,7 @@ class WorkflowExecution(Base):
     # Relationships
     workflow = relationship("Workflow", back_populates="executions")
     user = relationship("User", back_populates="workflow_executions")
-    step_executions = relationship("WorkflowStepExecution", back_populates="workflow_execution")
+    step_executions = relationship("WorkflowStepExecution", back_populates="workflow_execution", cascade="all, delete-orphan")
 
 
 class WorkflowStepExecution(Base):
@@ -227,7 +265,42 @@ class WorkflowStepExecution(Base):
 
     # Relationships
     workflow_execution = relationship("WorkflowExecution", back_populates="step_executions")
-    step = relationship("WorkflowStep")
+    step = relationship("WorkflowStep", back_populates="step_executions")
+
+
+class WorkflowDownload(Base):
+    """Tracks workflow downloads/imports by users."""
+    __tablename__ = "workflow_downloads"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    downloaded_at = Column(DateTime(timezone=True), server_default=func.now())
+    source_version = Column(Integer, default=1)  # Version at time of download
+    imported_workflow_id = Column(Integer, nullable=True)  # If user imported to their own workflows
+
+    # Relationships
+    workflow = relationship("Workflow", back_populates="downloads")
+    user = relationship("User", back_populates="workflow_downloads")
+
+
+class WorkflowReview(Base):
+    """User reviews for shared workflows."""
+    __tablename__ = "workflow_reviews"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    rating = Column(Integer, nullable=False)  # 1-5 stars
+    title = Column(String, nullable=True)
+    comment = Column(Text, nullable=True)
+    helpful_count = Column(Integer, default=0)  # Number of "helpful" votes
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    workflow = relationship("Workflow", back_populates="reviews")
+    user = relationship("User", back_populates="workflow_reviews")
 
 
 class UserSettings(Base):
@@ -351,6 +424,253 @@ class Payment(Base):
 
     # Relationships
     user = relationship("User")
+
+
+class CreatorProfile(Base):
+    """Creator profile for marketplace authors."""
+    __tablename__ = "creator_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), unique=True, nullable=False)
+    
+    # Profile information
+    display_name = Column(String, nullable=False)
+    bio = Column(Text, nullable=True)
+    avatar_url = Column(String, nullable=True)
+    website = Column(String, nullable=True)
+    github_url = Column(String, nullable=True)
+    twitter_url = Column(String, nullable=True)
+    linkedin_url = Column(String, nullable=True)
+    
+    # Verification and badges
+    is_verified = Column(Boolean, default=False)
+    verification_date = Column(DateTime(timezone=True), nullable=True)
+    badges = Column(JSON, nullable=True)  # e.g., ["top_creator", "expert", "early_adopter"]
+    
+    # Statistics (computed/cached)
+    total_workflows = Column(Integer, default=0)
+    total_downloads = Column(Integer, default=0)
+    total_reviews = Column(Integer, default=0)
+    average_rating = Column(Numeric(3, 2), default=0)
+    total_earnings = Column(Numeric(10, 2), default=0)
+    
+    # Payout information
+    payout_method = Column(String, nullable=True)  # stripe, mpesa, paypal
+    payout_details = Column(JSON, nullable=True)  # Encrypted payout details
+    
+    # Settings
+    is_public = Column(Boolean, default=True)
+    accept_donations = Column(Boolean, default=False)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    user = relationship("User", back_populates="creator_profile")
+
+
+class WorkflowVersion(Base):
+    """Track workflow versions for updates and rollbacks."""
+    __tablename__ = "workflow_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workflow_id = Column(Integer, ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False)
+    version_number = Column(Integer, nullable=False)
+    
+    # Snapshot of workflow at this version
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    steps_snapshot = Column(JSON, nullable=False)  # Full copy of steps
+    variables_snapshot = Column(JSON, nullable=True)
+    trigger_config_snapshot = Column(JSON, nullable=True)
+    
+    # Version metadata
+    changelog = Column(Text, nullable=True)  # What changed in this version
+    is_breaking = Column(Boolean, default=False)  # Breaking changes flag
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    # Relationships
+    workflow = relationship("Workflow", back_populates="versions")
+
+
+class WorkflowAnalytics(Base):
+    """Analytics tracking for marketplace workflows."""
+    __tablename__ = "workflow_analytics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workflow_id = Column(Integer, ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    # Daily aggregated metrics
+    date = Column(DateTime(timezone=True), nullable=False, index=True)
+    
+    # View metrics
+    impressions = Column(Integer, default=0)  # Times shown in browse/search
+    detail_views = Column(Integer, default=0)  # Times details modal opened
+    unique_viewers = Column(Integer, default=0)  # Unique users who viewed
+    
+    # Conversion metrics  
+    import_clicks = Column(Integer, default=0)  # Times import button clicked
+    successful_imports = Column(Integer, default=0)  # Successful imports
+    
+    # Engagement metrics
+    review_clicks = Column(Integer, default=0)  # Times review section viewed
+    share_clicks = Column(Integer, default=0)  # Times share button clicked
+    
+    # Search metrics
+    search_appearances = Column(Integer, default=0)  # Times appeared in search
+    search_clicks = Column(Integer, default=0)  # Times clicked from search
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Unique constraint on workflow_id + date
+    __table_args__ = (
+        Index('ix_workflow_analytics_workflow_date', 'workflow_id', 'date', unique=True),
+    )
+
+
+class NotificationType(str, Enum):
+    """Types of notifications."""
+    WORKFLOW_IMPORTED = "workflow_imported"
+    WORKFLOW_REVIEWED = "workflow_reviewed"
+    WORKFLOW_RATED = "workflow_rated"
+    NEW_FOLLOWER = "new_follower"
+    MILESTONE_REACHED = "milestone_reached"
+    SYSTEM_ANNOUNCEMENT = "system_announcement"
+    EARNINGS_RECEIVED = "earnings_received"
+
+
+class Notification(Base):
+    """In-app notifications for users."""
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    # Notification content
+    notification_type = Column(String, nullable=False)
+    title = Column(String, nullable=False)
+    message = Column(Text, nullable=False)
+    
+    # Related entities
+    workflow_id = Column(Integer, ForeignKey("workflows.id", ondelete="SET NULL"), nullable=True)
+    actor_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)  # User who triggered
+    
+    # Extra data
+    extra_data = Column(JSON, nullable=True)  # Additional data (e.g., rating value, download count)
+    
+    # Status
+    is_read = Column(Boolean, default=False, index=True)
+    read_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # Action URL
+    action_url = Column(String, nullable=True)  # Where to navigate on click
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    user = relationship("User", foreign_keys=[user_id])
+    workflow = relationship("Workflow")
+    actor = relationship("User", foreign_keys=[actor_id])
+
+
+class WorkflowFavorite(Base):
+    """User's favorite/bookmarked workflows."""
+    __tablename__ = "workflow_favorites"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    workflow_id = Column(Integer, ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index('ix_workflow_favorites_unique', 'user_id', 'workflow_id', unique=True),
+    )
+
+    # Relationships
+    user = relationship("User", backref="favorites")
+    workflow = relationship("Workflow", backref="favorited_by")
+
+
+class UserPreferences(Base):
+    """User preferences for notifications and app behavior."""
+    __tablename__ = "user_preferences"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
+    
+    # Email notification preferences
+    email_on_download = Column(Boolean, default=True)
+    email_on_sale = Column(Boolean, default=True)
+    email_on_review = Column(Boolean, default=True)
+    email_on_follower = Column(Boolean, default=True)
+    email_weekly_summary = Column(Boolean, default=True)
+    
+    # In-app notification preferences
+    notify_on_download = Column(Boolean, default=True)
+    notify_on_sale = Column(Boolean, default=True)
+    notify_on_review = Column(Boolean, default=True)
+    notify_on_follower = Column(Boolean, default=True)
+    
+    # App preferences
+    theme = Column(String, default="system")  # light, dark, system
+    language = Column(String, default="en")
+    timezone = Column(String, default="UTC")
+    default_visibility = Column(String, default="private")
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    user = relationship("User", backref="preferences")
+
+
+class CreatorFollower(Base):
+    """Follower relationship between users."""
+    __tablename__ = "creator_followers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    follower_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    following_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Unique constraint: a user can only follow another user once
+    __table_args__ = (
+        Index('ix_creator_followers_unique', 'follower_id', 'following_id', unique=True),
+    )
+
+    # Relationships
+    follower = relationship("User", foreign_keys=[follower_id], backref="following")
+    following = relationship("User", foreign_keys=[following_id], backref="followers")
+
+
+class ActivityFeedItem(Base):
+    """Activity feed for followed creators."""
+    __tablename__ = "activity_feed"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    actor_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    
+    # Activity type and content
+    activity_type = Column(String, nullable=False)  # workflow_published, workflow_updated, milestone, etc.
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    
+    # Related entities
+    workflow_id = Column(Integer, ForeignKey("workflows.id", ondelete="SET NULL"), nullable=True)
+    
+    # Extra data
+    extra_data = Column(JSON, nullable=True)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    user = relationship("User", foreign_keys=[user_id])
+    actor = relationship("User", foreign_keys=[actor_id])
+    workflow = relationship("Workflow")
 
 
 class Task(BaseModel):
