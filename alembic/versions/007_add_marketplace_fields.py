@@ -8,8 +8,8 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = '007_add_marketplace_fields'
-down_revision = '006_add_powerbi_support'
+revision = '007'
+down_revision = '006'
 branch_labels = None
 depends_on = None
 

@@ -12,7 +12,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = '004'
-down_revision = '003_add_chat_models'
+down_revision = '003'
 branch_labels = None
 depends_on = None
 
