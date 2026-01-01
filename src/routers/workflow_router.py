@@ -22,6 +22,27 @@ class WorkflowCreate(BaseModel):
     name: str = None
 
 
+class WorkflowFromConversation(BaseModel):
+    """Request model for extracting workflow from conversation."""
+    conversation_id: int
+    workflow_name: str
+    description: str = None
+    selected_step_ids: List[str] = None  # Optional: subset of steps to include
+    parameterize_fields: List[str] = None  # Fields to make dynamic
+    trigger_type: str = "manual"
+    trigger_config: Dict[str, Any] = None
+
+
+class WorkflowFromSteps(BaseModel):
+    """Request model for creating workflow from explicit steps."""
+    workflow_name: str
+    description: str
+    steps: List[Dict[str, Any]]
+    trigger_type: str = "manual"
+    trigger_config: Dict[str, Any] = None
+    variables: Dict[str, Any] = None
+
+
 class WorkflowUpdate(BaseModel):
     name: str = None
     description: str = None
@@ -687,4 +708,296 @@ async def create_chat_agent(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create chat agent: {str(e)}"
+        )
+
+
+@router.post("/extract-from-conversation")
+async def extract_workflow_from_conversation(
+    data: WorkflowFromConversation,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """
+    Extract a workflow from conversation history.
+    Analyzes tool calls in a conversation and creates a reusable workflow.
+    """
+    from sqlalchemy import select
+    from ..models import Conversation, Message
+    
+    try:
+        # Verify conversation belongs to user
+        result = await db.execute(
+            select(Conversation)
+            .filter(Conversation.id == data.conversation_id, Conversation.user_id == user.id)
+        )
+        conversation = result.scalar_one_or_none()
+        
+        if not conversation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Conversation not found"
+            )
+        
+        # Get all messages with tool calls
+        result = await db.execute(
+            select(Message)
+            .filter(Message.conversation_id == data.conversation_id)
+            .order_by(Message.created_at)
+        )
+        messages = result.scalars().all()
+        
+        # Extract tool calls from messages
+        extracted_steps = []
+        step_number = 1
+        
+        for msg in messages:
+            if msg.tools_called:
+                for tool_call in msg.tools_called:
+                    tool_name = tool_call.get("name", "")
+                    arguments = tool_call.get("arguments", {})
+                    tool_result = tool_call.get("result", {})
+                    
+                    # Skip if step is filtered out
+                    if data.selected_step_ids and tool_call.get("id") not in data.selected_step_ids:
+                        continue
+                    
+                    # Parameterize specified fields
+                    parameterized_args = dict(arguments)
+                    if data.parameterize_fields:
+                        for field in data.parameterize_fields:
+                            if field in parameterized_args:
+                                parameterized_args[field] = f"{{{{input.{field}}}}}"
+                    
+                    step = {
+                        "step_number": step_number,
+                        "tool_name": tool_name,
+                        "tool_parameters": parameterized_args,
+                        "description": f"Execute {tool_name}",
+                        "original_arguments": arguments,
+                        "original_result": tool_result,
+                        "condition": None,
+                        "retry_config": {"max_retries": 3, "retry_delay": 5},
+                        "timeout": 30
+                    }
+                    extracted_steps.append(step)
+                    step_number += 1
+        
+        if not extracted_steps:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No tool calls found in conversation to extract"
+            )
+        
+        # Build input schema from parameterized fields
+        input_schema = {}
+        if data.parameterize_fields:
+            for field in data.parameterize_fields:
+                input_schema[field] = {
+                    "type": "string",
+                    "required": True,
+                    "description": f"Input value for {field}"
+                }
+        
+        # Generate workflow suggestions
+        suggestions = []
+        if len(extracted_steps) > 1:
+            suggestions.append("Consider adding error handling between steps")
+        if any(step["tool_name"].startswith("slack") for step in extracted_steps):
+            suggestions.append("Add notification on workflow completion")
+        if not data.parameterize_fields:
+            suggestions.append("Consider parameterizing key fields for reusability")
+        
+        return {
+            "success": True,
+            "data": {
+                "workflow": {
+                    "name": data.workflow_name,
+                    "description": data.description or f"Workflow extracted from conversation {data.conversation_id}",
+                    "steps": extracted_steps,
+                    "trigger_type": data.trigger_type,
+                    "trigger_config": data.trigger_config,
+                    "input_schema": input_schema,
+                    "source_conversation_id": data.conversation_id
+                },
+                "extraction_summary": {
+                    "total_messages": len(messages),
+                    "tool_calls_found": len(extracted_steps),
+                    "parameterized_fields": data.parameterize_fields or []
+                },
+                "suggestions": suggestions
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to extract workflow: {str(e)}"
+        )
+
+
+@router.post("/create-from-steps")
+async def create_workflow_from_steps(
+    data: WorkflowFromSteps,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """
+    Create a workflow from explicit step definitions.
+    Used when saving a workflow extracted from conversation.
+    """
+    try:
+        workflow_service = WorkflowBuilderService()
+        
+        # Create workflow with steps
+        workflow = Workflow(
+            user_id=user.id,
+            name=data.workflow_name,
+            description=data.description,
+            status=WorkflowStatus.DRAFT,
+            trigger_type=WorkflowTriggerType(data.trigger_type) if data.trigger_type else WorkflowTriggerType.MANUAL,
+            trigger_config=data.trigger_config,
+            variables=data.variables or {},
+            version=1,
+            is_template=False
+        )
+        
+        db.add(workflow)
+        await db.commit()
+        await db.refresh(workflow)
+        
+        # Create workflow steps
+        created_steps = []
+        for step_data in data.steps:
+            step = WorkflowStep(
+                workflow_id=workflow.id,
+                step_number=step_data.get("step_number", len(created_steps) + 1),
+                tool_name=step_data.get("tool_name"),
+                tool_parameters=step_data.get("tool_parameters", {}),
+                description=step_data.get("description", ""),
+                condition=step_data.get("condition"),
+                retry_config=step_data.get("retry_config", {"max_retries": 3, "retry_delay": 5}),
+                timeout=step_data.get("timeout", 30)
+            )
+            db.add(step)
+            created_steps.append(step)
+        
+        await db.commit()
+        
+        # Refresh to get step IDs
+        for step in created_steps:
+            await db.refresh(step)
+        
+        workflow_data = {
+            "id": workflow.id,
+            "name": workflow.name,
+            "description": workflow.description,
+            "status": workflow.status.value if hasattr(workflow.status, 'value') else str(workflow.status),
+            "version": workflow.version,
+            "is_template": workflow.is_template,
+            "trigger_type": workflow.trigger_type.value if hasattr(workflow.trigger_type, 'value') else str(workflow.trigger_type),
+            "trigger_config": workflow.trigger_config,
+            "variables": workflow.variables,
+            "workflow_metadata": workflow.workflow_metadata,
+            "created_at": workflow.created_at.isoformat(),
+            "updated_at": workflow.updated_at.isoformat() if workflow.updated_at else None,
+            "steps": [{
+                "id": step.id,
+                "step_number": step.step_number,
+                "tool_name": step.tool_name,
+                "tool_parameters": step.tool_parameters,
+                "description": step.description,
+                "condition": step.condition,
+                "retry_config": step.retry_config,
+                "timeout": step.timeout
+            } for step in created_steps]
+        }
+        
+        return {
+            "success": True,
+            "data": workflow_data
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create workflow from steps: {str(e)}"
+        )
+
+
+@router.get("/conversation/{conversation_id}/tool-calls")
+async def get_conversation_tool_calls(
+    conversation_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """
+    Get all tool calls from a conversation for workflow extraction preview.
+    """
+    from sqlalchemy import select
+    from ..models import Conversation, Message
+    
+    try:
+        # Verify conversation belongs to user
+        result = await db.execute(
+            select(Conversation)
+            .filter(Conversation.id == conversation_id, Conversation.user_id == user.id)
+        )
+        conversation = result.scalar_one_or_none()
+        
+        if not conversation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Conversation not found"
+            )
+        
+        # Get all messages
+        result = await db.execute(
+            select(Message)
+            .filter(Message.conversation_id == conversation_id)
+            .order_by(Message.created_at)
+        )
+        messages = result.scalars().all()
+        
+        # Extract tool calls
+        tool_calls = []
+        for msg in messages:
+            if msg.tools_called:
+                for tool_call in msg.tools_called:
+                    tool_calls.append({
+                        "id": tool_call.get("id", f"call_{len(tool_calls)}"),
+                        "message_id": msg.id,
+                        "tool_name": tool_call.get("name", ""),
+                        "arguments": tool_call.get("arguments", {}),
+                        "result": tool_call.get("result", {}),
+                        "success": tool_call.get("result", {}).get("success", True),
+                        "timestamp": msg.created_at.isoformat() if msg.created_at else None
+                    })
+        
+        # Identify parameterizable fields
+        all_fields = set()
+        for tc in tool_calls:
+            for key in tc.get("arguments", {}).keys():
+                all_fields.add(key)
+        
+        return {
+            "success": True,
+            "data": {
+                "conversation_id": conversation_id,
+                "conversation_title": conversation.title,
+                "tool_calls": tool_calls,
+                "total_tool_calls": len(tool_calls),
+                "successful_tool_calls": sum(1 for tc in tool_calls if tc.get("success", True)),
+                "available_fields": list(all_fields),
+                "can_create_workflow": len(tool_calls) > 0
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get conversation tool calls: {str(e)}"
         )

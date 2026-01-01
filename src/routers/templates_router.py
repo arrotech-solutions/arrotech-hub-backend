@@ -1,0 +1,618 @@
+"""
+Workflow templates router for Mini-Hub.
+Provides pre-built starter templates for common use cases.
+"""
+
+import logging
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..database import get_db
+from ..models import User, Workflow
+from ..routers.auth_router import get_current_user
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+# Pre-built workflow templates
+WORKFLOW_TEMPLATES = [
+    {
+        "id": "marketing-email-campaign",
+        "name": "Email Marketing Campaign",
+        "description": "Automate email campaign creation and sending with HubSpot integration",
+        "category": "Marketing",
+        "icon": "📧",
+        "difficulty": "beginner",
+        "estimated_time": "5 mins",
+        "tags": ["email", "marketing", "hubspot", "automation"],
+        "required_connections": ["hubspot"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "hubspot_create_contact",
+                "tool_parameters": {
+                    "email": "{{input.email}}",
+                    "firstname": "{{input.first_name}}",
+                    "lastname": "{{input.last_name}}"
+                },
+                "description": "Create or update contact in HubSpot"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "hubspot_add_to_list",
+                "tool_parameters": {
+                    "contact_id": "{{step_1.contact_id}}",
+                    "list_id": "{{input.campaign_list_id}}"
+                },
+                "description": "Add contact to campaign list"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "hubspot_trigger_workflow",
+                "tool_parameters": {
+                    "workflow_id": "{{input.hubspot_workflow_id}}",
+                    "contact_id": "{{step_1.contact_id}}"
+                },
+                "description": "Trigger email workflow"
+            }
+        ],
+        "variables": {
+            "email": {"type": "string", "required": True, "description": "Contact email"},
+            "first_name": {"type": "string", "required": True},
+            "last_name": {"type": "string", "required": True},
+            "campaign_list_id": {"type": "string", "required": True},
+            "hubspot_workflow_id": {"type": "string", "required": True}
+        }
+    },
+    {
+        "id": "social-media-scheduler",
+        "name": "Social Media Post Scheduler",
+        "description": "Schedule and publish posts across multiple social media platforms",
+        "category": "Marketing",
+        "icon": "📱",
+        "difficulty": "intermediate",
+        "estimated_time": "10 mins",
+        "tags": ["social-media", "scheduling", "automation", "content"],
+        "required_connections": ["twitter", "linkedin", "slack"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "generate_social_content",
+                "tool_parameters": {
+                    "topic": "{{input.topic}}",
+                    "tone": "{{input.tone}}",
+                    "platforms": "{{input.platforms}}"
+                },
+                "description": "Generate platform-optimized content"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "twitter_post",
+                "tool_parameters": {
+                    "content": "{{step_1.twitter_content}}",
+                    "schedule_time": "{{input.schedule_time}}"
+                },
+                "description": "Schedule Twitter post",
+                "condition": {"if": "twitter in input.platforms"}
+            },
+            {
+                "step_number": 3,
+                "tool_name": "linkedin_post",
+                "tool_parameters": {
+                    "content": "{{step_1.linkedin_content}}",
+                    "schedule_time": "{{input.schedule_time}}"
+                },
+                "description": "Schedule LinkedIn post",
+                "condition": {"if": "linkedin in input.platforms"}
+            },
+            {
+                "step_number": 4,
+                "tool_name": "slack_notify",
+                "tool_parameters": {
+                    "channel": "{{input.notification_channel}}",
+                    "message": "Posts scheduled for {{input.schedule_time}}"
+                },
+                "description": "Notify team via Slack"
+            }
+        ],
+        "variables": {
+            "topic": {"type": "string", "required": True},
+            "tone": {"type": "string", "enum": ["professional", "casual", "humorous"]},
+            "platforms": {"type": "array", "items": {"type": "string"}},
+            "schedule_time": {"type": "string", "format": "datetime"},
+            "notification_channel": {"type": "string", "default": "#marketing"}
+        }
+    },
+    {
+        "id": "lead-scoring",
+        "name": "Lead Scoring & Qualification",
+        "description": "Automatically score and qualify leads based on behavior and demographics",
+        "category": "Sales",
+        "icon": "🎯",
+        "difficulty": "advanced",
+        "estimated_time": "15 mins",
+        "tags": ["leads", "sales", "scoring", "crm", "hubspot"],
+        "required_connections": ["hubspot", "clearbit"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "hubspot_get_contact",
+                "tool_parameters": {
+                    "email": "{{input.email}}"
+                },
+                "description": "Get contact from HubSpot"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "clearbit_enrich",
+                "tool_parameters": {
+                    "email": "{{input.email}}"
+                },
+                "description": "Enrich contact data with Clearbit"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "calculate_lead_score",
+                "tool_parameters": {
+                    "company_size": "{{step_2.company.employees}}",
+                    "industry": "{{step_2.company.industry}}",
+                    "page_views": "{{step_1.page_views}}",
+                    "email_opens": "{{step_1.email_opens}}"
+                },
+                "description": "Calculate lead score"
+            },
+            {
+                "step_number": 4,
+                "tool_name": "hubspot_update_contact",
+                "tool_parameters": {
+                    "contact_id": "{{step_1.contact_id}}",
+                    "properties": {
+                        "lead_score": "{{step_3.score}}",
+                        "qualification_status": "{{step_3.status}}"
+                    }
+                },
+                "description": "Update lead score in HubSpot"
+            }
+        ],
+        "variables": {
+            "email": {"type": "string", "required": True}
+        }
+    },
+    {
+        "id": "data-sync-analytics",
+        "name": "Analytics Data Sync",
+        "description": "Sync analytics data from multiple sources to a central dashboard",
+        "category": "Analytics",
+        "icon": "📊",
+        "difficulty": "intermediate",
+        "estimated_time": "10 mins",
+        "tags": ["analytics", "data", "sync", "reporting"],
+        "required_connections": ["google_analytics", "hubspot", "stripe"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "ga4_get_report",
+                "tool_parameters": {
+                    "metrics": ["sessions", "users", "pageviews"],
+                    "date_range": "{{input.date_range}}"
+                },
+                "description": "Fetch GA4 analytics"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "hubspot_get_analytics",
+                "tool_parameters": {
+                    "metrics": ["contacts", "deals", "revenue"],
+                    "date_range": "{{input.date_range}}"
+                },
+                "description": "Fetch HubSpot analytics"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "stripe_get_metrics",
+                "tool_parameters": {
+                    "date_range": "{{input.date_range}}"
+                },
+                "description": "Fetch Stripe revenue data"
+            },
+            {
+                "step_number": 4,
+                "tool_name": "aggregate_metrics",
+                "tool_parameters": {
+                    "ga_data": "{{step_1.data}}",
+                    "hubspot_data": "{{step_2.data}}",
+                    "stripe_data": "{{step_3.data}}"
+                },
+                "description": "Aggregate all metrics"
+            }
+        ],
+        "variables": {
+            "date_range": {"type": "string", "enum": ["today", "last_7_days", "last_30_days", "this_month"]}
+        }
+    },
+    {
+        "id": "customer-onboarding",
+        "name": "Customer Onboarding Sequence",
+        "description": "Automate customer onboarding with welcome emails, resource sharing, and check-ins",
+        "category": "Customer Success",
+        "icon": "🎉",
+        "difficulty": "beginner",
+        "estimated_time": "8 mins",
+        "tags": ["onboarding", "customer-success", "email", "automation"],
+        "required_connections": ["hubspot", "slack"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "hubspot_create_contact",
+                "tool_parameters": {
+                    "email": "{{input.customer_email}}",
+                    "properties": {
+                        "lifecycle_stage": "customer",
+                        "signup_date": "{{input.signup_date}}"
+                    }
+                },
+                "description": "Create customer record"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "send_welcome_email",
+                "tool_parameters": {
+                    "to": "{{input.customer_email}}",
+                    "template": "welcome_onboarding",
+                    "variables": {
+                        "name": "{{input.customer_name}}",
+                        "plan": "{{input.plan_name}}"
+                    }
+                },
+                "description": "Send welcome email"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "slack_notify",
+                "tool_parameters": {
+                    "channel": "#customer-success",
+                    "message": "🎉 New customer: {{input.customer_name}} ({{input.plan_name}})"
+                },
+                "description": "Notify CS team"
+            },
+            {
+                "step_number": 4,
+                "tool_name": "schedule_followup",
+                "tool_parameters": {
+                    "type": "email",
+                    "delay": "3 days",
+                    "template": "onboarding_checkin"
+                },
+                "description": "Schedule 3-day check-in"
+            }
+        ],
+        "variables": {
+            "customer_email": {"type": "string", "required": True},
+            "customer_name": {"type": "string", "required": True},
+            "signup_date": {"type": "string", "format": "date"},
+            "plan_name": {"type": "string", "enum": ["starter", "pro", "enterprise"]}
+        }
+    },
+    {
+        "id": "invoice-processor",
+        "name": "Invoice Processing Automation",
+        "description": "Automatically process incoming invoices, extract data, and update accounting",
+        "category": "Finance",
+        "icon": "💰",
+        "difficulty": "advanced",
+        "estimated_time": "15 mins",
+        "tags": ["invoices", "finance", "automation", "accounting"],
+        "required_connections": ["email", "quickbooks"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "extract_invoice_data",
+                "tool_parameters": {
+                    "file_url": "{{input.invoice_url}}"
+                },
+                "description": "Extract data from invoice PDF"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "validate_vendor",
+                "tool_parameters": {
+                    "vendor_name": "{{step_1.vendor_name}}",
+                    "tax_id": "{{step_1.tax_id}}"
+                },
+                "description": "Validate vendor details"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "quickbooks_create_bill",
+                "tool_parameters": {
+                    "vendor_id": "{{step_2.vendor_id}}",
+                    "amount": "{{step_1.amount}}",
+                    "due_date": "{{step_1.due_date}}",
+                    "line_items": "{{step_1.line_items}}"
+                },
+                "description": "Create bill in QuickBooks"
+            },
+            {
+                "step_number": 4,
+                "tool_name": "slack_notify",
+                "tool_parameters": {
+                    "channel": "#finance",
+                    "message": "Invoice from {{step_1.vendor_name}} for ${{step_1.amount}} processed"
+                },
+                "description": "Notify finance team"
+            }
+        ],
+        "variables": {
+            "invoice_url": {"type": "string", "required": True}
+        }
+    },
+    {
+        "id": "support-ticket-triage",
+        "name": "Support Ticket Auto-Triage",
+        "description": "Automatically categorize, prioritize, and route support tickets",
+        "category": "Customer Support",
+        "icon": "🎫",
+        "difficulty": "intermediate",
+        "estimated_time": "10 mins",
+        "tags": ["support", "tickets", "triage", "automation"],
+        "required_connections": ["zendesk", "slack"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "analyze_ticket",
+                "tool_parameters": {
+                    "subject": "{{input.ticket_subject}}",
+                    "description": "{{input.ticket_body}}"
+                },
+                "description": "AI-analyze ticket content"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "zendesk_update_ticket",
+                "tool_parameters": {
+                    "ticket_id": "{{input.ticket_id}}",
+                    "category": "{{step_1.category}}",
+                    "priority": "{{step_1.priority}}",
+                    "tags": "{{step_1.tags}}"
+                },
+                "description": "Update ticket with categorization"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "zendesk_assign",
+                "tool_parameters": {
+                    "ticket_id": "{{input.ticket_id}}",
+                    "group_id": "{{step_1.recommended_group}}"
+                },
+                "description": "Assign to appropriate team"
+            },
+            {
+                "step_number": 4,
+                "tool_name": "slack_notify",
+                "tool_parameters": {
+                    "channel": "{{step_1.slack_channel}}",
+                    "message": "🎫 {{step_1.priority}} ticket: {{input.ticket_subject}}"
+                },
+                "description": "Alert team on Slack",
+                "condition": {"if": "step_1.priority in ['urgent', 'high']"}
+            }
+        ],
+        "variables": {
+            "ticket_id": {"type": "string", "required": True},
+            "ticket_subject": {"type": "string", "required": True},
+            "ticket_body": {"type": "string", "required": True}
+        }
+    },
+    {
+        "id": "content-repurposing",
+        "name": "Content Repurposing Pipeline",
+        "description": "Transform blog posts into social media content, newsletters, and more",
+        "category": "Content",
+        "icon": "✍️",
+        "difficulty": "beginner",
+        "estimated_time": "8 mins",
+        "tags": ["content", "repurposing", "marketing", "ai"],
+        "required_connections": ["openai"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "extract_content",
+                "tool_parameters": {
+                    "url": "{{input.blog_url}}"
+                },
+                "description": "Extract content from blog post"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "generate_twitter_thread",
+                "tool_parameters": {
+                    "content": "{{step_1.content}}",
+                    "max_tweets": 5
+                },
+                "description": "Generate Twitter thread"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "generate_linkedin_post",
+                "tool_parameters": {
+                    "content": "{{step_1.content}}",
+                    "tone": "professional"
+                },
+                "description": "Generate LinkedIn post"
+            },
+            {
+                "step_number": 4,
+                "tool_name": "generate_newsletter_section",
+                "tool_parameters": {
+                    "content": "{{step_1.content}}",
+                    "max_words": 200
+                },
+                "description": "Generate newsletter snippet"
+            }
+        ],
+        "variables": {
+            "blog_url": {"type": "string", "required": True, "format": "url"}
+        }
+    }
+]
+
+# Template categories
+CATEGORIES = [
+    {"id": "marketing", "name": "Marketing", "icon": "📣", "color": "#8B5CF6"},
+    {"id": "sales", "name": "Sales", "icon": "💼", "color": "#10B981"},
+    {"id": "analytics", "name": "Analytics", "icon": "📊", "color": "#3B82F6"},
+    {"id": "customer-success", "name": "Customer Success", "icon": "🎉", "color": "#F59E0B"},
+    {"id": "customer-support", "name": "Customer Support", "icon": "🎫", "color": "#EF4444"},
+    {"id": "finance", "name": "Finance", "icon": "💰", "color": "#059669"},
+    {"id": "content", "name": "Content", "icon": "✍️", "color": "#EC4899"},
+    {"id": "hr", "name": "Human Resources", "icon": "👥", "color": "#6366F1"},
+    {"id": "operations", "name": "Operations", "icon": "⚙️", "color": "#64748B"},
+]
+
+
+class TemplateResponse(BaseModel):
+    success: bool
+    data: Any = None
+    message: str = None
+
+
+@router.get("/", response_model=TemplateResponse)
+async def list_templates(
+    category: Optional[str] = Query(None, description="Filter by category"),
+    difficulty: Optional[str] = Query(None, description="Filter by difficulty"),
+    search: Optional[str] = Query(None, description="Search term"),
+    connection: Optional[str] = Query(None, description="Filter by required connection"),
+):
+    """Get list of all workflow templates."""
+    templates = WORKFLOW_TEMPLATES.copy()
+    
+    # Filter by category
+    if category:
+        templates = [t for t in templates if t["category"].lower() == category.lower()]
+    
+    # Filter by difficulty
+    if difficulty:
+        templates = [t for t in templates if t["difficulty"] == difficulty]
+    
+    # Filter by required connection
+    if connection:
+        templates = [t for t in templates if connection.lower() in [c.lower() for c in t.get("required_connections", [])]]
+    
+    # Search
+    if search:
+        search_lower = search.lower()
+        templates = [
+            t for t in templates
+            if search_lower in t["name"].lower()
+            or search_lower in t["description"].lower()
+            or any(search_lower in tag.lower() for tag in t.get("tags", []))
+        ]
+    
+    return TemplateResponse(
+        success=True,
+        data={
+            "templates": templates,
+            "total": len(templates)
+        }
+    )
+
+
+@router.get("/categories", response_model=TemplateResponse)
+async def get_categories():
+    """Get all template categories."""
+    return TemplateResponse(
+        success=True,
+        data=CATEGORIES
+    )
+
+
+@router.get("/{template_id}", response_model=TemplateResponse)
+async def get_template(template_id: str):
+    """Get a specific template by ID."""
+    template = next((t for t in WORKFLOW_TEMPLATES if t["id"] == template_id), None)
+    
+    if not template:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Template not found"
+        )
+    
+    return TemplateResponse(
+        success=True,
+        data=template
+    )
+
+
+@router.post("/{template_id}/use", response_model=TemplateResponse)
+async def use_template(
+    template_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Create a workflow from a template."""
+    template = next((t for t in WORKFLOW_TEMPLATES if t["id"] == template_id), None)
+    
+    if not template:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Template not found"
+        )
+    
+    # Create workflow from template
+    workflow = Workflow(
+        name=f"{template['name']} (from template)",
+        description=template["description"],
+        user_id=current_user.id,
+        steps=template["steps"],
+        variables=template.get("variables"),
+        trigger_type="manual",
+        is_active=True,
+        category=template["category"],
+        tags=template.get("tags", []),
+    )
+    
+    db.add(workflow)
+    await db.commit()
+    await db.refresh(workflow)
+    
+    return TemplateResponse(
+        success=True,
+        data={
+            "workflow_id": workflow.id,
+            "message": f"Workflow created from template '{template['name']}'"
+        }
+    )
+
+
+@router.get("/featured/list", response_model=TemplateResponse)
+async def get_featured_templates():
+    """Get featured/recommended templates."""
+    # Return first 4 templates as featured
+    featured = WORKFLOW_TEMPLATES[:4]
+    
+    return TemplateResponse(
+        success=True,
+        data=featured
+    )
+
+
+@router.get("/stats/popular", response_model=TemplateResponse)
+async def get_popular_templates(
+    db: AsyncSession = Depends(get_db)
+):
+    """Get most popular templates based on usage."""
+    # In a real implementation, this would track actual usage
+    # For now, return templates with "beginner" difficulty as popular
+    popular = [t for t in WORKFLOW_TEMPLATES if t["difficulty"] == "beginner"]
+    
+    return TemplateResponse(
+        success=True,
+        data=popular[:5]
+    )
+
