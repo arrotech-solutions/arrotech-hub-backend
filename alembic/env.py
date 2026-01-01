@@ -35,7 +35,12 @@ target_metadata = Base.metadata
 
 def get_url():
     """Get database URL from settings."""
-    return settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+    url = settings.DATABASE_URL
+    # Fly Postgres uses postgres:// but SQLAlchemy requires postgresql://
+    url = url.replace("postgres://", "postgresql://")
+    # Use asyncpg driver for async operations
+    url = url.replace("postgresql://", "postgresql+asyncpg://")
+    return url
 
 
 def run_migrations_offline() -> None:
