@@ -1,7 +1,7 @@
 """Add user settings table
 
-Revision ID: 002
-Revises: 001
+Revision ID: 001
+Revises: None (initial migration)
 Create Date: 2024-01-01 00:00:00.000000
 
 """
@@ -10,8 +10,8 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision = '002'
-down_revision = '001'
+revision = '001'
+down_revision = None
 branch_labels = None
 depends_on = None
 
