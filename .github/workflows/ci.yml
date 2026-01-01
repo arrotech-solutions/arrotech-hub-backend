@@ -44,9 +44,9 @@ jobs:
     uses: arrotech-solutions/arrotech-solutions-actions/.github/workflows/ci-security-scan.yml@main
     with:
       language: "python"
-      enable-codeql: false  # Requires GitHub Advanced Security (paid for private repos)
+      enable-codeql: false        # Requires GitHub Advanced Security (paid)
       enable-dependency-scan: true
-      enable-secret-scan: true
+      enable-secret-scan: false   # Gitleaks requires license for orgs
       fail-on-high-severity: false
 
   # ===========================================================================
