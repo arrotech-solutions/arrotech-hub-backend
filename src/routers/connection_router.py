@@ -22,6 +22,10 @@ from ..services.slack_service import SlackService
 from ..services.teams_service import TeamsService
 from ..services.whatsapp_service import WhatsAppService
 from ..services.zoom_service import ZoomService
+from ..services.hr_service import HRService
+from ..services.logistics_service import LogisticsService
+from ..services.lead_intelligence_service import LeadIntelligenceService
+from ..services.bilingual_service import BilingualService
 
 router = APIRouter()
 
@@ -34,6 +38,10 @@ zoom_service = ZoomService()
 whatsapp_service = WhatsAppService()
 asana_service = AsanaService()
 powerbi_service = PowerBIService()
+hr_service = HRService()
+logistics_service = LogisticsService()
+lead_service = LeadIntelligenceService()
+context_service = BilingualService()
 
 
 class ConnectionCreate(BaseModel):
@@ -180,24 +188,20 @@ async def update_connection(
             )
 
         # Update connection
-        await db.execute(
-            update(Connection)
-            .where(Connection.id == connection_id)
-            .values(
-                name=connection_data.name,
-                status=connection_data.status,
-                config=connection_data.config
-            )
-        )
+        connection.name = connection_data.name
+        connection.status = connection_data.status
+        connection.config = connection_data.config
+        
         await db.commit()
+        await db.refresh(connection)
 
         return {
             "success": True,
             "data": {
                 "id": connection.id,
                 "platform": connection.platform,
-                "name": connection_data.name,
-                "status": connection_data.status,
+                "name": connection.name,
+                "status": connection.status,
                 "updated_at": connection.updated_at
             }
         }
@@ -333,7 +337,15 @@ async def test_platform_connection(platform: str, config: Dict[str, Any]) -> Dic
         elif platform == "asana":
             return await test_asana_connection(config)
         elif platform == "powerbi":
-            return await test_powerbi_connection(config)
+            return await powerbi_service.test_connection(config)
+        elif platform == "hr_hub":
+            return await hr_service.test_connection(config)
+        elif platform == "logistics_hub":
+            return await logistics_service.test_connection(config)
+        elif platform == "lead_intelligence":
+            return await lead_service.test_connection(config)
+        elif platform == "context_intelligence":
+            return await context_service.test_connection(config)
         else:
             return {
                 "success": False,

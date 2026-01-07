@@ -270,7 +270,7 @@ async def create_stripe_payment_intent(
 
 @router.get("/pricing")
 async def get_pricing_plans():
-    """Get pricing plans with Kenyan pricing."""
+    """Get pricing plans with regional pricing."""
     return {
         "success": True,
         "data": {
