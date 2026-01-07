@@ -7,6 +7,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
+from jinja2 import Template
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -321,7 +322,11 @@ class WorkflowBuilderService:
                 step_execution = await self._execute_workflow_step(step, execution.id, db, context, user_id)
                 
                 # Update context with step results
-                context["steps"][f"step_{step.step_number}"] = step_execution.output_data or {}
+                step_result = step_execution.output_data or {}
+                context["steps"][f"step_{step.step_number}"] = step_result
+                
+                # Also add to root context for easier variable access (e.g. {{step_1.field}})
+                context[f"step_{step.step_number}"] = step_result
                 
                 # Check if step failed
                 if step_execution.status == WorkflowExecutionStatus.FAILED:
@@ -413,8 +418,20 @@ class WorkflowBuilderService:
         await db.flush()
         
         try:
-            # Substitute variables in parameters
-            substituted_params = self._substitute_variables(step.tool_parameters, context or {})
+            # Prepare parameters with overrides first
+            effective_params = step.tool_parameters.copy() if step.tool_parameters else {}
+            
+            # Add direct overrides from input_data if they follow the step_N_param pattern
+            input_overrides = context.get("input", {})
+            for param_name in list(effective_params.keys()):
+                override_key = f"step_{step.step_number}_{param_name}"
+                if override_key in input_overrides:
+                    # Only apply override if it's not None/Empty, otherwise stick to default
+                    if input_overrides[override_key]:
+                        effective_params[param_name] = input_overrides[override_key]
+            
+            # Substitute variables in parameters (now including any overrides)
+            substituted_params = self._substitute_variables(effective_params, context or {})
             
             # Update step execution with substituted parameters
             step_execution.input_data = substituted_params
@@ -460,28 +477,39 @@ class WorkflowBuilderService:
     
     def _substitute_variables(self, parameters: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Substitute variables in parameters using {{variable}} syntax.
+        Substitute variables in parameters using Jinja2 templates for full expression support.
         """
         if not parameters:
             return parameters
         
         substituted = {}
         for key, value in parameters.items():
-            if isinstance(value, str):
-                # Find all variable placeholders
-                matches = re.findall(r'\{\{([^}]+)\}\}', value)
-                substituted_value = value
-                
-                for match in matches:
-                    variable_value = self._extract_value_from_context(match.strip(), context)
-                    if variable_value is not None:
-                        substituted_value = substituted_value.replace(f'{{{{{match}}}}}', str(variable_value))
-                
-                substituted[key] = substituted_value
+            if isinstance(value, str) and "{{" in value:
+                try:
+                    # Use Jinja2 for robust expression evaluation (e.g. {{ a if b else c }})
+                    template = Template(value)
+                    substituted[key] = template.render(**context)
+                except Exception as e:
+                    print(f"Error rendering template for key {key}: {e}")
+                    # Fallback to original value if rendering fails
+                    substituted[key] = value
             elif isinstance(value, dict):
                 substituted[key] = self._substitute_variables(value, context)
             elif isinstance(value, list):
-                substituted[key] = [self._substitute_variables(item, context) if isinstance(item, dict) else item for item in value]
+                # Handle lists of dicts or strings
+                new_list = []
+                for item in value:
+                    if isinstance(item, dict):
+                        new_list.append(self._substitute_variables(item, context))
+                    elif isinstance(item, str) and "{{" in item:
+                        try:
+                            template = Template(item)
+                            new_list.append(template.render(**context))
+                        except Exception:
+                            new_list.append(item)
+                    else:
+                        new_list.append(item)
+                substituted[key] = new_list
             else:
                 substituted[key] = value
         

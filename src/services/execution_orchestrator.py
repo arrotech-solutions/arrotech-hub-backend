@@ -135,6 +135,9 @@ For example:
 - If asked to "create a slack channel", call the slack_create_channel tool with channel_name (without # prefix, e.g., "projects" not "#projects")
 - If asked to "create an image", call the content_creation tool with operation="generate_image" and text="description of the image"
 - If asked to "generate content", call the content_creation tool with the appropriate operation and required parameters
+- If asked to "show today's payments", "get payment summary", or "show payments", call the mpesa_payment_reconciliation tool with operation="get_summary" and days=1
+- If asked to "get unmatched payments" or "show unmatched", call the mpesa_payment_reconciliation tool with operation="get_unmatched"
+- If asked about "M-Pesa payments", "payment summary", or "payment reconciliation", use the mpesa_payment_reconciliation tool
 
 Always use the exact tool names provided above and include all required parameters."""
         

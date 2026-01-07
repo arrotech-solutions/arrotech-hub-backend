@@ -361,6 +361,49 @@ class DynamicToolRegistry:
                 },
                 "category": "enterprise",
                 "always_available": True
+            },
+            # M-Pesa Payment Reconciliation Agent - Always available
+            "mpesa_payment_reconciliation": {
+                "name": "mpesa_payment_reconciliation",
+                "description": "M-Pesa Payment Reconciliation Tool - Use this tool when users ask about payments, payment summaries, M-Pesa transactions, or payment data. ALWAYS use this tool for queries like 'Show today's payments', 'Get payment summary', 'Show payments', 'List payments', 'Get unmatched payments', 'Payment reconciliation', or any question about M-Pesa payments. Examples: 'Show today's payments' -> operation='get_summary', days=1; 'Get unmatched payments' -> operation='get_unmatched'; 'Show payments from last week' -> operation='get_summary', days=7; 'List all payments' -> operation='get_payments'.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": [
+                                "get_summary",
+                                "get_payments",
+                                "get_unmatched",
+                                "get_payment_by_transaction_id"
+                            ],
+                            "description": "Operation to perform: 'get_summary' for payment summaries (use when user asks for 'today's payments', 'payment summary', 'show payments'), 'get_payments' to list payments with filters, 'get_unmatched' for unmatched payments, 'get_payment_by_transaction_id' to find a specific payment by transaction ID"
+                        },
+                        "days": {
+                            "type": "integer",
+                            "description": "Number of days for summary: 1 for today, 7 for last week, 30 for last month. Use 1 when user says 'today' or 'today's payments', 7 for 'this week' or 'last week', 30 for 'this month' or 'last month'",
+                            "default": 1
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": ["all", "pending", "matched", "unmatched", "verified"],
+                            "description": "Filter payments by status. Use 'unmatched' when user asks about unmatched payments",
+                            "default": "all"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of payments to return",
+                            "default": 20
+                        },
+                        "transaction_id": {
+                            "type": "string",
+                            "description": "M-Pesa transaction ID to search for (e.g., 'QGH1234567890')"
+                        }
+                    },
+                    "required": ["operation"]
+                },
+                "category": "payments",
+                "always_available": True
             }
         }
     
@@ -396,6 +439,14 @@ class DynamicToolRegistry:
                 tools.extend(self._get_asana_tools(connection))
             elif connection.platform == "powerbi":
                 tools.extend(self._get_powerbi_tools(connection))
+            elif connection.platform in platform_registry.platforms:
+                # Dynamically fetch tools for regional platforms (hr_hub, logistics_hub, etc.)
+                p_tools = platform_registry.get_platform_tools(connection.platform)
+                for tool in p_tools:
+                    tool["connection_id"] = connection.id
+                    tool["status"] = "available"
+                    tool["id"] = tool["name"]
+                    tools.append(tool)
         
         return tools
     
@@ -986,74 +1037,23 @@ class DynamicToolRegistry:
                 "always_available": tool_config.get("always_available", False)
             })
         
-        # Add all platform tools (without requiring active connections for workflow design)
-        # This allows users to design workflows even before setting up connections
-        platform_tools = [
-            # Slack tools
-            {
-                "name": "slack_send_message",
-                "description": "Send a message to a Slack channel",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "channel": {"type": "string", "description": "Channel name (e.g., #general)"},
-                        "message": {"type": "string", "description": "Message content"}
-                    },
-                    "required": ["channel", "message"]
-                },
-                "category": "communication",
-                "platform": "slack"
-            },
-            # Asana tools
-            {
-                "name": "asana_create_task",
-                "description": "Create a new task in Asana",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string", "description": "Task name"},
-                        "notes": {"type": "string", "description": "Task description"},
-                        "priority": {"type": "string", "enum": ["low", "normal", "high"], "description": "Task priority"}
-                    },
-                    "required": ["name"]
-                },
-                "category": "productivity",
-                "platform": "asana"
-            },
-            # GA4 tools
-            {
-                "name": "ga4_get_traffic_data",
-                "description": "Get website traffic data from Google Analytics 4",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "date_range": {"type": "string", "description": "Date range (e.g., last_7_days, last_30_days)"},
-                        "metrics": {"type": "array", "items": {"type": "string"}, "description": "Metrics to retrieve"}
-                    },
-                    "required": ["date_range"]
-                },
-                "category": "analytics",
-                "platform": "ga4"
-            },
-            # HubSpot tools
-            {
-                "name": "hubspot_contact_create",
-                "description": "Create a new contact in HubSpot",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "email": {"type": "string", "description": "Contact email"},
-                        "first_name": {"type": "string", "description": "First name"},
-                        "last_name": {"type": "string", "description": "Last name"}
-                    },
-                    "required": ["email"]
-                },
-                "category": "crm",
-                "platform": "hubspot"
-            }
-        ]
+        # Add all platform tools from the Platform Registry
+        # This ensures new specialized tools (HR, Logistics, etc.) are available for design
+        platform_tools = platform_registry.get_all_tools()
         
-        tools.extend(platform_tools)
+        # Add category and platform info if missing
+        formatted_platform_tools = []
+        for tool in platform_tools:
+            formatted_tool = {
+                "name": tool["name"],
+                "description": tool["description"],
+                "inputSchema": tool.get("inputSchema", tool.get("input_schema", {})),
+                "category": tool.get("category", "automation"),
+                "platform": tool.get("platform", "regional_hub")
+            }
+            formatted_platform_tools.append(formatted_tool)
+            
+        tools.extend(formatted_platform_tools)
         return tools
 
     async def get_tool_descriptions(self, user_id: int = None, db: AsyncSession = None) -> str:

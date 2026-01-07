@@ -212,6 +212,7 @@ async def build_system_prompt() -> str:
     - **file_management**: Upload, download, generate PDFs
     - **web_tools**: Web scraping and automation
     - **content_creation**: Generate images and content
+    - **mpesa_payment_reconciliation**: Query M-Pesa payments, get payment summaries, view unmatched payments. Use this when users ask about payments, payment summaries, "show today's payments", "get unmatched payments", or any M-Pesa payment queries.
 
     ## RESPONSE STYLE:
     - Be concise and clear
@@ -229,14 +230,43 @@ async def relevant_tools(available_tools: List[Dict[str, Any]],
     relevant_tools = []
     user_request = data.content.lower()
 
-    # Intent detection for Slack actions
-    if any(word in user_request for word in ["create channel", "new channel",
-                                             "make channel", "list channels",
-                                             "get members", "list members", "list channel members", "invite users",
-                                             "archive channel", "set topic",
-                                             "set purpose", "list users"]):
+    # Intent detection for M-Pesa Payments - CHECK FIRST (highest priority for payment queries)
+    # Check for payment-specific phrases first
+    payment_phrases = [
+        "today's payments", "todays payments", "show today", "today payments",
+        "payment summary", "unmatched payments", "payment reconciliation",
+        "show payments", "get payments", "list payments", "payment status",
+        "payment details", "mpesa payment", "m-pesa payment"
+    ]
+    
+    if any(phrase in user_request for phrase in payment_phrases) or \
+       any(word in user_request for word in ["mpesa", "m-pesa", "reconcile", "transaction"]):
         relevant_tools = [tool for tool in available_tools
-                          if tool['name'] == "slack_team_management"]
+                          if tool['name'] == "mpesa_payment_reconciliation"]
+        if relevant_tools:
+            return relevant_tools
+    
+    # Check for payment-related words (but only if not already matched)
+    if any(word in user_request for word in ["payment", "payments"]) and "slack" not in user_request:
+        # Only match if it's clearly about payments, not Slack payments
+        relevant_tools = [tool for tool in available_tools
+                          if tool['name'] == "mpesa_payment_reconciliation"]
+        if relevant_tools:
+            return relevant_tools
+
+    # Intent detection for Slack actions (only if not payment-related)
+    if "payment" not in user_request and "mpesa" not in user_request:
+        if any(word in user_request for word in ["create channel", "new channel",
+                                                 "make channel", "list channels",
+                                                 "get members", "list members", "list channel members", "invite users",
+                                                 "archive channel", "set topic",
+                                                 "set purpose", "list users"]):
+            # Only match if explicitly about Slack channels/members/users
+            if "slack" in user_request or "channel" in user_request or "member" in user_request:
+                relevant_tools = [tool for tool in available_tools
+                                  if tool['name'] == "slack_team_management"]
+                if relevant_tools:
+                    return relevant_tools
     elif any(word in user_request for word in ["send message", "send to",
                                                "message to", "post message",
                                                "send report", "send alert",
@@ -731,6 +761,19 @@ async def execute_function_calling_loop(
     
     # Get available tools in OpenAI format
     available_tools = await dynamic_tool_registry.get_tools_for_llm(user.id, db)
+    
+    # Check if this is a payment query and filter tools accordingly
+    user_message_lower = user_message.lower()
+    is_payment_query = any(phrase in user_message_lower for phrase in [
+        "payment", "payments", "mpesa", "m-pesa", "today's payments", "todays payments",
+        "show today", "payment summary", "unmatched", "reconcile", "transaction"
+    ])
+    
+    # If it's a payment query, ONLY include the M-Pesa tool
+    if is_payment_query:
+        available_tools = [tool for tool in available_tools if tool['name'] == 'mpesa_payment_reconciliation']
+        print(f"🔒 Payment query detected - filtering to only M-Pesa tool: {len(available_tools)} tools")
+    
     openai_tools = dynamic_tool_registry.convert_tools_to_openai_format(available_tools)
     
     # Get conversation context
@@ -738,6 +781,17 @@ async def execute_function_calling_loop(
     
     # Prepare initial messages for LLM
     messages = []
+    
+    # Add system prompt for payment queries
+    if is_payment_query:
+        system_prompt = """You are a helpful AI assistant. The user is asking about M-Pesa payments.
+
+You MUST use the "mpesa_payment_reconciliation" tool to respond to payment queries.
+- "Show today's payments" → use operation="get_summary", days=1
+- "Get unmatched payments" → use operation="get_unmatched"
+- "Payment summary" → use operation="get_summary", days=1 (for today) or days=7 (for week)"""
+        messages.append({"role": "system", "content": system_prompt})
+    
     for msg in context_messages:
         if msg.role == MessageRole.USER:
             messages.append({"role": "user", "content": msg.content})

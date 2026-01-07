@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
-from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Numeric
+from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Numeric, Float
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
@@ -671,6 +671,47 @@ class ActivityFeedItem(Base):
     user = relationship("User", foreign_keys=[user_id])
     actor = relationship("User", foreign_keys=[actor_id])
     workflow = relationship("Workflow")
+
+
+class MpesaPayment(Base):
+    """M-Pesa payment record for business reconciliation."""
+    __tablename__ = "mpesa_payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    transaction_id = Column(String, unique=True, nullable=False, index=True)
+    amount = Column(Numeric(10, 2), nullable=False)
+    phone_number = Column(String(20), nullable=False)
+    reference = Column(String, nullable=True)
+    description = Column(Text, nullable=True)
+    transaction_time = Column(DateTime(timezone=True), nullable=False, index=True)
+    status = Column(String, nullable=False, default="pending", index=True)  # pending, matched, unmatched, verified
+    matched_invoice_id = Column(Integer, nullable=True)
+    match_confidence = Column(Float, nullable=True)
+    channel = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    user = relationship("User", backref="mpesa_payments")
+
+
+class MpesaAgentConfig(Base):
+    """M-Pesa agent configuration per user."""
+    __tablename__ = "mpesa_agent_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    alert_channel_id = Column(String, nullable=True)
+    alert_enabled = Column(Boolean, default=True, nullable=False)
+    auto_match_enabled = Column(Boolean, default=True, nullable=False)
+    match_threshold = Column(Float, default=0.8, nullable=False)
+    notification_preferences = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    user = relationship("User", backref="mpesa_agent_config")
 
 
 class Task(BaseModel):

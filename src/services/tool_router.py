@@ -124,6 +124,19 @@ class PrecisionToolRouter:
     def _exact_command_match(self, user_input: str, tools: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """Match predefined exact commands for all available tools"""
         command_map = {
+            # M-Pesa Payment Tools - HIGHEST PRIORITY (check first)
+            r'show.*today.*payment': 'mpesa_payment_reconciliation',
+            r'today.*payment': 'mpesa_payment_reconciliation',
+            r'show.*payment': 'mpesa_payment_reconciliation',
+            r'get.*payment': 'mpesa_payment_reconciliation',
+            r'list.*payment': 'mpesa_payment_reconciliation',
+            r'payment.*summary': 'mpesa_payment_reconciliation',
+            r'payment.*reconcile': 'mpesa_payment_reconciliation',
+            r'unmatched.*payment': 'mpesa_payment_reconciliation',
+            r'(mpesa|m-pesa).*payment': 'mpesa_payment_reconciliation',
+            r'(mpesa|m-pesa).*summary': 'mpesa_payment_reconciliation',
+            r'(mpesa|m-pesa).*reconcile': 'mpesa_payment_reconciliation',
+            
             # Slack Tools
             r'(send|post).*slack': 'slack_send_message',
             r'create.*slack.*channel': 'slack_create_channel',
@@ -332,8 +345,11 @@ class PrecisionToolRouter:
         # Sort patterns by specificity (longer patterns first) to ensure more specific matches
         sorted_patterns = sorted(command_map.items(), key=lambda x: len(x[0]), reverse=True)
         
+        # Make matching case-insensitive
+        user_input_lower = user_input.lower()
+        
         for pattern, tool_name in sorted_patterns:
-            if re.search(pattern, user_input):
+            if re.search(pattern, user_input_lower, re.IGNORECASE):
                 print(f"   ✅ Pattern '{pattern}' matched for tool '{tool_name}'")
                 tool = next((t for t in tools if t['name'] == tool_name), None)
                 if tool:

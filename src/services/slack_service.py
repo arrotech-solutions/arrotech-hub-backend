@@ -128,9 +128,10 @@ class SlackService:
             response = self.client.chat_postMessage(**message_data)
 
             return {
-                "success": True,
-                "message_ts": response["ts"],
-                "channel": channel
+                "success": response["ok"],
+                "message_ts": response.get("ts"),
+                "channel": channel,
+                "error": response.get("error") if not response["ok"] else None
             }
 
         except Exception as e:
@@ -141,7 +142,8 @@ class SlackService:
             }
 
     async def send_report(self, channel: str, report_type: str,
-                          date_range: Optional[str] = None) -> Dict[str, Any]:
+                          date_range: Optional[str] = None,
+                          message: Optional[str] = None) -> Dict[str, Any]:
         """Send a campaign report to Slack."""
         if not self.client:
             raise Exception("Slack client not initialized")
@@ -154,21 +156,31 @@ class SlackService:
                 blocks = await self._generate_traffic_report_blocks(date_range)
             elif report_type == "conversion_report":
                 blocks = await self._generate_conversion_report_blocks(date_range)
+            elif report_type == "finance":
+                # Finance report uses the custom message
+                blocks = [
+                    HeaderBlock(text="💰 Finance Report"),
+                    DividerBlock(),
+                    SectionBlock(text=message or "No finance data available.")
+                ]
+                if date_range:
+                    blocks.append(ContextBlock(elements=[{"type": "mrkdwn", "text": f"Period: {date_range}"}]))
             else:
                 raise ValueError(f"Unknown report type: {report_type}")
 
             # Send report
             response = self.client.chat_postMessage(
                 channel=channel,
-                text=f"📊 {report_type.replace('_', ' ').title()} Report",
+                text=message or f"📊 {report_type.replace('_', ' ').title()} Report",
                 blocks=blocks
             )
 
             return {
-                "success": True,
-                "message_ts": response["ts"],
+                "success": response["ok"],
+                "message_ts": response.get("ts"),
                 "channel": channel,
-                "report_type": report_type
+                "report_type": report_type,
+                "error": response.get("error") if not response["ok"] else None
             }
 
         except Exception as e:
@@ -311,10 +323,11 @@ class SlackService:
             )
 
             return {
-                "success": True,
-                "message_ts": response["ts"],
+                "success": response["ok"],
+                "message_ts": response.get("ts"),
                 "channel": channel,
-                "alert_type": "general"
+                "alert_type": "general",
+                "error": response.get("error") if not response["ok"] else None
             }
 
         except Exception as e:
@@ -360,11 +373,12 @@ class SlackService:
             )
 
             return {
-                "success": True,
-                "message_ts": response["ts"],
+                "success": response["ok"],
+                "message_ts": response.get("ts"),
                 "channel": channel,
                 "scheduled_time": schedule_time,
-                "note": "Message sent immediately (scheduling not fully implemented)"
+                "note": "Message sent immediately (scheduling not fully implemented)",
+                "error": response.get("error") if not response["ok"] else None
             }
 
         except Exception as e:
