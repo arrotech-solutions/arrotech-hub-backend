@@ -46,6 +46,26 @@ async def test_delete_connection(
 
 
 @pytest.mark.asyncio
+async def test_update_connection(
+    client: AsyncClient, auth_headers, test_connection
+):
+    """Test updating a connection."""
+    response = await client.put(
+        f"/connections/{test_connection.id}",
+        headers=auth_headers,
+        json={
+            "name": "Updated Name",
+            "status": "active",
+            "config": test_connection.config
+        }
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert data["data"]["name"] == "Updated Name"
+
+
+@pytest.mark.asyncio
 async def test_get_platforms(client: AsyncClient, auth_headers):
     """Test getting available platforms."""
     response = await client.get(

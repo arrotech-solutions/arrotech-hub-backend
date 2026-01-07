@@ -414,68 +414,37 @@ async def execute_workflow(
 ):
     """Execute a workflow with input data."""
     try:
-        # Mock workflow execution response to demonstrate the full automation flow
-        # This simulates the GA4 → Asana → Slack workflow execution
+        workflow_service = WorkflowBuilderService()
+        execution = await workflow_service.execute_workflow(
+            workflow_id, user.id, db, data.input_data
+        )
         
-        mock_execution_data = {
-            "id": 1,
-            "workflow_id": workflow_id,
-            "status": "completed",
-            "trigger_type": "manual",
-            "trigger_data": {},
-            "input_data": data.input_data,
-            "output_data": {
-                "step_1": {
-                    "success": True,
-                    "data": {
-                        "sessions": 847,  # Below 1000 threshold
-                        "users": 623,
-                        "page_views": 2156,
-                        "date_range": "2024-01-08 to 2024-01-15"
-                    },
-                    "execution_time": "2.3 seconds"
-                },
-                "step_2": {
-                    "success": True,
-                    "condition_met": True,
-                    "reason": "847 sessions < 1000 threshold",
-                    "data": {
-                        "task_id": "1207893456789",
-                        "task_name": "SEO Optimization Required - Low Traffic Alert",
-                        "task_url": "https://app.asana.com/0/project/1207893456789",
-                        "priority": "high",
-                        "assignee": "Marketing Team"
-                    },
-                    "execution_time": "1.8 seconds"
-                },
-                "step_3": {
-                    "success": True,
-                    "condition_met": False,
-                    "reason": "847 sessions not > 5000 threshold",
-                    "status": "skipped"
-                },
-                "step_4": {
-                    "success": True,
-                    "data": {
-                        "channel": "#marketing",
-                        "message_id": "1705156789.123456",
-                        "message": "📊 **Weekly Performance Report**\n\n🔢 Sessions: 847\n👥 Users: 623\n📄 Page Views: 2156\n\n⚠️ Action needed - check Asana for tasks",
-                        "recipients": ["@marketing-team"]
-                    },
-                    "execution_time": "0.8 seconds"
-                }
-            },
-            "error_message": None,
-            "started_at": "2024-01-15T14:30:00Z",
-            "completed_at": "2024-01-15T14:30:05Z",
-            "created_at": "2024-01-15T14:30:00Z"
+        # Format response data
+        execution_data = {
+            "id": execution.id,
+            "workflow_id": execution.workflow_id,
+            "status": execution.status,
+            "trigger_type": execution.trigger_type,
+            "trigger_data": execution.trigger_data,
+            "input_data": execution.input_data,
+            "output_data": execution.output_data,
+            "error_message": execution.error_message,
+            "started_at": execution.started_at.isoformat() if execution.started_at else None,
+            "completed_at": execution.completed_at.isoformat() if execution.completed_at else None,
+            "created_at": execution.created_at.isoformat()
         }
         
         return {
             "success": True,
-            "data": mock_execution_data
+            "data": execution_data
         }
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
     except Exception as e:
+        logger.error(f"Error executing workflow {workflow_id}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to execute workflow: {str(e)}"

@@ -17,6 +17,7 @@ from .content_creation_service import ContentCreationService
 from .file_management_service import FileManagementService
 from .ga4_service import GA4Service
 from .hubspot_service import HubSpotService
+from .mpesa_reconciliation_service import MpesaReconciliationService
 from .powerbi_service import PowerBIService
 from .salesforce_service import SalesforceService
 from .slack_service import SlackService
@@ -25,6 +26,10 @@ from .teams_service import TeamsService
 from .web_tools_service import WebToolsService
 from .whatsapp_service import WhatsAppService
 from .zoom_service import ZoomService
+from .hr_service import HRService
+from .lead_intelligence_service import LeadIntelligenceService
+from .logistics_service import LogisticsService
+from .bilingual_service import BilingualService
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +52,11 @@ class ToolExecutor:
             "web_tools": WebToolsService(),
             "content_creation": ContentCreationService(),
             "asana": AsanaService(),
+            "mpesa": MpesaReconciliationService(),
+            "hr_hub": HRService(),
+            "lead_intelligence": LeadIntelligenceService(),
+            "logistics_hub": LogisticsService(),
+            "context_intelligence": BilingualService(),
         }
         # Initialize services
         self._initialized = False
@@ -111,6 +121,16 @@ class ToolExecutor:
                 return await self._execute_web_tools_tool(arguments, user, db)
             elif tool_name == "content_creation":
                 return await self._execute_content_creation_tool(arguments, user, db)
+            elif tool_name == "mpesa_payment_reconciliation":
+                return await self._execute_mpesa_tool(arguments, user, db)
+            elif tool_name.startswith("hr_"):
+                return await self._execute_hr_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("lead_intelligence_"):
+                return await self._execute_lead_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("logistics_"):
+                return await self._execute_logistics_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("context_"):
+                return await self._execute_context_tool(tool_name, arguments, user, db)
             else:
                 return {
                     "success": False,
@@ -134,6 +154,10 @@ class ToolExecutor:
         db: AsyncSession
     ) -> Dict[str, Any]:
         """Execute Slack-related tools."""
+        # Helper to check if a string looks like a Slack ID
+        def is_slack_id(c: str) -> bool:
+            return bool(c and len(c) >= 9 and c[0].isupper() and c[0] in "CUDGW")
+
         # Get user's Slack connection
         result = await db.execute(
             select(Connection)
@@ -173,8 +197,11 @@ class ToolExecutor:
             message = arguments.get("message", "")
             file_path = arguments.get("file_path") # Get the file_path from arguments
 
-            # Ensure channel has # prefix
-            if channel and not channel.startswith("#"):
+            # Ensure channel has # prefix if it's not already prefixed and doesn't look like a Slack ID
+            def is_slack_id(c):
+                return bool(c and len(c) >= 9 and c[0].isupper() and c[0] in "CUDGW")
+
+            if channel and not channel.startswith("#") and not is_slack_id(channel):
                 channel = f"#{channel}"
 
             if action == "send_message":
@@ -203,11 +230,11 @@ class ToolExecutor:
                         channel, message
                     )
                     return {
-                        "success": True,
-                        "result": f"Message sent to {channel}: {message}",
+                        "success": result.get("success", False),
+                        "result": result.get("message") or result.get("error") or f"Message sent to {channel}",
                         "data": result,
                         "processed_arguments": {
-                            "channel": channel,  # This will have the # prefix
+                            "channel": channel,
                             "message": message
                         }
                     }
@@ -216,11 +243,12 @@ class ToolExecutor:
                 result = await slack_service.send_report(
                     channel=channel,
                     report_type=report_type,
-                    date_range=arguments.get("date_range")
+                    date_range=arguments.get("date_range"),
+                    message=arguments.get("message")
                 )
                 return {
-                    "success": True,
-                    "result": f"Report sent to {channel}: {report_type}",
+                    "success": result.get("success", False),
+                    "result": result.get("message") or result.get("error") or f"Report sent to {channel}",
                     "data": result,
                     "processed_arguments": {
                         "channel": channel,
@@ -238,6 +266,18 @@ class ToolExecutor:
                         "channel": channel
                     }
                 }
+            elif action == "send_alert":
+                print(f"🚨 Sending alert to Slack channel {channel}: {message}")
+                result = await slack_service.send_alert(channel, message)
+                return {
+                    "success": result.get("success", False),
+                    "result": result.get("message") or result.get("error") or f"Alert sent to {channel}",
+                    "data": result,
+                    "processed_arguments": {
+                        "channel": channel,
+                        "message": message
+                    }
+                }
             else:
                 return {
                     "success": False,
@@ -252,8 +292,8 @@ class ToolExecutor:
             if operation == "list_channels":
                 channels = await slack_service.list_channels()
                 return {
-                    "success": True,
-                    "result": f"Found {len(channels)} channels",
+                    "success": channels.get("success", False),
+                    "result": f"Found {len(channels.get('channels', []))} channels",
                     "data": channels
                 }
         
@@ -261,7 +301,7 @@ class ToolExecutor:
             print(f"📋 Listing Slack channels for user {user.id}")
             result = await slack_service.list_channels()
             return {
-                "success": True,
+                "success": result.get("success", False),
                 "result": f"Retrieved {len(result.get('channels', []))} Slack channels",
                 "data": result,
                 "processed_arguments": {}
@@ -271,15 +311,15 @@ class ToolExecutor:
             channel = arguments.get("channel", "")
             message = arguments.get("message", "")
             
-            # Ensure channel has # prefix
-            if channel and not channel.startswith("#"):
+            # Ensure channel has # prefix if it's not an ID
+            if channel and not channel.startswith("#") and not is_slack_id(channel):
                 channel = f"#{channel}"
             
             print(f"💬 Sending message to Slack channel {channel}: {message}")
             result = await slack_service.send_message(channel, message)
             return {
-                "success": True,
-                "result": f"Message sent to {channel}: {message}",
+                "success": result.get("success", False),
+                "result": result.get("message") or f"Message sent to {channel}",
                 "data": result,
                 "processed_arguments": {
                     "channel": channel,
@@ -292,7 +332,7 @@ class ToolExecutor:
             print(f"👥 Getting members for Slack channel {channel_name}")
             result = await slack_service.get_channel_members(channel_name)
             return {
-                "success": True,
+                "success": result.get("success", False),
                 "result": f"Retrieved members for channel {channel_name}",
                 "data": result,
                 "processed_arguments": {
@@ -305,7 +345,7 @@ class ToolExecutor:
             print(f"➕ Creating new Slack channel {channel_name}")
             result = await slack_service.create_channel(channel_name)
             return {
-                "success": True,
+                "success": result.get("success", False),
                 "result": f"Created new Slack channel: {channel_name}",
                 "data": result,
                 "processed_arguments": {
@@ -415,7 +455,7 @@ class ToolExecutor:
 
                 result = await slack_service.get_user_info(user_id, user_name)
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": "User information retrieved",
                     "data": result
                 }
@@ -424,7 +464,7 @@ class ToolExecutor:
 
                 result = await slack_service.list_users(include_bots)
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"Found {result.get('total_users', 0)} users",
                     "data": result
                 }
@@ -451,7 +491,7 @@ class ToolExecutor:
 
                 result = await slack_service.pin_message(channel, timestamp)
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": "Message pinned successfully",
                     "data": result
                 }
@@ -467,7 +507,7 @@ class ToolExecutor:
 
                 result = await slack_service.get_pinned_messages(channel)
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"Found {result.get('total_pinned', 0)} pinned items",
                     "data": result
                 }
@@ -496,14 +536,14 @@ class ToolExecutor:
 
                 result = await slack_service.execute_command(command, channel, user_id, args)
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"Command '{command}' executed successfully",
                     "data": result
                 }
             elif action == "list_commands":
                 result = await slack_service.list_commands()
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"Found {result.get('total_commands', 0)} commands",
                     "data": result
                 }
@@ -525,7 +565,7 @@ class ToolExecutor:
             if action == "list_files":
                 result = await slack_service.list_files(channel)
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"Found {result.get('total_files', 0)} files",
                     "data": result
                 }
@@ -539,7 +579,7 @@ class ToolExecutor:
 
                 result = await slack_service.get_file_info(file_id)
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"File information retrieved",
                     "data": result
                 }
@@ -573,7 +613,7 @@ class ToolExecutor:
             if action == "get_shared_links":
                 result = await slack_service.get_shared_links(channel, date_range)
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"Found {result.get('total_links', 0)} shared links",
                     "data": result
                 }
@@ -593,7 +633,7 @@ class ToolExecutor:
             if action == "list_workflows":
                 result = await slack_service.list_workflows()
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"Found {result.get('total_workflows', 0)} workflows",
                     "data": result
                 }
@@ -607,7 +647,7 @@ class ToolExecutor:
 
                 result = await slack_service.execute_workflow(workflow_id, inputs)
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"Workflow '{workflow_id}' executed successfully",
                     "data": result
                 }
@@ -635,7 +675,7 @@ class ToolExecutor:
 
                 result = await slack_service.send_webhook(webhook_url, message, channel, blocks)
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"Webhook message sent successfully",
                     "data": result
                 }
@@ -662,7 +702,7 @@ class ToolExecutor:
 
                 result = await slack_service.get_user_info(user_id)
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"User profile retrieved",
                     "data": result
                 }
@@ -676,7 +716,7 @@ class ToolExecutor:
 
                 result = await slack_service.update_user_profile(user_id, profile_data)
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"User profile updated successfully",
                     "data": result
                 }
@@ -690,7 +730,7 @@ class ToolExecutor:
 
                 result = await slack_service.get_user_by_email(user_email)
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"User found by email",
                     "data": result
                 }
@@ -733,7 +773,7 @@ class ToolExecutor:
 
                 result = await slack_service.remove_reaction(channel, timestamp, emoji)
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"Reaction {emoji} removed from message",
                     "data": result
                 }
@@ -747,7 +787,7 @@ class ToolExecutor:
 
                 result = await slack_service.set_reminder(user_id, reminder_text, reminder_time)
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"Reminder set successfully",
                     "data": result
                 }
@@ -768,7 +808,7 @@ class ToolExecutor:
             if action == "list_user_groups":
                 result = await slack_service.list_user_groups()
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"Found {result.get('total_groups', 0)} user groups",
                     "data": result
                 }
@@ -782,7 +822,7 @@ class ToolExecutor:
 
                 result = await slack_service.create_user_group(group_name, group_handle, user_ids, description)
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"User group '{group_name}' created successfully",
                     "data": result
                 }
@@ -810,7 +850,7 @@ class ToolExecutor:
 
                 result = await slack_service.get_channel_history(channel, limit, oldest, latest)
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"Retrieved {result.get('total_messages', 0)} messages from channel history",
                     "data": result
                 }
@@ -838,7 +878,7 @@ class ToolExecutor:
 
                 result = await slack_service.search_files(query, channel, user, count=count)
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"Found {result.get('total_found', 0)} files",
                     "data": result
                 }
@@ -872,14 +912,14 @@ class ToolExecutor:
             if action == "get_workspace_info":
                 result = await slack_service.get_workspace_info()
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"Workspace information retrieved",
                     "data": result
                 }
             elif action == "get_workspace_analytics":
                 result = await slack_service.get_workspace_analytics()
                 return {
-                    "success": True,
+                    "success": result.get("success", False),
                     "result": f"Workspace analytics retrieved",
                     "data": result
                 }
@@ -3251,6 +3291,272 @@ class ToolExecutor:
                 }
         except Exception as e:
             logger.error(f"Error executing content creation tool: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_mpesa_tool(
+        self,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute M-Pesa payment reconciliation tools."""
+        try:
+            service = MpesaReconciliationService()
+            operation = arguments.get("operation")
+            
+            if operation == "get_summary":
+                # Get payment summary for a period
+                days = arguments.get("days", 1)
+                summary = await service.get_payment_summary(user.id, db, days=days)
+                
+                # Format the summary for display
+                total_amount = float(summary.get("total_amount", 0))
+                formatted_summary = f"""📊 M-Pesa Payment Summary (Last {days} day{'s' if days != 1 else ''})
+
+💰 Total Amount: KES {total_amount:,.2f}
+📈 Total Payments: {summary.get('total_count', 0)}
+✅ Matched: {summary.get('matched_count', 0)}
+⚠️ Unmatched: {summary.get('unmatched_count', 0)}
+⏳ Pending: {summary.get('pending_count', 0)}"""
+                
+                return {
+                    "success": True,
+                    "result": formatted_summary,
+                    "data": summary
+                }
+
+            elif operation == "search_payments":
+                # Alias for get_summary with query/date handling
+                from datetime import datetime, timedelta
+                
+                query = arguments.get("query", "today")
+                days = 1 if "today" in query.lower() else 7
+                
+                # Calculate date range
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=days)
+                
+                summary = await service.get_payment_summary(user.id, start_date, end_date, db)
+                
+                # Format for display
+                total_amount = float(summary.get("total_amount", 0))
+                total_count = int(summary.get("total_count", 0))
+                
+                formatted_summary = f"💰 Daily Summary: KES {total_amount:,.2f} ({total_count} txns)"
+                
+                # Flatten keys for template access {{step_1.total_amount}}
+                response_data = summary.copy()
+                response_data["total_amount"] = total_amount
+                response_data["transaction_count"] = total_count
+                
+                return {
+                    "success": True,
+                    "result": formatted_summary,
+                    "data": response_data,
+                    "total_amount": total_amount, # Top level access
+                    "transaction_count": total_count # Top level access
+                }
+            
+            elif operation == "get_payments":
+                # Get list of payments with filters
+                status = arguments.get("status", "all")
+                limit = arguments.get("limit", 20)
+                
+                from datetime import datetime, timedelta
+                from sqlalchemy import select
+                from ..models import MpesaPayment
+                
+                stmt = select(MpesaPayment).where(
+                    MpesaPayment.user_id == user.id
+                )
+                
+                if status != "all":
+                    stmt = stmt.where(MpesaPayment.status == status)
+                
+                stmt = stmt.order_by(MpesaPayment.transaction_time.desc()).limit(limit)
+                result = await db.execute(stmt)
+                payments = result.scalars().all()
+                
+                if not payments:
+                    return {
+                        "success": True,
+                        "result": "No payments found matching your criteria.",
+                        "data": []
+                    }
+                
+                # Format payments for display
+                payment_list = []
+                for payment in payments:
+                    payment_list.append({
+                        "transaction_id": payment.transaction_id,
+                        "amount": float(payment.amount),
+                        "phone_number": payment.phone_number,
+                        "status": payment.status,
+                        "transaction_time": payment.transaction_time.isoformat(),
+                        "reference": payment.reference
+                    })
+                
+                formatted_result = f"📋 Found {len(payment_list)} payment(s):\n\n"
+                for i, p in enumerate(payment_list[:10], 1):  # Show first 10
+                    formatted_result += f"{i}. {p['transaction_id']} - KES {p['amount']:,.2f} ({p['status']})\n"
+                
+                if len(payment_list) > 10:
+                    formatted_result += f"\n... and {len(payment_list) - 10} more"
+                
+                return {
+                    "success": True,
+                    "result": formatted_result,
+                    "data": payment_list
+                }
+            
+            elif operation == "get_unmatched":
+                # Get unmatched payments
+                limit = arguments.get("limit", 10)
+                payments = await service.get_unmatched_payments(user.id, db, limit=limit)
+                
+                if not payments:
+                    return {
+                        "success": True,
+                        "result": "✅ All payments are matched! No unmatched payments found.",
+                        "data": []
+                    }
+                
+                formatted_result = f"⚠️ Found {len(payments)} unmatched payment(s):\n\n"
+                for i, payment in enumerate(payments[:10], 1):
+                    formatted_result += f"{i}. {payment.transaction_id} - KES {float(payment.amount):,.2f} ({payment.phone_number})\n"
+                
+                return {
+                    "success": True,
+                    "result": formatted_result,
+                    "data": [{
+                        "transaction_id": p.transaction_id,
+                        "amount": float(p.amount),
+                        "phone_number": p.phone_number,
+                        "transaction_time": p.transaction_time.isoformat()
+                    } for p in payments]
+                }
+            
+            elif operation == "get_payment_by_transaction_id":
+                # Get payment by transaction ID
+                transaction_id = arguments.get("transaction_id")
+                if not transaction_id:
+                    return {
+                        "success": False,
+                        "error": "transaction_id is required"
+                    }
+                
+                payment = await service.get_payment_by_transaction_id(user.id, db, transaction_id)
+                
+                if not payment:
+                    return {
+                        "success": True,
+                        "result": f"Payment with transaction ID '{transaction_id}' not found.",
+                        "data": None
+                    }
+                
+                formatted_result = f"""💳 Payment Details:
+
+Transaction ID: {payment.transaction_id}
+Amount: KES {float(payment.amount):,.2f}
+Phone Number: {payment.phone_number}
+Status: {payment.status}
+Date: {payment.transaction_time.strftime('%Y-%m-%d %H:%M:%S')}
+Reference: {payment.reference or 'N/A'}
+Description: {payment.description or 'N/A'}"""
+                
+                return {
+                    "success": True,
+                    "result": formatted_result,
+                    "data": {
+                        "transaction_id": payment.transaction_id,
+                        "amount": float(payment.amount),
+                        "phone_number": payment.phone_number,
+                        "status": payment.status,
+                        "transaction_time": payment.transaction_time.isoformat(),
+                        "reference": payment.reference,
+                        "description": payment.description
+                    }
+                }
+            
+                
+        except Exception as e:
+            logger.error(f"Error executing M-Pesa tool: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def _execute_hr_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute HR Hub related tools."""
+        try:
+            service = self.services["hr_hub"]
+            if tool_name == "hr_leave_management":
+                operation = arguments.get("operation")
+                if operation == "get_balance":
+                    return await service.get_leave_balance(user.id, arguments.get("employee_id", "me"))
+                elif operation == "apply_leave":
+                    return await service.apply_leave(user.id, arguments)
+                elif operation == "get_requests":
+                    return {"success": True, "requests": await service.get_pending_requests(user.id)}
+            elif tool_name == "hr_policy_lookup":
+                return await service.search_policies(arguments.get("query", ""), language=arguments.get("language", "english"))
+            
+            return {"success": False, "error": f"Unknown HR tool/operation: {tool_name}"}
+        except Exception as e:
+            logger.error(f"Error in HR tool: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_lead_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute Lead Intelligence related tools."""
+        try:
+            service = self.services["lead_intelligence"]
+            if tool_name == "lead_intelligence_qualification":
+                operation = arguments.get("operation")
+                if operation == "score_lead":
+                    return await service.score_lead(arguments.get("lead_data", {}))
+                elif operation == "extract_info":
+                    return await service.extract_lead_info(arguments.get("text", ""))
+            elif tool_name == "lead_intelligence_followup":
+                return await service.draft_followup(arguments.get("lead_id", ""), tone=arguments.get("tone", "professional"))
+            
+            return {"success": False, "error": f"Unknown Lead tool: {tool_name}"}
+        except Exception as e:
+            logger.error(f"Error in Lead tool: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_logistics_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute Logistics Hub related tools."""
+        try:
+            service = self.services["logistics_hub"]
+            if tool_name == "logistics_tracking":
+                return await service.get_tracking_status(arguments.get("tracking_number", ""), provider=arguments.get("provider", "automatic"))
+            elif tool_name == "logistics_delivery":
+                return await service.create_delivery_request(arguments)
+            
+            return {"success": False, "error": f"Unknown Logistics tool: {tool_name}"}
+        except Exception as e:
+            logger.error(f"Error in Logistics tool: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_context_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute Context & Bilingual related tools."""
+        try:
+            service = self.services["context_intelligence"]
+            if tool_name == "context_translation":
+                return await service.translate(arguments.get("text", ""), target_lang=arguments.get("target_lang", "swahili"))
+            elif tool_name == "context_verification":
+                operation = arguments.get("operation")
+                pin = arguments.get("pin", "")
+                if operation == "verify_pin":
+                    return await service.verify_kra_pin(pin)
+                elif operation == "check_compliance":
+                    return await service.check_itax_compliance(pin)
+            elif tool_name == "context_sentiment":
+                return await service.analyze_sentiment_bilingual(arguments.get("text", ""))
+            
+            return {"success": False, "error": f"Unknown Context tool: {tool_name}"}
+        except Exception as e:
+            logger.error(f"Error in Context tool: {e}")
             return {"success": False, "error": str(e)}
 
 

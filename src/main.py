@@ -18,8 +18,8 @@ from .config import settings
 from .database import init_db
 from .routers import (agent_router, analytics_router, api_router, auth_router, chat_router,
                       connection_router, creator_router, favorites_router, marketplace_router, 
-                      mcp_router, notification_router, payment_router, preferences_router,
-                      settings_router, templates_router, workflow_router)
+                      mcp_router, mpesa_agent_router, notification_router, payment_router, preferences_router,
+                      settings_router, slack_agent_router, templates_router, workflow_router)
 from .services import (BillingService, ContentCreationService,
                        FileManagementService, GA4Service, HubSpotService,
                        RateLimitService, SlackService, SocialMediaService,
@@ -106,6 +106,8 @@ app.include_router(settings_router, prefix="/settings", tags=["settings"])
 app.include_router(chat_router, prefix="/chat", tags=["chat"])
 app.include_router(workflow_router, prefix="/workflows", tags=["workflows"])
 app.include_router(agent_router, prefix="/agents", tags=["agents"])
+app.include_router(mpesa_agent_router)  # Already has /api/agents/mpesa prefix
+app.include_router(slack_agent_router)  # Already has /api/slack prefix
 app.include_router(marketplace_router, tags=["marketplace"])  # Already has /marketplace prefix
 app.include_router(creator_router, tags=["creators"])  # Already has /creators prefix
 app.include_router(analytics_router, tags=["analytics"])  # Already has /analytics prefix

@@ -26,6 +26,9 @@ class BaseConfig(BaseSettings):
     GA4_PROPERTY_ID: Optional[str] = None
     GA4_CREDENTIALS_FILE: Optional[str] = None
     SLACK_BOT_TOKEN: Optional[str] = None
+    SLACK_SIGNING_SECRET: Optional[str] = None
+    SLACK_CLIENT_ID: Optional[str] = None
+    SLACK_CLIENT_SECRET: Optional[str] = None
     TEAMS_WEBHOOK_URL: Optional[str] = None
     TEAMS_ACCESS_TOKEN: Optional[str] = None
     TEAMS_TENANT_ID: Optional[str] = None
