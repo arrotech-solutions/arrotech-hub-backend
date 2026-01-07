@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
-from ..models import User, Workflow
+from ..models import User, Workflow, WorkflowStep, WorkflowStatus, WorkflowTriggerType
 from ..routers.auth_router import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -459,6 +459,358 @@ WORKFLOW_TEMPLATES = [
         "variables": {
             "blog_url": {"type": "string", "required": True, "format": "url"}
         }
+    },
+    {
+        "id": "mpesa-verification",
+        "name": "M-Pesa Payment Reconciliation",
+        "description": "Automatically verify M-Pesa payments and update deal status",
+        "category": "Finance",
+        "icon": "💸",
+        "difficulty": "beginner",
+        "estimated_time": "5 mins",
+        "tags": ["mpesa", "payments", "reconciliation", "verification"],
+        "required_connections": ["mpesa", "hubspot"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "mpesa_payment_reconciliation",
+                "tool_parameters": {
+                    "operation": "search_payments",
+                    "query": "{{input.transaction_id}}"
+                },
+                "description": "Verify payment on M-Pesa"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "hubspot_update_contact",
+                "tool_parameters": {
+                    "contact_id": "{{input.contact_id}}",
+                    "properties": {
+                        "payment_status": "verified",
+                        "last_mpesa_transaction": "{{step_1.data[0].transaction_id}}"
+                    }
+                },
+                "description": "Update payment status in CRM",
+                "condition": {"if": "step_1.success == True and len(step_1.data) > 0"}
+            }
+        ],
+        "variables": {
+            "transaction_id": {"type": "string", "required": True, "description": "M-Pesa Transaction ID (e.g., RK92...) "},
+            "contact_id": {"type": "string", "required": True}
+        }
+    },
+    {
+        "id": "tax-id-verification",
+        "name": "Tax ID & Compliance Verification",
+        "description": "Instantly verify Tax ID validity and compliance status",
+        "category": "Finance",
+        "icon": "🛡️",
+        "difficulty": "beginner",
+        "estimated_time": "3 mins",
+        "tags": ["tax", "compliance", "verification"],
+        "required_connections": ["context_intelligence"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "context_verification",
+                "tool_parameters": {
+                    "operation": "verify_pin",
+                    "pin": "{{input.tax_id}}"
+                },
+                "description": "Verify Tax ID validity"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "context_verification",
+                "tool_parameters": {
+                    "operation": "check_compliance",
+                    "pin": "{{input.tax_id}}"
+                },
+                "description": "Check compliance status"
+            }
+        ],
+        "variables": {
+            "tax_id": {"type": "string", "required": True, "description": "Business Tax ID (e.g. KRA PIN)"}
+        }
+    },
+    {
+        "id": "hr-leave-advisor",
+        "name": "HR & Leave Advisor",
+        "description": "Bilingual leave management and policy search for regional employees",
+        "category": "Human Resources",
+        "icon": "⚖️",
+        "difficulty": "beginner",
+        "estimated_time": "5 mins",
+        "tags": ["hr", "policy", "leave", "advisor"],
+        "required_connections": ["hr_hub"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "hr_policy_lookup",
+                "tool_parameters": {
+                    "query": "{{input.question}}",
+                    "language": "{{input.language}}"
+                },
+                "description": "Search company policy in preferred language"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "hr_leave_management",
+                "tool_parameters": {
+                    "operation": "get_balance",
+                    "employee_id": "{{input.employee_id}}"
+                },
+                "description": "Check leave balance",
+                "condition": {"if": "'leave' in input.question.lower() or 'likizo' in input.question.lower()"}
+            }
+        ],
+        "variables": {
+            "question": {"type": "string", "required": True, "description": "Employee question (supports local languages)"},
+            "employee_id": {"type": "string", "default": "me"},
+            "language": {"type": "string", "enum": ["english", "swahili"], "default": "english"}
+        }
+    },
+    {
+        "id": "lead-qualification-pipeline",
+        "name": "Bilingual Lead Qualification",
+        "description": "Qualify leads from any source and draft personalized follow-ups",
+        "category": "Sales",
+        "icon": "⚡",
+        "difficulty": "intermediate",
+        "estimated_time": "12 mins",
+        "tags": ["leads", "sales", "ai", "automation"],
+        "required_connections": ["lead_intelligence", "hubspot"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "lead_intelligence_qualification",
+                "tool_parameters": {
+                    "operation": "extract_info",
+                    "text": "{{input.lead_message}}"
+                },
+                "description": "Extract lead details from message"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "lead_intelligence_qualification",
+                "tool_parameters": {
+                    "operation": "score_lead",
+                    "lead_data": "{{step_1.extracted_data}}"
+                },
+                "description": "Score lead quality"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "lead_intelligence_followup",
+                "tool_parameters": {
+                    "lead_id": "{{step_1.extracted_data.name}}",
+                    "tone": "professional"
+                },
+                "description": "Draft personalized follow-up"
+            }
+        ],
+        "variables": {
+            "lead_message": {"type": "string", "required": True, "description": "Raw lead inquiry (WhatsApp, Email, etc.)"}
+        }
+    },
+    {
+        "id": "logistics-tracking-hub",
+        "name": "Multi-Provider Delivery Tracking",
+        "description": "Track shipments across multiple regional logistics providers automatically",
+        "category": "Operations",
+        "icon": "📦",
+        "difficulty": "beginner",
+        "estimated_time": "5 mins",
+        "tags": ["logistics", "tracking", "shipping"],
+        "required_connections": ["logistics_hub"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "logistics_tracking",
+                "tool_parameters": {
+                    "tracking_number": "{{input.tracking_number}}",
+                    "provider": "automatic"
+                },
+                "description": "Fetch real-time delivery status"
+            }
+        ],
+        "variables": {
+            "tracking_number": {"type": "string", "required": True, "description": "Tracking number (e.g. SN-123, G4-ABC)"}
+        }
+    },
+    {
+        "id": "mpesa-finance-summary",
+        "name": "M-Pesa Daily Financial Summary",
+        "description": "Automate daily M-Pesa collections reporting and Slack alerts for finance teams",
+        "category": "Finance",
+        "icon": "📈",
+        "difficulty": "beginner",
+        "estimated_time": "5 mins",
+        "tags": ["mpesa", "finance", "kenya", "reporting"],
+        "required_connections": ["mpesa", "slack"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "mpesa_payment_reconciliation",
+                "tool_parameters": {
+                    "operation": "search_payments",
+                    "query": "today"
+                },
+                "description": "Fetch today's M-Pesa collections"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "slack_team_communication",
+                "tool_parameters": {
+                    "action": "send_report",
+                    "channel": "{{input.report_channel}}",
+                    "message": "Daily M-Pesa Collections Summary: {{step_1.total_amount}} KES ({{step_1.transaction_count}} transactions)",
+                    "report_type": "finance"
+                },
+                "description": "Post financial summary to Slack"
+            }
+        ],
+        "variables": {
+            "report_channel": {"type": "string", "default": "#finance", "description": "Slack channel for daily reports"}
+        }
+    },
+    {
+        "id": "bilingual-support-triage",
+        "name": "Bilingual Support Triage",
+        "description": "Smart triage system that analyzes sentiment and translates regional inquiries",
+        "category": "Customer Support",
+        "icon": "🌍",
+        "difficulty": "intermediate",
+        "estimated_time": "10 mins",
+        "tags": ["support", "bilingual", "swahili", "triage"],
+        "required_connections": ["context_intelligence", "slack"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "context_sentiment",
+                "tool_parameters": {
+                    "text": "{{input.customer_message}}"
+                },
+                "description": "Analyze customer sentiment"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "context_translation",
+                "tool_parameters": {
+                    "text": "{{input.customer_message}}",
+                    "target_lang": "{{input.target_lang}}"
+                },
+                "description": "Translate to target language for internal routing",
+                "condition": {"if": "input.message_lang != input.target_lang"}
+            },
+            {
+                "step_number": 3,
+                "tool_name": "slack_team_communication",
+                "tool_parameters": {
+                    "action": "send_alert",
+                    "channel": "#customer-service",
+                    "message": "Urgent Support Needed ({{step_1.sentiment}}): {{step_2.translated if input.message_lang != input.target_lang else input.customer_message}}"
+                },
+                "description": "Alert support team on Slack",
+                "condition": {"if": "step_1.sentiment == 'negative' or step_1.sentiment == 'frustrated'"}
+            }
+        ],
+        "variables": {
+            "customer_message": {"type": "string", "required": True},
+            "message_lang": {"type": "string", "enum": ["english", "swahili", "other"], "default": "swahili"},
+            "target_lang": {"type": "string", "default": "english", "description": "Language to translate to (e.g. english, french)"}
+        }
+    },
+    {
+        "id": "operations-standup-hub",
+        "name": "Operations Stand-up Hub",
+        "description": "Centralize daily stand-ups with logistics status and team progress insights",
+        "category": "Operations",
+        "icon": "🏗️",
+        "difficulty": "intermediate",
+        "estimated_time": "15 mins",
+        "tags": ["operations", "logistics", "standup", "kenya"],
+        "required_connections": ["slack", "logistics_hub"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "slack_channel_analytics",
+                "tool_parameters": {
+                    "action": "get_channel_history",
+                    "channel": "{{input.standup_channel}}",
+                    "limit": 50
+                },
+                "description": "Gather daily stand-up updates from Slack"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "logistics_tracking",
+                "tool_parameters": {
+                    "tracking_number": "all_active",
+                    "provider": "automatic"
+                },
+                "description": "Check status of active shipments"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "slack_team_communication",
+                "tool_parameters": {
+                    "action": "send_message",
+                    "channel": "{{input.ops_channel}}",
+                    "message": "Operations Sync Hub:\n- Team Status: {{step_1.summary}}\n- Shipments: {{step_2.active_count}} in transit, {{step_2.delayed_count}} delayed"
+                },
+                "description": "Post integrated operations report"
+            }
+        ],
+        "variables": {
+            "standup_channel": {"type": "string", "default": "#daily-standup"},
+            "ops_channel": {"type": "string", "default": "#operations"}
+        }
+    },
+    {
+        "id": "hr-onboarding-advisor",
+        "name": "HR Onboarding Advisor",
+        "description": "Guide new employees through policy lookup and leave balance checks (Bilingual)",
+        "category": "Human Resources",
+        "icon": "🤝",
+        "difficulty": "beginner",
+        "estimated_time": "8 mins",
+        "tags": ["hr", "onboarding", "policy", "leave"],
+        "required_connections": ["hr_hub", "slack"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "hr_policy_lookup",
+                "tool_parameters": {
+                    "query": "onboarding welcome",
+                    "language": "{{input.language}}"
+                },
+                "description": "Fetch welcoming package info"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "hr_leave_management",
+                "tool_parameters": {
+                    "operation": "get_balance",
+                    "employee_id": "{{input.employee_id}}"
+                },
+                "description": "Verify initial leave allocation"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "slack_team_communication",
+                "tool_parameters": {
+                    "action": "send_message",
+                    "channel": "{{input.employee_id}}",
+                    "message": "Karibu! Here is your onboarding guide: {{step_1.policy_content}}\nYour current leave balance is {{step_2.balance}} days."
+                },
+                "description": "DM onboarding details to employee"
+            }
+        ],
+        "variables": {
+            "employee_id": {"type": "string", "required": True, "description": "Slack ID of the new employee"},
+            "language": {"type": "string", "enum": ["english", "swahili"], "default": "swahili"}
+        }
     }
 ]
 
@@ -564,15 +916,14 @@ async def use_template(
             detail="Template not found"
         )
     
-    # Create workflow from template
     workflow = Workflow(
         name=f"{template['name']} (from template)",
         description=template["description"],
         user_id=current_user.id,
-        steps=template["steps"],
+        steps=[WorkflowStep(**step) for step in template["steps"]],
         variables=template.get("variables"),
-        trigger_type="manual",
-        is_active=True,
+        trigger_type=WorkflowTriggerType.MANUAL,
+        status=WorkflowStatus.ACTIVE,
         category=template["category"],
         tags=template.get("tags", []),
     )

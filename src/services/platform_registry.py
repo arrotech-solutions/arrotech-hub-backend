@@ -1364,6 +1364,330 @@ class PlatformRegistry:
             },
             test_function="test_powerbi_connection"
         )
+
+        # M-Pesa Platform
+        mpesa_capabilities = [
+            PlatformCapability(
+                name="Payment Reconciliation",
+                description="Manage and reconcile M-Pesa payments with automated matching and alerts",
+                tool_name="mpesa_payment_reconciliation",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_summary", "search_payments", "get_unmatched", "match_to_invoice"]},
+                        "date_range": {"type": "string", "enum": ["today", "yesterday", "week", "month", "all"], "default": "today"},
+                        "query": {"type": "string"},
+                        "payment_id": {"type": "string"},
+                        "invoice_id": {"type": "string"},
+                        "limit": {"type": "integer", "default": 20}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_summary", "search_payments", "get_unmatched", "match_to_invoice"]
+            ),
+            PlatformCapability(
+                name="Account Management",
+                description="Get M-Pesa account balance and connection status",
+                tool_name="mpesa_account_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_balance", "get_status"]}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_balance", "get_status"]
+            ),
+            PlatformCapability(
+                name="Alert Configuration",
+                description="Manage real-time M-Pesa payment alerts and notifications",
+                tool_name="mpesa_alert_config",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_config", "update_config"]},
+                        "alert_enabled": {"type": "boolean"},
+                        "channel_id": {"type": "string"},
+                        "auto_match_enabled": {"type": "boolean"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_config", "update_config"]
+            )
+        ]
+
+        self.platforms["mpesa"] = Platform(
+            id="mpesa",
+            name="M-Pesa Business",
+            description="Mobile money integration for regional businesses with real-time alerts and reconciliation",
+            icon="mpesa",
+            features=[
+                "Real-time payment alerts",
+                "Automated reconciliation",
+                "Payment matching",
+                "Financial summaries",
+                "Swahili support"
+            ],
+            capabilities=mpesa_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "short_code": {"type": "string", "description": "Paybill or Buy Goods Till Number"},
+                    "consumer_key": {"type": "string", "description": "Daraja API Consumer Key"},
+                    "consumer_secret": {"type": "string", "description": "Daraja API Consumer Secret"},
+                    "pass_key": {"type": "string", "description": "Daraja API Pass Key"}
+                },
+                "required": ["short_code", "consumer_key", "consumer_secret"]
+            },
+            test_function="test_mpesa_connection"
+        )
+
+        # HR Platform
+        hr_capabilities = [
+            PlatformCapability(
+                name="Leave Management",
+                description="Manage employee leave requests, balances, and approvals",
+                tool_name="hr_leave_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_balance", "apply_leave", "get_requests", "approve_rejection"]},
+                        "employee_id": {"type": "string"},
+                        "leave_type": {"type": "string", "enum": ["annual", "sick", "maternity", "paternity", "compassionate", "unpaid"]},
+                        "days": {"type": "integer"},
+                        "start_date": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "request_id": {"type": "string"},
+                        "status": {"type": "string", "enum": ["approved", "rejected"]}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_balance", "apply_leave", "get_requests", "approve_rejection"]
+            ),
+            PlatformCapability(
+                name="Policy Q&A",
+                description="Search and query company policies and HR documents (Bilingual)",
+                tool_name="hr_policy_lookup",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "language": {"type": "string", "enum": ["english", "swahili"], "default": "english"}
+                    },
+                    "required": ["query"]
+                },
+                operations=["search_policies"]
+            )
+        ]
+
+        self.platforms["hr_hub"] = Platform(
+            id="hr_hub",
+            name="HR Hub",
+            description="HR management tailored for regional business policies and labor laws",
+            icon="users",
+            features=[
+                "Leave tracking",
+                "Policy search",
+                "Bilingual support",
+                "Manager approvals",
+                "Law compliance"
+            ],
+            capabilities=hr_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "company_id": {"type": "string", "description": "Internal Company ID"},
+                    "manager_channel": {"type": "string", "description": "Slack channel for leave approvals"}
+                },
+                "required": ["company_id"]
+            },
+            test_function="test_hr_hub_connection"
+        )
+
+        # Lead Intelligence Platform
+        lead_capabilities = [
+            PlatformCapability(
+                name="Lead Qualification",
+                description="Automatically qualify and score leads based on contact data and interactions",
+                tool_name="lead_intelligence_qualification",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["score_lead", "summarize_lead", "extract_info"]},
+                        "lead_data": {"type": "object"},
+                        "interaction_history": {"type": "array", "items": {"type": "object"}}
+                    },
+                    "required": ["operation", "lead_data"]
+                },
+                operations=["score_lead", "summarize_lead", "extract_info"]
+            ),
+            PlatformCapability(
+                name="Follow-up Orchestration",
+                description="Draft and schedule personalized follow-up messages for qualified leads",
+                tool_name="lead_intelligence_followup",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "lead_id": {"type": "string"},
+                        "tone": {"type": "string", "enum": ["professional", "casual", "urgent"], "default": "professional"},
+                        "channel": {"type": "string", "enum": ["email", "slack", "whatsapp"], "default": "slack"}
+                    },
+                    "required": ["lead_id"]
+                },
+                operations=["draft_followup"]
+            )
+        ]
+
+        self.platforms["lead_intelligence"] = Platform(
+            id="lead_intelligence",
+            name="Lead Intelligence",
+            description="AI-powered lead qualification and sales follow-up automation",
+            icon="zap",
+            features=[
+                "Lead scoring",
+                "Automated qualification",
+                "Personalized follow-ups",
+                "CRM sync",
+                "Bilingual extraction"
+            ],
+            capabilities=lead_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "qualification_threshold": {"type": "integer", "default": 70},
+                    "followup_reminder_channel": {"type": "string"}
+                },
+                "required": []
+            },
+            test_function="test_lead_intelligence_connection"
+        )
+
+        # Logistics Platform
+        logistics_capabilities = [
+            PlatformCapability(
+                name="Delivery Tracking",
+                description="Track shipments across various regional logistics providers",
+                tool_name="logistics_tracking",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "provider": {"type": "string", "enum": ["sendy", "g4s", "wells_fargo", "automatic"], "default": "automatic"},
+                        "tracking_number": {"type": "string"},
+                        "order_id": {"type": "string"}
+                    },
+                    "required": ["tracking_number"]
+                },
+                operations=["get_status", "get_estimated_delivery"]
+            ),
+            PlatformCapability(
+                name="Delivery Creation",
+                description="Create new delivery requests with local logistics partners",
+                tool_name="logistics_delivery",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "provider": {"type": "string", "enum": ["sendy", "g4s"]},
+                        "pickup_location": {"type": "string"},
+                        "delivery_location": {"type": "string"},
+                        "recipient_phone": {"type": "string"},
+                        "package_description": {"type": "string"}
+                    },
+                    "required": ["pickup_location", "delivery_location", "recipient_phone"]
+                },
+                operations=["create_delivery", "cancel_delivery"]
+            )
+        ]
+
+        self.platforms["logistics_hub"] = Platform(
+            id="logistics_hub",
+            name="Logistics Hub",
+            description="Integration with regional providers for real-time delivery tracking",
+            icon="truck",
+            features=[
+                "Multi-provider tracking",
+                "Delivery alerts",
+                "Automated booking",
+                "Local context awareness"
+            ],
+            capabilities=logistics_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "sendy_api_key": {"type": "string"},
+                    "g4s_client_id": {"type": "string"},
+                    "wells_fargo_api_key": {"type": "string"}
+                },
+                "required": []
+            },
+            test_function="test_logistics_hub_connection"
+        )
+
+        # Context & Bilingual Platform
+        context_capabilities = [
+            PlatformCapability(
+                name="Bilingual Translation",
+                description="Translate business communications between English and regional languages",
+                tool_name="context_translation",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"},
+                        "target_lang": {"type": "string", "enum": ["english", "swahili"]}
+                    },
+                    "required": ["text", "target_lang"]
+                },
+                operations=["translate"]
+            ),
+            PlatformCapability(
+                name="Business Verification",
+                description="Verify tax IDs and check compliance status for regional businesses",
+                tool_name="context_verification",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["verify_pin", "check_compliance"]},
+                        "pin": {"type": "string"}
+                    },
+                    "required": ["operation", "pin"]
+                },
+                operations=["verify_pin", "check_compliance"]
+            ),
+            PlatformCapability(
+                name="Sentiment Analysis",
+                description="Analyze sentiment of messages in English or local languages",
+                tool_name="context_sentiment",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"}
+                    },
+                    "required": ["text"]
+                },
+                operations=["analyze_sentiment"]
+            )
+        ]
+
+        self.platforms["context_intelligence"] = Platform(
+            id="context_intelligence",
+            name="Business Intelligence",
+            description="Linguistic and regulatory intelligence for regional markets",
+            icon="shield",
+            features=[
+                "Bilingual NLP",
+                "Tax ID verification",
+                "Compliance checks",
+                "Local sentiment analysis"
+            ],
+            capabilities=context_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "openai_api_key": {"type": "string"}
+                },
+                "required": []
+            },
+            test_function="test_context_intelligence_connection"
+        )
     
     def get_platform(self, platform_id: str) -> Optional[Platform]:
         """Get a platform by ID."""
