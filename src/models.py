@@ -103,6 +103,16 @@ class AccessRequestStatus(str, Enum):
     REJECTED = "rejected"
 
 
+class InvoiceStatus(str, Enum):
+    """Invoice status."""
+    DRAFT = "draft"
+    SENT = "sent"
+    PAID = "paid"
+    PARTIAL = "partial"
+    OVERDUE = "overdue"
+    CANCELLED = "cancelled"
+
+
 class User(Base):
     """User model."""
     __tablename__ = "users"
@@ -719,6 +729,40 @@ class MpesaAgentConfig(Base):
 
     # Relationships
     user = relationship("User", backref="mpesa_agent_config")
+
+
+    # Relationships
+    user = relationship("User", backref="mpesa_agent_config")
+
+
+class Invoice(Base):
+    """Invoice model for reconciliation."""
+    __tablename__ = "invoices"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    invoice_number = Column(String, nullable=False)
+    amount = Column(Numeric(10, 2), nullable=False)
+    due_date = Column(DateTime(timezone=True), nullable=True)
+    status = Column(String, default=InvoiceStatus.SENT, index=True)
+    customer_name = Column(String, nullable=True)
+    customer_email = Column(String, nullable=True)
+    customer_phone = Column(String, nullable=True)
+    reference = Column(String, nullable=True)  # External reference (e.g., matching M-Pesa account)
+    description = Column(Text, nullable=True)
+    items = Column(JSON, nullable=True)  # List of items
+    metadata_ = Column(JSON, nullable=True)  # Additional metadata (renamed from metadata to avoid conflict)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Unique constraint on user_id + invoice_number
+    __table_args__ = (
+        Index('ix_invoices_user_number', 'user_id', 'invoice_number', unique=True),
+    )
+
+    # Relationships
+    user = relationship("User", backref="invoices")
 
 
 class AccessRequest(Base):

@@ -365,7 +365,7 @@ class DynamicToolRegistry:
             # M-Pesa Payment Reconciliation Agent - Always available
             "mpesa_payment_reconciliation": {
                 "name": "mpesa_payment_reconciliation",
-                "description": "M-Pesa Payment Reconciliation Tool - Use this tool when users ask about payments, payment summaries, M-Pesa transactions, or payment data. ALWAYS use this tool for queries like 'Show today's payments', 'Get payment summary', 'Show payments', 'List payments', 'Get unmatched payments', 'Payment reconciliation', or any question about M-Pesa payments. Examples: 'Show today's payments' -> operation='get_summary', days=1; 'Get unmatched payments' -> operation='get_unmatched'; 'Show payments from last week' -> operation='get_summary', days=7; 'List all payments' -> operation='get_payments'.",
+                "description": "M-Pesa Payment Reconciliation and Invoice Tool. Use for payments, summaries, and INVOICE management. Operations: 'get_summary', 'match_payment' (reconcile), 'create_invoice', 'list_invoices'.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -375,29 +375,44 @@ class DynamicToolRegistry:
                                 "get_summary",
                                 "get_payments",
                                 "get_unmatched",
-                                "get_payment_by_transaction_id"
+                                "get_payment_by_transaction_id",
+                                "match_payment",
+                                "create_invoice",
+                                "list_invoices"
                             ],
-                            "description": "Operation to perform: 'get_summary' for payment summaries (use when user asks for 'today's payments', 'payment summary', 'show payments'), 'get_payments' to list payments with filters, 'get_unmatched' for unmatched payments, 'get_payment_by_transaction_id' to find a specific payment by transaction ID"
+                            "description": "Operation to perform."
                         },
                         "days": {
                             "type": "integer",
-                            "description": "Number of days for summary: 1 for today, 7 for last week, 30 for last month. Use 1 when user says 'today' or 'today's payments', 7 for 'this week' or 'last week', 30 for 'this month' or 'last month'",
+                            "description": "Number of days for summary",
                             "default": 1
                         },
                         "status": {
                             "type": "string",
-                            "enum": ["all", "pending", "matched", "unmatched", "verified"],
-                            "description": "Filter payments by status. Use 'unmatched' when user asks about unmatched payments",
+                            "enum": ["all", "pending", "matched", "unmatched", "verified", "draft", "sent", "paid", "overdue"],
+                            "description": "Filter by status (payment or invoice)",
                             "default": "all"
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum number of payments to return",
+                            "description": "Limit results",
                             "default": 20
                         },
                         "transaction_id": {
                             "type": "string",
-                            "description": "M-Pesa transaction ID to search for (e.g., 'QGH1234567890')"
+                            "description": "M-Pesa transaction ID"
+                        },
+                        "invoice_number": {
+                            "type": "string",
+                            "description": "Invoice Number (for creation)"
+                        },
+                        "amount": {
+                            "type": "number",
+                            "description": "Amount (for invoice creation)"
+                        },
+                        "customer_name": {
+                            "type": "string",
+                            "description": "Customer Name (for invoice)"
                         }
                     },
                     "required": ["operation"]
