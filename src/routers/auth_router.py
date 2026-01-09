@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
-from ..models import User
+from ..models import User, AccessRequest, AccessRequestStatus
 
 
 class UserRegister(BaseModel):
@@ -106,6 +106,29 @@ async def register(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
         )
+        
+    # Check if the email has been approved for access
+    # 0. Check for Admin bypass
+    from ..config import settings
+    if settings.ADMIN_EMAIL and user_data.email == settings.ADMIN_EMAIL:
+        pass # Skip access checks for admin
+    else:
+        access_result = await db.execute(
+            select(AccessRequest).where(AccessRequest.email == user_data.email)
+        )
+        access_request = access_result.scalar_one_or_none()
+        
+        if not access_request:
+             raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Please request access first."
+            )
+        
+        if access_request.status != AccessRequestStatus.APPROVED:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your email has not been approved for access yet. Please join the waitlist."
+            )
 
     # Create new user
     hashed_password = get_password_hash(user_data.password)
@@ -148,7 +171,35 @@ async def login(
     db: AsyncSession = Depends(get_db)
 ):
     """Login a user."""
-    # Find user by email
+    # 0. Check for Admin bypass
+    from ..config import settings
+    if settings.ADMIN_EMAIL and user_data.email == settings.ADMIN_EMAIL:
+        pass # Skip access checks for admin
+    else:
+        # 1. Check Access Request Status
+        access_result = await db.execute(
+            select(AccessRequest).where(AccessRequest.email == user_data.email)
+        )
+        access_request = access_result.scalar_one_or_none()
+        
+        # If they aren't on the list at all
+        if not access_request:
+            # Check if they really are a user (legacy support)
+            user_check = await db.execute(select(User).where(User.email == user_data.email))
+            if not user_check.scalar_one_or_none():
+                 raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Please request access first."
+                )
+        
+        # If they are on the list but pending/rejected
+        elif access_request.status != AccessRequestStatus.APPROVED:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are on the list awaiting approval."
+            )
+
+    # 2. Proceed with Standard Login (User Check)
     result = await db.execute(
         select(User).where(User.email == user_data.email)
     )

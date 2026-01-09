@@ -96,6 +96,13 @@ class WorkflowLicense(str, Enum):
     ENTERPRISE = "enterprise"    # Enterprise licensing
 
 
+class AccessRequestStatus(str, Enum):
+    """Status for platform access requests."""
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
 class User(Base):
     """User model."""
     __tablename__ = "users"
@@ -712,6 +719,21 @@ class MpesaAgentConfig(Base):
 
     # Relationships
     user = relationship("User", backref="mpesa_agent_config")
+
+
+class AccessRequest(Base):
+    """Model for tracking early access/waitlist requests."""
+    __tablename__ = "access_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True, nullable=False)
+    name = Column(String, nullable=True)
+    status = Column(String, default=AccessRequestStatus.PENDING)
+    reason = Column(Text, nullable=True)  # Optional: Why they want access
+    request_metadata = Column(JSON, nullable=True)  # Source, referer, etc.
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 
 class Task(BaseModel):

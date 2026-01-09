@@ -12,7 +12,7 @@ from src.models import (
     WorkflowStepExecution, WorkflowDownload, WorkflowReview, 
     Payment, CreatorProfile, WorkflowVersion, WorkflowAnalytics,
     Notification, WorkflowFavorite, UserPreferences, CreatorFollower,
-    ActivityFeedItem, MpesaPayment, MpesaAgentConfig
+    ActivityFeedItem, MpesaPayment, MpesaAgentConfig, AccessRequest
 )
 
 # Configure logging

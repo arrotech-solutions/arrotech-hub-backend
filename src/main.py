@@ -17,7 +17,7 @@ from mcp.server.stdio import stdio_server
 
 from .config import settings
 from .database import init_db
-from .routers import (agent_router, analytics_router, api_router, auth_router, chat_router,
+from .routers import (access_router, agent_router, analytics_router, api_router, auth_router, chat_router,
                       connection_router, creator_router, favorites_router, marketplace_router, 
                       mcp_router, mpesa_agent_router, notification_router, payment_router, preferences_router,
                       settings_router, slack_agent_router, templates_router, workflow_router)
@@ -100,6 +100,7 @@ app.add_middleware(
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 
 # Include routers
+app.include_router(access_router.router)
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(payment_router, prefix="/payments", tags=["payments"])
 app.include_router(connection_router, prefix="/connections",
