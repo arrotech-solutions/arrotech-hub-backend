@@ -126,6 +126,10 @@ class BaseConfig(BaseSettings):
     # Logging
     LOG_LEVEL: str = "INFO"
 
+    # Admin Configuration
+    ADMIN_EMAIL: Optional[str] = None
+    ADMIN_PASSWORD: Optional[str] = None
+
     class Config:
         env_file = ".env"
         case_sensitive = True

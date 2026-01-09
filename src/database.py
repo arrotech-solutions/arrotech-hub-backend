@@ -82,6 +82,41 @@ def get_session_maker() -> async_sessionmaker[AsyncSession]:
     )
 
 
+async def seed_admin_user():
+    """Seed the admin user if configured."""
+    from .config import settings
+    # Only run if admin credentials are set
+    if not settings.ADMIN_EMAIL or not settings.ADMIN_PASSWORD:
+        return
+
+    session_maker = get_session_maker()
+    async with session_maker() as session:
+        from sqlalchemy import select
+        from .models import User
+        from passlib.context import CryptContext
+        
+        # Check if admin user exists
+        result = await session.execute(select(User).where(User.email == settings.ADMIN_EMAIL))
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            print(f"[Admin] Seeding admin user: {settings.ADMIN_EMAIL}")
+            pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+            
+            # Create strict admin user
+            new_user = User(
+                email=settings.ADMIN_EMAIL,
+                name="System Admin",
+                password_hash=pwd_context.hash(settings.ADMIN_PASSWORD),
+                api_key="admin_" + os.urandom(12).hex(),
+                # Assuming enterprise tier for admin
+                subscription_tier="enterprise" 
+            )
+            session.add(new_user)
+            await session.commit()
+            print("[Admin] Admin user created.")
+
+
 async def init_db():
     """Initialize database tables."""
     eng = get_engine()
@@ -91,6 +126,12 @@ async def init_db():
 
         # Create all tables
         await conn.run_sync(Base.metadata.create_all)
+    
+    # Seed admin user
+    try:
+        await seed_admin_user()
+    except Exception as e:
+        print(f"[Admin] Error seeding admin user: {e}")
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
