@@ -123,6 +123,8 @@ class ToolExecutor:
                 return await self._execute_content_creation_tool(arguments, user, db)
             elif tool_name == "mpesa_payment_reconciliation":
                 return await self._execute_mpesa_tool(arguments, user, db)
+            elif tool_name == "context_intelligence":
+                return await self._execute_context_intelligence_tool(arguments, user, db)
             elif tool_name.startswith("hr_"):
                 return await self._execute_hr_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("lead_intelligence_"):
@@ -3614,25 +3616,54 @@ Description: {payment.description or 'N/A'}"""
             logger.error(f"Error in Logistics tool: {e}")
             return {"success": False, "error": str(e)}
 
-    async def _execute_context_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
-        """Execute Context & Bilingual related tools."""
+    async def _execute_context_intelligence_tool(self, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute Context Intelligence (Bilingual) tool."""
         try:
             service = self.services["context_intelligence"]
-            if tool_name == "context_translation":
-                return await service.translate(arguments.get("text", ""), target_lang=arguments.get("target_lang", "swahili"))
-            elif tool_name == "context_verification":
-                operation = arguments.get("operation")
-                pin = arguments.get("pin", "")
-                if operation == "verify_pin":
-                    return await service.verify_kra_pin(pin)
-                elif operation == "check_compliance":
-                    return await service.check_itax_compliance(pin)
-            elif tool_name == "context_sentiment":
-                return await service.analyze_sentiment_bilingual(arguments.get("text", ""))
+            operation = arguments.get("operation")
             
-            return {"success": False, "error": f"Unknown Context tool: {tool_name}"}
+            if operation == "translate":
+                text = arguments.get("text", "")
+                target_lang = arguments.get("target_lang", "English")
+                result = await service.translate(text, target_lang)
+                return {
+                    "success": True,
+                    "result": f"Translated to {target_lang}: {result.get('translated_text')}",
+                    "data": result
+                }
+            
+            elif operation == "analyze_sentiment":
+                text = arguments.get("text", "")
+                result = await service.analyze_sentiment_bilingual(text)
+                return {
+                    "success": True,
+                    "result": f"Sentiment: {result.get('sentiment')} (Score: {result.get('score')})",
+                    "data": result
+                }
+            
+            elif operation == "verify_kra_pin":
+                pin = arguments.get("pin", "")
+                result = await service.verify_kra_pin(pin)
+                return {
+                    "success": result.get("valid", False),
+                    "result": f"KRA PIN {'valid' if result.get('valid') else 'invalid'}: {result.get('taxpayer_name', 'N/A')}",
+                    "data": result
+                }
+            
+            elif operation == "check_itax_compliance":
+                pin = arguments.get("pin", "")
+                result = await service.check_itax_compliance(pin)
+                return {
+                    "success": True,
+                    "result": f"Compliance: {'Yes' if result.get('compliant') else 'No'}",
+                    "data": result
+                }
+            
+            else:
+                return {"success": False, "error": f"Unknown operation: {operation}"}
+                
         except Exception as e:
-            logger.error(f"Error in Context tool: {e}")
+            logger.error(f"Error in context_intelligence tool: {e}")
             return {"success": False, "error": str(e)}
 
 
