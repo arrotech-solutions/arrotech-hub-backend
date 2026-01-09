@@ -3374,8 +3374,15 @@ class ToolExecutor:
                     stmt = stmt.where(MpesaPayment.status == status)
                 
                 stmt = stmt.order_by(MpesaPayment.transaction_time.desc()).limit(limit)
+                
+                # DEBUG: Log query details
+                logger.info(f"🔍 Querying payments for user_id={user.id}, status={status}, limit={limit}")
+                
                 result = await db.execute(stmt)
                 payments = result.scalars().all()
+                
+                # DEBUG: Log results
+                logger.info(f"🔍 Found {len(payments)} payments")
                 
                 if not payments:
                     return {
@@ -3398,15 +3405,84 @@ class ToolExecutor:
                 
                 formatted_result = f"📋 Found {len(payment_list)} payment(s):\n\n"
                 for i, p in enumerate(payment_list[:10], 1):  # Show first 10
-                    formatted_result += f"{i}. {p['transaction_id']} - KES {p['amount']:,.2f} ({p['status']})\n"
+                    formatted_result += f"{i}. {p['transaction_id']} - KES {p['amount']:,.2f} - {p['status']}\n"
                 
                 if len(payment_list) > 10:
-                    formatted_result += f"\n... and {len(payment_list) - 10} more"
+                    formatted_result += f"...and {len(payment_list) - 10} more."
                 
                 return {
                     "success": True,
                     "result": formatted_result,
                     "data": payment_list
+                }
+
+            elif operation == "match_payment":
+                transaction_id = arguments.get("transaction_id")
+                if not transaction_id:
+                     return {"success": False, "error": "transaction_id required"}
+                
+                from sqlalchemy import select
+                from ..models import MpesaPayment
+                stmt = select(MpesaPayment).where(
+                    MpesaPayment.transaction_id == transaction_id,
+                    MpesaPayment.user_id == user.id
+                )
+                result = await db.execute(stmt)
+                payment = result.scalar_one_or_none()
+                
+                if not payment:
+                    return {"success": False, "error": "Payment not found"}
+                
+                match_result = await service.attempt_auto_match(payment, db)
+                if match_result and match_result["match_type"] != "none":
+                     inv = match_result["invoice"]
+                     return {
+                         "success": True, 
+                         "result": f"✅ Matched to Invoice {inv.invoice_number} (Confidence: {match_result['confidence']:.2f})",
+                         "data": {"matched": True, "invoice_id": inv.id, "confidence": match_result['confidence']}
+                     }
+                return {
+                    "success": True, 
+                    "result": "❌ No match found",
+                    "data": {"matched": False}
+                }
+
+            elif operation == "create_invoice":
+                 invoice_data = arguments.get("invoice_data", {})
+                 if not invoice_data:
+                      # try flattened params
+                      invoice_data = {
+                          "invoice_number": arguments.get("invoice_number"),
+                          "amount": arguments.get("amount"),
+                          "customer_name": arguments.get("customer_name"),
+                          "reference": arguments.get("reference"),
+                          "due_date": arguments.get("due_date")
+                      }
+                 
+                 if not invoice_data.get("invoice_number") or not invoice_data.get("amount"):
+                      return {"success": False, "error": "invoice_number and amount required"}
+                 
+                 try:
+                     inv = await service.invoice_service.create_invoice(user.id, invoice_data, db)
+                     return {
+                         "success": True,
+                         "result": f"✅ Invoice {inv.invoice_number} created.",
+                         "data": {"id": inv.id, "invoice_number": inv.invoice_number}
+                     }
+                 except Exception as e:
+                     return {"success": False, "error": str(e)}
+
+            elif operation == "list_invoices":
+                status = arguments.get("status")
+                invoices = await service.invoice_service.get_invoices(
+                    user.id, db, status=status, limit=arguments.get("limit", 20)
+                )
+                data = [{"invoice_number": i.invoice_number, "amount": float(i.amount), "status": i.status, "reference": i.reference} for i in invoices]
+                formatted = "📋 Invoices:\n" + "\n".join([f"- {i['invoice_number']}: {i['amount']} ({i['status']})" for i in data])
+                return {
+                    "success": True,
+                    "result": formatted,
+                    "data": data
                 }
             
             elif operation == "get_unmatched":

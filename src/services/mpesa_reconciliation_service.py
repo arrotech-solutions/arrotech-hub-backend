@@ -17,9 +17,13 @@ from ..models import (
     ConnectionStatus,
     MpesaAgentConfig,
     MpesaPayment,
-    User
+    User,
+    Invoice,
+    InvoiceStatus
 )
 from .slack_service import SlackService
+from .invoice_service import InvoiceService
+import difflib
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +31,14 @@ logger = logging.getLogger(__name__)
 class MpesaReconciliationService:
     """Service for M-Pesa payment reconciliation and alerts."""
 
+    # Match confidence thresholds
+    EXACT_MATCH_THRESHOLD = 1.0
+    HIGH_CONFIDENCE_THRESHOLD = 0.9
+    MEDIUM_CONFIDENCE_THRESHOLD = 0.7
+
     def __init__(self):
         self.slack_service = SlackService()
+        self.invoice_service = InvoiceService()
 
     async def get_config(
         self,
@@ -189,12 +199,117 @@ class MpesaReconciliationService:
     ) -> Optional[Dict[str, Any]]:
         """
         Attempt to automatically match payment to invoice.
-        This is a placeholder - implement your invoice matching logic here.
+        Uses both exact and fuzzy matching.
         """
-        # TODO: Implement invoice matching logic
-        # For now, just mark as unmatched
+        match_result = await self.find_matching_invoice(payment, db)
+        
+        if match_result and match_result["match_type"] != "none":
+            # Update payment with match info
+            payment.matched_invoice_id = match_result["invoice"].id
+            payment.match_confidence = match_result["confidence"]
+            payment.status = "matched"
+            
+            # If high confidence/exact, verify it automatically
+            config = await self.get_config(payment.user_id, db)
+            threshold = config.match_threshold if config else self.HIGH_CONFIDENCE_THRESHOLD
+            
+            if match_result["confidence"] >= threshold:
+                 # Update Invoice status
+                 await self.invoice_service.update_invoice(
+                     match_result["invoice"].id,
+                     payment.user_id,
+                     {"status": InvoiceStatus.PAID},
+                     db
+                 )
+                 payment.status = "verified"
+            
+            await db.flush()
+            return match_result
+            
+        # No match found
         payment.status = "unmatched"
         await db.flush()
+        return None
+
+    async def find_matching_invoice(
+        self,
+        payment: MpesaPayment,
+        db: AsyncSession
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Find best matching invoice for payment.
+        """
+        # Get all pending invoices for user
+        invoices = await self.invoice_service.get_invoices(
+            user_id=payment.user_id, 
+            db=db, 
+            limit=100,
+            status=InvoiceStatus.SENT
+        )
+        
+        best_match = None
+        best_score = 0.0
+        match_type = "none"
+        
+        payment_ref = (payment.reference or "").lower()
+        payment_phone = (payment.phone_number or "").replace("+", "").replace("254", "0")
+        
+        for invoice in invoices:
+            score = 0.0
+            current_match_type = "none"
+            
+            # invoice identifiers
+            inv_number = (invoice.invoice_number or "").lower()
+            inv_ref = (invoice.reference or "").lower()
+            if not inv_ref: inv_ref = inv_number # Fallback
+            
+            # exact amount match is usually required for auto-reconciliation
+            amount_match = float(payment.amount) == float(invoice.amount)
+            
+            if not amount_match:
+                # If amounts differ significantly, skip or penalize?
+                # For now simplify: MUST match amount for high confidence
+                pass
+            
+            # 1. Exact Reference Match
+            if payment_ref and (payment_ref == inv_number or payment_ref == inv_ref):
+                score = 1.0
+                current_match_type = "exact_reference"
+            
+            # 2. Exact Phone Match (if invoice has customer phone)
+            elif invoice.customer_phone and payment_phone in str(invoice.customer_phone):
+                 # Phone match alone is weak, but with amount it's decent
+                 if amount_match:
+                     score = 0.8
+                     current_match_type = "phone_amount"
+            
+            # 3. Fuzzy Reference Match
+            elif payment_ref:
+                # Use difflib for similarity
+                sim_number = difflib.SequenceMatcher(None, payment_ref, inv_number).ratio()
+                sim_ref = difflib.SequenceMatcher(None, payment_ref, inv_ref).ratio()
+                max_sim = max(sim_number, sim_ref)
+                
+                if max_sim > 0.6: # Filter low quality
+                    score = max_sim
+                    current_match_type = "fuzzy_reference"
+            
+            # Apply Amount Penalty if mismatched
+            if not amount_match:
+                 score = score * 0.5 # significantly reduce confidence
+            
+            if score > best_score:
+                best_score = score
+                best_match = invoice
+                match_type = current_match_type
+        
+        if best_match:
+            return {
+                "invoice": best_match,
+                "confidence": best_score,
+                "match_type": match_type
+            }
+            
         return None
 
     async def send_payment_alert(
