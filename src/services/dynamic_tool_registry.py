@@ -419,6 +419,43 @@ class DynamicToolRegistry:
                 },
                 "category": "payments",
                 "always_available": True
+            },
+            # Bilingual & Context Intelligence - Always available
+            "context_intelligence": {
+                "name": "context_intelligence",
+                "description": "Bilingual Translation & Context Intelligence. Translate between English and Swahili, analyze sentiment, verify KRA PINs. Operations: 'translate', 'analyze_sentiment', 'verify_kra_pin'.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": [
+                                "translate",
+                                "analyze_sentiment",
+                                "verify_kra_pin",
+                                "check_itax_compliance"
+                            ],
+                            "description": "Operation: translate (EN↔SW), analyze_sentiment, verify_kra_pin, check_itax_compliance"
+                        },
+                        "text": {
+                            "type": "string",
+                            "description": "Text to translate or analyze"
+                        },
+                        "target_lang": {
+                            "type": "string",
+                            "enum": ["English", "Swahili"],
+                            "description": "Target language for translation",
+                            "default": "English"
+                        },
+                        "pin": {
+                            "type": "string",
+                            "description": "KRA PIN to verify (11 characters, e.g., A012345678Z)"
+                        }
+                    },
+                    "required": ["operation"]
+                },
+                "category": "localization",
+                "always_available": True
             }
         }
     
