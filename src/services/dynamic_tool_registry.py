@@ -378,7 +378,10 @@ class DynamicToolRegistry:
                                 "get_payment_by_transaction_id",
                                 "match_payment",
                                 "create_invoice",
-                                "list_invoices"
+                                "list_invoices",
+                                "analyze_fraud",
+                                "verify_with_daraja",
+                                "get_fraud_signals"
                             ],
                             "description": "Operation to perform."
                         },
@@ -401,6 +404,10 @@ class DynamicToolRegistry:
                         "transaction_id": {
                             "type": "string",
                             "description": "M-Pesa transaction ID"
+                        },
+                        "payment_id": {
+                            "type": "integer",
+                            "description": "Internal Payment ID"
                         },
                         "invoice_number": {
                             "type": "string",
