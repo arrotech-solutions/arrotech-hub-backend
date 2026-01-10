@@ -12,7 +12,8 @@ from src.models import (
     WorkflowStepExecution, WorkflowDownload, WorkflowReview, 
     Payment, CreatorProfile, WorkflowVersion, WorkflowAnalytics,
     Notification, WorkflowFavorite, UserPreferences, CreatorFollower,
-    ActivityFeedItem, MpesaPayment, MpesaAgentConfig, AccessRequest, Invoice, InvoiceStatus
+    ActivityFeedItem, MpesaPayment, MpesaAgentConfig, AccessRequest, Invoice, InvoiceStatus,
+    FraudSignal
 )
 
 # Configure logging

@@ -706,6 +706,15 @@ class MpesaPayment(Base):
     matched_invoice_id = Column(Integer, nullable=True)
     match_confidence = Column(Float, nullable=True)
     channel = Column(String, nullable=True)
+    
+    # Fraud Detection Fields
+    is_suspicious = Column(Boolean, default=False, index=True)
+    fraud_risk_score = Column(Float, nullable=True)  # 0.0 - 1.0
+    fraud_flags = Column(JSON, nullable=True)  # List of triggered fraud rules
+    verification_status = Column(String, default="unverified")  # unverified, verified, failed
+    locked_at = Column(DateTime(timezone=True), nullable=True)
+    locked_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -763,6 +772,41 @@ class Invoice(Base):
 
     # Relationships
     user = relationship("User", backref="invoices")
+
+
+class FraudSignal(Base):
+    """Track fraud indicators for machine learning."""
+    __tablename__ = "fraud_signals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    payment_id = Column(Integer, ForeignKey("mpesa_payments.id"), nullable=True, index=True)
+    
+    # Signal metadata
+    signal_type = Column(String, index=True)  # duplicate, frequency, amount_anomaly, time_anomaly, staff_pattern
+    risk_score = Column(Numeric(3, 2))  # 0.00 - 1.00
+    confidence = Column(Numeric(3, 2))  # How confident we are in this signal
+    
+    # Detection details
+    detected_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    detection_method = Column(String)  # rule_based, ml_model, manual
+    
+    # Context (store additional detection info)
+    metadata_ = Column(JSON, nullable=True)
+    
+    # Human review
+    is_false_positive = Column(Boolean, default=False, index=True)
+    reviewed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # Action taken
+    action_taken = Column(String, nullable=True)  # locked, flagged, approved, dismissed
+    notes = Column(Text, nullable=True)
+    
+    # Relationships
+    user = relationship("User", foreign_keys=[user_id], backref="fraud_signals")
+    reviewer = relationship("User", foreign_keys=[reviewed_by])
+    payment = relationship("MpesaPayment", backref="fraud_signals")
 
 
 class AccessRequest(Base):

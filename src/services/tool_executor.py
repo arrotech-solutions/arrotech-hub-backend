@@ -3556,6 +3556,73 @@ Description: {payment.description or 'N/A'}"""
                     }
                 }
             
+            elif operation == "analyze_fraud":
+                payment_id = arguments.get("payment_id")
+                transaction_id = arguments.get("transaction_id")
+                
+                if not payment_id and transaction_id:
+                    payment = await service.get_payment_by_transaction_id(user.id, db, transaction_id)
+                    if payment:
+                        payment_id = payment.id
+                
+                if not payment_id:
+                    return {"success": False, "error": "payment_id or transaction_id required"}
+                
+                from .fraud_detection_service import fraud_detection_service
+                result = await fraud_detection_service.analyze_payment(payment_id, db)
+                
+                return {
+                    "success": True,
+                    "result": f"🔍 Fraud Analysis: Risk Score {result['risk_score']:.2f} - {'SUSPICIOUS ⚠️' if result['is_suspicious'] else 'SAFE ✅'}",
+                    "data": result
+                }
+
+            elif operation == "verify_with_daraja":
+                payment_id = arguments.get("payment_id")
+                transaction_id = arguments.get("transaction_id")
+                
+                if not payment_id and transaction_id:
+                    payment = await service.get_payment_by_transaction_id(user.id, db, transaction_id)
+                    if payment:
+                        payment_id = payment.id
+                
+                if not payment_id:
+                    return {"success": False, "error": "payment_id or transaction_id required"}
+                
+                from .fraud_detection_service import fraud_detection_service
+                result = await fraud_detection_service.verify_with_daraja(payment_id, db)
+                
+                return {
+                    "success": result.get("success", False),
+                    "result": f"📡 Daraja Verification: {result.get('verification_status', 'unknown').upper()}",
+                    "data": result
+                }
+
+            elif operation == "get_fraud_signals":
+                payment_id = arguments.get("payment_id")
+                if not payment_id:
+                    return {"success": False, "error": "payment_id required"}
+                
+                from ..models import FraudSignal
+                stmt = select(FraudSignal).where(FraudSignal.payment_id == payment_id)
+                res = await db.execute(stmt)
+                signals = res.scalars().all()
+                
+                data = [{
+                    "type": s.signal_type,
+                    "score": float(s.risk_score),
+                    "confidence": float(s.confidence),
+                    "detected_at": s.detected_at.isoformat(),
+                    "metadata": s.metadata_
+                } for s in signals]
+                
+                formatted = "🚨 Fraud Signals:\n" + "\n".join([f"- {s['type'].title()}: {s['score']} ({s['metadata']})" for s in data])
+                return {
+                    "success": True,
+                    "result": formatted or "No fraud signals found.",
+                    "data": data
+                }
+            
                 
         except Exception as e:
             logger.error(f"Error executing M-Pesa tool: {e}", exc_info=True)
