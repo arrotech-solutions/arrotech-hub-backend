@@ -19,6 +19,7 @@ class SubscriptionTier(str, Enum):
     """Subscription tiers."""
     FREE = "free"
     TESTING = "testing"
+    STARTER = "starter"
     PRO = "pro"
     ENTERPRISE = "enterprise"
 
@@ -113,6 +114,16 @@ class InvoiceStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+
+class SubscriptionStatus(str, Enum):
+    """Subscription status."""
+    ACTIVE = "active"
+    PAST_DUE = "past_due"
+    CANCELED = "canceled"
+    EXPIRED = "expired"
+    GRACE_PERIOD = "grace_period"
+
+
 class User(Base):
     """User model."""
     __tablename__ = "users"
@@ -123,6 +134,8 @@ class User(Base):
     password_hash = Column(String, nullable=False)
     api_key = Column(String, unique=True, index=True, nullable=True)
     subscription_tier = Column(String, default=SubscriptionTier.FREE)
+    subscription_status = Column(String, default=SubscriptionStatus.ACTIVE)
+    subscription_end_date = Column(DateTime(timezone=True), nullable=True)
     stripe_customer_id = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -719,7 +732,8 @@ class MpesaPayment(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     # Relationships
-    user = relationship("User", backref="mpesa_payments")
+    user = relationship("User", foreign_keys=[user_id], backref="mpesa_payments")
+    locked_by_user = relationship("User", foreign_keys=[locked_by])
 
 
 class MpesaAgentConfig(Base):
@@ -735,10 +749,6 @@ class MpesaAgentConfig(Base):
     notification_preferences = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-    # Relationships
-    user = relationship("User", backref="mpesa_agent_config")
-
 
     # Relationships
     user = relationship("User", backref="mpesa_agent_config")

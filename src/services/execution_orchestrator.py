@@ -13,6 +13,7 @@ from .dynamic_tool_registry import dynamic_tool_registry
 from .intent_processor import IntentProcessor
 from .tool_executor import tool_executor
 from .tool_router import ToolRouter
+from .feature_flags import FeatureGate
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,24 @@ class ExecutionOrchestrator:
         self.conversation_id = conversation_id
         self.tool_router = ToolRouter(user, db)
         self.intent_processor = IntentProcessor(user, db)
+
+    @staticmethod
+    async def get_daily_message_count(db: AsyncSession, user_id: int) -> int:
+        """Get the number of AI messages sent by the user today."""
+        from datetime import datetime, time
+        from sqlalchemy import func, select
+        
+        today_start = datetime.combine(datetime.utcnow().date(), time.min)
+        
+        stmt = select(func.count(Message.id)).where(
+            Message.conversation_id == Conversation.id,
+            Conversation.user_id == user_id,
+            Message.role == MessageRole.ASSISTANT,
+            Message.created_at >= today_start
+        )
+        
+        result = await db.execute(stmt)
+        return result.scalar() or 0
     
     async def process_message(self, content: str, provider: str) -> Tuple[str, List[Dict[str, Any]]]:
         """
@@ -41,6 +60,11 @@ class ExecutionOrchestrator:
         try:
             print(f"🎯 Orchestrating message processing for: '{content[:50]}...'")
             
+            # Step 0: Check AI message limits
+            daily_count = await self.get_daily_message_count(self.db, self.user.id)
+            if not FeatureGate.can_use_ai_message(self.user, daily_count):
+                return f"Plan limit reached: Your {self.user.subscription_tier} plan allows {FeatureGate.get_limits(self.user.subscription_tier)['max_ai_messages_daily']} AI messages per day. Please upgrade to continue.", []
+
             # Step 1: Classify intent
             intent_classifier = await self.intent_processor.classify_intent(content)
             print(f"🧠 Intent classified: {intent_classifier.intent_type} (confidence: {intent_classifier.confidence:.1%})")

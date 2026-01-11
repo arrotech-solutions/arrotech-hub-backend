@@ -1,6 +1,4 @@
-"""
-Workflow Router for creating and executing business workflows.
-"""
+import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -15,6 +13,7 @@ from ..services.workflow_builder_service import WorkflowBuilderService
 from .auth_router import get_current_user
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class WorkflowCreate(BaseModel):
@@ -253,6 +252,49 @@ async def get_workflows(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get workflows: {str(e)}"
+        )
+
+
+@router.get("/executions")
+async def get_all_executions(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Get all workflow executions for the current user."""
+    try:
+        from sqlalchemy import select
+        from ..models import WorkflowExecution
+        
+        result = await db.execute(
+            select(WorkflowExecution)
+            .where(WorkflowExecution.user_id == user.id)
+            .order_by(WorkflowExecution.created_at.desc())
+        )
+        executions = result.scalars().all()
+        
+        executions_data = [
+            {
+                "id": execution.id,
+                "workflow_id": execution.workflow_id,
+                "status": execution.status,
+                "trigger_type": execution.trigger_type,
+                "input_data": execution.input_data,
+                "output_data": execution.output_data,
+                "error_message": execution.error_message,
+                "started_at": execution.started_at.isoformat() if execution.started_at else None,
+                "completed_at": execution.completed_at.isoformat() if execution.completed_at else None,
+                "created_at": execution.created_at.isoformat()
+            } for execution in executions
+        ]
+        
+        return {
+            "success": True,
+            "data": executions_data
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get all executions: {str(e)}"
         )
 
 

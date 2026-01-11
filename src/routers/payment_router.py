@@ -232,6 +232,57 @@ async def create_stripe_subscription(
         )
 
 
+
+class SubscriptionCheckoutRequest(BaseModel):
+    plan_id: str
+    amount: int
+    currency: str = "kes"
+
+
+@router.post("/stripe/create-subscription-checkout-session")
+async def create_stripe_subscription_checkout_session(
+    request: SubscriptionCheckoutRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Create a Stripe Checkout Session for subscription."""
+    try:
+        # Determine success and cancel URLs based on frontend environment
+        frontend_url = settings.ALLOWED_ORIGINS[0] 
+        success_url = f"{frontend_url}/pricing?success=true&session_id={{CHECKOUT_SESSION_ID}}"
+        cancel_url = f"{frontend_url}/pricing?canceled=true"
+        
+        result = await payment_service.create_subscription_checkout_session(
+            plan_id=request.plan_id,
+            amount=request.amount,
+            currency=request.currency,
+            user_email=current_user.email,
+            user_id=current_user.id,
+            success_url=success_url,
+            cancel_url=cancel_url
+        )
+
+        if result["success"]:
+            return {
+                "success": True,
+                "data": {
+                    "checkout_url": result["checkout_url"],
+                    "session_id": result["session_id"]
+                }
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result["error"]
+            )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Checkout session creation failed: {str(e)}"
+        )
+
+
 @router.post("/stripe/create-payment-intent")
 async def create_stripe_payment_intent(
     request: StripePaymentRequest,

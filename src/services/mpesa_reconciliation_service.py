@@ -231,6 +231,50 @@ class MpesaReconciliationService:
         await db.flush()
         return None
 
+    async def match_all_pending_payments(
+        self,
+        user_id: int,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Match all pending payments for a user."""
+        stmt = select(MpesaPayment).where(
+            and_(
+                MpesaPayment.user_id == user_id,
+                MpesaPayment.status == "pending"
+            )
+        )
+        result = await db.execute(stmt)
+        payments = result.scalars().all()
+        
+        matched_count = 0
+        unmatched_count = 0
+        results = []
+        
+        for payment in payments:
+            match = await self.attempt_auto_match(payment, db)
+            if match:
+                matched_count += 1
+                results.append({
+                    "transaction_id": payment.transaction_id,
+                    "matched": True,
+                    "invoice_number": match["invoice"].invoice_number,
+                    "confidence": match["confidence"]
+                })
+            else:
+                unmatched_count += 1
+                results.append({
+                    "transaction_id": payment.transaction_id,
+                    "matched": False
+                })
+        
+        await db.commit()
+        return {
+            "total_processed": len(payments),
+            "matched_count": matched_count,
+            "unmatched_count": unmatched_count,
+            "results": results
+        }
+
     async def find_matching_invoice(
         self,
         payment: MpesaPayment,
@@ -455,13 +499,24 @@ class MpesaReconciliationService:
     ) -> List[MpesaPayment]:
         """Get payments within a date range."""
         stmt = select(MpesaPayment).where(
-            and_(
-                MpesaPayment.user_id == user_id,
-                MpesaPayment.transaction_time >= start_date,
-                MpesaPayment.transaction_time <= end_date
-            )
+            MpesaPayment.user_id == user_id,
+            MpesaPayment.transaction_time >= start_date,
+            MpesaPayment.transaction_time <= end_date
         ).order_by(MpesaPayment.transaction_time.desc()).limit(limit)
-
+        
         result = await db.execute(stmt)
-        return list(result.scalars().all())
+        return result.scalars().all()
 
+    async def get_payment_by_transaction_id(
+        self,
+        user_id: int,
+        db: AsyncSession,
+        transaction_id: str
+    ) -> Optional[MpesaPayment]:
+        """Get a specific payment by its transaction ID."""
+        stmt = select(MpesaPayment).where(
+            MpesaPayment.user_id == user_id,
+            MpesaPayment.transaction_id == transaction_id
+        )
+        result = await db.execute(stmt)
+        return result.scalar_one_or_none()

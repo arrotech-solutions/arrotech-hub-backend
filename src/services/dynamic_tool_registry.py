@@ -377,6 +377,7 @@ class DynamicToolRegistry:
                                 "get_unmatched",
                                 "get_payment_by_transaction_id",
                                 "match_payment",
+                                "match_payments",
                                 "create_invoice",
                                 "list_invoices",
                                 "analyze_fraud",

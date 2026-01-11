@@ -20,7 +20,7 @@ from .database import init_db
 from .routers import (access_router, agent_router, analytics_router, api_router, auth_router, chat_router,
                       connection_router, creator_router, favorites_router, marketplace_router, 
                       mcp_router, mpesa_agent_router, notification_router, payment_router, preferences_router,
-                      settings_router, slack_agent_router, templates_router, workflow_router)
+                      settings_router, slack_agent_router, subscription_router, templates_router, workflow_router)
 from .services import (BillingService, ContentCreationService,
                        FileManagementService, GA4Service, HubSpotService,
                        RateLimitService, SlackService, SocialMediaService,
@@ -120,6 +120,7 @@ app.include_router(notification_router, tags=["notifications"])  # Already has /
 app.include_router(templates_router, prefix="/templates", tags=["templates"])
 app.include_router(favorites_router, prefix="/favorites", tags=["favorites"])
 app.include_router(preferences_router, prefix="/preferences", tags=["preferences"])
+app.include_router(subscription_router.router)
 
 
 @app.get("/")

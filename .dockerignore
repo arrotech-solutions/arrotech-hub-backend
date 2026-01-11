@@ -97,7 +97,7 @@ prometheus/
 logstash/
 
 # Scripts
-scripts/
+
 postman-collection/
 
 # SSL
