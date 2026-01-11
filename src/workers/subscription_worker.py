@@ -21,13 +21,16 @@ class SubscriptionWorker:
             try:
                 # Get all users with expiration dates in the past
                 now = datetime.now()
-                # Query logic: active users whose end_date is < now
-                # We also need to check grace_period users who might have now fully expired
+                # Query logic: active, canceled, or grace_period users whose end_date < now
                 result = await db.execute(
-                    select(User).where(
+                   select(User).where(
                         (User.subscription_end_date.isnot(None)) & 
                         (User.subscription_end_date < now) &
-                        (User.subscription_status.in_([SubscriptionStatus.ACTIVE, SubscriptionStatus.GRACE_PERIOD]))
+                        (User.subscription_status.in_([
+                            SubscriptionStatus.ACTIVE, 
+                            SubscriptionStatus.GRACE_PERIOD,
+                            SubscriptionStatus.CANCELED  # Include canceled to process them when end date passes
+                        ]))
                     )
                 )
                 users = result.scalars().all()
@@ -35,8 +38,18 @@ class SubscriptionWorker:
                 for user in users:
                     days_past_due = (now - user.subscription_end_date).days
                     
-                    if days_past_due <= 7:
-                        # Grace Period
+                    # For CANCELED subscriptions, immediately downgrade to FREE when end date passes
+                    if user.subscription_status == SubscriptionStatus.CANCELED:
+                        logger.info(f"User {user.email} canceled subscription expired. Downgrading to Free.")
+                        user.subscription_status = SubscriptionStatus.EXPIRED
+                        user.subscription_tier = SubscriptionTier.FREE
+                        # await self.notification_service.send_email(
+                        #     user.email,
+                        #     "Subscription Ended",
+                        #     "Your subscription has ended. You have been moved to the Free tier."
+                        # )
+                    elif days_past_due <= 7:
+                        # Grace Period for ACTIVE subscriptions only
                         if user.subscription_status != SubscriptionStatus.GRACE_PERIOD:
                             logger.info(f"User {user.email} entering grace period.")
                             user.subscription_status = SubscriptionStatus.GRACE_PERIOD

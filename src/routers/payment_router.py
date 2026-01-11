@@ -822,3 +822,126 @@ async def get_creator_earnings(
             ]
         }
     }
+
+
+# ========================================
+# SUBSCRIPTION MANAGEMENT ENDPOINTS
+# ========================================
+
+class CancelSubscriptionRequest(BaseModel):
+    reason: str = None
+    feedback: str = None
+
+
+@router.post("/subscriptions/cancel")
+async def cancel_subscription(
+    request: CancelSubscriptionRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Cancel user's subscription.
+    Access is retained until the end of the current billing period.
+    """
+    try:
+        from datetime import datetime
+        from sqlalchemy import update
+        from ..models import SubscriptionStatus
+        
+        # Check if user has an active subscription
+        if current_user.subscription_tier == "free":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You don't have an active subscription to cancel"
+            )
+        
+        if current_user.subscription_status == SubscriptionStatus.CANCELED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Your subscription is already canceled"
+            )
+        
+        # Update subscription status to canceled        
+        stmt = update(User).where(User.id == current_user.id).values(
+            subscription_status=SubscriptionStatus.CANCELED,
+            updated_at=datetime.utcnow()
+        )
+        await db.execute(stmt)
+        await db.commit()
+        
+        # Log cancellation reason (could store in a separate table or field)
+        logger.info(f"User {current_user.id} canceled subscription. Reason: {request.reason}")
+        
+        # TODO: Send cancellation confirmation email
+        
+        return {
+            "success": True,
+            "message": f"Subscription canceled. You'll retain access until {current_user.subscription_end_date.strftime('%B %d, %Y') if current_user.subscription_end_date else 'end of billing period'}",
+            "access_until": current_user.subscription_end_date.isoformat() if current_user.subscription_end_date else None
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error canceling subscription: {str(e)}")
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to cancel subscription: {str(e)}"
+        )
+
+
+@router.post("/subscriptions/reactivate")
+async def reactivate_subscription(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Reactivate a canceled subscription before the end date.
+    """
+    try:
+        from datetime import datetime
+        from sqlalchemy import update
+        from ..models import SubscriptionStatus
+        
+        # Check if subscription is canceled
+        if current_user.subscription_status != SubscriptionStatus.CANCELED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Your subscription is not canceled"
+            )
+        
+        # Check if subscription end date has passed
+        if current_user.subscription_end_date and current_user.subscription_end_date < datetime.now(current_user.subscription_end_date.tzinfo):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Your subscription has already expired. Please upgrade to reactivate."
+            )
+        
+        # Reactivate subscription
+        stmt = update(User).where(User.id == current_user.id).values(
+            subscription_status=SubscriptionStatus.ACTIVE,
+            updated_at=datetime.utcnow()
+        )
+        await db.execute(stmt)
+        await db.commit()
+        
+        logger.info(f"User {current_user.id} reactivated subscription")
+        
+        # TODO: Send reactivation confirmation email
+        
+        return {
+            "success": True,
+            "message": "Subscription reactivated successfully",
+            "next_billing_date": current_user.subscription_end_date.isoformat() if current_user.subscription_end_date else None
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reactivating subscription: {str(e)}")
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to reactivate subscription: {str(e)}"
+        )
