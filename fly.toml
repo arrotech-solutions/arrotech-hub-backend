@@ -10,8 +10,7 @@ primary_region = 'jnb'
 
 [deploy]
   # Stamp database to mark existing tables as migrated, then run any new migrations
-  # Temporarily disabled to allow DB reset
-  # release_command = "python -m alembic upgrade head"
+  release_command = "bash /app/scripts/migrate.sh"
 
 [http_service]
   internal_port = 8000

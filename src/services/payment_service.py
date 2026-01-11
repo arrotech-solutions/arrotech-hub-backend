@@ -215,6 +215,55 @@ class PaymentService:
                 "error": f"M-Pesa payment error: {str(e)}"
             }
 
+    async def process_mpesa_subscription(
+        self,
+        phone_number: str,
+        amount: int,
+        user_id: int,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Process M-Pesa subscription payment and extend validity."""
+        try:
+            from sqlalchemy import select
+            from ..models import User, SubscriptionStatus
+            
+            # Find user
+            result = await db.execute(select(User).where(User.id == user_id))
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                return {"success": False, "error": "User not found"}
+                
+            # Calculate new end date
+            # If currently active and not expired, add to existing end date
+            # If expired or none, start from today
+            now = datetime.now()
+            days_to_add = 30 # Default monthly
+            
+            if user.subscription_end_date and user.subscription_end_date > now:
+                user.subscription_end_date += timedelta(days=days_to_add)
+            else:
+                user.subscription_end_date = now + timedelta(days=days_to_add)
+            
+            user.subscription_status = SubscriptionStatus.ACTIVE
+            
+            # Update tier based on amount (Hardcoded logic for now, ideally strictly coupled with plans)
+            if amount >= 5000:
+                user.subscription_tier = "pro"
+            elif amount >= 1500:
+                user.subscription_tier = "starter"
+                
+            await db.commit()
+            
+            return {
+                "success": True, 
+                "new_end_date": user.subscription_end_date,
+                "tier": user.subscription_tier
+            }
+            
+        except Exception as e:
+            return {"success": False, "error": f"Failed to process subscription: {str(e)}"}
+
     async def create_stripe_customer(self, email: str, name: str) -> Dict[str, Any]:
         """Create a Stripe customer."""
         try:
@@ -255,6 +304,60 @@ class PaymentService:
             return {
                 "success": False,
                 "error": f"Stripe subscription creation failed: {str(e)}"
+            }
+
+    async def create_subscription_checkout_session(
+        self,
+        plan_id: str,
+        amount: int,
+        currency: str,
+        user_email: str,
+        user_id: int,
+        success_url: str,
+        cancel_url: str
+    ) -> Dict[str, Any]:
+        """Create a Stripe Checkout Session for subscription."""
+        try:
+            # Create a price object for the subscription
+            # In a real app, you might use pre-defined Price IDs from Stripe
+            # Here we use ad-hoc prices for flexibility
+            
+            checkout_session = self.stripe.checkout.Session.create(
+                payment_method_types=['card'],
+                line_items=[{
+                    'price_data': {
+                        'currency': currency.lower(),
+                        'product_data': {
+                            'name': f"{plan_id.title()} Subscription",
+                            'description': f"Monthly subscription for {plan_id.title()} plan",
+                        },
+                        'unit_amount': amount * 100, # Stripe expects cents
+                        'recurring': {
+                            'interval': 'month',
+                        },
+                    },
+                    'quantity': 1,
+                }],
+                mode='subscription',
+                customer_email=user_email,
+                success_url=success_url,
+                cancel_url=cancel_url,
+                metadata={
+                    'plan_id': plan_id,
+                    'user_id': str(user_id),
+                    'type': 'subscription_upgrade'
+                }
+            )
+            
+            return {
+                "success": True,
+                "checkout_url": checkout_session.url,
+                "session_id": checkout_session.id
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Stripe checkout session failed: {str(e)}"
             }
 
     async def create_stripe_payment_intent(
@@ -400,6 +503,30 @@ class PaymentService:
 
         # Update subscription status
         subscription_id = invoice.get('subscription')
+        
+        # Sync with user's subscription end date if it's a subscription invoice
+        if subscription_id:
+             # Fetch subscription details from Stripe to get current_period_end
+            try:
+                subscription = self.stripe.Subscription.retrieve(subscription_id)
+                current_period_end = datetime.fromtimestamp(subscription.current_period_end)
+                
+                # Find user by customer ID
+                customer_id = invoice.get('customer')
+                from sqlalchemy import select
+                from ..models import User, SubscriptionStatus
+                
+                result = await db.execute(select(User).where(User.stripe_customer_id == customer_id))
+                user = result.scalar_one_or_none()
+                
+                if user:
+                    user.subscription_end_date = current_period_end
+                    user.subscription_status = SubscriptionStatus.ACTIVE
+                    # Optionally update tier based on plan product ID if needed
+                    # user.subscription_tier = ... 
+                    
+            except Exception as e:
+                print(f"Error syncing subscription date: {e}")
 
         # Create payment record
         payment = Payment(

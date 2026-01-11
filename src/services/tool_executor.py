@@ -30,6 +30,7 @@ from .hr_service import HRService
 from .lead_intelligence_service import LeadIntelligenceService
 from .logistics_service import LogisticsService
 from .bilingual_service import BilingualService
+from .feature_flags import FeatureGate
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,14 @@ class ToolExecutor:
             if tools_called is not None:
                 self._tools_called = tools_called
 
+            # Check connection access based on plan
+            if not await self._check_connection_access(tool_name, user, db):
+                return {
+                    "success": False,
+                    "error": f"Plan restriction: Your {user.subscription_tier} plan does not have access to the '{self._get_platform_from_tool(tool_name)}' integration. Please upgrade.",
+                    "result": None
+                }
+
             # Route to appropriate service based on tool name
             if tool_name.startswith("slack_"):
                 return await self._execute_slack_tool(tool_name, arguments, user, db)
@@ -147,6 +156,32 @@ class ToolExecutor:
                 "error": str(e),
                 "result": None
             }
+
+    async def _check_connection_access(self, tool_name: str, user: User, db: AsyncSession) -> bool:
+        """Check if the user has access to the connection required by the tool."""
+        platform = self._get_platform_from_tool(tool_name)
+        if not platform:
+            return True # If no specific platform, allow it (e.g. content_creation, web_tools)
+            
+        return FeatureGate.has_connection_access(user, platform)
+
+    def _get_platform_from_tool(self, tool_name: str) -> Optional[str]:
+        """Map tool name to platform string."""
+        if tool_name.startswith("slack_"): return "slack"
+        if tool_name.startswith("teams_"): return "teams"
+        if tool_name.startswith("zoom_"): return "zoom"
+        if tool_name.startswith("hubspot_"): return "hubspot"
+        if tool_name.startswith("salesforce_"): return "salesforce"
+        if tool_name.startswith("ga4_"): return "ga4"
+        if tool_name.startswith("whatsapp_"): return "whatsapp"
+        if tool_name.startswith("social_media_"): return "social_media"
+        if tool_name.startswith("asana_"): return "asana"
+        if tool_name.startswith("powerbi_"): return "powerbi"
+        if tool_name.startswith("mpesa_"): return "mpesa"
+        if tool_name.startswith("hr_"): return "hr_hub"
+        if tool_name.startswith("lead_intelligence_"): return "lead_intelligence"
+        if tool_name.startswith("logistics_"): return "logistics_hub"
+        return None
 
     async def _execute_slack_tool(
         self,
@@ -3306,9 +3341,29 @@ class ToolExecutor:
             service = MpesaReconciliationService()
             operation = arguments.get("operation")
             
+            # Type casting for potential string placeholders
+            def is_placeholder(val):
+                return isinstance(val, str) and val.startswith("{{") and val.endswith("}}")
+
+            def safe_int(val, default=0, name="parameter"):
+                if val is None: return default
+                if isinstance(val, int): return val
+                if is_placeholder(val):
+                    raise ValueError(f"Variable substitution failed for '{val}'. Step might have failed or variable is undefined.")
+                try: return int(str(val))
+                except: return default
+            
+            def safe_float(val, default=0.0, name="parameter"):
+                if val is None: return default
+                if isinstance(val, (int, float)): return float(val)
+                if is_placeholder(val):
+                    raise ValueError(f"Variable substitution failed for '{val}'. Step might have failed or variable is undefined.")
+                try: return float(str(val))
+                except: return default
+            
             if operation == "get_summary":
                 # Get payment summary for a period
-                days = arguments.get("days", 1)
+                days = safe_int(arguments.get("days"), 1)
                 summary = await service.get_payment_summary(user.id, db, days=days)
                 
                 # Format the summary for display
@@ -3362,7 +3417,7 @@ class ToolExecutor:
             elif operation == "get_payments":
                 # Get list of payments with filters
                 status = arguments.get("status", "all")
-                limit = arguments.get("limit", 20)
+                limit = safe_int(arguments.get("limit"), 20)
                 
                 from datetime import datetime, timedelta
                 from sqlalchemy import select
@@ -3438,15 +3493,33 @@ class ToolExecutor:
                 match_result = await service.attempt_auto_match(payment, db)
                 if match_result and match_result["match_type"] != "none":
                      inv = match_result["invoice"]
+                     await db.commit()
                      return {
                          "success": True, 
                          "result": f"✅ Matched to Invoice {inv.invoice_number} (Confidence: {match_result['confidence']:.2f})",
                          "data": {"matched": True, "invoice_id": inv.id, "confidence": match_result['confidence']}
                      }
+                
+                await db.commit()
                 return {
                     "success": True, 
                     "result": "❌ No match found",
                     "data": {"matched": False}
+                }
+
+            elif operation == "match_payments":
+                # Batch match all pending payments
+                match_results = await service.match_all_pending_payments(user.id, db)
+                
+                summary = f"🔄 Batch Matching Results:\n"
+                summary += f"- Total Processed: {match_results['total_processed']}\n"
+                summary += f"- Matched: {match_results['matched_count']}\n"
+                summary += f"- Unmatched: {match_results['unmatched_count']}\n"
+                
+                return {
+                    "success": True,
+                    "result": summary,
+                    "data": match_results
                 }
 
             elif operation == "create_invoice":
@@ -3455,7 +3528,7 @@ class ToolExecutor:
                       # try flattened params
                       invoice_data = {
                           "invoice_number": arguments.get("invoice_number"),
-                          "amount": arguments.get("amount"),
+                           "amount": safe_float(arguments.get("amount"), 0.0),
                           "customer_name": arguments.get("customer_name"),
                           "reference": arguments.get("reference"),
                           "due_date": arguments.get("due_date")
@@ -3476,8 +3549,9 @@ class ToolExecutor:
 
             elif operation == "list_invoices":
                 status = arguments.get("status")
+                limit = safe_int(arguments.get("limit"), 20)
                 invoices = await service.invoice_service.get_invoices(
-                    user.id, db, status=status, limit=arguments.get("limit", 20)
+                    user.id, db, status=status, limit=limit
                 )
                 data = [{"invoice_number": i.invoice_number, "amount": float(i.amount), "status": i.status, "reference": i.reference} for i in invoices]
                 formatted = "📋 Invoices:\n" + "\n".join([f"- {i['invoice_number']}: {i['amount']} ({i['status']})" for i in data])
@@ -3489,7 +3563,7 @@ class ToolExecutor:
             
             elif operation == "get_unmatched":
                 # Get unmatched payments
-                limit = arguments.get("limit", 10)
+                limit = safe_int(arguments.get("limit"), 10)
                 payments = await service.get_unmatched_payments(user.id, db, limit=limit)
                 
                 if not payments:
@@ -3557,7 +3631,7 @@ Description: {payment.description or 'N/A'}"""
                 }
             
             elif operation == "analyze_fraud":
-                payment_id = arguments.get("payment_id")
+                payment_id = safe_int(arguments.get("payment_id"), None)
                 transaction_id = arguments.get("transaction_id")
                 
                 if not payment_id and transaction_id:
@@ -3578,7 +3652,7 @@ Description: {payment.description or 'N/A'}"""
                 }
 
             elif operation == "verify_with_daraja":
-                payment_id = arguments.get("payment_id")
+                payment_id = safe_int(arguments.get("payment_id"), None)
                 transaction_id = arguments.get("transaction_id")
                 
                 if not payment_id and transaction_id:
@@ -3599,7 +3673,7 @@ Description: {payment.description or 'N/A'}"""
                 }
 
             elif operation == "get_fraud_signals":
-                payment_id = arguments.get("payment_id")
+                payment_id = safe_int(arguments.get("payment_id"), None)
                 if not payment_id:
                     return {"success": False, "error": "payment_id required"}
                 

@@ -18,6 +18,7 @@ from ..models import (Conversation, Message, User, Workflow, WorkflowExecution,
 from .dynamic_tool_registry import DynamicToolRegistry
 from .llm_service import LLMService
 from .tool_executor import ToolExecutor
+from .feature_flags import FeatureGate
 
 
 class WorkflowBuilderService:
@@ -30,6 +31,22 @@ class WorkflowBuilderService:
         """
         Create a workflow from natural language description and save to database.
         """
+        # Get user for subscription check
+        stmt = select(User).where(User.id == user_id)
+        result = await db.execute(stmt)
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            raise ValueError("User not found")
+
+        # Check plan limits
+        active_workflows = await self.get_active_workflow_count(user_id, db)
+        if not FeatureGate.can_activate_workflow(user, active_workflows):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Plan limit reached: {user.subscription_tier} plan allows only {FeatureGate.get_limits(user.subscription_tier)['max_active_workflows']} active workflows. Please upgrade."
+            )
+
         # Analyze the description to identify required tools and steps
         workflow_steps = await self._analyze_workflow_requirements(description, user_id, db)
         
@@ -117,6 +134,19 @@ class WorkflowBuilderService:
         await db.delete(workflow)
         await db.commit()
         return True
+
+    @staticmethod
+    async def get_active_workflow_count(user_id: int, db: AsyncSession) -> int:
+        """
+        Count active workflows for a user.
+        """
+        from sqlalchemy import func
+        stmt = select(func.count(Workflow.id)).where(
+            Workflow.user_id == user_id,
+            Workflow.status == WorkflowStatus.ACTIVE
+        )
+        result = await db.execute(stmt)
+        return result.scalar() or 0
     
     async def _analyze_workflow_requirements(self, description: str, user_id: int, db: AsyncSession) -> List[Dict[str, Any]]:
         """
@@ -488,10 +518,13 @@ class WorkflowBuilderService:
                 try:
                     # Use Jinja2 for robust expression evaluation (e.g. {{ a if b else c }})
                     template = Template(value)
-                    substituted[key] = template.render(**context)
+                    # Use render to get string result
+                    rendered = template.render(**context)
+                    # Handle cases where Jinja returns 'None' for missing attributes in some contexts
+                    substituted[key] = rendered
                 except Exception as e:
-                    print(f"Error rendering template for key {key}: {e}")
-                    # Fallback to original value if rendering fails
+                    # Log rendering errors but don't crash the whole workflow
+                    print(f"Variable substitution failed for '{value}': {e}")
                     substituted[key] = value
             elif isinstance(value, dict):
                 substituted[key] = self._substitute_variables(value, context)
