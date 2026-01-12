@@ -29,13 +29,19 @@ class ToolCallRequest(BaseModel):
 
 @router.get("/tools")
 async def list_tools_get(
+    include_all: bool = False,
+    all: bool = False,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Get available MCP tools for the current user."""
     try:
-        # Get user-specific tools based on their connections
-        tools = await dynamic_tool_registry.get_user_tools(current_user.id, db)
+        # Support both 'all' and 'include_all'
+        discovery_mode = include_all or all
+        
+        print(f"[DEBUG] list_tools_get called with discovery_mode={discovery_mode} for user {current_user.id}")
+        tools = await dynamic_tool_registry.get_user_tools(current_user.id, db, include_all=discovery_mode)
+        print(f"[DEBUG] Found {len(tools)} tools for user {current_user.id}")
 
         return {
             "success": True,

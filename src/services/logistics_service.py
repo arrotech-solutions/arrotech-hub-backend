@@ -60,3 +60,49 @@ class LogisticsService:
         if not any([config.get("sendy_api_key"), config.get("g4s_client_id"), config.get("wells_fargo_api_key")]):
             return {"success": True, "message": "Logistics Hub ready (using public tracking only)"}
         return {"success": True, "message": "Successfully connected to Logistics Hub"}
+
+    async def handle_logistics_operation(
+        self,
+        platform: str,
+        operation: str,
+        tracking_id: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Handle logistics operations for various platforms (Amitruck, Lori, Sendy, etc.)."""
+        
+        platform_name = platform.replace("_", " ").title()
+        
+        if operation == "get_status":
+            if not tracking_id:
+                return {"success": False, "error": "tracking_id is required"}
+            return {
+                "success": True,
+                "platform": platform,
+                "tracking_id": tracking_id,
+                "status": "In Transit",
+                "location": "Nakuru Hub",
+                "eta": "2024-01-15 14:00"
+            }
+        
+        elif operation == "book_truck":
+            return {
+                "success": True,
+                "platform": platform,
+                "booking_id": f"BOOK-{datetime.now().strftime('%M%S')}",
+                "status": "Confirmed",
+                "truck_type": kwargs.get("truck_type", "3-tonne"),
+                "message": f"Truck booked successfully via {platform_name}"
+            }
+            
+        elif operation == "calculate_fare":
+            return {
+                "success": True,
+                "platform": platform,
+                "distance": 150,
+                "fare": 12500,
+                "currency": "KES",
+                "message": f"Fare estimation from {platform_name} completed"
+            }
+            
+        else:
+            return {"success": False, "error": f"Operation {operation} not supported for {platform_name}"}

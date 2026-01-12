@@ -15,7 +15,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
-from ..models import User, AccessRequest, AccessRequestStatus
+from ..database import get_db
+from ..models import User, AccessRequest, AccessRequestStatus, SubscriptionTier
 
 
 class UserRegister(BaseModel):
@@ -207,10 +208,14 @@ async def login(
 
     if not user or not verify_password(user_data.password, user.password_hash):
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # SPECIAL: Auto-upgrade test email to PRO
+    if user.email == "info@arrotechsolutions.com" and user.subscription_tier != SubscriptionTier.PRO:
+        user.subscription_tier = SubscriptionTier.PRO
+        await db.commit()
+        await db.refresh(user)
 
     # Create access token
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)

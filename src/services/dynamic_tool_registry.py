@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
-from ..models import Connection, ConnectionStatus
+from ..models import Connection, ConnectionStatus, User, SubscriptionTier
 from .platform_registry import platform_registry
 
 logger = logging.getLogger(__name__)
@@ -467,16 +467,17 @@ class DynamicToolRegistry:
             }
         }
     
-    async def get_user_tools(self, user_id: int, db: AsyncSession) -> List[Dict[str, Any]]:
+    async def get_user_tools(self, user_id: int, db: AsyncSession, include_all: bool = False) -> List[Dict[str, Any]]:
         """Get tools available for a specific user based on their connections."""
         tools = []
         
         # Add base tools that are always available
         for tool_name, tool_config in self.base_tools.items():
+            t = tool_config.copy()
             # Add status field for frontend compatibility
-            tool_config["status"] = "available"
-            tool_config["id"] = tool_name  # Add id field for frontend
-            tools.append(tool_config)
+            t["status"] = "available"
+            t["id"] = tool_name  # Add id field for frontend
+            tools.append(t)
         
         # Get user's active connections
         result = await db.execute(
@@ -484,6 +485,7 @@ class DynamicToolRegistry:
             .filter(Connection.user_id == user_id, Connection.status == ConnectionStatus.ACTIVE)
         )
         connections = result.scalars().all()
+        active_platforms = {c.platform: c.id for c in connections}
         
         # Generate tools based on user's connections
         for connection in connections:
@@ -507,6 +509,42 @@ class DynamicToolRegistry:
                     tool["status"] = "available"
                     tool["id"] = tool["name"]
                     tools.append(tool)
+        
+        # If discovery mode, add all other available platform tools
+        if include_all:
+            processed_tool_names = {t["name"] for t in tools}
+            for platform in platform_registry.list_platforms():
+                if platform.id not in active_platforms:
+                    p_tools = platform_registry.get_platform_tools(platform.id)
+                    for tool in p_tools:
+                        if tool["name"] not in processed_tool_names:
+                            tool["status"] = "connection_required"
+                            tool["id"] = tool["name"]
+                            tools.append(tool)
+        
+        # Filter for Free Tier
+        user = await db.get(User, user_id)
+        if user and user.subscription_tier == SubscriptionTier.FREE:
+            allowed_tools = {
+                "mpesa_payment_reconciliation", 
+                "slack_send_message", 
+                "context_intelligence"
+            }
+            # Only filter if we aren't in strict discovery mode, or maybe we SHOULD filter even in discovery?
+            # The user said "users should have access to". This likely means execution access.
+            # But "access to" usually means "can see/use". 
+            # If I filter here, they won't even see other tools in the workflow builder if they are on free tier?
+            # Or maybe they see them but can't use them?
+            # User request: "users should have access to 1. mpesa... 2. ... 3. ..."
+            # This implies a restriction. I will filter the list.
+            
+            # Use list comprehension to filter, keeping "always_available" base tools if needed?
+            # The prompt says "1. mpesa..., slack..., context...". 
+            # It doesn't mention base tools. But usually base tools like "marketing_campaign_automation" defined above are important.
+            # However, I will stick to what the user explicitly requested for now to be safe, or 
+            # maybe I should check if I should exclude base_tools.
+            # Since the user was very specific, I will filter strict.
+            tools = [t for t in tools if t["name"] in allowed_tools]
         
         return tools
     

@@ -1483,11 +1483,18 @@ async def get_available_providers():
 
 
 @router.get("/tools")
-async def get_available_tools():
+async def get_available_tools(
+    include_all: bool = True,
+    all: bool = True,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """Get available MCP tools."""
     try:
-        # Get all tools from the dynamic registry
-        tools = await dynamic_tool_registry.get_all_tools(None)
+        # For chat tools, we default to ALL tools for discovery
+        discovery_mode = include_all or all
+        
+        tools = await dynamic_tool_registry.get_user_tools(current_user.id, db, include_all=discovery_mode)
 
         return {
             "success": True,

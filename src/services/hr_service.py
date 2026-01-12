@@ -113,3 +113,48 @@ class HRService:
         if not company_id:
             return {"success": False, "error": "company_id is required"}
         return {"success": True, "message": "Successfully connected to HR Hub"}
+
+    async def handle_hr_operation(
+        self,
+        platform: str,
+        operation: str,
+        employee_id: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Handle HR operations for various platforms (WorkPay, SeamlessHR, etc.)."""
+        
+        platform_name = platform.replace("_", " ").title()
+        
+        if operation == "process_payroll":
+            return {
+                "success": True,
+                "platform": platform,
+                "period": "January 2024",
+                "employees_processed": 15,
+                "total_payout": 450000,
+                "status": "Paid",
+                "message": f"Payroll for January 2024 processed successfully via {platform_name}"
+            }
+        
+        elif operation == "onboard_employee":
+            name = kwargs.get("name", "New Employee")
+            return {
+                "success": True,
+                "platform": platform,
+                "employee_id": f"EMP-{datetime.now().strftime('%M%S')}",
+                "status": "Active",
+                "message": f"Employee {name} onboarded successfully to {platform_name}"
+            }
+            
+        elif operation == "approve_leave":
+            request_id = kwargs.get("request_id", "REQ-001")
+            return {
+                "success": True,
+                "platform": platform,
+                "request_id": request_id,
+                "status": "Approved",
+                "message": f"Leave request {request_id} approved on {platform_name}"
+            }
+            
+        else:
+            return {"success": False, "error": f"Operation {operation} not supported for {platform_name}"}

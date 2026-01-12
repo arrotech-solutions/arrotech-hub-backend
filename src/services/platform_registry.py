@@ -38,6 +38,7 @@ class PlatformRegistry:
     def __init__(self):
         self.platforms: Dict[str, Platform] = {}
         self._initialize_default_platforms()
+        self._initialize_kenyan_platforms()
     
     def _initialize_default_platforms(self):
         """Initialize default platforms with their capabilities."""
@@ -1688,6 +1689,228 @@ class PlatformRegistry:
             },
             test_function="test_context_intelligence_connection"
         )
+
+    def _initialize_kenyan_platforms(self):
+        """Initialize the 50 new Kenyan business tools."""
+        
+        # Helper to create platforms in batch
+        def register_domain_tools(domain_id_list, domain_name_map, caps_template, icon, config_schema, features):
+            for pid in domain_id_list:
+                name = domain_name_map.get(pid, pid.replace("_", " ").title())
+                
+                # Customize capabilities for this specific platform
+                platform_caps = []
+                for cap in caps_template:
+                    platform_caps.append(PlatformCapability(
+                        name=cap.name,
+                        description=f"{name} {cap.description}",
+                        tool_name=f"{pid}_{cap.tool_name.split('_', 1)[1]}",
+                        input_schema=cap.input_schema,
+                        operations=cap.operations
+                    ))
+                
+                self.platforms[pid] = Platform(
+                    id=pid,
+                    name=name,
+                    description=f"Kenyan {name} integration for business operations",
+                    icon=icon,
+                    features=features,
+                    capabilities=platform_caps,
+                    config_schema=config_schema,
+                    test_function=f"test_{pid}_connection"
+                )
+
+        # 1. Fintech Tools
+        fintech_tools = ["airtel_money", "t_kash", "equity_jenga", "flutterwave", "paystack", "kopo_kopo", "cellulant", "pesapal", "ipay", "little_pay"]
+        fintech_names = {"airtel_money": "Airtel Money", "t_kash": "T-Kash", "equity_jenga": "Equity Jenga"}
+        fintech_caps = [
+            PlatformCapability(
+                name="Payment Operations",
+                description="operations including payment initiation and status queries",
+                tool_name="placeholder_payment_ops",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["initiate_payment", "query_status", "fetch_payouts", "verify_transaction"]},
+                        "amount": {"type": "number"},
+                        "phone_number": {"type": "string"},
+                        "transaction_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["initiate_payment", "query_status", "fetch_payouts", "verify_transaction"]
+            )
+        ]
+        register_domain_tools(fintech_tools, fintech_names, fintech_caps, "credit-card", 
+                             {"type": "object", "properties": {"api_key": {"type": "string"}}, "required": ["api_key"]},
+                             ["Real-time payments", "Transaction status", "Payout management"])
+
+        # 2. Ecommerce Tools
+        ecommerce_tools = ["jumia", "kilimall", "jiji", "masoko", "copia", "twiga_foods", "wasoko", "sky_garden"]
+        ecommerce_names = {"twiga_foods": "Twiga Foods", "sky_garden": "Sky Garden"}
+        ecommerce_caps = [
+            PlatformCapability(
+                name="Store Management",
+                description="operations for orders and inventory sync",
+                tool_name="placeholder_ecommerce_ops",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["fetch_orders", "sync_inventory", "update_order_status"]},
+                        "order_id": {"type": "string"},
+                        "product_data": {"type": "object"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["fetch_orders", "sync_inventory", "update_order_status"]
+            )
+        ]
+        register_domain_tools(ecommerce_tools, ecommerce_names, ecommerce_caps, "shopping-cart",
+                             {"type": "object", "properties": {"seller_id": {"type": "string"}, "api_token": {"type": "string"}}, "required": ["seller_id", "api_token"]},
+                             ["Order tracking", "Inventory sync", "Seller analytics"])
+
+        # 3. Accounting & Tax
+        accounting_tools = ["kra_itax", "quickbooks", "xero", "zoho_books", "lipabiz", "sasapay", "vyapar"]
+        accounting_names = {"kra_itax": "KRA iTax", "zoho_books": "Zoho Books"}
+        accounting_caps = [
+            PlatformCapability(
+                name="Financial Controls",
+                description="operations for tax compliance and invoicing",
+                tool_name="placeholder_accounting_ops",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["validate_pin", "check_compliance", "sync_invoices"]},
+                        "pin": {"type": "string"},
+                        "invoice_data": {"type": "object"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["validate_pin", "check_compliance", "sync_invoices"]
+            )
+        ]
+        register_domain_tools(accounting_tools, accounting_names, accounting_caps, "file-text",
+                             {"type": "object", "properties": {"client_id": {"type": "string"}, "client_secret": {"type": "string"}}, "required": ["client_id"]},
+                             ["Tax compliance", "Invoice automation", "Financial reporting"])
+
+        # 4. Logistics
+        logistics_tools = ["amitruck", "lori_systems", "sendy", "busybee", "fargo_courier", "g4s"]
+        logistics_names = {"lori_systems": "Lori Systems", "fargo_courier": "Fargo Courier"}
+        logistics_caps = [
+            PlatformCapability(
+                name="Logistics Operations",
+                description="operations for tracking and booking deliveries",
+                tool_name="placeholder_logistics_ops",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_status", "book_truck", "calculate_fare"]},
+                        "tracking_id": {"type": "string"},
+                        "pickup": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_status", "book_truck", "calculate_fare"]
+            )
+        ]
+        register_domain_tools(logistics_tools, logistics_names, logistics_caps, "truck",
+                             {"type": "object", "properties": {"api_key": {"type": "string"}}, "required": ["api_key"]},
+                             ["Live tracking", "Fleet management", "Route optimization"])
+
+        # 5. HR & Payroll
+        hr_tools = ["workpay", "seamlesshr", "bitrix24", "bamboohr", "rescue"]
+        hr_names = {"workpay": "WorkPay", "seamlesshr": "SeamlessHR", "bamboohr": "BambooHR"}
+        hr_caps = [
+            PlatformCapability(
+                name="Workforce Management",
+                description="operations for payroll and employee management",
+                tool_name="placeholder_hr_ops",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["process_payroll", "approve_leave", "onboard_employee"]},
+                        "employee_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["process_payroll", "approve_leave", "onboard_employee"]
+            )
+        ]
+        register_domain_tools(hr_tools, hr_names, hr_caps, "users",
+                             {"type": "object", "properties": {"subdomain": {"type": "string"}, "api_key": {"type": "string"}}, "required": ["api_key"]},
+                             ["Payroll automation", "Leave management", "Employee onboarding"])
+
+        # 6. Agritech
+        agri_tools = ["shambasmart", "digifarm", "sunculture", "apollo_agriculture", "iprocure", "m_farm", "farmdrive"]
+        agri_names = {"shambasmart": "ShambaSmart", "digifarm": "DigiFarm", "apollo_agriculture": "Apollo Agriculture"}
+        agri_caps = [
+            PlatformCapability(
+                name="Agritech Services",
+                description="operations for market data and farm inputs",
+                tool_name="placeholder_agri_ops",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_market_prices", "order_inputs", "request_credit"]},
+                        "crop": {"type": "string"},
+                        "location": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_market_prices", "order_inputs", "request_credit"]
+            )
+        ]
+        register_domain_tools(agri_tools, agri_names, agri_caps, "leaf",
+                             {"type": "object", "properties": {"account_id": {"type": "string"}}, "required": ["account_id"]},
+                             ["Market pricing", "Input ordering", "Yield monitoring"])
+
+        # 7. Healthtech
+        health_tools = ["mydawa", "penda_health", "ilara_health"]
+        health_names = {"mydawa": "MyDawa", "penda_health": "Penda Health", "ilara_health": "Ilara Health"}
+        health_caps = [
+            PlatformCapability(
+                name="Health Management",
+                description="operations for medical records and appointments",
+                tool_name="placeholder_health_ops",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["book_appointment", "order_medicine", "view_records"]},
+                        "patient_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["book_appointment", "order_medicine", "view_records"]
+            )
+        ]
+        register_domain_tools(health_tools, health_names, health_caps, "activity",
+                             {"type": "object", "properties": {"patient_token": {"type": "string"}}, "required": ["patient_token"]},
+                             ["Telemedicine", "Prescription sync", "Appointment booking"])
+
+        # 8. Utilities
+        utility_tools = ["kenya_power", "nairobi_water", "safaricom_biz", "zuku"]
+        utility_names = {"kenya_power": "Kenya Power", "nairobi_water": "Nairobi Water", "safaricom_biz": "Safaricom Biz"}
+        utility_caps = [
+            PlatformCapability(
+                name="Utility Management",
+                description="operations for bill payments and usage tracking",
+                tool_name="placeholder_utility_ops",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["buy_tokens", "pay_bill", "check_usage"]},
+                        "account_number": {"type": "string"},
+                        "amount": {"type": "number"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["buy_tokens", "pay_bill", "check_usage"]
+            )
+        ]
+        register_domain_tools(utility_tools, utility_names, utility_caps, "zap",
+                             {"type": "object", "properties": {"account_no": {"type": "string"}}, "required": ["account_no"]},
+                             ["Bill automation", "Usage tracking", "Outage reports"])
+
     
     def get_platform(self, platform_id: str) -> Optional[Platform]:
         """Get a platform by ID."""

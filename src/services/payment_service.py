@@ -622,3 +622,44 @@ class PaymentService:
             await self.handle_subscription_updated(event, db)
         elif event_type == 'customer.subscription.deleted':
             await self.handle_subscription_deleted(event, db)
+
+    async def process_kenyan_payment(
+        self,
+        provider: str,
+        phone_number: str,
+        amount: int,
+        operation: str = "initiate_payment",
+        transaction_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Process payments for Kenyan Fintech providers (Airtel, T-Kash, Equity, etc.)."""
+        # Mock logic for new providers - in production, this would call provider-specific APIs
+        # provider is one of airtel_money, t_kash, equity_jenga, etc.
+        
+        provider_name = provider.replace("_", " ").title()
+        
+        if operation == "initiate_payment":
+            return {
+                "success": True,
+                "provider": provider,
+                "transaction_id": f"{provider[:2].upper()}-{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                "message": f"Payment of {amount} KES initiated via {provider_name}"
+            }
+        elif operation == "query_status":
+            return {
+                "success": True,
+                "provider": provider,
+                "status": "completed",
+                "transaction_id": transaction_id,
+                "message": f"Status query for {transaction_id} on {provider_name} returned: COMPLETED"
+            }
+        elif operation == "fetch_payouts":
+            return {
+                "success": True,
+                "provider": provider,
+                "payouts": [
+                    {"id": "P1", "amount": 1200, "date": "2024-01-10"},
+                    {"id": "P2", "amount": 5500, "date": "2024-01-11"}
+                ]
+            }
+        else:
+            return {"success": False, "error": f"Unsupported operation: {operation}"}
