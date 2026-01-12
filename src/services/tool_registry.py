@@ -15,6 +15,7 @@ class ToolRegistry:
     def __init__(self):
         self.tools: Dict[str, Dict[str, Any]] = {}
         self._initialize_tools()
+        self._initialize_kenyan_tools()
     
     def _initialize_tools(self):
         """Initialize available MCP tools."""
@@ -1198,6 +1199,133 @@ class ToolRegistry:
                 }
             }
         }
+
+    def _initialize_kenyan_tools(self):
+        """Initialize tools for the 50 new Kenyan business platforms."""
+        
+        # Helper to batch register tools
+        def register_domain_tools(tool_ids, domain_desc, input_schema):
+            for tid in tool_ids:
+                # Use the pattern {id}_{domain_suffix} to match platform_registry
+                if "payment" in domain_desc.lower():
+                    tool_name = f"{tid}_payment_ops"
+                elif "ecommerce" in domain_desc.lower() or "store" in domain_desc.lower():
+                    tool_name = f"{tid}_ecommerce_ops"
+                elif "accounting" in domain_desc.lower() or "financial" in domain_desc.lower():
+                    tool_name = f"{tid}_accounting_ops"
+                elif "logistics" in domain_desc.lower():
+                    tool_name = f"{tid}_logistics_ops"
+                elif "hr" in domain_desc.lower() or "workforce" in domain_desc.lower():
+                    tool_name = f"{tid}_hr_ops"
+                elif "agritech" in domain_desc.lower() or "agri" in domain_desc.lower():
+                    tool_name = f"{tid}_agri_ops"
+                elif "health" in domain_desc.lower():
+                    tool_name = f"{tid}_health_ops"
+                elif "utility" in domain_desc.lower():
+                    tool_name = f"{tid}_utility_ops"
+                else:
+                    continue
+                
+                name_pretty = tid.replace("_", " ").title()
+                self.tools[tool_name] = {
+                    "name": tool_name,
+                    "description": f"{name_pretty} {domain_desc}",
+                    "inputSchema": input_schema
+                }
+
+        # fintech
+        fintech_tools = ["airtel_money", "t_kash", "equity_jenga", "flutterwave", "paystack", "kopo_kopo", "cellulant", "pesapal", "ipay", "little_pay"]
+        register_domain_tools(fintech_tools, "Payment operations including initiation, status queries, and payouts", {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["initiate_payment", "query_status", "fetch_payouts", "verify_transaction"]},
+                "amount": {"type": "number"},
+                "phone_number": {"type": "string"},
+                "transaction_id": {"type": "string"}
+            },
+            "required": ["operation"]
+        })
+
+        # ecommerce
+        ecommerce_tools = ["jumia", "kilimall", "jiji", "masoko", "copia", "twiga_foods", "wasoko", "sky_garden"]
+        register_domain_tools(ecommerce_tools, "Store management operations for orders, inventory sync, and status updates", {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["fetch_orders", "sync_inventory", "update_order_status"]},
+                "order_id": {"type": "string"},
+                "product_data": {"type": "object"}
+            },
+            "required": ["operation"]
+        })
+
+        # accounting
+        accounting_tools = ["kra_itax", "quickbooks", "xero", "zoho_books", "lipabiz", "sasapay", "vyapar"]
+        register_domain_tools(accounting_tools, "Financial and accounting operations for tax compliance and invoicing", {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["validate_pin", "check_compliance", "sync_invoices"]},
+                "pin": {"type": "string"},
+                "invoice_data": {"type": "object"}
+            },
+            "required": ["operation"]
+        })
+
+        # logistics
+        logistics_tools = ["amitruck", "lori_systems", "sendy", "busybee", "fargo_courier", "g4s"]
+        register_domain_tools(logistics_tools, "Logistics operations for tracking, booking, and fare calculation", {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["get_status", "book_truck", "calculate_fare"]},
+                "tracking_id": {"type": "string"},
+                "pickup": {"type": "string"}
+            },
+            "required": ["operation"]
+        })
+
+        # hr
+        hr_tools = ["workpay", "seamlesshr", "bitrix24", "bamboohr", "rescue"]
+        register_domain_tools(hr_tools, "HR and workforce management operations for payroll, leave, and onboarding", {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["process_payroll", "approve_leave", "onboard_employee"]},
+                "employee_id": {"type": "string"}
+            },
+            "required": ["operation"]
+        })
+
+        # agritech
+        agri_tools = ["shambasmart", "digifarm", "sunculture", "apollo_agriculture", "iprocure", "m_farm", "farmdrive"]
+        register_domain_tools(agri_tools, "Agritech operations for market prices, input ordering, and credit requests", {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["get_market_prices", "order_inputs", "request_credit"]},
+                "crop": {"type": "string"}
+            },
+            "required": ["operation"]
+        })
+
+        # health
+        health_tools = ["mydawa", "penda_health", "ilara_health"]
+        register_domain_tools(health_tools, "Health management operations for records, appointments, and medicine orders", {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["book_appointment", "order_medicine", "view_records"]},
+                "patient_id": {"type": "string"}
+            },
+            "required": ["operation"]
+        })
+
+        # utility
+        utility_tools = ["kenya_power", "nairobi_water", "safaricom_biz", "zuku"]
+        register_domain_tools(utility_tools, "Utility management operations for tokens, bill payments, and usage tracking", {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["buy_tokens", "pay_bill", "check_usage"]},
+                "account_no": {"type": "string"},
+                "amount": {"type": "number"}
+            },
+            "required": ["operation"]
+        })
     
     def get_tools_for_llm(self) -> List[Dict[str, Any]]:
         """Get tools in format suitable for LLM function calling."""

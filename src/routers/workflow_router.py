@@ -5,10 +5,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import func, select
 from ..database import get_db
 from ..models import (User, Workflow, WorkflowExecution,
                       WorkflowExecutionStatus, WorkflowStatus, WorkflowStep,
-                      WorkflowTriggerType)
+                      WorkflowTriggerType, SubscriptionTier)
 from ..services.workflow_builder_service import WorkflowBuilderService
 from .auth_router import get_current_user
 
@@ -115,6 +116,19 @@ async def create_workflow(
 ):
     """Create a workflow from natural language description."""
     try:
+        # Check active workflows limit for Free Tier
+        if user.subscription_tier == SubscriptionTier.FREE:
+            active_workflows_count = await db.scalar(
+                select(func.count(Workflow.id))
+                .filter(Workflow.user_id == user.id, Workflow.status == WorkflowStatus.ACTIVE)
+            ) or 0
+            
+            if active_workflows_count >= 3:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Free tier users are limited to 3 active workflows. Please upgrade to create more."
+                )
+
         # Return a mock successful response to test if the issue is in database operations
         # This will help isolate if the problem is in DB operations or elsewhere
         

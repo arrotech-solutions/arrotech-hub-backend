@@ -90,7 +90,7 @@ class BaseConfig(BaseSettings):
     ENVIRONMENT: str = "development"
 
     # Rate Limits
-    FREE_TIER_LIMIT: int = 100  # requests per day
+    FREE_TIER_LIMIT: int = 10  # requests per day
     PRO_TIER_LIMIT: int = 10000  # requests per day
 
     # Pricing

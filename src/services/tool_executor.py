@@ -30,6 +30,12 @@ from .hr_service import HRService
 from .lead_intelligence_service import LeadIntelligenceService
 from .logistics_service import LogisticsService
 from .bilingual_service import BilingualService
+from .payment_service import PaymentService
+from .ecommerce_service import EcommerceService
+from .accounting_service import AccountingService
+from .agritech_service import AgritechService
+from .health_service import HealthService
+from .utilities_service import UtilitiesService
 from .feature_flags import FeatureGate
 
 logger = logging.getLogger(__name__)
@@ -58,6 +64,12 @@ class ToolExecutor:
             "lead_intelligence": LeadIntelligenceService(),
             "logistics_hub": LogisticsService(),
             "context_intelligence": BilingualService(),
+            "fintech": PaymentService(),
+            "ecommerce": EcommerceService(),
+            "accounting": AccountingService(),
+            "agritech": AgritechService(),
+            "health": HealthService(),
+            "utility": UtilitiesService(),
         }
         # Initialize services
         self._initialized = False
@@ -142,6 +154,18 @@ class ToolExecutor:
                 return await self._execute_logistics_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("context_"):
                 return await self._execute_context_tool(tool_name, arguments, user, db)
+            elif tool_name.endswith("_payment_ops"):
+                return await self._execute_fintech_tool(tool_name, arguments, user, db)
+            elif tool_name.endswith("_ecommerce_ops"):
+                return await self._execute_ecommerce_tool(tool_name, arguments, user, db)
+            elif tool_name.endswith("_accounting_ops"):
+                return await self._execute_accounting_tool(tool_name, arguments, user, db)
+            elif tool_name.endswith("_agri_ops"):
+                return await self._execute_agri_tool(tool_name, arguments, user, db)
+            elif tool_name.endswith("_health_ops"):
+                return await self._execute_health_tool(tool_name, arguments, user, db)
+            elif tool_name.endswith("_utility_ops"):
+                return await self._execute_utility_tool(tool_name, arguments, user, db)
             else:
                 return {
                     "success": False,
@@ -181,6 +205,15 @@ class ToolExecutor:
         if tool_name.startswith("hr_"): return "hr_hub"
         if tool_name.startswith("lead_intelligence_"): return "lead_intelligence"
         if tool_name.startswith("logistics_"): return "logistics_hub"
+        
+        # Kenyan Specific Mappings
+        if tool_name.endswith("_payment_ops"): return tool_name.replace("_payment_ops", "")
+        if tool_name.endswith("_ecommerce_ops"): return tool_name.replace("_ecommerce_ops", "")
+        if tool_name.endswith("_accounting_ops"): return tool_name.replace("_accounting_ops", "")
+        if tool_name.endswith("_agri_ops"): return tool_name.replace("_agri_ops", "")
+        if tool_name.endswith("_health_ops"): return tool_name.replace("_health_ops", "")
+        if tool_name.endswith("_utility_ops"): return tool_name.replace("_utility_ops", "")
+        
         return None
 
     async def _execute_slack_tool(
@@ -3709,7 +3742,10 @@ Description: {payment.description or 'N/A'}"""
         """Execute HR Hub related tools."""
         try:
             service = self.services["hr_hub"]
-            if tool_name == "hr_leave_management":
+            if tool_name.endswith("_hr_ops"):
+                platform = tool_name.replace("_hr_ops", "")
+                return await service.handle_hr_operation(platform=platform, **arguments)
+            elif tool_name == "hr_leave_management":
                 operation = arguments.get("operation")
                 if operation == "get_balance":
                     return await service.get_leave_balance(user.id, arguments.get("employee_id", "me"))
@@ -3747,7 +3783,10 @@ Description: {payment.description or 'N/A'}"""
         """Execute Logistics Hub related tools."""
         try:
             service = self.services["logistics_hub"]
-            if tool_name == "logistics_tracking":
+            if tool_name.endswith("_logistics_ops"):
+                platform = tool_name.replace("_logistics_ops", "")
+                return await service.handle_logistics_operation(platform=platform, **arguments)
+            elif tool_name == "logistics_tracking":
                 return await service.get_tracking_status(arguments.get("tracking_number", ""), provider=arguments.get("provider", "automatic"))
             elif tool_name == "logistics_delivery":
                 return await service.create_delivery_request(arguments)
@@ -3805,6 +3844,72 @@ Description: {payment.description or 'N/A'}"""
                 
         except Exception as e:
             logger.error(f"Error in context_intelligence tool: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_fintech_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute Fintech related tools."""
+        try:
+            service = self.services["fintech"]
+            platform = tool_name.replace("_payment_ops", "")
+            return await service.process_kenyan_payment(
+                provider=platform,
+                phone_number=arguments.get("phone_number", ""),
+                amount=arguments.get("amount", 0),
+                operation=arguments.get("operation", "initiate_payment"),
+                transaction_id=arguments.get("transaction_id")
+            )
+        except Exception as e:
+            logger.error(f"Error in Fintech tool {tool_name}: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_ecommerce_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute E-commerce related tools."""
+        try:
+            service = self.services["ecommerce"]
+            platform = tool_name.replace("_ecommerce_ops", "")
+            return await service.handle_operation(platform=platform, **arguments)
+        except Exception as e:
+            logger.error(f"Error in E-commerce tool {tool_name}: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_accounting_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute Accounting related tools."""
+        try:
+            service = self.services["accounting"]
+            platform = tool_name.replace("_accounting_ops", "")
+            return await service.handle_operation(platform=platform, **arguments)
+        except Exception as e:
+            logger.error(f"Error in Accounting tool {tool_name}: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_agri_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute Agritech related tools."""
+        try:
+            service = self.services["agritech"]
+            platform = tool_name.replace("_agri_ops", "")
+            return await service.handle_operation(platform=platform, **arguments)
+        except Exception as e:
+            logger.error(f"Error in Agritech tool {tool_name}: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_health_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute Healthtech related tools."""
+        try:
+            service = self.services["health"]
+            platform = tool_name.replace("_health_ops", "")
+            return await service.handle_operation(platform=platform, **arguments)
+        except Exception as e:
+            logger.error(f"Error in Healthtech tool {tool_name}: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_utility_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute Utility related tools."""
+        try:
+            service = self.services["utility"]
+            platform = tool_name.replace("_utility_ops", "")
+            return await service.handle_operation(platform=platform, **arguments)
+        except Exception as e:
+            logger.error(f"Error in Utility tool {tool_name}: {e}")
             return {"success": False, "error": str(e)}
 
 
