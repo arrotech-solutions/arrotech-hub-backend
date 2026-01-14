@@ -24,7 +24,7 @@ from .routers import (access_router, agent_router, analytics_router, api_router,
 from .services import (BillingService, ContentCreationService,
                        FileManagementService, GA4Service, HubSpotService,
                        RateLimitService, SlackService, SocialMediaService,
-                       WebToolsService)
+                       WebToolsService, WorkflowSchedulerService)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -40,6 +40,7 @@ social_media_service = SocialMediaService()
 file_management_service = FileManagementService()
 web_tools_service = WebToolsService()
 content_creation_service = ContentCreationService()
+workflow_scheduler_service = WorkflowSchedulerService()
 
 
 @asynccontextmanager
@@ -72,12 +73,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Slack service initialization failed: {e}")
 
+    # Start Workflow Scheduler
+    try:
+        await workflow_scheduler_service.start()
+    except Exception as e:
+        logger.error(f"Failed to start Workflow Scheduler: {e}")
+
     logger.info("Services ready - app is now accepting requests")
 
     yield
 
     # Shutdown
     logger.info("Shutting down Mini-Hub MCP Server...")
+    workflow_scheduler_service.shutdown()
 
 # Create FastAPI app
 app = FastAPI(

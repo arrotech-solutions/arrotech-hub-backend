@@ -114,7 +114,44 @@ class WorkflowBuilderService:
         if not workflow:
             return None
         
-        # Update workflow fields
+        # Handle steps update separately
+        if 'steps' in updates:
+            steps_data = updates.pop('steps')
+            
+            # Delete existing steps
+            # First delete executions associated with these steps to avoid FK violation
+            # We use a subquery to identify step executions to delete
+            from ..models import WorkflowStepExecution
+            
+            # Find steps to be deleted
+            steps_subquery = select(WorkflowStep.id).where(WorkflowStep.workflow_id == workflow_id)
+            
+            # Delete executions referencing these steps
+            delete_executions_stmt = delete(WorkflowStepExecution).where(WorkflowStepExecution.step_id.in_(steps_subquery))
+            await db.execute(delete_executions_stmt)
+            
+            # Now delete the steps
+            stmt = delete(WorkflowStep).where(WorkflowStep.workflow_id == workflow_id)
+            await db.execute(stmt)
+            
+            # Create new steps
+            for step_data in steps_data:
+                # Handle both dict and object (if pydantic model passed)
+                s_data = step_data if isinstance(step_data, dict) else step_data.dict()
+                
+                step = WorkflowStep(
+                    workflow_id=workflow.id,
+                    step_number=s_data.get('step_number'),
+                    tool_name=s_data.get('tool_name'),
+                    tool_parameters=s_data.get('tool_parameters', {}),
+                    description=s_data.get('description', ''),
+                    condition=s_data.get('condition'),
+                    retry_config=s_data.get('retry_config', {"max_retries": 3, "retry_delay": 5}),
+                    timeout=s_data.get('timeout', 30)
+                )
+                db.add(step)
+        
+        # Update other workflow fields
         for field, value in updates.items():
             if hasattr(workflow, field):
                 setattr(workflow, field, value)

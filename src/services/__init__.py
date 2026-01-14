@@ -25,6 +25,7 @@ from .social_media_service import SocialMediaService
 from .web_tools_service import WebToolsService
 from .white_label_service import WhiteLabelService
 from .workflow_builder_service import WorkflowBuilderService
+from .workflow_scheduler import WorkflowSchedulerService
 
 __all__ = [
     "ABTestingService",
@@ -49,5 +50,6 @@ __all__ = [
     "WhiteLabelService",
     "WorkflowBuilderService",
     "AsanaService",
-    "PowerBIService"
-] 
+    "PowerBIService",
+    "WorkflowSchedulerService",
+]
