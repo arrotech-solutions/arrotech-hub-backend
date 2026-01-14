@@ -9,7 +9,6 @@ primary_region = 'jnb'
 [build]
 
 [deploy]
-  # Stamp database to mark existing tables as migrated, then run any new migrations
   release_command = "bash /app/scripts/migrate.sh"
 
 [http_service]

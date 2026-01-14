@@ -41,6 +41,7 @@ class WorkflowFromSteps(BaseModel):
     trigger_type: str = "manual"
     trigger_config: Dict[str, Any] = None
     variables: Dict[str, Any] = None
+    workflow_metadata: Dict[str, Any] = None
 
 
 class WorkflowUpdate(BaseModel):
@@ -50,6 +51,8 @@ class WorkflowUpdate(BaseModel):
     trigger_type: str = None
     trigger_config: Dict[str, Any] = None
     variables: Dict[str, Any] = None
+    steps: List[Dict[str, Any]] = None
+    workflow_metadata: Dict[str, Any] = None
 
 
 class WorkflowExecute(BaseModel):
@@ -367,7 +370,7 @@ async def get_workflow(
         )
 
 
-@router.put("/{workflow_id}", response_model=WorkflowResponse)
+@router.put("/{workflow_id}")
 async def update_workflow(
     workflow_id: int,
     data: WorkflowUpdate,
@@ -392,6 +395,10 @@ async def update_workflow(
             updates["trigger_config"] = data.trigger_config
         if data.variables is not None:
             updates["variables"] = data.variables
+        if data.steps is not None:
+            updates["steps"] = data.steps
+        if data.workflow_metadata is not None:
+            updates["workflow_metadata"] = data.workflow_metadata
         
         workflow = await workflow_service.update_workflow(workflow_id, user.id, updates, db)
         
@@ -401,30 +408,34 @@ async def update_workflow(
                 detail="Workflow not found"
             )
         
-        return WorkflowResponse(
-            id=workflow.id,
-            name=workflow.name,
-            description=workflow.description,
-            status=workflow.status,
-            version=workflow.version,
-            is_template=workflow.is_template,
-            trigger_type=workflow.trigger_type,
-            trigger_config=workflow.trigger_config,
-            variables=workflow.variables,
-            workflow_metadata=workflow.workflow_metadata,
-            created_at=workflow.created_at.isoformat(),
-            updated_at=workflow.updated_at.isoformat() if workflow.updated_at else None,
-            steps=[{
-                "id": step.id,
-                "step_number": step.step_number,
-                "tool_name": step.tool_name,
-                "tool_parameters": step.tool_parameters,
-                "description": step.description,
-                "condition": step.condition,
-                "retry_config": step.retry_config,
-                "timeout": step.timeout
-            } for step in workflow.steps]
-        )
+        return {
+            "success": True,
+            "data": {
+                "id": workflow.id,
+                "name": workflow.name,
+                "description": workflow.description,
+                "status": workflow.status,
+                "version": workflow.version,
+                "is_template": workflow.is_template,
+                "trigger_type": workflow.trigger_type,
+                "trigger_config": workflow.trigger_config,
+                "variables": workflow.variables,
+                "workflow_metadata": workflow.workflow_metadata,
+                "created_at": workflow.created_at.isoformat(),
+                "updated_at": workflow.updated_at.isoformat() if workflow.updated_at else None,
+                "steps": [{
+                    "id": step.id,
+                    "step_number": step.step_number,
+                    "tool_name": step.tool_name,
+                    "tool_parameters": step.tool_parameters,
+                    "description": step.description,
+                    "condition": step.condition,
+                    "retry_config": step.retry_config,
+                    "timeout": step.timeout
+                } for step in workflow.steps]
+            }
+        }
+
     except HTTPException:
         raise
     except Exception as e:
@@ -880,7 +891,7 @@ async def create_workflow_from_steps(
             user_id=user.id,
             name=data.workflow_name,
             description=data.description,
-            status=WorkflowStatus.DRAFT,
+            status=WorkflowStatus.ACTIVE,
             trigger_type=WorkflowTriggerType(data.trigger_type) if data.trigger_type else WorkflowTriggerType.MANUAL,
             trigger_config=data.trigger_config,
             variables=data.variables or {},
