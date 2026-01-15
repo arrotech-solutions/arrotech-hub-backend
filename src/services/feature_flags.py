@@ -21,9 +21,16 @@ PLAN_LIMITS: Dict[str, Dict[str, Any]] = {
         "support_level": "priority_email",
         "reports": "daily_auto"
     },
+    SubscriptionTier.TESTING: {
+        "max_active_workflows": 9999,  # Unlimited for testing
+        "max_ai_messages_daily": 9999,  # Unlimited for testing
+        "allowed_connections": ["*"],  # All allowed for testing
+        "support_level": "email",
+        "reports": "daily_auto"
+    },
     SubscriptionTier.PRO: {
         "max_active_workflows": 9999,  # Unlimited
-        "max_ai_messages_daily": 9999, # Unlimited
+        "max_ai_messages_daily": 9999,  # Unlimited
         "allowed_connections": ["*"],  # All allowed
         "support_level": "dedicated_whatsapp",
         "reports": "real_time"

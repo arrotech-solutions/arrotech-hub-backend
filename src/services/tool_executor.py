@@ -36,6 +36,14 @@ from .accounting_service import AccountingService
 from .agritech_service import AgritechService
 from .health_service import HealthService
 from .utilities_service import UtilitiesService
+from .google_workspace import (
+    GoogleWorkspaceBaseClient,
+    GmailService,
+    CalendarService,
+    DriveService,
+    SheetsService,
+    DocsService
+)
 from .feature_flags import FeatureGate
 
 logger = logging.getLogger(__name__)
@@ -134,6 +142,8 @@ class ToolExecutor:
                 return await self._execute_social_media_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("asana_"):
                 return await self._execute_asana_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("google_workspace_"):
+                return await self._execute_google_workspace_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("powerbi_"):
                 return await self._execute_powerbi_tool(tool_name, arguments, user, db)
             elif tool_name == "file_management":
@@ -200,6 +210,7 @@ class ToolExecutor:
         if tool_name.startswith("whatsapp_"): return "whatsapp"
         if tool_name.startswith("social_media_"): return "social_media"
         if tool_name.startswith("asana_"): return "asana"
+        if tool_name.startswith("google_workspace_"): return "google_workspace"
         if tool_name.startswith("powerbi_"): return "powerbi"
         if tool_name.startswith("mpesa_"): return "mpesa"
         if tool_name.startswith("hr_"): return "hr_hub"
@@ -2325,6 +2336,308 @@ class ToolExecutor:
             return {
                 "success": False,
                 "error": f"Asana tool execution failed: {str(e)}"
+            }
+    
+    async def _execute_google_workspace_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute Google Workspace tools."""
+        try:
+            # Get user's Google Workspace connection
+            result = await db.execute(
+                select(Connection)
+                .filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == "google_workspace",
+                    Connection.status == ConnectionStatus.ACTIVE
+                )
+            )
+            connection = result.scalars().first()
+            
+            if not connection:
+                return {
+                    "success": False,
+                    "error": "No active Google Workspace connection found. Please connect your Google Workspace account first."
+                }
+            
+            # Get OAuth credentials from connection
+            client_id = connection.config.get("client_id")
+            client_secret = connection.config.get("client_secret")
+            refresh_token = connection.config.get("refresh_token")
+            
+            if not all([client_id, client_secret, refresh_token]):
+                return {
+                    "success": False,
+                    "error": "Incomplete Google Workspace credentials in connection"
+                }
+            
+            # Initialize base client
+            base_client = GoogleWorkspaceBaseClient(
+                client_id=client_id,
+                client_secret=client_secret,
+                refresh_token=refresh_token
+            )
+            
+            operation = arguments.get("operation")
+            
+            # Route to appropriate service based on tool name
+            if tool_name == "google_workspace_gmail":
+                service = GmailService(base_client)
+                
+                if operation == "send_email":
+                    return await service.send_email(
+                        to=arguments.get("to"),
+                        subject=arguments.get("subject"),
+                        body=arguments.get("body"),
+                        cc=arguments.get("cc"),
+                        bcc=arguments.get("bcc"),
+                        html=arguments.get("html", False)
+                    )
+                elif operation == "read_emails":
+                    return await service.read_emails(
+                        max_results=arguments.get("max_results", 10),
+                        label_ids=arguments.get("label_ids"),
+                        query=arguments.get("query")
+                    )
+                elif operation == "search_emails":
+                    return await service.search_emails(
+                        query=arguments.get("query"),
+                        max_results=arguments.get("max_results", 50)
+                    )
+                elif operation == "create_label":
+                    return await service.create_label(
+                        name=arguments.get("label_name")
+                    )
+                elif operation == "apply_label":
+                    return await service.apply_label(
+                        message_ids=arguments.get("message_ids"),
+                        label_ids=arguments.get("label_ids")
+                    )
+                elif operation == "create_draft":
+                    return await service.create_draft(
+                        to=arguments.get("to"),
+                        subject=arguments.get("subject"),
+                        body=arguments.get("body"),
+                        cc=arguments.get("cc"),
+                        html=arguments.get("html", False)
+                    )
+                elif operation == "delete_email":
+                    return await service.delete_email(
+                        message_id=arguments.get("message_id"),
+                        permanent=arguments.get("permanent", False)
+                    )
+                elif operation == "get_email_details":
+                    return await service.get_email_details(
+                        message_id=arguments.get("message_id")
+                    )
+            
+            elif tool_name == "google_workspace_calendar":
+                service = CalendarService(base_client)
+                
+                if operation == "create_event":
+                    return await service.create_event(
+                        summary=arguments.get("summary"),
+                        start_time=arguments.get("start_time"),
+                        end_time=arguments.get("end_time"),
+                        description=arguments.get("description"),
+                        location=arguments.get("location"),
+                        attendees=arguments.get("attendees"),
+                        timezone=arguments.get("timezone", "Africa/Nairobi")
+                    )
+                elif operation == "list_events":
+                    return await service.list_events(
+                        time_min=arguments.get("time_min"),
+                        time_max=arguments.get("time_max"),
+                        max_results=arguments.get("max_results", 10)
+                    )
+                elif operation == "update_event":
+                    return await service.update_event(
+                        event_id=arguments.get("event_id"),
+                        summary=arguments.get("summary"),
+                        start_time=arguments.get("start_time"),
+                        end_time=arguments.get("end_time"),
+                        description=arguments.get("description"),
+                        location=arguments.get("location")
+                    )
+                elif operation == "delete_event":
+                    return await service.delete_event(
+                        event_id=arguments.get("event_id")
+                    )
+                elif operation == "check_availability":
+                    return await service.check_availability(
+                        time_min=arguments.get("time_min"),
+                        time_max=arguments.get("time_max"),
+                        attendees=arguments.get("attendees")
+                    )
+                elif operation == "create_meeting":
+                    return await service.create_meeting(
+                        summary=arguments.get("summary"),
+                        start_time=arguments.get("start_time"),
+                        end_time=arguments.get("end_time"),
+                        attendees=arguments.get("attendees"),
+                        description=arguments.get("description")
+                    )
+            
+            elif tool_name == "google_workspace_drive":
+                service = DriveService(base_client)
+                
+                if operation == "upload_file":
+                    # Convert content string to bytes if needed
+                    content = arguments.get("content")
+                    if isinstance(content, str):
+                        content = content.encode("utf-8")
+                    return await service.upload_file(
+                        filename=arguments.get("filename"),
+                        content=content,
+                        mime_type=arguments.get("mime_type", "application/octet-stream"),
+                        folder_id=arguments.get("folder_id")
+                    )
+                elif operation == "download_file":
+                    return await service.download_file(
+                        file_id=arguments.get("file_id")
+                    )
+                elif operation == "list_files":
+                    return await service.list_files(
+                        folder_id=arguments.get("folder_id"),
+                        query=arguments.get("query"),
+                        max_results=arguments.get("max_results", 100)
+                    )
+                elif operation == "create_folder":
+                    return await service.create_folder(
+                        name=arguments.get("filename"),
+                        parent_folder_id=arguments.get("folder_id")
+                    )
+                elif operation == "delete_file":
+                    return await service.delete_file(
+                        file_id=arguments.get("file_id")
+                    )
+                elif operation == "share_file":
+                    return await service.share_file(
+                        file_id=arguments.get("file_id"),
+                        email=arguments.get("email"),
+                        role=arguments.get("role", "reader")
+                    )
+                elif operation == "search_files":
+                    return await service.search_files(
+                        query=arguments.get("query"),
+                        max_results=arguments.get("max_results", 50)
+                    )
+                elif operation == "get_metadata":
+                    return await service.get_file_metadata(
+                        file_id=arguments.get("file_id")
+                    )
+            
+            elif tool_name == "google_workspace_sheets":
+                service = SheetsService(base_client)
+                
+                if operation == "create_spreadsheet":
+                    return await service.create_spreadsheet(
+                        title=arguments.get("title"),
+                        sheets=arguments.get("sheets")
+                    )
+                elif operation == "read_range":
+                    return await service.read_range(
+                        spreadsheet_id=arguments.get("spreadsheet_id"),
+                        range_name=arguments.get("range_name")
+                    )
+                elif operation == "write_range":
+                    return await service.write_range(
+                        spreadsheet_id=arguments.get("spreadsheet_id"),
+                        range_name=arguments.get("range_name"),
+                        values=arguments.get("values"),
+                        value_input_option=arguments.get("value_input_option", "USER_ENTERED")
+                    )
+                elif operation == "append_rows":
+                    return await service.append_rows(
+                        spreadsheet_id=arguments.get("spreadsheet_id"),
+                        range_name=arguments.get("range_name"),
+                        values=arguments.get("values")
+                    )
+                elif operation == "clear_range":
+                    return await service.clear_range(
+                        spreadsheet_id=arguments.get("spreadsheet_id"),
+                        range_name=arguments.get("range_name")
+                    )
+                elif operation == "batch_update":
+                    return await service.batch_update(
+                        spreadsheet_id=arguments.get("spreadsheet_id"),
+                        requests=arguments.get("requests")
+                    )
+                elif operation == "get_info":
+                    return await service.get_spreadsheet_info(
+                        spreadsheet_id=arguments.get("spreadsheet_id")
+                    )
+            
+            elif tool_name == "google_workspace_docs":
+                service = DocsService(base_client)
+                
+                if operation == "create_document":
+                    return await service.create_document(
+                        title=arguments.get("title")
+                    )
+                elif operation == "read_document":
+                    return await service.read_document(
+                        document_id=arguments.get("document_id")
+                    )
+                elif operation == "insert_text":
+                    return await service.insert_text(
+                        document_id=arguments.get("document_id"),
+                        text=arguments.get("text"),
+                        index=arguments.get("index", 1)
+                    )
+                elif operation == "append_text":
+                    return await service.append_text(
+                        document_id=arguments.get("document_id"),
+                        text=arguments.get("text")
+                    )
+                elif operation == "replace_text":
+                    return await service.replace_text(
+                        document_id=arguments.get("document_id"),
+                        find_text=arguments.get("find_text"),
+                        replace_text=arguments.get("replace_text"),
+                        match_case=arguments.get("match_case", False)
+                    )
+                elif operation == "format_text":
+                    return await service.format_text(
+                        document_id=arguments.get("document_id"),
+                        start_index=arguments.get("start_index"),
+                        end_index=arguments.get("end_index"),
+                        bold=arguments.get("bold"),
+                        italic=arguments.get("italic"),
+                        font_size=arguments.get("font_size"),
+                        foreground_color=arguments.get("foreground_color")
+                    )
+                elif operation == "insert_table":
+                    return await service.insert_table(
+                        document_id=arguments.get("document_id"),
+                        rows=arguments.get("rows"),
+                        columns=arguments.get("columns"),
+                        index=arguments.get("index", 1)
+                    )
+                elif operation == "batch_update":
+                    return await service.batch_update(
+                        document_id=arguments.get("document_id"),
+                        requests=arguments.get("requests")
+                    )
+                elif operation == "export_pdf":
+                    return await service.export_as_pdf(
+                        document_id=arguments.get("document_id")
+                    )
+            
+            return {
+                "success": False,
+                "error": f"Unknown Google Workspace tool or operation: {tool_name} - {operation}"
+            }
+        
+        except Exception as e:
+            logger.error(f"Error executing Google Workspace tool {tool_name}: {e}")
+            return {
+                "success": False,
+                "error": f"Google Workspace tool execution failed: {str(e)}"
             }
 
     async def _execute_asana_create_project(
