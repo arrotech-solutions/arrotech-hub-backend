@@ -1689,6 +1689,167 @@ class PlatformRegistry:
             },
             test_function="test_context_intelligence_connection"
         )
+        
+        # Google Workspace Platform
+        google_workspace_capabilities = [
+            # Gmail Capabilities
+            PlatformCapability(
+                name="Gmail Operations",
+                description="Send, read, search, and manage emails with full Gmail integration",
+                tool_name="google_workspace_gmail",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["send_email", "read_emails", "search_emails", "create_label", "apply_label", "create_draft", "delete_email", "get_email_details"]},
+                        "to": {"type": "string"},
+                        "subject": {"type": "string"},
+                        "body": {"type": "string"},
+                        "cc": {"type": "string"},
+                        "bcc": {"type": "string"},
+                        "html": {"type": "boolean"},
+                        "max_results": {"type": "integer", "default": 10},
+                        "label_ids": {"type": "array", "items": {"type": "string"}},
+                        "query": {"type": "string"},
+                        "message_id": {"type": "string"},
+                        "label_name": {"type": "string"},
+                        "message_ids": {"type": "array", "items": {"type": "string"}},
+                        "permanent": {"type": "boolean"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["send_email", "read_emails", "search_emails", "create_label", "apply_label", "create_draft", "delete_email", "get_email_details"]
+            ),
+            # Calendar Capabilities
+            PlatformCapability(
+                name="Calendar Operations",
+                description="Manage calendar events, meetings, and scheduling with Google Calendar",
+                tool_name="google_workspace_calendar",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_event", "list_events", "update_event", "delete_event", "check_availability", "create_meeting"]},
+                        "summary": {"type": "string"},
+                        "start_time": {"type": "string"},
+                        "end_time": {"type": "string"},
+                        "description": {"type": "string"},
+                        "location": {"type": "string"},
+                        "attendees": {"type": "array", "items": {"type": "string"}},
+                        "timezone": {"type": "string", "default": "Africa/Nairobi"},
+                        "calendar_id": {"type": "string", "default": "primary"},
+                        "event_id": {"type": "string"},
+                        "time_min": {"type": "string"},
+                        "time_max": {"type": "string"},
+                        "max_results": {"type": "integer", "default": 10}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["create_event", "list_events", "update_event", "delete_event", "check_availability", "create_meeting"]
+            ),
+            # Drive Capabilities
+            PlatformCapability(
+                name="Drive Operations",
+                description="Upload, download, share, and manage files in Google Drive",
+                tool_name="google_workspace_drive",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["upload_file", "download_file", "list_files", "create_folder", "delete_file", "share_file", "search_files", "get_metadata"]},
+                        "filename": {"type": "string"},
+                        "content": {"type": "string"},
+                        "mime_type": {"type": "string"},
+                        "folder_id": {"type": "string"},
+                        "file_id": {"type": "string"},
+                        "query": {"type": "string"},
+                        "max_results": {"type": "integer", "default": 100},
+                        "order_by": {"type": "string", "default": "modifiedTime desc"},
+                        "email": {"type": "string"},
+                        "role": {"type": "string", "enum": ["reader", "writer", "commenter", "owner"]}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["upload_file", "download_file", "list_files", "create_folder", "delete_file", "share_file", "search_files", "get_metadata"]
+            ),
+            # Sheets Capabilities
+            PlatformCapability(
+                name="Sheets Operations",
+                description="Create, read, write, and manage Google Sheets spreadsheets",
+                tool_name="google_workspace_sheets",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_spreadsheet", "read_range", "write_range", "append_rows", "clear_range", "batch_update", "format_cells", "create_chart", "get_info"]},
+                        "spreadsheet_id": {"type": "string"},
+                        "title": {"type": "string"},
+                        "sheets": {"type": "array", "items": {"type": "string"}},
+                        "range_name": {"type": "string"},
+                        "values": {"type": "array"},
+                        "value_input_option": {"type": "string", "enum": ["RAW", "USER_ENTERED"], "default": "USER_ENTERED"},
+                        "requests": {"type": "array"},
+                        "format_options": {"type": "object"},
+                        "chart_type": {"type": "string"},
+                        "sheet_id": {"type": "integer"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["create_spreadsheet", "read_range", "write_range", "append_rows", "clear_range", "batch_update", "format_cells", "create_chart", "get_info"]
+            ),
+            # Docs Capabilities
+            PlatformCapability(
+                name="Docs Operations",
+                description="Create, edit, format, and manage Google Docs documents",
+                tool_name="google_workspace_docs",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_document", "read_document", "insert_text", "append_text", "replace_text", "format_text", "insert_table", "batch_update", "export_pdf"]},
+                        "document_id": {"type": "string"},
+                        "title": {"type": "string"},
+                        "text": {"type": "string"},
+                        "index": {"type": "integer"},
+                        "find_text": {"type": "string"},
+                        "replace_text": {"type": "string"},
+                        "match_case": {"type": "boolean"},
+                        "start_index": {"type": "integer"},
+                        "end_index": {"type": "integer"},
+                        "bold": {"type": "boolean"},
+                        "italic": {"type": "boolean"},
+                        "font_size": {"type": "integer"},
+                        "foreground_color": {"type": "object"},
+                        "rows": {"type": "integer"},
+                        "columns": {"type": "integer"},
+                        "requests": {"type": "array"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["create_document", "read_document", "insert_text", "append_text", "replace_text", "format_text", "insert_table", "batch_update", "export_pdf"]
+            )
+        ]
+        
+        self.platforms["google_workspace"] = Platform(
+            id="google_workspace",
+            name="Google Workspace",
+            description="Complete Google Workspace integration - Gmail, Calendar, Drive, Sheets, and Docs",
+            icon="google",
+            features=[
+                "Email management",
+                "Calendar scheduling",
+                "File storage and sharing",
+                "Spreadsheet operations",
+                "Document editing"
+            ],
+            capabilities=google_workspace_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "client_id": {"type": "string", "description": "Google OAuth Client ID"},
+                    "client_secret": {"type": "string", "description": "Google OAuth Client Secret"},
+                    "refresh_token": {"type": "string", "description": "OAuth Refresh Token"}
+                },
+                "required": ["client_id", "client_secret", "refresh_token"]
+            },
+            test_function="test_google_workspace_connection"
+        )
+
 
     def _initialize_kenyan_platforms(self):
         """Initialize the 50 new Kenyan business tools."""
