@@ -250,17 +250,7 @@ class DynamicToolRegistry:
                             "description": "End date for calendar generation"
                         }
                     },
-                    "required": ["operation"],
-                    "allOf": [
-                        {
-                            "if": {
-                                "properties": {"operation": {"const": "generate_image"}}
-                            },
-                            "then": {
-                                "required": ["operation", "text"]
-                            }
-                        }
-                    ]
+                    "required": ["operation"]
                 },
                 "category": "content_creation",
                 "always_available": True

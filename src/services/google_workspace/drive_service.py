@@ -36,7 +36,7 @@ class DriveService:
             description: File description
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             file_metadata = {'name': filename}
             
@@ -83,7 +83,7 @@ class DriveService:
             file_id: ID of the file to download
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             request = service.files().get_media(fileId=file_id)
             
@@ -134,7 +134,7 @@ class DriveService:
             order_by: Sort order (e.g., 'modifiedTime desc', 'name')
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             # Build query
             q_parts = []
@@ -195,7 +195,7 @@ class DriveService:
             parent_folder_id: Parent folder ID (optional)
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             file_metadata = {
                 'name': name,
@@ -234,7 +234,7 @@ class DriveService:
             file_id: ID of the file to delete
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             service.files().delete(fileId=file_id).execute()
             
@@ -266,7 +266,7 @@ class DriveService:
             send_notification: Send email notification
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             permission = {
                 'type': 'user',
@@ -323,7 +323,7 @@ class DriveService:
             file_id: ID of the file
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             file = service.files().get(
                 fileId=file_id,
@@ -333,6 +333,50 @@ class DriveService:
             return {
                 'success': True,
                 'file': file
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    async def move_file(
+        self,
+        file_id: str,
+        folder_id: str
+    ) -> Dict[str, Any]:
+        """
+        Move a file to a new folder
+        
+        Args:
+            file_id: ID of the file to move
+            folder_id: ID of the destination folder
+        """
+        try:
+            service = self.base_client.get_service(self.service_name, self.version)
+            
+            # Retrieve the existing parents to remove
+            file = service.files().get(
+                fileId=file_id,
+                fields='parents'
+            ).execute()
+            
+            previous_parents = ",".join(file.get('parents', []))
+            
+            # Move the file by adding the new parent and removing the old ones
+            file = service.files().update(
+                fileId=file_id,
+                addParents=folder_id,
+                removeParents=previous_parents,
+                fields='id, parents, name, webViewLink'
+            ).execute()
+            
+            return {
+                'success': True,
+                'file_id': file.get('id'),
+                'name': file.get('name'),
+                'parents': file.get('parents'),
+                'web_view_link': file.get('webViewLink')
             }
             
         except Exception as e:

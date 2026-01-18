@@ -28,7 +28,7 @@ class SheetsService:
             sheets: List of sheet names to create
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             spreadsheet_body = {
                 'properties': {
@@ -72,7 +72,7 @@ class SheetsService:
             range_name: Range in A1 notation (e.g., 'Sheet1!A1:D10')
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             result = service.spreadsheets().values().get(
                 spreadsheetId=spreadsheet_id,
@@ -112,7 +112,7 @@ class SheetsService:
             value_input_option: 'RAW' or 'USER_ENTERED'
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             body = {
                 'values': values
@@ -156,7 +156,7 @@ class SheetsService:
             value_input_option: 'RAW' or 'USER_ENTERED'
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             body = {
                 'values': values
@@ -196,7 +196,7 @@ class SheetsService:
             range_name: Range in A1 notation
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             result = service.spreadsheets().values().clear(
                 spreadsheetId=spreadsheet_id,
@@ -228,7 +228,7 @@ class SheetsService:
             requests: List of update requests
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             body = {
                 'requests': requests
@@ -266,7 +266,7 @@ class SheetsService:
             format_options: Formatting options (backgroundColor, textFormat, etc.)
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             # Parse range to get sheet ID and range coordinates
             # This is a simplified version - production code would need proper parsing
@@ -355,7 +355,7 @@ class SheetsService:
             spreadsheet_id: ID of the spreadsheet
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             spreadsheet = service.spreadsheets().get(
                 spreadsheetId=spreadsheet_id

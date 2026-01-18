@@ -116,63 +116,7 @@ class PlatformRegistry:
             test_function="test_hubspot_connection"
         )
         
-        # GA4 Platform
-        ga4_capabilities = [
-            PlatformCapability(
-                name="Analytics Dashboard",
-                description="Get comprehensive GA4 analytics including traffic, conversions, user behavior, and custom reports",
-                tool_name="ga4_analytics_dashboard",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "report_type": {"type": "string", "enum": ["traffic", "conversions", "user_behavior", "custom", "ecommerce"]},
-                        "date_range": {"type": "string", "default": "last_30_days"},
-                        "metrics": {"type": "array", "items": {"type": "string"}},
-                        "dimensions": {"type": "array", "items": {"type": "string"}},
-                        "filters": {"type": "object"}
-                    },
-                    "required": ["report_type"]
-                },
-                operations=["get_traffic", "get_conversions", "get_user_behavior", "get_custom_reports", "get_ecommerce"]
-            ),
-            PlatformCapability(
-                name="User Behavior",
-                description="Analyze user behavior patterns and engagement metrics",
-                tool_name="ga4_user_behavior",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "hours": {"type": "integer", "default": 24},
-                        "user_segments": {"type": "array", "items": {"type": "string"}},
-                        "engagement_metrics": {"type": "array", "items": {"type": "string"}}
-                    }
-                },
-                operations=["analyze_behavior", "get_segments", "get_engagement"]
-            )
-        ]
-        
-        self.platforms["ga4"] = Platform(
-            id="ga4",
-            name="Google Analytics 4",
-            description="Web analytics and reporting",
-            icon="analytics",
-            features=[
-                "Traffic analysis",
-                "Conversion tracking",
-                "User behavior",
-                "Custom reports"
-            ],
-            capabilities=ga4_capabilities,
-            config_schema={
-                "type": "object",
-                "properties": {
-                    "property_id": {"type": "string", "description": "GA4 Property ID"},
-                    "credentials_file": {"type": "string", "description": "Service Account JSON file path"}
-                },
-                "required": ["property_id", "credentials_file"]
-            },
-            test_function="test_ga4_connection"
-        )
+
         
         # Slack Platform
         slack_capabilities = [
@@ -1366,6 +1310,264 @@ class PlatformRegistry:
             test_function="test_powerbi_connection"
         )
 
+        # WhatsApp Platform
+        whatsapp_capabilities = [
+            PlatformCapability(
+                name="Messaging",
+                description="Send text and media messages to customers via WhatsApp",
+                tool_name="whatsapp_messaging",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["send_message", "send_media", "send_location"]},
+                        "to_number": {"type": "string"},
+                        "message": {"type": "string"},
+                        "media_url": {"type": "string"},
+                        "media_type": {"type": "string", "enum": ["image", "video", "document", "audio"]},
+                        "caption": {"type": "string"},
+                        "latitude": {"type": "string"},
+                        "longitude": {"type": "string"},
+                        "location_name": {"type": "string"},
+                        "location_address": {"type": "string"}
+                    },
+                    "required": ["operation", "to_number"]
+                },
+                operations=["send_message", "send_media", "send_location"]
+            ),
+            PlatformCapability(
+                name="Template Management",
+                description="Manage and send WhatsApp Message Templates",
+                tool_name="whatsapp_templates",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["send_template", "list_templates", "create_template"]},
+                        "to_number": {"type": "string"},
+                        "template_name": {"type": "string"},
+                        "language_code": {"type": "string", "default": "en_US"},
+                        "components": {"type": "array", "items": {"type": "object"}},
+                        "category": {"type": "string", "enum": ["MARKETING", "UTILITY", "AUTHENTICATION"]}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["send_template", "list_templates", "create_template"]
+            ),
+            PlatformCapability(
+                name="Account Info",
+                description="Get WhatsApp Business Account information",
+                tool_name="whatsapp_account_info",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_phone_info", "check_connection"]}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_phone_info", "check_connection"]
+            )
+        ]
+
+        self.platforms["whatsapp"] = Platform(
+            id="whatsapp",
+            name="WhatsApp Business",
+            description="Send messages and manage interactions on WhatsApp",
+            icon="whatsapp",
+            features=[
+                "Messaging",
+                "Template management",
+                "Media support",
+                "Location sharing",
+                "Business profile"
+            ],
+            capabilities=whatsapp_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "access_token": {"type": "string", "description": "WhatsApp Business API Access Token"},
+                    "phone_number_id": {"type": "string", "description": "WhatsApp Phone Number ID"},
+                    "business_account_id": {"type": "string", "description": "WhatsApp Business Account ID"},
+                    "auth_type": {"type": "string", "enum": ["oauth", "manual"], "default": "manual"}
+                },
+                "required": ["access_token", "phone_number_id"]
+            },
+            test_function="test_whatsapp_connection"
+        )
+
+
+        # Facebook Platform
+        facebook_capabilities = [
+            PlatformCapability(
+                name="Posting",
+                description="Create and manage posts on Facebook Pages",
+                tool_name="facebook_posting",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_post", "get_posts"]},
+                        "page_id": {"type": "string"},
+                        "message": {"type": "string"},
+                        "link": {"type": "string"},
+                        "media_url": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["create_post", "get_posts"]
+            ),
+            PlatformCapability(
+                name="Insights",
+                description="Get insights and engagement metrics for Facebook Pages",
+                tool_name="facebook_insights",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_page_insights", "get_post_insights"]},
+                        "page_id": {"type": "string"},
+                        "metric": {"type": "string"},
+                        "period": {"type": "string"}
+                    },
+                    "required": ["operation", "page_id"]
+                },
+                operations=["get_page_insights", "get_post_insights"]
+            )
+        ]
+
+        self.platforms["facebook"] = Platform(
+            id="facebook",
+            name="Facebook Pages",
+            description="Manage posts and insights for Facebook Pages",
+            icon="facebook",
+            features=[
+                "Post Management",
+                "Page Insights",
+                "Community Engagement"
+            ],
+            capabilities=facebook_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "access_token": {"type": "string", "description": "Facebook User Access Token"},
+                    "auth_type": {"type": "string", "enum": ["oauth"], "default": "oauth"}
+                },
+                "required": ["access_token"]
+            },
+            test_function="test_facebook_connection"
+        )
+
+
+        # Instagram Platform
+        instagram_capabilities = [
+            PlatformCapability(
+                name="Media Publishing",
+                description="Publish photos and videos to Instagram Business accounts",
+                tool_name="instagram_publishing",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["publish_media", "get_media"]},
+                        "image_url": {"type": "string"},
+                        "caption": {"type": "string"},
+                        "media_type": {"type": "string", "enum": ["IMAGE", "VIDEO", "CAROUSEL"]}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["publish_media", "get_media"]
+            ),
+            PlatformCapability(
+                name="Comment Management",
+                description="Reply to and manage comments on Instagram posts",
+                tool_name="instagram_comments",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["reply_comment", "delete_comment", "get_comments"]},
+                        "media_id": {"type": "string"},
+                        "comment_id": {"type": "string"},
+                        "message": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["reply_comment", "delete_comment", "get_comments"]
+            )
+        ]
+
+        self.platforms["instagram"] = Platform(
+            id="instagram",
+            name="Instagram Business",
+            description="Publish content and manage interactions on Instagram",
+            icon="instagram",
+            features=[
+                "Media Publishing",
+                "Comment Management",
+                "Business Insights"
+            ],
+            capabilities=instagram_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "access_token": {"type": "string", "description": "Instagram User Access Token"},
+                    "auth_type": {"type": "string", "enum": ["oauth"], "default": "oauth"}
+                },
+                "required": ["access_token"]
+            },
+            test_function="test_instagram_connection"
+        )
+
+
+
+        # Twitter (X) Platform
+        twitter_capabilities = [
+            PlatformCapability(
+                name="Tweet Publishing",
+                description="Post tweets and threads to X (Twitter)",
+                tool_name="twitter_publishing",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["post_tweet"]},
+                        "text": {"type": "string"},
+                        "media_ids": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["operation", "text"]
+                },
+                operations=["post_tweet"]
+            ),
+            PlatformCapability(
+                name="User Profile",
+                description="Read user profile information",
+                tool_name="twitter_profile",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_me"]}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_me"]
+            )
+        ]
+
+        self.platforms["twitter"] = Platform(
+            id="twitter",
+            name="Twitter (X)",
+            description="Manage tweets and interact with the X platform",
+            icon="twitter",
+            features=[
+                "Tweet Publishing",
+                "Community Engagement"
+            ],
+            capabilities=twitter_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "access_token": {"type": "string", "description": "Twitter Access Token"},
+                    "refresh_token": {"type": "string", "description": "Twitter Refresh Token"},
+                    "auth_type": {"type": "string", "enum": ["oauth_pkce"], "default": "oauth_pkce"}
+                },
+                "required": ["access_token"]
+            },
+            test_function="test_twitter_connection"
+        )
+
         # M-Pesa Platform
         mpesa_capabilities = [
             PlatformCapability(
@@ -1753,7 +1955,7 @@ class PlatformRegistry:
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "operation": {"type": "string", "enum": ["upload_file", "download_file", "list_files", "create_folder", "delete_file", "share_file", "search_files", "get_metadata"]},
+                        "operation": {"type": "string", "enum": ["upload_file", "download_file", "list_files", "create_folder", "delete_file", "share_file", "search_files", "get_metadata", "move_file"]},
                         "filename": {"type": "string"},
                         "content": {"type": "string"},
                         "mime_type": {"type": "string"},
@@ -1767,7 +1969,7 @@ class PlatformRegistry:
                     },
                     "required": ["operation"]
                 },
-                operations=["upload_file", "download_file", "list_files", "create_folder", "delete_file", "share_file", "search_files", "get_metadata"]
+                operations=["upload_file", "download_file", "list_files", "create_folder", "delete_file", "share_file", "search_files", "get_metadata", "move_file"]
             ),
             # Sheets Capabilities
             PlatformCapability(
@@ -1782,16 +1984,26 @@ class PlatformRegistry:
                         "title": {"type": "string"},
                         "sheets": {"type": "array", "items": {"type": "string"}},
                         "range_name": {"type": "string"},
-                        "values": {"type": "array"},
+                        "values": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
                         "value_input_option": {"type": "string", "enum": ["RAW", "USER_ENTERED"], "default": "USER_ENTERED"},
-                        "requests": {"type": "array"},
+                        "requests": {"type": "array", "items": {"type": "object"}},
                         "format_options": {"type": "object"},
                         "chart_type": {"type": "string"},
                         "sheet_id": {"type": "integer"}
                     },
                     "required": ["operation"]
                 },
-                operations=["create_spreadsheet", "read_range", "write_range", "append_rows", "clear_range", "batch_update", "format_cells", "create_chart", "get_info"]
+                operations=[
+                    "create_spreadsheet", 
+                    "read_range", 
+                    "write_range", 
+                    "append_rows", 
+                    "clear_range", 
+                    "batch_update", 
+                    "format_cells", 
+                    "create_chart", 
+                    "get_info"
+                ]
             ),
             # Docs Capabilities
             PlatformCapability(
@@ -1817,11 +2029,40 @@ class PlatformRegistry:
                         "foreground_color": {"type": "object"},
                         "rows": {"type": "integer"},
                         "columns": {"type": "integer"},
-                        "requests": {"type": "array"}
+                        "requests": {"type": "array", "items": {"type": "object"}}
                     },
                     "required": ["operation"]
                 },
-                operations=["create_document", "read_document", "insert_text", "append_text", "replace_text", "format_text", "insert_table", "batch_update", "export_pdf"]
+                operations=[
+                    "create_document", 
+                    "read_document", 
+                    "insert_text", 
+                    "append_text", 
+                    "replace_text", 
+                    "format_text", 
+                    "insert_table", 
+                    "batch_update", 
+                    "export_pdf"
+                ]
+            ),
+            # Analytics Capabilities
+            PlatformCapability(
+                name="Analytics Operations",
+                description="Get comprehensive Google Analytics data including traffic, conversions, and user behavior",
+                tool_name="google_workspace_analytics",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_traffic", "get_conversions", "get_user_behavior", "get_custom_report", "get_ecommerce_data"]},
+                        "property_id": {"type": "string"},
+                        "hours": {"type": "integer", "default": 24},
+                        "metrics": {"type": "array", "items": {"type": "string"}},
+                        "dimensions": {"type": "array", "items": {"type": "string"}},
+                        "filters": {"type": "object"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_traffic", "get_conversions", "get_user_behavior", "get_custom_report", "get_ecommerce_data"]
             )
         ]
         
@@ -1835,7 +2076,8 @@ class PlatformRegistry:
                 "Calendar scheduling",
                 "File storage and sharing",
                 "Spreadsheet operations",
-                "Document editing"
+                "Document editing",
+                "Analytics"
             ],
             capabilities=google_workspace_capabilities,
             config_schema={
@@ -1843,11 +2085,43 @@ class PlatformRegistry:
                 "properties": {
                     "client_id": {"type": "string", "description": "Google OAuth Client ID"},
                     "client_secret": {"type": "string", "description": "Google OAuth Client Secret"},
-                    "refresh_token": {"type": "string", "description": "OAuth Refresh Token"}
+                    "refresh_token": {"type": "string", "description": "OAuth Refresh Token"},
+                    "default_property_id": {"type": "string", "description": "Default Google Analytics Property ID"}
                 },
                 "required": ["client_id", "client_secret", "refresh_token"]
             },
             test_function="test_google_workspace_connection"
+        )
+
+        # System Platform (Workflow Management)
+        system_capabilities = [
+            PlatformCapability(
+                name="Workflow Management",
+                description="Manage automation workflows - create, draft, and list workflows",
+                tool_name="workflow_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_draft", "list_workflows", "get_workflow"]},
+                        "title": {"type": "string"},
+                        "description": {"type": "string"},
+                        "steps": {"type": "array", "items": {"type": "object"}}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["create_draft", "list_workflows", "get_workflow"]
+            )
+        ]
+        
+        self.platforms["system"] = Platform(
+            id="system",
+            name="System",
+            description="Core system capabilities including workflow management",
+            icon="settings",
+            features=["Workflow automation", "System settings"],
+            capabilities=system_capabilities,
+            config_schema={"type": "object", "properties": {}, "required": []},
+            test_function="test_system_status"
         )
 
 

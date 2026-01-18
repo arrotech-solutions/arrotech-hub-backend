@@ -41,7 +41,7 @@ class CalendarService:
             calendar_id: Calendar ID (default 'primary')
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             event = {
                 'summary': summary,
@@ -101,7 +101,7 @@ class CalendarService:
             query: Free text search terms
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             params = {
                 'calendarId': calendar_id,
@@ -130,7 +130,8 @@ class CalendarService:
                     'location': event.get('location'),
                     'description': event.get('description'),
                     'attendees': event.get('attendees', []),
-                    'html_link': event.get('htmlLink')
+                    'html_link': event.get('htmlLink'),
+                    'meet_link': event.get('hangoutLink')
                 })
             
             return {
@@ -168,7 +169,7 @@ class CalendarService:
             calendar_id: Calendar ID
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             # Get existing event
             event = service.events().get(
@@ -222,7 +223,7 @@ class CalendarService:
             send_updates: Send cancellation to attendees
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             service.events().delete(
                 calendarId=calendar_id,
@@ -258,7 +259,7 @@ class CalendarService:
             timezone: Timezone
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             body = {
                 'timeMin': time_min,
@@ -311,7 +312,7 @@ class CalendarService:
             timezone: Timezone
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             event = {
                 'summary': summary,

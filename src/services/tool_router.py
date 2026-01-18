@@ -67,14 +67,23 @@ class PrecisionToolRouter:
         
         print(f"🔍 Stage 1: Exact command matching")
         # Stage 1: Exact command matching (100% confidence)
-        if exact_match := self._exact_command_match(user_input, tools):
-            print(f"   ✅ Exact match found: {exact_match['name']} (100% confidence)")
-            return [(exact_match, 1.0)]
+        exact_matches = self._exact_command_match(user_input, tools)
+        if exact_matches:
+            print(f"   ✅ Found {len(exact_matches)} exact matches")
+            for match in exact_matches:
+                print(f"      - {match['name']} (100% confidence)")
+                results.append((match, 1.0))
         else:
             print(f"   ❌ No exact match found")
         
         print(f"🧠 Stage 2: Semantic pattern matching")
         # Stage 2: Semantic pattern matching
+        
+        # Only proceed to semantic matching if we didn't find enough exact matches
+        # or if there might be more relevant tools (optional strategy)
+        # For now, let's process other stages too to capture everything, 
+        # but exact matches will naturally be top ranked.
+        
         semantic_results = await self._semantic_pattern_match(user_input, tools)
         results.extend(semantic_results)
         if semantic_results:
@@ -121,7 +130,7 @@ class PrecisionToolRouter:
         print(f"📋 Final results after deduplication: {len(deduped)} unique tools")
         return deduped
     
-    def _exact_command_match(self, user_input: str, tools: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    def _exact_command_match(self, user_input: str, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Match predefined exact commands for all available tools"""
         command_map = {
             # M-Pesa Payment Tools - HIGHEST PRIORITY (check first)
@@ -138,11 +147,49 @@ class PrecisionToolRouter:
             r'(mpesa|m-pesa).*reconcile': 'mpesa_payment_reconciliation',
             
             # Slack Tools
-            r'(send|post).*slack': 'slack_send_message',
+            r'(send|post|write).*slack': 'slack_send_message',
             r'create.*slack.*channel': 'slack_create_channel',
             r'list.*slack.*channel': 'slack_list_channels',
             r'get.*slack.*channel.*member': 'slack_get_channel_members',
             r'list.*slack.*member': 'slack_get_channel_members',
+            
+            # Google Workspace - Gmail
+            r'(send|write).*email': 'google_workspace_gmail',
+            r'email.*to': 'google_workspace_gmail',
+            r'gmail.*message': 'google_workspace_gmail',
+            r'send.*gmail': 'google_workspace_gmail',
+            r'compose.*email': 'google_workspace_gmail',
+
+            # Google Workspace - Calendar
+            r'(schedule|create).*meeting': 'google_workspace_calendar',
+            r'(schedule|create).*event': 'google_workspace_calendar',
+            r'add.*calendar': 'google_workspace_calendar',
+            r'list.*event': 'google_workspace_calendar',
+            r'check.*availability': 'google_workspace_calendar',
+            r'meeting.*schedule': 'google_workspace_calendar',
+
+            # Google Workspace - Drive
+            r'(upload|download).*file': 'google_workspace_drive',
+            r'create.*folder': 'google_workspace_drive',
+            r'list.*file': 'google_workspace_drive',
+            r'share.*file': 'google_workspace_drive',
+            r'search.*drive': 'google_workspace_drive',
+
+            # Google Workspace - Docs
+            r'(create|make|write).*doc': 'google_workspace_docs',
+            r'google.*doc': 'google_workspace_docs',
+            r'new.*document': 'google_workspace_docs',
+            r'add.*text.*doc': 'google_workspace_docs',
+
+            # Google Workspace - Sheets
+            r'(create|make|new).*spreadsheet': 'google_workspace_sheets',
+            r'(create|make|new).*sheet': 'google_workspace_sheets',
+            r'google.*sheet': 'google_workspace_sheets',
+            r'add.*row': 'google_workspace_sheets',
+            r'read.*data': 'google_workspace_sheets',
+            r'read.*sheet': 'google_workspace_sheets',
+            r'update.*sheet': 'google_workspace_sheets',
+            r'format.*cell': 'google_workspace_sheets',
             
             # WhatsApp Tools
             r'whatsapp.*message': 'whatsapp_send_message',
@@ -288,11 +335,16 @@ class PrecisionToolRouter:
             r'create.*ab.*test': 'ab_testing_platform',
             r'run.*ab.*test': 'ab_testing_platform',
             
-            # Workflow Tools
-            r'workflow.*builder': 'workflow_builder',
-            r'create.*workflow': 'workflow_builder',
-            r'build.*workflow': 'workflow_builder',
-            r'automate.*workflow': 'workflow_builder',
+            # LinkedIn
+            r'(post|share).*linkedin': 'social_media_management',
+            r'linkedin.*analytics': 'social_media_analytics',
+            
+            # Workflow Management (Consolidated)
+            r'workflow.*builder': 'workflow_management',
+            r'create.*workflow': 'workflow_management',
+            r'build.*workflow': 'workflow_management',
+            r'automate.*workflow': 'workflow_management',
+
             
             # API Management Tools
             r'api.*management': 'api_management',
@@ -336,7 +388,104 @@ class PrecisionToolRouter:
             r'web.*tool': 'web_tools',
             r'web.*utility': 'web_tools',
             r'web.*service': 'web_tools',
-            r'web.*integration': 'web_tools'
+            r'web.*integration': 'web_tools',
+
+            # Social Media - Facebook
+            r'(post|create).*facebook': 'facebook_posting',
+            r'facebook.*post': 'facebook_posting',
+            r'facebook.*insights': 'facebook_insights',
+            r'page.*insights': 'facebook_insights',
+            r'post.*insights': 'facebook_insights',
+
+            # Social Media - Instagram
+            r'(post|publish).*instagram': 'instagram_publishing',
+            r'instagram.*post': 'instagram_publishing',
+            r'instagram.*video': 'instagram_publishing',
+            r'instagram.*comment': 'instagram_comments',
+            r'reply.*instagram': 'instagram_comments',
+
+            # Social Media - Twitter (X)
+            r'(post|tweet).*twitter': 'twitter_publishing',
+            r'send.*tweet': 'twitter_publishing',
+            r'twitter.*profile': 'twitter_profile',
+            r'get.*twitter.*user': 'twitter_profile',
+
+            # LinkedIn
+            r'(post|share).*linkedin': 'linkedin_content_management',
+            r'linkedin.*analytics': 'linkedin_analytics',
+
+            # HubSpot Extended
+            r'hubspot.*deal': 'hubspot_deal_management',
+            r'create.*deal': 'hubspot_deal_management',
+            r'update.*deal': 'hubspot_deal_management',
+            r'hubspot.*analytics': 'hubspot_analytics',
+
+            # Salesforce Extended
+            r'salesforce.*account': 'salesforce_account_management',
+            r'create.*account.*salesforce': 'salesforce_account_management',
+            r'salesforce.*sync': 'salesforce_data_sync',
+            r'sync.*salesforce': 'salesforce_data_sync',
+
+            # Microsoft Teams Extended
+            r'teams.*channel': 'teams_channel_management',
+            r'create.*teams.*channel': 'teams_channel_management',
+            r'teams.*search': 'teams_message_search',
+            r'search.*teams': 'teams_message_search',
+
+            # Zoom Extended
+            r'zoom.*participant': 'zoom_meeting_operations',
+            r'zoom.*registrant': 'zoom_meeting_operations',
+            r'zoom.*recording': 'zoom_recording_management',
+            r'zoom.*user': 'zoom_user_management',
+            r'zoom.*webinar': 'zoom_webinar_management',
+            r'zoom.*analytics': 'zoom_analytics',
+            r'zoom.*report': 'zoom_analytics',
+
+            # Asana Extended
+            r'asana.*collaboration': 'asana_team_collaboration',
+            r'asana.*team': 'asana_team_collaboration',
+            r'asana.*portfolio': 'asana_portfolio_management',
+            r'create.*portfolio': 'asana_portfolio_management',
+
+            # Power BI Extended
+            r'powerbi.*analytics': 'powerbi_analytics_summary',
+            r'powerbi.*user': 'powerbi_user_management',
+
+            # M-Pesa Extended
+            r'mpesa.*account': 'mpesa_account_management',
+            r'mpesa.*balance': 'mpesa_account_management',
+            r'mpesa.*alert': 'mpesa_alert_config',
+
+            # HR Hub
+            r'apply.*leave': 'hr_leave_management',
+            r'leave.*balance': 'hr_leave_management',
+            r'hr.*policy': 'hr_policy_lookup',
+            r'company.*policy': 'hr_policy_lookup',
+
+            # Lead Intelligence
+            r'score.*lead': 'lead_intelligence_qualification',
+            r'qualify.*lead': 'lead_intelligence_qualification',
+            r'draft.*followup': 'lead_intelligence_followup',
+
+            # Logistics Hub
+            r'track.*shipment': 'logistics_tracking',
+            r'delivery.*status': 'logistics_tracking',
+            r'create.*delivery': 'logistics_delivery',
+            r'book.*delivery': 'logistics_delivery',
+
+            # Context Intelligence
+            r'translate.*text': 'context_translation',
+            r'verify.*pin': 'context_verification',
+            r'check.*compliance': 'context_verification',
+            r'analyze.*sentiment': 'context_sentiment',
+            
+            # Google Workspace - Analytics
+            r'google.*analytics': 'google_workspace_analytics',
+            r'ga4.*report': 'google_workspace_analytics',
+
+            # Workflow Management
+            r'manage.*workflow': 'workflow_management',
+            r'list.*workflow': 'workflow_management'
         }
         
         user_input = user_input.lower()
@@ -348,19 +497,28 @@ class PrecisionToolRouter:
         # Make matching case-insensitive
         user_input_lower = user_input.lower()
         
+        matches = []
+        matched_tools = set()
+        
         for pattern, tool_name in sorted_patterns:
+            # Skip if this tool is already matched to avoid duplicate exact matches for same tool
+            if tool_name in matched_tools:
+                continue
+                
             if re.search(pattern, user_input_lower, re.IGNORECASE):
                 print(f"   ✅ Pattern '{pattern}' matched for tool '{tool_name}'")
                 tool = next((t for t in tools if t['name'] == tool_name), None)
                 if tool:
                     print(f"   🎯 Found matching tool: {tool_name}")
-                    return tool
+                    matches.append(tool)
+                    matched_tools.add(tool_name)
                 else:
                     print(f"   ⚠️  Tool '{tool_name}' not found in available tools")
             else:
-                print(f"   ❌ Pattern '{pattern}' did not match")
+                pass 
+                # print(f"   ❌ Pattern '{pattern}' did not match")
         
-        return None
+        return matches
     
     async def _semantic_pattern_match(self, user_input: str, tools: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], float]]:
         """Semantic matching with domain-specific patterns"""
@@ -615,6 +773,23 @@ class PrecisionToolRouter:
                 ],
                 "keywords": ["scrape", "website", "web", "extract", "crawl"]
             },
+            "google_workspace_docs": {
+                "patterns": [
+                    ["create", "google", "doc"],
+                    ["write", "document"],
+                    ["new", "doc"]
+                ],
+                "keywords": ["doc", "document", "google", "write", "create"]
+            },
+            "google_workspace_sheets": {
+                "patterns": [
+                    ["create", "google", "sheet"],
+                    ["new", "spreadsheet"],
+                    ["add", "row", "sheet"],
+                    ["read", "data", "sheet"]
+                ],
+                "keywords": ["sheet", "spreadsheet", "row", "column", "cell", "data"]
+            },
             "content_creation": {
                 "patterns": [
                     ["generate", "image"],
@@ -730,6 +905,78 @@ class PrecisionToolRouter:
                 ],
                 "keywords": ["salesforce", "contact", "create", "add", "crm"]
             },
+            "salesforce_account_management": {
+                "patterns": [
+                    ["create", "account", "salesforce"],
+                    ["manage", "salesforce", "account"],
+                    ["get", "account", "details"]
+                ],
+                "keywords": ["salesforce", "account", "create", "manage", "company"]
+            },
+            "facebook_posting": {
+                "patterns": [
+                    ["post", "facebook"],
+                    ["create", "facebook", "post"],
+                    ["share", "facebook", "page"]
+                ],
+                "keywords": ["facebook", "post", "share", "page", "create"]
+            },
+            "instagram_publishing": {
+                "patterns": [
+                    ["post", "instagram"],
+                    ["publish", "photo", "instagram"],
+                    ["share", "instagram"]
+                ],
+                "keywords": ["instagram", "post", "photo", "video", "share"]
+            },
+            "twitter_publishing": {
+                "patterns": [
+                    ["post", "tweet"],
+                    ["send", "tweet"],
+                    ["write", "tweet"]
+                ],
+                "keywords": ["twitter", "tweet", "post", "send", "write"]
+            },
+            "social_media_management": {
+                "patterns": [
+                    ["post", "linkedin"],
+                    ["share", "linkedin", "update"],
+                    ["create", "linkedin", "post"]
+                ],
+                "keywords": ["linkedin", "post", "share", "update", "professional"]
+            },
+            "teams_team_communication": {
+                "patterns": [
+                    ["send", "teams", "message"],
+                    ["notify", "teams", "channel"],
+                    ["post", "teams"]
+                ],
+                "keywords": ["teams", "message", "send", "notify", "channel"]
+            },
+            "zoom_meeting_management": {
+                "patterns": [
+                    ["create", "zoom", "meeting"],
+                    ["schedule", "zoom"],
+                    ["list", "zoom", "meetings"]
+                ],
+                "keywords": ["zoom", "meeting", "create", "schedule", "list"]
+            },
+            "hr_leave_management": {
+                "patterns": [
+                    ["apply", "leave"],
+                    ["request", "time", "off"],
+                    ["check", "leave", "balance"]
+                ],
+                "keywords": ["leave", "apply", "balance", "off", "vacation"]
+            },
+            "logistics_tracking": {
+                "patterns": [
+                    ["track", "package"],
+                    ["check", "delivery", "status"],
+                    ["where", "shipment"]
+                ],
+                "keywords": ["track", "delivery", "shipment", "package", "status"]
+            },
             "salesforce_search_contacts": {
                 "patterns": [
                     ["search", "contact", "salesforce"],
@@ -785,6 +1032,53 @@ class PrecisionToolRouter:
                     ["migrate", "data", "hubspot"]
                 ],
                 "keywords": ["salesforce", "hubspot", "sync", "import", "migrate"]
+            },
+            # Google Workspace Tools
+            "google_workspace_gmail": {
+                 "patterns": [
+                    ["send", "email"],
+                    ["write", "email"],
+                    ["compose", "email"],
+                    ["send", "gmail"],
+                    ["email", "to"]
+                 ],
+                 "keywords": ["gmail", "email", "send", "write", "compose", "message"]
+            },
+            "google_workspace_calendar": {
+                 "patterns": [
+                    ["schedule", "meeting"],
+                    ["create", "event"],
+                    ["check", "availability"],
+                    ["calendar", "invite"]
+                 ],
+                 "keywords": ["calendar", "meeting", "schedule", "event", "invite", "availability"]
+            },
+            "google_workspace_drive": {
+                 "patterns": [
+                    ["upload", "file"],
+                    ["share", "document"],
+                    ["create", "folder"],
+                    ["search", "drive"]
+                 ],
+                 "keywords": ["drive", "file", "folder", "upload", "share", "storage"]
+            },
+            "google_workspace_docs": {
+                 "patterns": [
+                    ["create", "document"],
+                    ["write", "doc"],
+                    ["google", "doc"],
+                    ["edit", "document"]
+                 ],
+                 "keywords": ["doc", "document", "write", "create", "edit", "text"]
+            },
+            "google_workspace_sheets": {
+                 "patterns": [
+                    ["create", "spreadsheet"],
+                    ["google", "sheet"],
+                    ["add", "row"],
+                    ["analyze", "data"]
+                 ],
+                 "keywords": ["sheet", "spreadsheet", "row", "column", "data", "cell"]
             },
             # GA4 Tools
             "ga4_get_traffic": {

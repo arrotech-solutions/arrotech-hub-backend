@@ -71,6 +71,11 @@ class IntentProcessor:
                 intent_scores[intent_type] = score / len(patterns)
             else:
                 intent_scores[intent_type] = 0
+                
+        # CRITICAL FIX: If 'action' or 'automation' has ANY score, override 'chat'
+        # This prevents "Hello, send an email" from being classified as 'chat'
+        if (intent_scores.get('action', 0) > 0 or intent_scores.get('automation', 0) > 0) and intent_scores.get('chat', 0) > 0:
+            intent_scores['chat'] = 0
         
         # Determine primary intent
         primary_intent = max(intent_scores.items(), key=lambda x: x[1])
@@ -151,7 +156,8 @@ class IntentProcessor:
         command_words = [
             'send', 'create', 'get', 'list', 'find', 'scrape', 'generate',
             'download', 'upload', 'execute', 'run', 'call', 'manage', 'analyze',
-            'report', 'automate', 'workflow', 'sync', 'connect'
+            'report', 'automate', 'workflow', 'sync', 'connect', 'post', 'write',
+            'email', 'search'
         ]
         
         user_input_lower = user_input.lower()

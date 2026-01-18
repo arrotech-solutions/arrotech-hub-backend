@@ -9,6 +9,7 @@ from .calendar_service import CalendarService
 from .drive_service import DriveService
 from .sheets_service import SheetsService
 from .docs_service import DocsService
+from .analytics_service import AnalyticsService
 
 __all__ = [
     'GoogleWorkspaceBaseClient',
@@ -17,4 +18,5 @@ __all__ = [
     'DriveService',
     'SheetsService',
     'DocsService',
+    'AnalyticsService',
 ]

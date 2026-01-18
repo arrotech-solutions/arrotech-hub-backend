@@ -44,7 +44,7 @@ class GmailService:
             html: Whether body is HTML
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             # Create message
             if html or attachments:
@@ -111,7 +111,7 @@ class GmailService:
             include_spam_trash: Include spam and trash
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             # List messages
             list_params = {
@@ -196,7 +196,7 @@ class GmailService:
             message_list_visibility: 'show' or 'hide'
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             label_object = {
                 'name': name,
@@ -234,7 +234,7 @@ class GmailService:
             label_ids: List of label IDs to apply
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             body = {
                 'ids': message_ids,
@@ -276,7 +276,7 @@ class GmailService:
             html: Whether body is HTML
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             # Create message
             message = MIMEText(body, 'html' if html else 'plain')
@@ -317,7 +317,7 @@ class GmailService:
             permanent: If True, permanently delete; if False, move to trash
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             if permanent:
                 service.users().messages().delete(
@@ -353,7 +353,7 @@ class GmailService:
             message_id: Message ID
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             message = service.users().messages().get(
                 userId='me',

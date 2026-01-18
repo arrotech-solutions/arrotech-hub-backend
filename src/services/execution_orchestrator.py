@@ -146,24 +146,14 @@ class ExecutionOrchestrator:
         messages = []
         
         # Add system prompt to guide tool selection
-        system_prompt = f"""You are a helpful AI assistant with access to the following tools:
-
-{chr(10).join([f"- {tool['function']['name']}: {tool['function']['description']}" for tool in openai_tools])}
-
-When the user asks for something that requires using these tools, you MUST call the appropriate tool using the function calling format. Do not provide instructions or code examples - actually call the tools.
-
-For example:
-- If asked to "list slack channels", call the slack_list_channels tool
-- If asked to "send a message", call the slack_send_message tool
-- If asked to "get campaign performance", call the campaign_performance_tracking tool
-- If asked to "create a slack channel", call the slack_create_channel tool with channel_name (without # prefix, e.g., "projects" not "#projects")
-- If asked to "create an image", call the content_creation tool with operation="generate_image" and text="description of the image"
-- If asked to "generate content", call the content_creation tool with the appropriate operation and required parameters
-- If asked to "show today's payments", "get payment summary", or "show payments", call the mpesa_payment_reconciliation tool with operation="get_summary" and days=1
-- If asked to "get unmatched payments" or "show unmatched", call the mpesa_payment_reconciliation tool with operation="get_unmatched"
-- If asked about "M-Pesa payments", "payment summary", or "payment reconciliation", use the mpesa_payment_reconciliation tool
-
-Always use the exact tool names provided above and include all required parameters."""
+        try:
+            from ..routers.chat_router import build_system_prompt
+            system_prompt = await build_system_prompt(openai_tools)
+        except ImportError:
+            # Fallback if circular import fails (though it shouldn't inside method)
+            logger.warning("Could not import build_system_prompt, using fallback")
+            system_prompt = f"""You are a helpful AI assistant with access to {len(openai_tools)} tools. 
+Please use the provided tools to answer the user request."""
         
         messages.append({"role": "system", "content": system_prompt})
         
@@ -230,6 +220,10 @@ Always use the exact tool names provided above and include all required paramete
                     except json.JSONDecodeError as e:
                         print(f"❌ Failed to parse tool calls from content: {e}")
                 
+                # Clean assistant message - remove empty tool_calls to avoid OpenAI API errors
+                if 'tool_calls' in assistant_message and not assistant_message['tool_calls']:
+                    del assistant_message['tool_calls']
+
                 # Add assistant message to conversation
                 messages.append(assistant_message)
                 
