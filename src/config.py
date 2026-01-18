@@ -45,6 +45,17 @@ class BaseConfig(BaseSettings):
     WHATSAPP_PHONE_NUMBER_ID: Optional[str] = None
     WHATSAPP_BUSINESS_ACCOUNT_ID: Optional[str] = None
     WHATSAPP_BASE_URL: Optional[str] = None
+    WHATSAPP_APP_ID: Optional[str] = None
+    WHATSAPP_APP_SECRET: Optional[str] = None
+    WHATSAPP_VERIFY_TOKEN: Optional[str] = None
+    
+    # Facebook (Pages) Configuration
+    FACEBOOK_APP_ID: Optional[str] = None
+    FACEBOOK_APP_SECRET: Optional[str] = None
+
+    # Twitter (X) Configuration
+    TWITTER_CLIENT_ID: Optional[str] = None
+    TWITTER_CLIENT_SECRET: Optional[str] = None
 
     # Asana API Configuration
     ASANA_ACCESS_TOKEN: Optional[str] = None
@@ -110,6 +121,10 @@ class BaseConfig(BaseSettings):
     PORT: int = int(os.getenv("PORT", "8000"))
     DEBUG: bool = True
     RELOAD: bool = True
+    
+    # URLs
+    API_BASE_URL: str = "http://localhost:8000"
+    FRONTEND_URL: str = "http://localhost:3000"
 
     # CORS - Allow Railway, local development, and production domain
     ALLOWED_ORIGINS: list = [

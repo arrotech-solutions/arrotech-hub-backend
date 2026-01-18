@@ -15,7 +15,7 @@ from ..models import Connection, ConnectionStatus, User
 from .asana_service import AsanaService
 from .content_creation_service import ContentCreationService
 from .file_management_service import FileManagementService
-from .ga4_service import GA4Service
+
 from .hubspot_service import HubSpotService
 from .mpesa_reconciliation_service import MpesaReconciliationService
 from .powerbi_service import PowerBIService
@@ -36,13 +36,15 @@ from .accounting_service import AccountingService
 from .agritech_service import AgritechService
 from .health_service import HealthService
 from .utilities_service import UtilitiesService
+from .workflow_service import WorkflowService
 from .google_workspace import (
     GoogleWorkspaceBaseClient,
     GmailService,
     CalendarService,
     DriveService,
     SheetsService,
-    DocsService
+    DocsService,
+    AnalyticsService
 )
 from .feature_flags import FeatureGate
 
@@ -60,7 +62,7 @@ class ToolExecutor:
             "salesforce": SalesforceService(),
             "teams": TeamsService(),
             "zoom": ZoomService(),
-            "ga4": GA4Service(),
+
             "whatsapp": WhatsAppService(),
             "social_media": SocialMediaService(),
             "file_management": FileManagementService(),
@@ -78,6 +80,7 @@ class ToolExecutor:
             "agritech": AgritechService(),
             "health": HealthService(),
             "utility": UtilitiesService(),
+            "workflow": WorkflowService(),
         }
         # Initialize services
         self._initialized = False
@@ -89,7 +92,7 @@ class ToolExecutor:
                 if hasattr(service, 'initialize'):
                     # Only initialize services that don't require parameters
                     # Services like Salesforce require a connection parameter and should be initialized per-request
-                    if service_name in ["slack", "teams", "zoom", "ga4", "whatsapp", "social_media", "file_management", "web_tools", "content_creation", "rate_limit", "billing"]:
+                    if service_name in ["slack", "teams", "zoom", "whatsapp", "social_media", "file_management", "web_tools", "content_creation", "rate_limit", "billing"]:
                         await service.initialize()
             self._initialized = True
 
@@ -132,8 +135,7 @@ class ToolExecutor:
                 return await self._execute_hubspot_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("salesforce_"):
                 return await self._execute_salesforce_tool(tool_name, arguments, user, db)
-            elif tool_name.startswith("ga4_"):
-                return await self._execute_ga4_tool(tool_name, arguments, user, db)
+
             elif tool_name.startswith("marketing_"):
                 return await self._execute_marketing_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("whatsapp_"):
@@ -176,6 +178,8 @@ class ToolExecutor:
                 return await self._execute_health_tool(tool_name, arguments, user, db)
             elif tool_name.endswith("_utility_ops"):
                 return await self._execute_utility_tool(tool_name, arguments, user, db)
+            elif tool_name == "workflow_management":
+                return await self._execute_system_tool(tool_name, arguments, user, db)
             else:
                 return {
                     "success": False,
@@ -206,7 +210,7 @@ class ToolExecutor:
         if tool_name.startswith("zoom_"): return "zoom"
         if tool_name.startswith("hubspot_"): return "hubspot"
         if tool_name.startswith("salesforce_"): return "salesforce"
-        if tool_name.startswith("ga4_"): return "ga4"
+
         if tool_name.startswith("whatsapp_"): return "whatsapp"
         if tool_name.startswith("social_media_"): return "social_media"
         if tool_name.startswith("asana_"): return "asana"
@@ -510,6 +514,27 @@ class ToolExecutor:
                 result = await slack_service.search_messages(query, channel, limit)
                 return {
                     "success": True,
+                    "result": f"Found {result.get('total_found', 0)} messages",
+                    "data": result
+                }
+            elif action == "get_channel_history":
+                channel = arguments.get("channel")
+                limit = arguments.get("limit", 20)
+
+                if not channel:
+                     return {
+                        "success": False,
+                        "error": "Channel name or ID is required",
+                        "result": None
+                    }
+                
+                # Check if input is likely an ID (starts with C, G, D) or name
+                # Simple check: if it starts with C/G/D and has numbers, treat as ID, else Name
+                # But safer to just pass both to the service method which resolves it
+                
+                result = await slack_service.get_channel_history(channel_name=channel, limit=limit)
+                return {
+                    "success": result.get("success", False),
                     "result": f"Found {result.get('total_found', 0)} messages",
                     "data": result
                 }
@@ -2376,11 +2401,12 @@ class ToolExecutor:
                 }
             
             # Initialize base client
-            base_client = GoogleWorkspaceBaseClient(
-                client_id=client_id,
-                client_secret=client_secret,
-                refresh_token=refresh_token
-            )
+            credentials_data = {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": refresh_token
+            }
+            base_client = GoogleWorkspaceBaseClient(credentials_data)
             
             operation = arguments.get("operation")
             
@@ -2530,6 +2556,11 @@ class ToolExecutor:
                     return await service.get_file_metadata(
                         file_id=arguments.get("file_id")
                     )
+                elif operation == "move_file":
+                    return await service.move_file(
+                        file_id=arguments.get("file_id"),
+                        folder_id=arguments.get("folder_id")
+                    )
             
             elif tool_name == "google_workspace_sheets":
                 service = SheetsService(base_client)
@@ -2626,6 +2657,42 @@ class ToolExecutor:
                 elif operation == "export_pdf":
                     return await service.export_as_pdf(
                         document_id=arguments.get("document_id")
+                    )
+
+            elif tool_name == "google_workspace_analytics":
+                service = AnalyticsService(base_client)
+                # Use configured default property ID if not provided in arguments
+                property_id = arguments.get("property_id") or connection.config.get("default_property_id")
+                
+                if operation == "get_traffic":
+                    return await service.get_traffic(
+                        property_id=property_id,
+                        hours=arguments.get("hours", 24)
+                    )
+                elif operation == "get_conversions":
+                    return await service.get_conversions(
+                        property_id=property_id,
+                        hours=arguments.get("hours", 24),
+                        conversion_events=arguments.get("conversion_events")
+                    )
+                elif operation == "get_user_behavior":
+                    return await service.get_user_behavior(
+                        property_id=property_id,
+                        hours=arguments.get("hours", 24),
+                        user_segments=arguments.get("user_segments"),
+                        engagement_metrics=arguments.get("engagement_metrics")
+                    )
+                elif operation == "get_custom_report":
+                    return await service.get_custom_report(
+                        property_id=property_id,
+                        metrics=arguments.get("metrics"),
+                        dimensions=arguments.get("dimensions"),
+                        filters=arguments.get("filters")
+                    )
+                elif operation == "get_ecommerce_data":
+                    return await service.get_ecommerce_data(
+                        property_id=property_id,
+                        hours=arguments.get("hours", 24)
                     )
             
             return {
@@ -4223,6 +4290,42 @@ Description: {payment.description or 'N/A'}"""
             return await service.handle_operation(platform=platform, **arguments)
         except Exception as e:
             logger.error(f"Error in Utility tool {tool_name}: {e}")
+            return {"success": False, "error": str(e)}
+
+
+
+    async def _execute_system_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute system-related tools."""
+        try:
+            workflow_service = self.services["workflow"]
+            
+            if tool_name == "workflow_management":
+                operation = arguments.get("operation")
+                
+                if operation == "create_draft":
+                    title = arguments.get("title", "New Workflow")
+                    description = arguments.get("description", "")
+                    steps = arguments.get("steps", [])
+                    return await workflow_service.create_draft_workflow(user.id, title, description, steps, db)
+                
+                elif operation == "list_workflows":
+                    return await workflow_service.list_workflows(user.id, db)
+                
+                elif operation == "get_workflow":
+                    workflow_id = arguments.get("workflow_id")
+                    if not workflow_id:
+                        return {"success": False, "error": "Workflow ID is required"}
+                    return await workflow_service.get_workflow(workflow_id, db)
+            
+            return {"success": False, "error": f"Unknown system tool: {tool_name}"}
+        except Exception as e:
+            logger.error(f"Error executing system tool: {e}")
             return {"success": False, "error": str(e)}
 
 

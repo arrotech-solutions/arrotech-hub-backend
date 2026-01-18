@@ -31,6 +31,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile",
+    "https://www.googleapis.com/auth/analytics.readonly",
 ]
 
 
@@ -157,6 +158,7 @@ async def oauth_callback(
             new_connection = Connection(
                 user_id=user_id,
                 platform="google_workspace",
+                name=user_info.get("name") or user_info.get("email") or "Google Workspace",
                 status=ConnectionStatus.ACTIVE,
                 config={
                     "client_id": GOOGLE_CLIENT_ID,

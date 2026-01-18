@@ -182,44 +182,44 @@ async def get_conversation(
     }
 
 
-async def build_system_prompt() -> str:
+async def build_system_prompt(tools: List[Dict[str, Any]] = None) -> str:
     system_prompt = """You are Mini-Hub, a business automation assistant. Be direct and efficient.
 
-    ## CORE PRINCIPLES:
-    1. Respond to current input only - no context from previous messages
-    2. Be direct and efficient - quick responses
-    3. Use tools only when needed - don't call tools for casual conversation
-    4. Precise tool calls - exact tool names and correct arguments
+## CORE PRINCIPLES:
+1. Respond to current input only - no context from previous messages
+2. Be direct and efficient - quick responses
+3. Use tools only when needed - don't call tools for casual conversation
+4. Precise tool calls - exact tool names and correct arguments
 
-    ## TOOL CALL FORMAT:
-    When you need to use a tool, format your response exactly like this:
-    ```
-    TOOL_CALL: {"tool": "tool_name", "arguments": {"param": "value"}}
-    ```
-    
-    IMPORTANT: 
-    - Always use the exact format: TOOL_CALL: followed by valid JSON
-    - Use the exact tool names as listed below
-    - Provide all required arguments for the tool
-    - Only call tools when the user specifically requests an action
+## TOOL CALL FORMAT:
+When you need to use a tool, format your response exactly like this:
+```
+TOOL_CALL: {"tool": "tool_name", "arguments": {"param": "value"}}
+```
+OR use the native function calling capability if available.
 
-    ## AVAILABLE TOOLS:
-    - **slack_team_communication**: Send messages to Slack channels
-    - **slack_team_management**: Create and manage Slack channels, list users, and manage workspace settings
-    - **whatsapp_messaging**: Send WhatsApp messages
-    - **hubspot_contact_operations**: Manage HubSpot contacts
-    - **ga4_analytics_dashboard**: Get Google Analytics data
-    - **file_management**: Upload, download, generate PDFs
-    - **web_tools**: Web scraping and automation
-    - **content_creation**: Generate images and content
-    - **mpesa_payment_reconciliation**: Query M-Pesa payments, get payment summaries, view unmatched payments. Use this when users ask about payments, payment summaries, "show today's payments", "get unmatched payments", or any M-Pesa payment queries.
+IMPORTANT:
+- Always use the exact format provided above or native function calls
+- Provide all required arguments for the tool
+- Only call tools when the user specifically requests an action
+"""
 
-    ## RESPONSE STYLE:
-    - Be concise and clear
-    - Avoid repetition
-    - Use proper grammar and spelling
-    - Respond naturally to user requests
-    """
+    if tools:
+        system_prompt += "\n## AVAILABLE TOOLS:\n"
+        for tool in tools:
+            # Handle both OpenAI format (nested in 'function') and flat format
+            func = tool.get('function', tool)
+            name = func.get('name')
+            description = func.get('description')
+            system_prompt += f"- **{name}**: {description}\n"
+
+    system_prompt += """
+## RESPONSE STYLE:
+- Be concise and clear
+- Avoid repetition
+- Use proper grammar and spelling
+- Respond naturally to user requests
+"""
 
     return system_prompt
 
@@ -263,98 +263,125 @@ async def relevant_tools(available_tools: List[Dict[str, Any]],
                                                  "set purpose", "list users"]):
             # Only match if explicitly about Slack channels/members/users
             if "slack" in user_request or "channel" in user_request or "member" in user_request:
-                relevant_tools = [tool for tool in available_tools
-                                  if tool['name'] == "slack_team_management"]
-                if relevant_tools:
-                    return relevant_tools
-    elif any(word in user_request for word in ["send message", "send to",
-                                               "message to", "post message",
-                                               "send report", "send alert",
-                                               "schedule message"]):
-        if "slack" in user_request or "#" in user_request:
-            relevant_tools = [tool for tool in available_tools
-                              if tool['name'] == "slack_team_communication"]
-        elif any(word in user_request for word in ["whatsapp", "phone", "sms"]):
-            relevant_tools = [tool for tool in available_tools
-                              if "whatsapp" in tool['name']]
-        else:
-            # Default to Slack messaging if no specific platform mentioned
-            relevant_tools = [tool for tool in available_tools
-                              if tool['name'] == "slack_team_communication"]
-    elif any(word in user_request for word in ["upload file", "file upload",
-                                               "share file", "attach file"]):
-        relevant_tools = [tool for tool in available_tools
-                          if tool['name'] == "slack_file_management"]
-    elif any(word in user_request for word in ["add reaction", "react",
-                                               "emoji", "thumbs up", "like"]):
-        relevant_tools = [tool for tool in available_tools
-                          if tool['name'] == "slack_reactions"]
-    elif any(word in user_request for word in ["search", "find message",
-                                               "look for", "search messages"]):
-        relevant_tools = [tool for tool in available_tools
-                          if tool['name'] == "slack_search"]
-    elif any(word in user_request for word in ["get user info", "user info",
-                                               "list users", "find user",
-                                               "user details"]):
-        relevant_tools = [tool for tool in available_tools
-                          if tool['name'] == "slack_user_management"]
-    elif any(word in user_request for word in ["pin message", "pinned messages",
-                                               "get pinned", "pin"]):
-        relevant_tools = [tool for tool in available_tools
-                          if tool['name'] == "slack_pins"]
+                relevant_tools.extend([tool for tool in available_tools
+                                  if tool['name'] == "slack_team_management"])
 
-        # Intent detection for WhatsApp
-    elif any(word in user_request for word in ["whatsapp", "phone", "sms",
-                                               "text", "message"]):
+        if any(word in user_request for word in ["send message", "send to",
+                                                   "message to", "post message", "post", "write",
+                                                   "send report", "send alert",
+                                                   "schedule message"]):
+            if "slack" in user_request or "#" in user_request:
+                relevant_tools.extend([tool for tool in available_tools
+                                  if tool['name'] == "slack_team_communication"])
+            elif any(word in user_request for word in ["whatsapp", "phone", "sms"]):
+                relevant_tools.extend([tool for tool in available_tools
+                                  if "whatsapp" in tool['name']])
+            else:
+                # If specifically asking to post/send but platform ambiguous, include Slack as option if relevant context
+                if "slack" in user_request or "channel" in user_request:
+                    relevant_tools.extend([tool for tool in available_tools
+                                      if tool['name'] == "slack_team_communication"])
+
+        if any(word in user_request for word in ["upload file", "file upload",
+                                                   "share file", "attach file"]):
+            relevant_tools.extend([tool for tool in available_tools
+                              if tool['name'] == "slack_file_management"])
+
+        if any(word in user_request for word in ["add reaction", "react",
+                                                   "emoji", "thumbs up", "like"]):
+            relevant_tools.extend([tool for tool in available_tools
+                              if tool['name'] == "slack_reactions"])
+
+        if any(word in user_request for word in ["search", "find message",
+                                                   "look for", "search messages"]):
+            relevant_tools.extend([tool for tool in available_tools
+                              if tool['name'] == "slack_search"])
+
+        if any(word in user_request for word in ["get user info", "user info",
+                                                   "list users", "find user",
+                                                   "user details"]):
+            relevant_tools.extend([tool for tool in available_tools
+                              if tool['name'] == "slack_user_management"])
+
+        if any(word in user_request for word in ["pin message", "pinned messages",
+                                                   "get pinned", "pin"]):
+            relevant_tools.extend([tool for tool in available_tools
+                              if tool['name'] == "slack_pins"])
+
+    # Intent detection for WhatsApp
+    if any(word in user_request for word in ["whatsapp", "phone", "sms",
+                                               "text", "message"]) and "slack" not in user_request:
         if any(word in user_request for word in ["template", "template message",
                                                  "list templates", "create template",
                                                  "show templates", "get templates"]):
-            relevant_tools = [tool for tool in available_tools
-                              if tool['name'] == "whatsapp_templates"]
+            relevant_tools.extend([tool for tool in available_tools
+                              if tool['name'] == "whatsapp_templates"])
         elif any(word in user_request for word in ["media", "image", "video",
                                                    "audio", "document", "file",
                                                    "photo", "picture"]):
-            relevant_tools = [tool for tool in available_tools
-                              if tool['name'] == "whatsapp_messaging"]
+            relevant_tools.extend([tool for tool in available_tools
+                              if tool['name'] == "whatsapp_messaging"])
         elif any(word in user_request for word in ["location", "send location",
                                                    "share location", "where",
                                                    "coordinates", "map"]):
-            relevant_tools = [tool for tool in available_tools
-                              if tool['name'] == "whatsapp_messaging"]
+            relevant_tools.extend([tool for tool in available_tools
+                              if tool['name'] == "whatsapp_messaging"])
         else:
-            # Default to WhatsApp messaging for general message requests
-            relevant_tools = [tool for tool in available_tools
-                              if tool['name'] == "whatsapp_messaging"]
+            # Default to WhatsApp messaging for general message requests ONLY if WhatsApp mentioned
+            if "whatsapp" in user_request:
+                 relevant_tools.extend([tool for tool in available_tools
+                                  if tool['name'] == "whatsapp_messaging"])
 
     # Intent detection for HubSpot/CRM
-    elif any(word in user_request for word in ["contact", "lead", "person"]):
-        relevant_tools = [tool for tool in available_tools
-                          if "hubspot_contact" in tool['name']]
-    elif any(word in user_request for word in ["deal", "opportunity", "sale"]):
-        relevant_tools = [tool for tool in available_tools
-                          if "hubspot_deal" in tool['name']]
-    elif any(word in user_request for word in ["hubspot", "crm"]):
-        relevant_tools = [tool for tool in available_tools
-                          if "hubspot" in tool['name']]
+    if any(word in user_request for word in ["hubspot", "crm", "contact", "lead", "person", "deal", "opportunity", "sale"]):
+        if any(word in user_request for word in ["contact", "lead", "person"]):
+            relevant_tools.extend([tool for tool in available_tools
+                              if "hubspot_contact" in tool['name']])
+        if any(word in user_request for word in ["deal", "opportunity", "sale"]):
+            relevant_tools.extend([tool for tool in available_tools
+                              if "hubspot_deal" in tool['name']])
+        if any(word in user_request for word in ["hubspot", "crm"]):
+            relevant_tools.extend([tool for tool in available_tools
+                              if "hubspot" in tool['name']])
 
     # Intent detection for Analytics
-    elif any(word in user_request for word in ["analytics", "ga4", "report",
+    if any(word in user_request for word in ["analytics", "ga4", "report",
                                                "traffic", "data"]):
-        relevant_tools = [tool for tool in available_tools
-                          if "ga4" in tool['name']]
+        relevant_tools.extend([tool for tool in available_tools
+                          if "ga4" in tool['name']])
 
     # Intent detection for Web Tools
-    elif any(word in user_request for word in ["scrape", "website", "web page",
+    if any(word in user_request for word in ["scrape", "website", "web page",
                                                "extract", "data from", "check website",
                                                "website status", "extract emails"]):
-        relevant_tools = [tool for tool in available_tools
-                          if tool['name'] == "web_tools"]
+        relevant_tools.extend([tool for tool in available_tools
+                          if tool['name'] == "web_tools"])
 
     # Intent detection for Marketing
-    elif any(word in user_request for word in ["campaign", "marketing",
+    if any(word in user_request for word in ["campaign", "marketing",
                                                "automation"]):
-        relevant_tools = [tool for tool in available_tools
-                          if "marketing" in tool['name']]
+        relevant_tools.extend([tool for tool in available_tools
+                          if "marketing" in tool['name']])
+
+    # Intent detection for Email
+    if any(word in user_request for word in ["email", "mail", "gmail",
+                                               "send to", "message"]):
+        if "email" in user_request or "gmail" in user_request or "mail" in user_request:
+             relevant_tools.extend([tool for tool in available_tools
+                              if "google_workspace_gmail" in tool['name']])
+
+    # Intent detection for Workflow Management
+    if any(word in user_request for word in ["workflow", "automate", "flow",
+                                               "process", "blueprint"]):
+        relevant_tools.extend([tool for tool in available_tools
+                          if "workflow_management" in tool['name']])
+
+    # Intent detection for System Tools
+    if any(word in user_request for word in ["system", "status", "health",
+                                               "check"]):
+        relevant_tools.extend([tool for tool in available_tools
+                          if "system" in tool['name']])
+
 
     # If no specific intent detected, don't include any tools
     # Let the LLM respond naturally without tool calling

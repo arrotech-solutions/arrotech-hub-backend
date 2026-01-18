@@ -20,9 +20,9 @@ from .database import init_db
 from .routers import (access_router, agent_router, analytics_router, api_router, auth_router, chat_router,
                       connection_router, creator_router, favorites_router, google_workspace_router, marketplace_router, 
                       mcp_router, mpesa_agent_router, notification_router, payment_router, preferences_router,
-                      settings_router, slack_agent_router, subscription_router, templates_router, workflow_router)
+                      settings_router, slack_agent_router, slack_routes, subscription_router, templates_router, whatsapp_routes, workflow_router, facebook_routes, instagram_routes, twitter_routes)
 from .services import (BillingService, ContentCreationService,
-                       FileManagementService, GA4Service, HubSpotService,
+                       FileManagementService, HubSpotService,
                        RateLimitService, SlackService, SocialMediaService,
                        WebToolsService, WorkflowSchedulerService)
 
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 # Global services
 hubspot_service = HubSpotService()
-ga4_service = GA4Service()
+
 slack_service = SlackService()
 billing_service = BillingService()
 rate_limit_service = RateLimitService()
@@ -59,12 +59,7 @@ async def lifespan(app: FastAPI):
         logger.error(f"Database initialization failed: {e}")
 
     # Initialize services that need it (with timeouts)
-    try:
-        await asyncio.wait_for(ga4_service.initialize(), timeout=10.0)
-    except asyncio.TimeoutError:
-        logger.warning("GA4 service initialization timed out")
-    except Exception as e:
-        logger.warning(f"GA4 service initialization failed: {e}")
+
 
     try:
         await asyncio.wait_for(slack_service.initialize(), timeout=10.0)
@@ -130,6 +125,12 @@ app.include_router(favorites_router, prefix="/favorites", tags=["favorites"])
 app.include_router(preferences_router, prefix="/preferences", tags=["preferences"])
 app.include_router(subscription_router.router)
 app.include_router(google_workspace_router)  # Already has /api/google-workspace prefix
+app.include_router(slack_routes) # Already has /api/slack prefix
+app.include_router(whatsapp_routes)
+app.include_router(facebook_routes)
+app.include_router(instagram_routes)
+app.include_router(twitter_routes)
+
 
 
 @app.get("/")
@@ -208,29 +209,7 @@ async def run_mcp_server():
                     "required": ["deal_id", "note"]
                 }
             },
-            {
-                "name": "ga4_get_traffic",
-                "description": "Get traffic data from Google Analytics 4",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "date_range": {"type": "string", "default": "7d"},
-                        "dimensions": {"type": "array", "items": {"type": "string"}},
-                        "metrics": {"type": "array", "items": {"type": "string"}}
-                    }
-                }
-            },
-            {
-                "name": "ga4_get_conversions",
-                "description": "Get conversion data from Google Analytics 4",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "date_range": {"type": "string", "default": "7d"},
-                        "conversion_events": {"type": "array", "items": {"type": "string"}}
-                    }
-                }
-            },
+
             {
                 "name": "slack_send_message",
                 "description": "Send a message to a Slack channel",
@@ -333,10 +312,7 @@ async def run_mcp_server():
                 return await hubspot_service.create_contact(**arguments)
             elif name == "hubspot_add_deal_note":
                 return await hubspot_service.add_deal_note(**arguments)
-            elif name == "ga4_get_traffic":
-                return await ga4_service.get_traffic(**arguments)
-            elif name == "ga4_get_conversions":
-                return await ga4_service.get_conversions(**arguments)
+
             elif name == "slack_send_message":
                 return await slack_service.send_message(**arguments)
             elif name == "slack_send_report":

@@ -26,7 +26,7 @@ class DocsService:
             title: Document title
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             body = {
                 'title': title
@@ -58,7 +58,7 @@ class DocsService:
             document_id: ID of the document
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             doc = service.documents().get(documentId=document_id).execute()
             
@@ -103,7 +103,7 @@ class DocsService:
             index: Position to insert text (default 1, start of document)
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             requests = [{
                 'insertText': {
@@ -149,7 +149,7 @@ class DocsService:
             if not doc_result.get('success'):
                 return doc_result
             
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             # Get the end index from the document body
             doc = service.documents().get(documentId=document_id).execute()
@@ -180,7 +180,7 @@ class DocsService:
             match_case: Whether to match case
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             requests = [{
                 'replaceAllText': {
@@ -234,7 +234,7 @@ class DocsService:
             foreground_color: Color dict with 'red', 'green', 'blue' (0-1)
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             text_style = {}
             fields = []
@@ -300,7 +300,7 @@ class DocsService:
             index: Position to insert table
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             requests = [{
                 'insertTable': {
@@ -341,7 +341,7 @@ class DocsService:
             requests: List of update requests
         """
         try:
-            service = await self.base_client.get_service(self.service_name, self.version)
+            service = self.base_client.get_service(self.service_name, self.version)
             
             result = service.documents().batchUpdate(
                 documentId=document_id,
@@ -372,7 +372,7 @@ class DocsService:
         """
         try:
             # Use Drive API to export
-            drive_service = await self.base_client.get_service('drive', 'v3')
+            drive_service = self.base_client.get_service('drive', 'v3')
             
             request = drive_service.files().export_media(
                 fileId=document_id,

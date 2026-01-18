@@ -1641,41 +1641,60 @@ class SlackService:
             }
 
     # Channel Analytics
-    async def get_channel_history(self, channel: str, limit: int = 100, oldest: str = None, latest: str = None) -> Dict[str, Any]:
+    async def get_channel_history(self, channel_id: str = None, channel_name: str = None, limit: int = 20) -> Dict[str, Any]:
         """Get message history from a channel."""
         if not self.client:
             raise Exception("Slack client not initialized")
 
         try:
-            params = {
-                "channel": channel,
-                "limit": limit
-            }
-            if oldest:
-                params["oldest"] = oldest
-            if latest:
-                params["latest"] = latest
+            target_channel_id = channel_id
 
-            response = self.client.conversations_history(**params)
+            # If channel_name provided, resolve to ID
+            if not target_channel_id and channel_name:
+                # Remove # if present
+                clean_name = channel_name.lstrip('#')
+                
+                # List channels to find ID
+                # Note: This might be slow for workspaces with many channels, caching recommended in prod
+                response = self.client.conversations_list(types="public_channel,private_channel")
+                if response["ok"]:
+                    for channel in response["channels"]:
+                        if channel["name"] == clean_name:
+                            target_channel_id = channel["id"]
+                            break
+            
+            if not target_channel_id:
+                 return {
+                    "success": False,
+                    "error": "Channel ID or valid Channel Name is required"
+                }
+
+            # Fetch history
+            response = self.client.conversations_history(
+                channel=target_channel_id,
+                limit=limit
+            )
 
             if response["ok"]:
                 messages = []
-                for message in response["messages"]:
+                for msg in response["messages"]:
+                    # Skip subtype messages (like "channel_join") if desired, or keep them
+                    # For inbox, we might want only actual messages
+                    if "subtype" in msg and msg["subtype"] in ["channel_join", "channel_leave"]:
+                         continue
+                         
                     messages.append({
-                        "text": message["text"],
-                        "user": message.get("user", "Unknown"),
-                        "timestamp": message["ts"],
-                        "type": message.get("type", "message"),
-                        "subtype": message.get("subtype"),
-                        "reactions": message.get("reactions", [])
+                        "text": msg.get("text", ""),
+                        "user": msg.get("user", "Unknown"),
+                        "timestamp": msg["ts"],
+                        "channel": channel_name or target_channel_id # Context
                     })
 
                 return {
                     "success": True,
-                    "channel": channel,
                     "messages": messages,
-                    "total_messages": len(messages),
-                    "has_more": response.get("has_more", False)
+                    "total_found": len(messages),
+                    "channel_id": target_channel_id
                 }
             else:
                 return {
@@ -1689,6 +1708,7 @@ class SlackService:
                 "success": False,
                 "error": str(e)
             }
+
 
     # Search and Discovery
     async def search_files(self, query: str, channel: str = None, user: str = None, date_from: str = None, date_to: str = None, count: int = 20) -> Dict[str, Any]:

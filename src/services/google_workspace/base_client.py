@@ -34,14 +34,7 @@ class GoogleWorkspaceBaseClient:
                 token_uri="https://oauth2.googleapis.com/token",
                 client_id=data.get("client_id"),
                 client_secret=data.get("client_secret"),
-                scopes=data.get("scopes", [
-                    'https://www.googleapis.com/auth/gmail.send',
-                    'https://www.googleapis.com/auth/gmail.modify',
-                    'https://www.googleapis.com/auth/calendar',
-                    'https://www.googleapis.com/auth/drive',
-                    'https://www.googleapis.com/auth/spreadsheets',
-                    'https://www.googleapis.com/auth/documents'
-                ])
+                scopes=data.get("scopes")
             )
             return creds
         except Exception as e:

@@ -14,7 +14,7 @@ from ..database import get_db
 from ..models import Connection, ConnectionStatus, User
 from ..routers.auth_router import get_current_user
 from ..services.asana_service import AsanaService
-from ..services.ga4_service import GA4Service
+
 from ..services.hubspot_service import HubSpotService
 from ..services.platform_registry import platform_registry
 from ..services.powerbi_service import PowerBIService
@@ -31,7 +31,7 @@ router = APIRouter()
 
 # Initialize services
 hubspot_service = HubSpotService()
-ga4_service = GA4Service()
+
 slack_service = SlackService()
 teams_service = TeamsService()
 zoom_service = ZoomService()
@@ -314,8 +314,7 @@ async def test_platform_connection(platform: str, config: Dict[str, Any]) -> Dic
     try:
         if platform == "hubspot":
             return await hubspot_service.test_connection(config)
-        elif platform == "ga4":
-            return await ga4_service.test_connection(config)
+
         elif platform == "slack":
             return await slack_service.test_connection(config)
         elif platform == "whatsapp":
@@ -637,21 +636,7 @@ async def test_zoom_connection(config: Dict[str, Any]) -> Dict[str, Any]:
         }
 
 
-async def test_ga4_connection(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Test GA4 connection."""
-    try:
-        # Create temporary service for testing
-        ga4_service = GA4Service()
-        
-        # Test the connection
-        result = await ga4_service.test_connection(config)
-        return result
-        
-    except Exception as e:
-        return {
-            "success": False,
-            "error": f"GA4 connection test failed: {str(e)}"
-        }
+
 
 
 async def test_asana_connection(config: Dict[str, Any]) -> Dict[str, Any]:
