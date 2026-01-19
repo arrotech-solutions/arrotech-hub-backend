@@ -20,7 +20,7 @@ from .database import init_db
 from .routers import (access_router, agent_router, analytics_router, api_router, auth_router, chat_router,
                       connection_router, creator_router, favorites_router, google_workspace_router, marketplace_router, 
                       mcp_router, mpesa_agent_router, notification_router, payment_router, preferences_router,
-                      settings_router, slack_agent_router, slack_routes, subscription_router, templates_router, whatsapp_routes, workflow_router, facebook_routes, instagram_routes, twitter_routes)
+                      settings_router, slack_agent_router, slack_routes, subscription_router, templates_router, whatsapp_routes, workflow_router, facebook_routes, instagram_routes, twitter_routes, clickup_routes)
 from .services import (BillingService, ContentCreationService,
                        FileManagementService, HubSpotService,
                        RateLimitService, SlackService, SocialMediaService,
@@ -130,6 +130,7 @@ app.include_router(whatsapp_routes)
 app.include_router(facebook_routes)
 app.include_router(instagram_routes)
 app.include_router(twitter_routes)
+app.include_router(clickup_routes.router)
 
 
 
