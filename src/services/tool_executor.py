@@ -37,6 +37,7 @@ from .agritech_service import AgritechService
 from .health_service import HealthService
 from .utilities_service import UtilitiesService
 from .workflow_service import WorkflowService
+from .clickup_service import ClickUpService
 from .google_workspace import (
     GoogleWorkspaceBaseClient,
     GmailService,
@@ -81,6 +82,7 @@ class ToolExecutor:
             "health": HealthService(),
             "utility": UtilitiesService(),
             "workflow": WorkflowService(),
+            "clickup": ClickUpService(),
         }
         # Initialize services
         self._initialized = False
@@ -166,6 +168,8 @@ class ToolExecutor:
                 return await self._execute_logistics_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("context_"):
                 return await self._execute_context_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("clickup_"):
+                return await self._execute_clickup_tool(tool_name, arguments, user, db)
             elif tool_name.endswith("_payment_ops"):
                 return await self._execute_fintech_tool(tool_name, arguments, user, db)
             elif tool_name.endswith("_ecommerce_ops"):
@@ -219,7 +223,9 @@ class ToolExecutor:
         if tool_name.startswith("mpesa_"): return "mpesa"
         if tool_name.startswith("hr_"): return "hr_hub"
         if tool_name.startswith("lead_intelligence_"): return "lead_intelligence"
+        if tool_name.startswith("lead_intelligence_"): return "lead_intelligence"
         if tool_name.startswith("logistics_"): return "logistics_hub"
+        if tool_name.startswith("clickup_"): return "clickup"
         
         # Kenyan Specific Mappings
         if tool_name.endswith("_payment_ops"): return tool_name.replace("_payment_ops", "")
@@ -4293,6 +4299,97 @@ Description: {payment.description or 'N/A'}"""
             return {"success": False, "error": str(e)}
 
 
+
+    async def _execute_clickup_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute ClickUp tools."""
+        try:
+            # Get user's ClickUp connection
+            # We don't have the Connection model imported here usually with enough context, 
+            # but we can query it.
+            # Assuming 'connection' logic is similar to slack.
+            
+            result = await db.execute(
+                select(Connection)
+                .filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == "clickup",
+                    Connection.status == ConnectionStatus.ACTIVE
+                )
+            )
+            connection = result.scalar_one_or_none()
+            
+            if not connection:
+                return {
+                    "success": False,
+                    "error": "No active ClickUp connection found. Please connect ClickUp in Settings > Connections.",
+                    "result": None
+                }
+            
+            access_token = connection.config.get("access_token")
+            if not access_token:
+                 return {
+                    "success": False,
+                    "error": "ClickUp connection is missing access token. Please reconnect.",
+                    "result": None
+                }
+
+            clickup_service = ClickUpService()
+            operation = arguments.get("operation")
+            
+            if tool_name == "clickup_resource_management":
+                if operation == "get_spaces":
+                    team_id = arguments.get("team_id")
+                    if not team_id:
+                        teams = connection.config.get("teams", [])
+                        if teams:
+                            team_id = teams[0].get("id")
+                    return await clickup_service.get_spaces(access_token, team_id)
+                elif operation == "get_folders":
+                    return await clickup_service.get_folders(access_token, arguments.get("space_id"))
+                elif operation == "get_lists":
+                    return await clickup_service.get_lists(access_token, arguments.get("folder_id"))
+                elif operation == "get_folderless_lists":
+                    return await clickup_service.get_folderless_lists(access_token, arguments.get("space_id"))
+            
+            elif tool_name == "clickup_task_management":
+                if operation == "create_task":
+                    return await clickup_service.create_task(
+                        access_token,
+                        arguments.get("list_id"),
+                        arguments.get("name"),
+                        arguments.get("description")
+                    )
+                elif operation == "get_tasks":
+                    return await clickup_service.get_tasks(
+                        access_token,
+                        arguments.get("list_id"),
+                        arguments.get("include_closed", False)
+                    )
+                elif operation == "get_team_tasks":
+                    team_id = arguments.get("team_id")
+                    if not team_id:
+                         teams = connection.config.get("teams", [])
+                         if teams:
+                             team_id = teams[0].get("id")
+                    return await clickup_service.get_team_tasks(
+                        access_token,
+                        team_id,
+                        arguments.get("assignee_id")
+                    )
+                else:
+                    return {"success": False, "error": f"Unsupported operation: {operation}"}
+            
+            return {"success": False, "error": f"Unknown ClickUp tool: {tool_name}"}
+            
+        except Exception as e:
+            logger.error(f"Error executing ClickUp tool: {e}")
+            return {"success": False, "error": str(e)}
 
     async def _execute_system_tool(
         self,

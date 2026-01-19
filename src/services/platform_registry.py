@@ -634,6 +634,69 @@ class PlatformRegistry:
             },
             test_function="test_twitter_connection"
         )
+        
+        # ClickUp Platform
+        clickup_capabilities = [
+            PlatformCapability(
+                name="Task Management",
+                description="Manage ClickUp tasks, lists, and folders",
+                tool_name="clickup_task_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_task", "get_tasks", "get_team_tasks", "update_task", "delete_task"]},
+                        "list_id": {"type": "string"},
+                        "team_id": {"type": "string"},
+                        "assignee_id": {"type": "string"},
+                        "task_id": {"type": "string"},
+                        "name": {"type": "string"},
+                        "description": {"type": "string"},
+                        "assignees": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["create_task", "get_tasks", "get_team_tasks", "update_task", "delete_task"]
+            ),
+            PlatformCapability(
+                name="Resource Management",
+                description="Navigate ClickUp hierarchy (Spaces, Folders, Lists)",
+                tool_name="clickup_resource_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_spaces", "get_folders", "get_lists", "get_folderless_lists"]},
+                        "team_id": {"type": "string"},
+                        "space_id": {"type": "string"},
+                        "folder_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_spaces", "get_folders", "get_lists", "get_folderless_lists"]
+            )
+        ]
+
+        self.platforms["clickup"] = Platform(
+            id="clickup",
+            name="ClickUp",
+            description="Project management and productivity platform",
+            icon="clickup",
+            features=[
+                "Task creation",
+                "List management",
+                "Team collaboration",
+                "Workflow automation"
+            ],
+            capabilities=clickup_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "client_id": {"type": "string", "description": "ClickUp Client ID"},
+                    "client_secret": {"type": "string", "description": "ClickUp Client Secret"}
+                },
+                "required": ["client_id", "client_secret"]
+            },
+            test_function="test_clickup_connection"
+        )
 
         # LinkedIn Platform
         linkedin_capabilities = [
