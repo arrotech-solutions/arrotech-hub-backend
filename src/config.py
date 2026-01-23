@@ -66,6 +66,22 @@ class BaseConfig(BaseSettings):
     POWERBI_CLIENT_SECRET: Optional[str] = None
     POWERBI_TENANT_ID: Optional[str] = None
 
+    # Outlook Configuration
+    OUTLOOK_CLIENT_ID: Optional[str] = None
+    OUTLOOK_CLIENT_SECRET: Optional[str] = None
+    
+    # Notion Configuration
+    NOTION_CLIENT_ID: Optional[str] = None
+    NOTION_CLIENT_SECRET: Optional[str] = None
+
+    # Trello Configuration
+    TRELLO_CLIENT_ID: Optional[str] = None
+    TRELLO_CLIENT_SECRET: Optional[str] = None
+
+    # Jira Configuration
+    JIRA_CLIENT_ID: Optional[str] = None
+    JIRA_CLIENT_SECRET: Optional[str] = None
+
     # LLM API Keys
     OPENAI_API_KEY: Optional[str] = None
     GEMINI_API_KEY: Optional[str] = None
@@ -74,7 +90,7 @@ class BaseConfig(BaseSettings):
     ANTHROPIC_API_KEY: Optional[str] = None
 
     # LLM Settings
-    DEFAULT_LLM_PROVIDER: str = "ollama"
+    DEFAULT_LLM_PROVIDER: str = "openai"
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_TOKENS: Optional[int] = None
 
@@ -97,7 +113,7 @@ class BaseConfig(BaseSettings):
     STRIPE_PUBLISHABLE_KEY: Optional[str] = None
 
     # App Settings
-    SECRET_KEY: str = "your-secret-key-change-in-production"
+    SECRET_KEY: str  # Must be set in environment
     ENVIRONMENT: str = "development"
 
     # Rate Limits
@@ -119,8 +135,8 @@ class BaseConfig(BaseSettings):
     # Server Settings
     HOST: str = "0.0.0.0"
     PORT: int = int(os.getenv("PORT", "8000"))
-    DEBUG: bool = True
-    RELOAD: bool = True
+    DEBUG: bool = False  # Secure default
+    RELOAD: bool = False  # Secure default
     
     # URLs
     API_BASE_URL: str = "http://localhost:8000"

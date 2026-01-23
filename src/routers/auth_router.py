@@ -11,12 +11,21 @@ from fastapi.security import HTTPBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from ..database import get_db
 from ..database import get_db
-from ..models import User, AccessRequest, AccessRequestStatus, SubscriptionTier
+from ..models import (
+    User, AccessRequest, AccessRequestStatus, SubscriptionTier,
+    UserSettings, Connection, UsageLog, Workflow, Conversation,
+    CreatorProfile, Invoice, MpesaPayment
+)
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
+import json
 
 
 class UserRegister(BaseModel):
@@ -32,6 +41,18 @@ class UserLogin(BaseModel):
 
 router = APIRouter()
 security = HTTPBearer()
+
+from ..services.email_service import email_service
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+class ValidateResetTokenRequest(BaseModel):
+    token: str
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -65,6 +86,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
 
 
 async def get_current_user(
+    request: Request,
     token: str = Depends(security),
     db: AsyncSession = Depends(get_db)
 ) -> User:
@@ -84,19 +106,46 @@ async def get_current_user(
     except JWTError:
         raise credentials_exception
 
-    result = await db.execute(select(User).where(User.email == email))
+    # Load user with settings for IP whitelist check
+    result = await db.execute(
+        select(User)
+        .where(User.email == email)
+        .options(selectinload(User.settings))
+    )
     user = result.scalar_one_or_none()
+    
     if user is None:
         raise credentials_exception
+
+    # IP Whitelist Check
+    if user.settings and user.settings.ip_whitelist:
+        client_host = request.client.host
+        # Handle cases where behind proxy (X-Forwarded-For) - simplistic check for now
+        # In production, trust specific proxies or use a library
+        whitelist = user.settings.ip_whitelist
+        if isinstance(whitelist, list) and len(whitelist) > 0:
+             if client_host not in whitelist:
+                 # TODO: Check X-Forwarded-For if behind load balancer
+                 raise HTTPException(
+                     status_code=status.HTTP_403_FORBIDDEN,
+                     detail=f"IP address {client_host} is not whitelisted."
+                 )
+
     return user
 
 
 @router.post("/register")
 async def register(
+    request: Request,
     user_data: UserRegister,
     db: AsyncSession = Depends(get_db)
 ):
     """Register a new user."""
+    # Check rate limit (use IP or email)
+    rate_limit_service = request.app.state.rate_limit_service
+    if not await rate_limit_service.check_limit(user_data.email, tier="free"): # Apply strict limit for auth
+         raise HTTPException(status_code=429, detail="Too many attempts. Please try again later.")
+
     # Check if user already exists
     result = await db.execute(
         select(User).where(User.email == user_data.email)
@@ -168,10 +217,16 @@ async def register(
 
 @router.post("/login")
 async def login(
+    request: Request,
     user_data: UserLogin,
     db: AsyncSession = Depends(get_db)
 ):
     """Login a user."""
+    # Check rate limit
+    rate_limit_service = request.app.state.rate_limit_service
+    if not await rate_limit_service.check_limit(user_data.email, tier="free"): 
+        raise HTTPException(status_code=429, detail="Too many login attempts. Please try again later.")
+
     # 0. Check for Admin bypass
     from ..config import settings
     if settings.ADMIN_EMAIL and user_data.email == settings.ADMIN_EMAIL:
@@ -208,6 +263,8 @@ async def login(
 
     if not user or not verify_password(user_data.password, user.password_hash):
         raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -257,3 +314,228 @@ async def get_current_user_info(
             "subscription_tier": current_user.subscription_tier
         }
     }
+
+
+@router.post("/me/regenerate-api-key")
+async def regenerate_api_key(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Regenerate the user's API Key."""
+    new_api_key = secrets.token_urlsafe(32)
+    current_user.api_key = new_api_key
+    await db.commit()
+    return {
+        "success": True, 
+        "data": {
+            "api_key": new_api_key
+        }, 
+        "message": "API Key regenerated successfully"
+    }
+
+
+@router.get("/me/export")
+async def export_data(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    GDPR/CCPA Right to Data Portability.
+    Export all personal data associated with the user.
+    """
+    # 1. Fetch comprehensive user data
+    
+    # Settings
+    settings = await db.execute(select(UserSettings).where(UserSettings.user_id == current_user.id))
+    settings_data = [s.__dict__ for s in settings.scalars().all()]
+    for s in settings_data: s.pop('_sa_instance_state', None)
+
+    # Connections
+    connections = await db.execute(select(Connection).where(Connection.user_id == current_user.id))
+    connections_data = [c.__dict__ for c in connections.scalars().all()]
+    for c in connections_data: c.pop('_sa_instance_state', None)
+
+    # Usage Logs (Limit to last 1000)
+    logs = await db.execute(select(UsageLog).where(UsageLog.user_id == current_user.id).limit(1000))
+    logs_data = [l.__dict__ for l in logs.scalars().all()]
+    for l in logs_data: l.pop('_sa_instance_state', None)
+
+    # Workflows
+    workflows = await db.execute(select(Workflow).where(Workflow.user_id == current_user.id))
+    workflows_data = [w.__dict__ for w in workflows.scalars().all()]
+    for w in workflows_data: w.pop('_sa_instance_state', None)
+
+    # Conversations
+    conversations = await db.execute(select(Conversation).where(Conversation.user_id == current_user.id))
+    conversations_data = [c.__dict__ for c in conversations.scalars().all()]
+    for c in conversations_data: c.pop('_sa_instance_state', None)
+
+    # Invoices/Payments
+    invoices = await db.execute(select(Invoice).where(Invoice.user_id == current_user.id))
+    invoices_data = [i.__dict__ for i in invoices.scalars().all()]
+    for i in invoices_data: i.pop('_sa_instance_state', None)
+
+    # Construct Export Object
+    export_content = {
+        "user_info": {
+            "id": current_user.id,
+            "email": current_user.email,
+            "name": current_user.name,
+            "created_at": current_user.created_at.isoformat() if current_user.created_at else None,
+            "subscription_tier": current_user.subscription_tier,
+        },
+        "settings": settings_data,
+        "connections": connections_data,
+        "workflows": workflows_data,
+        "conversations": conversations_data,
+        "invoices": invoices_data,
+        "usage_logs_sample": logs_data,
+        "generated_at": datetime.utcnow().isoformat(),
+        "legal_notice": "This export contains your personal data as processed by Arrotech Hub."
+    }
+
+    return JSONResponse(
+        content=jsonable_encoder(export_content),
+        headers={"Content-Disposition": f"attachment; filename=user_data_export_{current_user.id}.json"}
+    )
+
+
+@router.delete("/me")
+async def delete_account(
+    confirmation: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    GDPR/CCPA Right to Erasure.
+    Permanently delete account and all associated data.
+    Requires confirmation string 'DELETE'.
+    """
+    if confirmation != "DELETE":
+        raise HTTPException(status_code=400, detail="Confirmation string 'DELETE' required.")
+
+    # Delete dependent data manually
+    # 1. Child tables
+    await db.execute(delete(UsageLog).where(UsageLog.user_id == current_user.id))
+    await db.execute(delete(Conversation).where(Conversation.user_id == current_user.id))
+    await db.execute(delete(Workflow).where(Workflow.user_id == current_user.id))
+    await db.execute(delete(Connection).where(Connection.user_id == current_user.id))
+    await db.execute(delete(UserSettings).where(UserSettings.user_id == current_user.id))
+    await db.execute(delete(CreatorProfile).where(CreatorProfile.user_id == current_user.id))
+    await db.execute(delete(MpesaPayment).where(MpesaPayment.user_id == current_user.id))
+    await db.execute(delete(Invoice).where(Invoice.user_id == current_user.id))
+    
+    # 2. The User
+    await db.delete(current_user)
+    await db.commit()
+
+    return {"message": "Account permanently deleted."}
+
+
+@router.post("/forgot-password")
+async def forgot_password(
+    data: ForgotPasswordRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Initiate password reset flow.
+    Sends an email with a reset token.
+    """
+    # 1. Check if user exists
+    result = await db.execute(
+        select(User).where(User.email == data.email)
+    )
+    user = result.scalar_one_or_none()
+    
+    # We always return success to prevent email enumeration
+    if not user:
+        # Simulate processing time to prevent timing attacks
+        import asyncio
+        await asyncio.sleep(0.5) 
+        return {"success": True, "message": "If an account exists, a reset email has been sent."}
+
+    # 2. Generate Reset Token (Short-lived JWT)
+    from ..config import settings
+    
+    reset_token_expires = timedelta(minutes=60) # 1 hour
+    reset_token = create_access_token(
+        data={"sub": user.email, "type": "password_reset"}, 
+        expires_delta=reset_token_expires
+    )
+    
+    # 3. Construct Reset URL
+    # Frontend URL should be configured in settings
+    reset_url = f"{settings.FRONTEND_URL.rstrip('/')}/reset-password"
+    
+    # 4. Send Email
+    await email_service.send_password_reset_email(
+        to_email=user.email,
+        reset_token=reset_token,
+        reset_url=reset_url
+    )
+    
+    return {"success": True, "message": "If an account exists, a reset email has been sent."}
+
+
+@router.post("/reset-password")
+async def reset_password(
+    data: ResetPasswordRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Complete password reset flow.
+    Verifies token and updates password.
+    """
+    try:
+        # 1. Verify Token
+        payload = jwt.decode(
+            data.token, SECRET_KEY, algorithms=[ALGORITHM]
+        )
+        email: str = payload.get("sub")
+        token_type: str = payload.get("type")
+        
+        if email is None or token_type != "password_reset":
+             raise HTTPException(status_code=400, detail="Invalid reset token.")
+             
+    except JWTError:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token.")
+
+    # 2. Get User
+    result = await db.execute(
+        select(User).where(User.email == email)
+    )
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+        
+    # 3. Update Password
+    user.password_hash = get_password_hash(data.new_password)
+    await db.commit()
+    
+    return {"success": True, "message": "Password updated successfully."}
+
+
+@router.post("/validate-reset-token")
+async def validate_reset_token(
+    data: ValidateResetTokenRequest
+):
+    """
+    Validate a password reset token.
+    Used by frontend to verify link validity before showing form.
+    """
+    try:
+        payload = jwt.decode(
+            data.token, SECRET_KEY, algorithms=[ALGORITHM]
+        )
+        email: str = payload.get("sub")
+        token_type: str = payload.get("type")
+        
+        if email is None or token_type != "password_reset":
+             raise HTTPException(status_code=400, detail="Invalid reset token.")
+             
+    except JWTError:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token.")
+
+    return {"success": True, "message": "Token is valid."}

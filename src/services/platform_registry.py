@@ -17,6 +17,7 @@ class PlatformCapability:
     tool_name: str
     input_schema: Dict[str, Any]
     operations: List[str]
+    few_shot_examples: Optional[List[Dict[str, str]]] = None
 
 
 @dataclass
@@ -122,7 +123,7 @@ class PlatformRegistry:
         slack_capabilities = [
             PlatformCapability(
                 name="Team Communication",
-                description="Send messages, reports, and notifications to Slack channels with rich formatting",
+                description="Send messages, reports, and notifications to Slack channels. USE THIS FOR: sending messages to channels (e.g., 'Send hello to #general'), posting reports, sending alerts. REQUIRED: action (send_message/send_report/send_alert), channel, message",
                 tool_name="slack_team_communication",
                 input_schema={
                     "type": "object",
@@ -136,7 +137,19 @@ class PlatformRegistry:
                     },
                     "required": ["action", "channel"]
                 },
-                operations=["send_message", "send_report", "send_alert", "schedule_message"]
+                operations=["send_message", "send_report", "send_alert", "schedule_message"],
+                few_shot_examples=[
+                    {
+                        "user": "Send a message to #general saying 'Hello team'",
+                        "tool_call": 'slack_team_communication(action="send_message", channel="#general", message="Hello team")',
+                        "response": "✅ Message sent to #general: 'Hello team'"
+                    },
+                    {
+                        "user": "Send an alert to #devops that the server is down",
+                        "tool_call": 'slack_team_communication(action="send_alert", channel="#devops", message="Server is down")',
+                        "response": "🚨 Alert sent to #devops: 'Server is down'"
+                    }
+                ]
             ),
             PlatformCapability(
                 name="Team Management",
@@ -644,7 +657,7 @@ class PlatformRegistry:
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "operation": {"type": "string", "enum": ["create_task", "get_tasks", "get_team_tasks", "update_task", "delete_task"]},
+                        "operation": {"type": "string", "enum": ["create_task", "get_tasks", "get_team_tasks", "update_task", "delete_task", "get_teams"]},
                         "list_id": {"type": "string"},
                         "team_id": {"type": "string"},
                         "assignee_id": {"type": "string"},
@@ -1455,6 +1468,185 @@ class PlatformRegistry:
             },
             test_function="test_whatsapp_connection"
         )
+        
+        # Outlook Platform
+        outlook_capabilities = [
+            PlatformCapability(
+                name="Email Management",
+                description="Read, search, and send emails using Microsoft Outlook",
+                tool_name="outlook_email_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["read_emails", "search_emails", "send_email"]},
+                        "query": {"type": "string", "description": "Query for search"},
+                        "limit": {"type": "integer", "default": 10},
+                        "to_email": {"type": "string"},
+                        "subject": {"type": "string"},
+                        "content": {"type": "string"},
+                        "content_type": {"type": "string", "enum": ["text", "html"], "default": "text"}
+                    },
+                    "required": ["action"]
+                },
+                operations=["read_emails", "search_emails", "send_email"]
+            )
+        ]
+
+        self.platforms["outlook"] = Platform(
+            id="outlook",
+            name="Microsoft Outlook",
+            description="Manage emails, calendar, and contacts",
+            icon="microsoft_outlook",
+            features=[
+                "Email management",
+                "Calendar integration",
+                "Contact management"
+            ],
+            capabilities=outlook_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "access_token": {"type": "string", "description": "Microsoft Graph Access Token"},
+                    "refresh_token": {"type": "string", "description": "Refresh Token"}
+                },
+                "required": ["access_token"]
+            },
+            test_function="test_outlook_connection"
+        )
+
+        # Notion Platform
+        notion_capabilities = [
+            PlatformCapability(
+                name="Workspace Management",
+                description="Search and manage pages in Notion workspace",
+                tool_name="notion_workspace_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["search_pages", "create_page"]},
+                        "query": {"type": "string", "description": "Query for search"},
+                        "limit": {"type": "integer", "default": 10},
+                        "title": {"type": "string"},
+                        "content": {"type": "string"},
+                        "parent_id": {"type": "string"}
+                    },
+                    "required": ["action"]
+                },
+                operations=["search_pages", "create_page"]
+            )
+        ]
+
+        self.platforms["notion"] = Platform(
+            id="notion",
+            name="Notion",
+            description="All-in-one workspace for notes, projects, and docs",
+            icon="notion",
+            features=[
+                "Page management",
+                "Database integration",
+                "Content creation"
+            ],
+            capabilities=notion_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "access_token": {"type": "string", "description": "Notion Integration Token"},
+                    "workspace_name": {"type": "string"}
+                },
+                "required": ["access_token"]
+            },
+            test_function="test_notion_connection"
+        )
+
+        # Trello Platform
+        trello_capabilities = [
+            PlatformCapability(
+                name="Project Management",
+                description="Manage boards, lists and cards in Trello",
+                tool_name="trello_project_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["get_boards", "search_cards", "create_card"]},
+                        "query": {"type": "string", "description": "Query for search"},
+                        "limit": {"type": "integer", "default": 10},
+                        "list_id": {"type": "string"},
+                        "name": {"type": "string", "description": "Card name"},
+                        "desc": {"type": "string", "description": "Card description"},
+                        "due": {"type": "string", "description": "Due date (ISO)"}
+                    },
+                    "required": ["action"]
+                },
+                operations=["get_boards", "search_cards", "create_card"]
+            )
+        ]
+
+        self.platforms["trello"] = Platform(
+            id="trello",
+            name="Trello",
+            description="Manage projects and tasks with boards",
+            icon="trello",
+            features=[
+                "Board management",
+                "List tracking",
+                "Card creation"
+            ],
+            capabilities=trello_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "access_token": {"type": "string"},
+                    "refresh_token": {"type": "string"}
+                },
+                "required": ["access_token"]
+            },
+            test_function="test_trello_connection"
+        )
+        
+        # Jira Platform
+        jira_capabilities = [
+            PlatformCapability(
+                name="Issue Tracking",
+                description="Manage issues and projects in Jira",
+                tool_name="jira_issue_tracking",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["get_projects", "search_issues", "create_issue"]},
+                        "jql": {"type": "string", "description": "JQL query for search_issues"},
+                        "limit": {"type": "integer", "default": 10},
+                        "project_key": {"type": "string"},
+                        "summary": {"type": "string", "description": "Issue summary"},
+                        "description": {"type": "string", "description": "Issue description"},
+                        "issuetype": {"type": "string", "default": "Task"}
+                    },
+                    "required": ["action"]
+                },
+                operations=["get_projects", "search_issues", "create_issue"]
+            )
+        ]
+
+        self.platforms["jira"] = Platform(
+            id="jira",
+            name="Jira",
+            description="Issue and project tracking software",
+            icon="jira",
+            features=[
+                "Issue tracking",
+                "Project management",
+                "Agile boards"
+            ],
+            capabilities=jira_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "access_token": {"type": "string"},
+                    "cloud_id": {"type": "string"}
+                },
+                "required": ["access_token", "cloud_id"]
+            },
+            test_function="test_jira_connection"
+        )
 
 
         # Facebook Platform
@@ -1635,7 +1827,7 @@ class PlatformRegistry:
         mpesa_capabilities = [
             PlatformCapability(
                 name="Payment Reconciliation",
-                description="Manage and reconcile M-Pesa payments with automated matching and alerts",
+                description="M-Pesa payment management and reconciliation. USE THIS FOR: viewing today's payments, getting payment summaries, finding unmatched payments, reconciling invoices. EXAMPLES: 'Show today's M-Pesa payments' → operation=search_payments, date_range=today. REQUIRED: operation",
                 tool_name="mpesa_payment_reconciliation",
                 input_schema={
                     "type": "object",

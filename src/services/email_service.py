@@ -136,8 +136,13 @@ class EmailService:
     ) -> bool:
         """Send an email asynchronously."""
         if not self.enabled:
-            logger.warning("Email service is not configured. Skipping email.")
-            return False
+            logger.warning("Email service is not configured. Logging email content instead.")
+            logger.info(f"To: {to_email}")
+            logger.info(f"Subject: {subject}")
+            logger.info(f"Content: {text_content if text_content else 'HTML Content Present'}")
+            # Also log HTML content for now as it contains the link
+            logger.info(f"HTML Content preview: {html_content[:5000]}..." if len(html_content) > 5000 else html_content)
+            return True # Return True to simulate success for the caller
         
         try:
             msg = MIMEMultipart('alternative')

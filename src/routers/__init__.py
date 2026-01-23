@@ -26,11 +26,16 @@ from .whatsapp_routes import router as whatsapp_routes
 from .facebook_routes import router as facebook_routes
 from .instagram_routes import router as instagram_routes
 from .twitter_routes import router as twitter_routes
+from .outlook_router import router as outlook_router
+from .notion_router import router as notion_router
+from .trello_router import router as trello_router
+from .jira_router import router as jira_router
 
 __all__ = [
     "analytics_router", "mcp_router", "api_router", "auth_router", "chat_router",
     "connection_router", "creator_router", "favorites_router", "marketplace_router", 
     "mpesa_agent_router", "notification_router", "payment_router", "preferences_router", 
     "settings_router", "slack_agent_router", "templates_router", "workflow_router", "agent_router",
-    "google_workspace_router", "slack_routes", "whatsapp_routes", "facebook_routes", "instagram_routes", "twitter_routes"
+    "google_workspace_router", "slack_routes", "whatsapp_routes", "facebook_routes", "instagram_routes", "twitter_routes",
+    "outlook_router", "notion_router", "trello_router", "jira_router"
 ]

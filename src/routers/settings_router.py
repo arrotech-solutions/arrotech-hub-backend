@@ -40,6 +40,11 @@ class APISettings(BaseModel):
     api_rate_limit: int = Field(default=1000, description="API rate limit per hour")
     api_timeout: int = Field(default=30, description="API timeout in seconds")
     auto_refresh_tokens: bool = Field(default=True, description="Auto refresh tokens")
+    openai_api_key: Optional[str] = Field(None, description="OpenAI API Key")
+    anthropic_api_key: Optional[str] = Field(None, description="Anthropic API Key")
+    gemini_api_key: Optional[str] = Field(None, description="Gemini API Key")
+    huggingface_api_key: Optional[str] = Field(None, description="Hugging Face API Key")
+    together_api_key: Optional[str] = Field(None, description="Together AI API Key")
 
 
 class DashboardSettings(BaseModel):
@@ -123,7 +128,12 @@ def format_settings_response(settings: UserSettings) -> dict:
         "api_settings": {
             "api_rate_limit": settings.api_rate_limit,
             "api_timeout": settings.api_timeout,
-            "auto_refresh_tokens": settings.auto_refresh_tokens
+            "auto_refresh_tokens": settings.auto_refresh_tokens,
+            "openai_api_key": settings.openai_api_key,
+            "anthropic_api_key": settings.anthropic_api_key,
+            "gemini_api_key": settings.gemini_api_key,
+            "huggingface_api_key": settings.huggingface_api_key,
+            "together_api_key": settings.together_api_key
         },
         "dashboard_settings": {
             "dashboard_theme": settings.dashboard_theme,
@@ -194,6 +204,11 @@ async def update_user_settings(
             settings.api_rate_limit = api.api_rate_limit
             settings.api_timeout = api.api_timeout
             settings.auto_refresh_tokens = api.auto_refresh_tokens
+            settings.openai_api_key = api.openai_api_key
+            settings.anthropic_api_key = api.anthropic_api_key
+            settings.gemini_api_key = api.gemini_api_key
+            settings.huggingface_api_key = api.huggingface_api_key
+            settings.together_api_key = api.together_api_key
 
         # Update dashboard settings
         if settings_update.dashboard_settings:
@@ -352,6 +367,11 @@ async def update_api_settings(
         settings.api_rate_limit = api_settings.api_rate_limit
         settings.api_timeout = api_settings.api_timeout
         settings.auto_refresh_tokens = api_settings.auto_refresh_tokens
+        settings.openai_api_key = api_settings.openai_api_key
+        settings.anthropic_api_key = api_settings.anthropic_api_key
+        settings.gemini_api_key = api_settings.gemini_api_key
+        settings.huggingface_api_key = api_settings.huggingface_api_key
+        settings.together_api_key = api_settings.together_api_key
 
         await db.commit()
         await db.refresh(settings)
@@ -361,7 +381,12 @@ async def update_api_settings(
             data={
                 "api_rate_limit": settings.api_rate_limit,
                 "api_timeout": settings.api_timeout,
-                "auto_refresh_tokens": settings.auto_refresh_tokens
+                "auto_refresh_tokens": settings.auto_refresh_tokens,
+                "openai_api_key": settings.openai_api_key,
+                "anthropic_api_key": settings.anthropic_api_key,
+                "gemini_api_key": settings.gemini_api_key,
+                "huggingface_api_key": settings.huggingface_api_key,
+                "together_api_key": settings.together_api_key
             },
             message="API settings updated"
         )

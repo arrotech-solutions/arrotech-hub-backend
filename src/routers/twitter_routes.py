@@ -44,6 +44,10 @@ def create_code_challenge(code_verifier):
 @router.get("/auth-url")
 async def get_auth_url(user: User = Depends(get_current_user)):
     """Generate Twitter OAuth 2.0 URL with PKCE."""
+    # Check tier-based access BEFORE allowing OAuth flow
+    from ..services.tier_gate import check_connection_access
+    check_connection_access(user, "twitter")
+    
     if not settings.TWITTER_CLIENT_ID or not settings.TWITTER_CLIENT_SECRET:
         raise HTTPException(
             status_code=500, 

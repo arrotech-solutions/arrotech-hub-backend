@@ -23,6 +23,10 @@ from .salesforce_service import SalesforceService
 from .slack_service import SlackService
 from .social_media_service import SocialMediaService
 from .teams_service import TeamsService
+from .outlook_service import OutlookService
+from .notion_service import NotionService
+from .trello_service import TrelloService
+from .jira_service import JiraService
 from .web_tools_service import WebToolsService
 from .whatsapp_service import WhatsAppService
 from .zoom_service import ZoomService
@@ -62,6 +66,10 @@ class ToolExecutor:
             "powerbi": PowerBIService(),
             "salesforce": SalesforceService(),
             "teams": TeamsService(),
+            "outlook": OutlookService(),
+            "notion": NotionService(),
+            "trello": TrelloService(),
+            "jira": JiraService(),
             "zoom": ZoomService(),
 
             "whatsapp": WhatsAppService(),
@@ -94,7 +102,7 @@ class ToolExecutor:
                 if hasattr(service, 'initialize'):
                     # Only initialize services that don't require parameters
                     # Services like Salesforce require a connection parameter and should be initialized per-request
-                    if service_name in ["slack", "teams", "zoom", "whatsapp", "social_media", "file_management", "web_tools", "content_creation", "rate_limit", "billing"]:
+                    if service_name in ["slack", "teams", "outlook", "notion", "trello", "jira", "zoom", "whatsapp", "social_media", "file_management", "web_tools", "content_creation", "rate_limit", "billing"]:
                         await service.initialize()
             self._initialized = True
 
@@ -131,6 +139,14 @@ class ToolExecutor:
                 return await self._execute_slack_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("teams_"):
                 return await self._execute_teams_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("outlook_"):
+                return await self._execute_outlook_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("notion_"):
+                return await self._execute_notion_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("trello_"):
+                return await self._execute_trello_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("jira_"):
+                return await self._execute_jira_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("zoom_"):
                 return await self._execute_zoom_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("hubspot_"):
@@ -1242,31 +1258,434 @@ class ToolExecutor:
                 }
 
         elif tool_name == "teams_message_search":
-            query = arguments.get("query")
-            channel_id = arguments.get("channel_id")
+            action = arguments.get("action", "search_messages")
             limit = arguments.get("limit", 20)
-
-            if not query:
+            
+            if action == "get_recent_chats":
+                print(f"💬 Getting recent Teams chats for user {user.id}")
+                result = await teams_service.get_recent_chats(limit=limit)
                 return {
+                    "success": result.get("success", False),
+                    "result": f"Retrieved {result.get('count', 0)} recent chats",
+                    "data": result
+                }
+                
+            elif action == "search_messages":
+                query = arguments.get("query")
+                channel_id = arguments.get("channel_id")
+
+                if not query:
+                    return {
+                        "success": False,
+                        "error": "Search query is required",
+                        "result": None
+                    }
+
+                result = await teams_service.search_messages(
+                    query=query,
+                    channel_id=channel_id,
+                    limit=limit
+                )
+                return {
+                    "success": result.get("success", False),
+                    "result": "Messages searched",
+                    "data": result
+                }
+            else:
+                 return {
                     "success": False,
-                    "error": "Search query is required",
+                    "error": f"Unknown Teams message action: {action}",
                     "result": None
                 }
-
-            result = await teams_service.search_messages(
-                query=query,
-                channel_id=channel_id,
-                limit=limit
-            )
-            return {
-                "success": result.get("success", False),
-                "result": "Messages searched",
-                "data": result
-            }
 
         return {
             "success": False,
             "error": f"Unknown Teams tool: {tool_name}",
+            "result": None
+        }
+
+    async def _execute_outlook_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute Outlook-related tools."""
+        # Get user's Outlook connection
+        result = await db.execute(
+            select(Connection).filter(
+                Connection.user_id == user.id,
+                Connection.platform == "outlook",
+                Connection.status == ConnectionStatus.ACTIVE
+            )
+        )
+        connection = result.scalars().first()
+
+        if not connection:
+            return {
+                "success": False,
+                "error": "Outlook is not connected. Please connect your Outlook account first.",
+                "result": None
+            }
+
+        # Configure service with user's specific access token
+        outlook_service = self.services["outlook"]
+        config = connection.config
+        
+        # We need to manually inject token, service expects 'access_token' in config usually or we set it directly
+        # The OutlookService I wrote has self.access_token.
+        # It also has initialize() which reads ENV vars for client_id.
+        # But for request-specific action, we need to set access_token.
+        outlook_service.access_token = config.get("access_token")
+        
+        # Check if we should use refresh token? Not implemented in Service yet, 
+        # but the Router saved it. 
+        # For now assume access token is valid or we'd need a refresh mechanism.
+
+        if tool_name == "outlook_email_management":
+            action = arguments.get("action")
+            
+            if action == "read_emails":
+                limit = arguments.get("limit", 10)
+                result = await outlook_service.get_recent_emails(limit)
+                return {
+                    "success": result.get("success", False),
+                    "result": f"Retrieved {result.get('count', 0)} emails",
+                    "data": result
+                }
+            elif action == "search_emails":
+                query = arguments.get("query")
+                limit = arguments.get("limit", 10)
+                if not query:
+                    return {"success": False, "error": "Query required for search_emails"}
+                result = await outlook_service.search_emails(query, limit)
+                return {
+                    "success": result.get("success", False),
+                    "result": f"Found {result.get('count', 0)} emails for query '{query}'",
+                    "data": result
+                }
+            elif action == "send_email":
+                to_email = arguments.get("to_email")
+                subject = arguments.get("subject")
+                content = arguments.get("content")
+                content_type = arguments.get("content_type", "text")
+                cc_email = arguments.get("cc")
+                bcc_email = arguments.get("bcc")
+                
+                if not to_email or not subject or not content:
+                     return {"success": False, "error": "To, Subject, and Content required for send_email"}
+                
+                result = await outlook_service.send_email(
+                    to_email=to_email, 
+                    subject=subject, 
+                    content=content, 
+                    content_type=content_type,
+                    cc=cc_email,
+                    bcc=bcc_email
+                )
+                return {
+                    "success": result.get("success", False),
+                    "result": "Email sent",
+                    "data": result
+                }
+            else:
+                 return {"success": False, "error": f"Unknown Outlook action: {action}"}
+
+        return {
+            "success": False,
+            "error": f"Unknown Outlook tool: {tool_name}",
+            "result": None
+        }
+
+    async def _execute_notion_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute Notion-related tools."""
+        result = await db.execute(
+            select(Connection).filter(
+                Connection.user_id == user.id,
+                Connection.platform == "notion",
+                Connection.status == ConnectionStatus.ACTIVE
+            )
+        )
+        connection = result.scalars().first()
+
+        if not connection:
+            return {
+                "success": False,
+                "error": "Notion is not connected. Please connect your Notion account first.",
+                "result": None
+            }
+
+        notion_service = self.services["notion"]
+        config = connection.config
+        notion_service.access_token = config.get("access_token")
+
+        if tool_name == "notion_workspace_management":
+            action = arguments.get("action")
+            
+            if action == "search_pages":
+                query = arguments.get("query", "")
+                limit = arguments.get("limit", 10)
+                result = await notion_service.search_pages(query, limit)
+                return {
+                    "success": result.get("success", False),
+                    "result": f"Found {result.get('count', 0)} pages",
+                    "data": result
+                }
+            elif action == "create_page":
+                title = arguments.get("title")
+                parent_id = arguments.get("parent_id")
+                content = arguments.get("content", "")
+                
+                if not title or not parent_id:
+                     return {"success": False, "error": "Title and Parent ID required for create_page"}
+                
+                result = await notion_service.create_page(parent_id, title, content)
+                return {
+                    "success": result.get("success", False),
+                    "result": "Page created",
+                    "data": result
+                }
+            else:
+                 return {"success": False, "error": f"Unknown Notion action: {action}"}
+
+        return {
+            "success": False,
+            "error": f"Unknown Notion tool: {tool_name}",
+            "result": None
+        }
+
+    async def _execute_trello_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute Trello-related tools."""
+        result = await db.execute(
+            select(Connection).filter(
+                Connection.user_id == user.id,
+                Connection.platform == "trello",
+                Connection.status == ConnectionStatus.ACTIVE
+            )
+        )
+        connection = result.scalars().first()
+
+        if not connection:
+            return {
+                "success": False,
+                "error": "Trello is not connected. Please connect your Trello account first.",
+                "result": None
+            }
+
+        trello_service = self.services["trello"]
+        config = connection.config
+        trello_service.access_token = config.get("access_token")
+
+        if tool_name == "trello_project_management":
+            action = arguments.get("action")
+            
+            if action == "get_boards":
+                result = await trello_service.get_boards()
+                return {
+                    "success": result.get("success", False),
+                    "result": f"Found {result.get('count', 0)} boards",
+                    "data": result
+                }
+            elif action == "search_cards":
+                query = arguments.get("query", "")
+                limit = arguments.get("limit", 10)
+                if not query:
+                     return {"success": False, "error": "Query required for search_cards"}
+                result = await trello_service.search_cards(query, limit)
+                return {
+                    "success": result.get("success", False),
+                    "result": f"Found {result.get('count', 0)} cards",
+                    "data": result
+                }
+            elif action == "get_lists":
+                board_id = arguments.get("board_id")
+                if not board_id:
+                     return {"success": False, "error": "Board ID required for get_lists"}
+                result = await trello_service.get_lists(board_id)
+                return {
+                    "success": result.get("success", False),
+                    "result": f"Found {result.get('count', 0)} lists",
+                    "data": result
+                }
+            elif action == "create_card":
+                list_id = arguments.get("list_id")
+                name = arguments.get("name")
+                desc = arguments.get("desc", "")
+                due = arguments.get("due")
+                
+                if not list_id or not name:
+                     return {"success": False, "error": "List ID and Name required for create_card"}
+                
+                result = await trello_service.create_card(list_id, name, desc, due)
+                return {
+                    "success": result.get("success", False),
+                    "result": "Card created",
+                    "data": result
+                }
+            elif action == "update_card":
+                card_id = arguments.get("card_id")
+                list_id = arguments.get("list_id")
+                name = arguments.get("name")
+                desc = arguments.get("desc")
+                closed = arguments.get("closed")
+                
+                if not card_id:
+                     return {"success": False, "error": "Card ID required for update_card"}
+                
+                result = await trello_service.update_card(card_id, list_id, name, desc, closed)
+                return {
+                    "success": result.get("success", False),
+                    "result": "Card updated",
+                    "data": result
+                }
+            else:
+                 return {"success": False, "error": f"Unknown Trello action: {action}"}
+
+        return {
+            "success": False,
+            "error": f"Unknown Trello tool: {tool_name}",
+            "result": None
+        }
+
+    async def _execute_jira_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute Jira-related tools."""
+        result = await db.execute(
+            select(Connection).filter(
+                Connection.user_id == user.id,
+                Connection.platform == "jira",
+                Connection.status == ConnectionStatus.ACTIVE
+            )
+        )
+        connection = result.scalars().first()
+
+        if not connection:
+            return {
+                "success": False,
+                "error": "Jira is not connected. Please connect your Jira account first.",
+                "result": None
+            }
+
+        jira_service = self.services["jira"]
+        config = connection.config
+        jira_service.access_token = config.get("access_token")
+        jira_service.cloud_id = config.get("cloud_id")
+        refresh_token = config.get("refresh_token")
+
+        async def execute_with_retry(func, *args, **kwargs):
+            # First attempt
+            res = await func(*args, **kwargs)
+            
+            # Check for 401 Unauthorized
+            error_msg = str(res.get("error", ""))
+            if not res.get("success") and "401" in error_msg and refresh_token:
+                logger.info("Jira token expired (401). Attempting refresh...")
+                try:
+                    # Refresh token
+                    new_tokens = await jira_service.refresh_access_token(refresh_token)
+                    new_access_token = new_tokens.get("access_token")
+                    new_refresh_token = new_tokens.get("refresh_token")
+                    
+                    if new_access_token:
+                        # Update DB
+                        config["access_token"] = new_access_token
+                        if new_refresh_token:
+                            config["refresh_token"] = new_refresh_token
+                        
+                        connection.config = config
+                        # We need to explicitly flag modified for JSON types sometimes, but reassignment usually works
+                        # Ensure SQLAlchemy detects change
+                        from sqlalchemy.orm.attributes import flag_modified
+                        flag_modified(connection, "config")
+                        
+                        await db.commit()
+                        logger.info("Jira token refreshed and saved to DB.")
+                        
+                        # Update Service instance
+                        jira_service.access_token = new_access_token
+                        
+                        # Retry operation
+                        return await func(*args, **kwargs)
+                except Exception as e:
+                    logger.error(f"Failed to refresh Jira token: {e}")
+                    # Fall through to return original 401 response
+                    
+            return res
+
+        if tool_name == "jira_issue_tracking":
+            action = arguments.get("action")
+            
+            if action == "get_projects":
+                result = await execute_with_retry(jira_service.get_projects)
+                return {
+                    "success": result.get("success", False),
+                    "result": f"Found {result.get('count', 0)} projects",
+                    "data": result
+                }
+            elif action == "search_issues":
+                jql = arguments.get("jql", "")
+                limit = arguments.get("limit", 10)
+                if not jql:
+                     return {"success": False, "error": "JQL required for search_issues"}
+                result = await execute_with_retry(jira_service.search_issues, jql, limit)
+                return {
+                    "success": result.get("success", False),
+                    "result": f"Found {result.get('count', 0)} issues",
+                    "data": result
+                }
+            elif action == "create_issue":
+                project_key = arguments.get("project_key")
+                summary = arguments.get("summary")
+                description = arguments.get("description", "")
+                issuetype = arguments.get("issuetype", "Task")
+                status = arguments.get("status", "To Do")
+                
+                if not project_key or not summary:
+                     return {"success": False, "error": "Project Key and Summary required for create_issue"}
+                
+                result = await execute_with_retry(jira_service.create_issue, project_key, summary, description, issuetype, status)
+                return {
+                    "success": result.get("success", False),
+                    "result": "Issue created",
+                    "data": result
+                }
+            elif action == "update_issue":
+                issue_key = arguments.get("issue_key")
+                status = arguments.get("status")
+                
+                if not issue_key or not status:
+                     return {"success": False, "error": "Issue Key and Status required for update_issue"}
+                
+                result = await execute_with_retry(jira_service._transition_issue, issue_key, status)
+                return {
+                    "success": result.get("success", False),
+                    "result": f"Issue updated to {status}",
+                    "data": result
+                }
+            else:
+                 return {"success": False, "error": f"Unknown Jira action: {action}"}
+
+        return {
+            "success": False,
+            "error": f"Unknown Jira tool: {tool_name}",
             "result": None
         }
 
@@ -1298,19 +1717,13 @@ class ToolExecutor:
 
         # Initialize Zoom service with user's connection config
         zoom_service = ZoomService()
-        client_id = connection.config.get("client_id")
-        client_secret = connection.config.get("client_secret")
-        account_id = connection.config.get("account_id")
-        
-        if not client_id or not client_secret:
-            return {
-                "success": False,
-                "error": "Missing required Zoom credentials (client_id, client_secret)",
-                "result": None
-            }
+        # We pass the entire config dict which may contain client_id, client_secret, account_id, AND access_token
+        # Ensure we are passing what the service expects
+        service_config = connection.config.copy() if connection.config else {}
         
         # Initialize the service with the user's credentials
-        await zoom_service.initialize(client_id, client_secret, account_id)
+        # The initialize method expects a dictionary 'config'
+        await zoom_service.initialize(config=service_config)
         print(f"🔧 Initialized Zoom service with user credentials for user {user.id}")
 
         if tool_name == "zoom_meeting_management":
@@ -4365,6 +4778,14 @@ Description: {payment.description or 'N/A'}"""
                         arguments.get("name"),
                         arguments.get("description")
                     )
+                elif operation == "update_task":
+                    return await clickup_service.update_task(
+                        access_token,
+                        arguments.get("task_id"),
+                        arguments.get("status"),
+                        arguments.get("name"),
+                        arguments.get("description")
+                    )
                 elif operation == "get_tasks":
                     return await clickup_service.get_tasks(
                         access_token,
@@ -4380,8 +4801,11 @@ Description: {payment.description or 'N/A'}"""
                     return await clickup_service.get_team_tasks(
                         access_token,
                         team_id,
-                        arguments.get("assignee_id")
+                        arguments.get("assignee_id"),
+                        arguments.get("include_closed", False)
                     )
+                elif operation == "get_teams":
+                    return await clickup_service.get_teams(access_token)
                 else:
                     return {"success": False, "error": f"Unsupported operation: {operation}"}
             
@@ -4428,3 +4852,4 @@ Description: {payment.description or 'N/A'}"""
 
 # Global tool executor instance
 tool_executor = ToolExecutor()
+

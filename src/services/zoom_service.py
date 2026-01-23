@@ -37,26 +37,38 @@ class ZoomService:
             self.client_id = config.get("client_id")
             self.client_secret = config.get("client_secret")
             self.account_id = config.get("account_id")
+            self._access_token = config.get("access_token")  # Support direct access token
         else:
             self.client_id = settings.ZOOM_CLIENT_ID
             self.client_secret = settings.ZOOM_CLIENT_SECRET
             self.account_id = settings.ZOOM_ACCOUNT_ID
 
-            if not self.client_id or not self.client_secret:
-                logger.warning("Zoom OAuth credentials not configured")
-                logger.warning(f"Client ID: {'Set' if self.client_id else 'Not set'}")
-                logger.warning(f"Client Secret: {'Set' if self.client_secret else 'Not set'}")
-                return
+        # Validation: If we have an access token, we don't necessarily need client credentials immediately
+        # But if we don't have an access token, we assume client credentials flow is needed
+        if not self._access_token and (not self.client_id or not self.client_secret):
+            logger.warning("Zoom OAuth credentials not configured")
+            return
 
         self._initialized = True
         logger.info("Zoom service initialized")
 
     async def _get_access_token(self) -> Optional[str]:
-        """Get Zoom access token using OAuth 2.0 client credentials flow."""
+        """Get Zoom access token."""
         try:
-            # Check if we have a valid cached token
-            if self._access_token and self._token_expires_at and datetime.utcnow() < self._token_expires_at:
-                return self._access_token
+            # Check if we have a valid cached token or a static one provided in init
+            if self._access_token:
+                # If token was provided in initialize (no expiry set by us), return it.
+                # If it was fetched dynamically (with _token_expires_at), check expiry.
+                if not self._token_expires_at:
+                    return self._access_token
+                if datetime.utcnow() < self._token_expires_at:
+                    return self._access_token
+
+            # If we reach here, we need to generate a new token via Client Credentials
+            # This requires client_id/secret
+            if not self.client_id or not self.client_secret:
+                logger.error("Cannot refresh Zoom token: Missing client_id/secret")
+                return None
 
             # Create basic auth header
             credentials = f"{self.client_id}:{self.client_secret}"
@@ -86,7 +98,7 @@ class ZoomService:
                             # Log more details for debugging
                             logger.error(f"Response status: {response.status}")
                             logger.error(f"Response headers: {dict(response.headers)}")
-                        except Exception as parse_error:
+                        except Exception:
                             error_text = await response.text()
                             logger.error(f"Failed to get Zoom access token. Status: {response.status}, Response: {error_text}")
                         return None
@@ -190,6 +202,61 @@ class ZoomService:
                 "success": False,
                 "error": error_msg
             }
+
+    def get_auth_url(self, redirect_uri: str, state: str) -> str:
+        """Generate Zoom OAuth authorization URL."""
+        if not self.client_id:
+             # Try to load from settings if instance not fully init with config
+             self.client_id = settings.ZOOM_CLIENT_ID
+             if not self.client_id:
+                raise ValueError("Zoom client_id must be configured")
+
+        from urllib.parse import urlencode
+
+        params = {
+            "client_id": self.client_id,
+            "response_type": "code",
+            "redirect_uri": redirect_uri,
+            "state": state
+        }
+        
+        base_url = "https://zoom.us/oauth/authorize"
+        return f"{base_url}?{urlencode(params)}"
+
+    async def exchange_code_for_token(self, code: str, redirect_uri: str) -> Dict[str, Any]:
+        """Exchange authorization code for access token."""
+        if not self.client_id:
+             self.client_id = settings.ZOOM_CLIENT_ID
+        if not self.client_secret:
+             self.client_secret = settings.ZOOM_CLIENT_SECRET
+             
+        if not self.client_id or not self.client_secret:
+            raise ValueError("Zoom credentials must be configured")
+
+        token_url = "https://zoom.us/oauth/token"
+        
+        # Basic Auth for Zoom Token Endpoint
+        auth_str = f"{self.client_id}:{self.client_secret}"
+        b64_auth = base64.b64encode(auth_str.encode()).decode()
+        
+        headers = {
+            "Authorization": f"Basic {b64_auth}",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+
+        params = {
+            "code": code,
+            "grant_type": "authorization_code",
+            "redirect_uri": redirect_uri
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(token_url, headers=headers, params=params) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    error_text = await response.text()
+                    raise Exception(f"Failed to exchange token: {response.status} - {error_text}")
 
     # Meeting Management
     async def create_meeting(

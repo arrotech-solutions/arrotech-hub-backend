@@ -11,9 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import Conversation, Message, MessageRole, MessageStatus, User
 from .dynamic_tool_registry import dynamic_tool_registry
 from .intent_processor import IntentProcessor
-from .tool_executor import tool_executor
+from .tool_executor import ToolExecutor, tool_executor
+from .tool_validator import ToolArgumentValidator
 from .tool_router import ToolRouter
 from .feature_flags import FeatureGate
+try:
+    import tiktoken
+except ImportError:
+    tiktoken = None
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +51,7 @@ class ExecutionOrchestrator:
         result = await db.execute(stmt)
         return result.scalar() or 0
     
-    async def process_message(self, content: str, provider: str) -> Tuple[str, List[Dict[str, Any]]]:
+    async def process_message(self, content: str, provider: str) -> Tuple[str, List[Dict[str, Any]], int]:
         """
         Process a user message with full orchestration.
         
@@ -55,7 +60,7 @@ class ExecutionOrchestrator:
             provider: LLM provider to use
             
         Returns:
-            Tuple of (response_content, tools_called)
+            Tuple of (response_content, tools_called, tokens_used)
         """
         try:
             print(f"🎯 Orchestrating message processing for: '{content[:50]}...'")
@@ -63,7 +68,7 @@ class ExecutionOrchestrator:
             # Step 0: Check AI message limits
             daily_count = await self.get_daily_message_count(self.db, self.user.id)
             if not FeatureGate.can_use_ai_message(self.user, daily_count):
-                return f"Plan limit reached: Your {self.user.subscription_tier} plan allows {FeatureGate.get_limits(self.user.subscription_tier)['max_ai_messages_daily']} AI messages per day. Please upgrade to continue.", []
+                return f"Plan limit reached: Your {self.user.subscription_tier} plan allows {FeatureGate.get_limits(self.user.subscription_tier)['max_ai_messages_daily']} AI messages per day. Please upgrade to continue.", [], 0
 
             # Step 1: Classify intent
             intent_classifier = await self.intent_processor.classify_intent(content)
@@ -83,7 +88,39 @@ class ExecutionOrchestrator:
             print(f"🔧 Found {len(relevant_tools)} relevant tools")
             
             # Step 4: Execute with function calling loop
-            return await self._execute_with_function_calling(content, provider, relevant_tools)
+            # Convert tools to OpenAI format
+            openai_tools = dynamic_tool_registry.convert_tools_to_openai_format(relevant_tools)
+            
+            print(f"🔧 Converted {len(openai_tools)} tools to OpenAI format:")
+            for tool in openai_tools:
+                print(f"  - {tool['function']['name']}: {tool['function']['description']}")
+
+            # Get conversation context for the function calling loop
+            from ..routers.chat_router import get_optimized_context
+            context_messages = await get_optimized_context(self.conversation_id, self.db, user_message=content)
+            
+            # Prepare messages for LLM
+            messages = []
+            for msg in context_messages:
+                if msg.role == MessageRole.USER:
+                    messages.append({"role": "user", "content": msg.content})
+                elif msg.role == MessageRole.ASSISTANT:
+                    messages.append({"role": "assistant", "content": msg.content})
+                elif msg.role == MessageRole.TOOL:
+                    messages.append({"role": "tool", "content": msg.content, "tool_call_id": msg.tool_call_id})
+            
+            messages.append({"role": "user", "content": content})
+            
+              # Execute function calling loop
+            response_content, tools_called, output_tokens = await self._execute_function_calling_loop(provider, messages, openai_tools)
+
+            # Count input tokens
+            from ..config import settings
+            input_tokens = self._count_message_tokens(messages, getattr(settings, 'OPENAI_MODEL', 'gpt-4o'))
+            
+            # Return content, tools, and total tokens
+            total_tokens = input_tokens + output_tokens
+            return response_content, tools_called, total_tokens
             
         except Exception as e:
             print(f"❌ Error in process_message: {e}")
@@ -92,9 +129,9 @@ class ExecutionOrchestrator:
             
             # Return a helpful error message
             error_response = f"I apologize, but I encountered an issue processing your request: '{content[:100]}...'. Please try again or rephrase your question."
-            return error_response, []
+            return error_response, [], 0
     
-    async def _generate_direct_response(self, content: str, provider: str) -> Tuple[str, List[Dict[str, Any]]]:
+    async def _generate_direct_response(self, content: str, provider: str) -> Tuple[str, List[Dict[str, Any]], int]:
         """Generate a direct response without tool usage."""
         # Get conversation context
         from ..routers.chat_router import get_optimized_context
@@ -122,12 +159,15 @@ class ExecutionOrchestrator:
             assistant_message = response.get('choices', [{}])[0].get('message', {})
             content = assistant_message.get('content', '')
             if content:
-                return content, []
+                # Extract tokens
+                usage = response.get('usage', {})
+                total_tokens = usage.get('total_tokens', 0)
+                return content, [], total_tokens
         
         # Fallback response when LLM is not available
         print(f"⚠️ LLM not available, providing fallback response")
         fallback_response = f"I understand you're asking about: '{content[:100]}...'. I'm here to help with your questions and can assist with various tasks when you need them. How can I be of assistance?"
-        return fallback_response, []
+        return fallback_response, [], 0
     
     async def _execute_with_function_calling(self, content: str, provider: str, relevant_tools: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
         """Execute using function calling loop with relevant tools."""
@@ -138,41 +178,122 @@ class ExecutionOrchestrator:
         for tool in openai_tools:
             print(f"  - {tool['function']['name']}: {tool['function']['description']}")
         
-        # Get conversation context
-        from ..routers.chat_router import get_optimized_context
-        context_messages = await get_optimized_context(self.conversation_id, self.db, user_message=content)
+    async def _call_openai_with_functions(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Call OpenAI API with function calling support."""
+        from ..config import settings
+        from sqlalchemy import select
+        from ..models import UserSettings
+
+        api_key = settings.OPENAI_API_KEY
         
-        # Prepare messages for LLM with system prompt
-        messages = []
-        
-        # Add system prompt to guide tool selection
+        # BYOK: Check for user-provided API key
         try:
-            from ..routers.chat_router import build_system_prompt
-            system_prompt = await build_system_prompt(openai_tools)
-        except ImportError:
-            # Fallback if circular import fails (though it shouldn't inside method)
-            logger.warning("Could not import build_system_prompt, using fallback")
-            system_prompt = f"""You are a helpful AI assistant with access to {len(openai_tools)} tools. 
-Please use the provided tools to answer the user request."""
+            stmt = select(UserSettings).where(UserSettings.user_id == self.user.id)
+            result = await self.db.execute(stmt)
+            user_settings = result.scalar_one_or_none()
+            if user_settings and user_settings.openai_api_key:
+                logger.info(f"Using BYOK for user {self.user.id}")
+                api_key = user_settings.openai_api_key
+        except Exception as e:
+            logger.warning(f"Failed to fetch user settings: {e}")
+
+        if not api_key:
+            print("❌ OpenAI API key not configured")
+            return None
         
-        messages.append({"role": "system", "content": system_prompt})
+        try:
+            from openai import AsyncOpenAI
+            
+            client = AsyncOpenAI(api_key=api_key)
+            
+            # Build request parameters
+            model = getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
+            kwargs = {
+                "model": model,
+                "messages": messages,
+                "temperature": settings.LLM_TEMPERATURE or 0.7,
+            }
+            
+            if settings.LLM_MAX_TOKENS:
+                kwargs["max_tokens"] = settings.LLM_MAX_TOKENS
+            
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+            
+            print(f"📤 Calling OpenAI with {len(messages)} messages and {len(tools) if tools else 0} tools")
+            
+            response = await client.chat.completions.create(**kwargs)
+            
+            # Convert response to dict format matching our expected structure
+            message = response.choices[0].message
+            
+            # Capture usage if available
+            usage = response.usage
+            input_tokens = usage.prompt_tokens if usage else 0
+            output_tokens = usage.completion_tokens if usage else 0
+            logger.info(f"Token usage - Input: {input_tokens}, Output: {output_tokens}")
+            
+            result = {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": message.content or "",
+                        "tool_calls": []
+                    }
+                }],
+                "usage": {
+                    "prompt_tokens": input_tokens,
+                    "completion_tokens": output_tokens
+                }
+            }
+            
+            # Convert tool_calls to expected format
+            if message.tool_calls:
+                for tool_call in message.tool_calls:
+                    result["choices"][0]["message"]["tool_calls"].append({
+                        "id": tool_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_call.function.name,
+                            "arguments": tool_call.function.arguments
+                        }
+                    })
+            
+            print(f"✅ OpenAI response received with {len(result['choices'][0]['message']['tool_calls'])} tool calls")
+            return result
+            
+        except Exception as e:
+            print(f"❌ OpenAI API error: {e}")
+            import traceback
+            print(f"❌ Traceback: {traceback.format_exc()}")
+            return None
+
+    def _count_message_tokens(self, messages: List[Dict[str, Any]], model: str = "gpt-4o") -> int:
+        """Count tokens for a list of messages."""
+        if not tiktoken:
+            return 0
         
-        for msg in context_messages:
-            if msg.role == MessageRole.USER:
-                messages.append({"role": "user", "content": msg.content})
-            elif msg.role == MessageRole.ASSISTANT:
-                messages.append({"role": "assistant", "content": msg.content})
-            elif msg.role == MessageRole.TOOL:
-                messages.append({"role": "tool", "content": msg.content, "tool_call_id": msg.tool_call_id})
-        
-        messages.append({"role": "user", "content": content})
-        
-        # Execute function calling loop
-        return await self._execute_function_calling_loop(provider, messages, openai_tools)
+        try:
+            encoding = tiktoken.encoding_for_model(model)
+        except KeyError:
+            encoding = tiktoken.get_encoding("cl100k_base")
+            
+        num_tokens = 0
+        for message in messages:
+            num_tokens += 4  # every message follows <im_start>{role/name}\n{content}<im_end>\n
+            for key, value in message.items():
+                if key == "content" and value:
+                    num_tokens += len(encoding.encode(value))
+                if key == "name":
+                    num_tokens += -1  # role is always required and always 1 token
+        num_tokens += 2  # every reply is primed with <im_start>assistant
+        return num_tokens
     
-    async def _execute_function_calling_loop(self, provider: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], max_iterations: int = 5) -> Tuple[str, List[Dict[str, Any]]]:
+    async def _execute_function_calling_loop(self, provider: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], max_iterations: int = 5) -> Tuple[str, List[Dict[str, Any]], int]:
         """Execute function calling loop with validation and error handling."""
         tools_called = []
+        total_output_tokens = 0
         
         for iteration in range(max_iterations):
             print(f"🔄 Function calling iteration {iteration + 1}/{max_iterations}")
@@ -188,6 +309,10 @@ Please use the provided tools to answer the user request."""
                     print(f"❌ No response from LLM in iteration {iteration + 1}")
                     break
                 
+                # Track tokens from response if available
+                if "usage" in response:
+                    total_output_tokens += response["usage"].get("completion_tokens", 0)
+
                 print(f"📥 LLM Response: {json.dumps(response, indent=2)}")
                 
                 # Get assistant message
@@ -235,12 +360,15 @@ Please use the provided tools to answer the user request."""
                         final_response = await self._call_ollama_with_functions(messages, tools)
                     else:
                         final_response = await self._call_llm_fallback(provider, messages, tools)
+                    
                     if final_response:
+                        if "usage" in final_response:
+                            total_output_tokens += final_response["usage"].get("completion_tokens", 0)
                         final_message = final_response.get('choices', [{}])[0].get('message', {})
                         final_content = final_message.get('content', '')
-                        return final_content, tools_called
+                        return final_content, tools_called, total_output_tokens
                     else:
-                        return content, tools_called
+                        return content, tools_called, total_output_tokens
                 
                 # Execute tool calls
                 for tool_call in tool_calls:
@@ -254,6 +382,25 @@ Please use the provided tools to answer the user request."""
                         # Parse arguments
                         arguments = json.loads(arguments_str)
                         
+                        # Validate arguments
+                        is_valid, error_msg = ToolArgumentValidator.validate(function_name, arguments, tools)
+                        
+                        if not is_valid:
+                            print(f"❌ Validation failed for {function_name}: {error_msg}")
+                            # Self-Correction: Feed error back to LLM
+                            messages.append({
+                                "role": "tool",
+                                "content": f"Error: Invalid arguments. {error_msg} Please fix the arguments and retry.",
+                                "tool_call_id": tool_call_id
+                            })
+                            # Add to tools_called for tracking attempts
+                            tools_called.append({
+                                "name": function_name,
+                                "arguments": arguments,
+                                "result": {"error": error_msg}
+                            })
+                            continue
+
                         # Execute tool
                         tool_result = await tool_executor.execute_tool(
                             function_name, arguments, self.user, self.db, tools_called
@@ -299,9 +446,9 @@ Please use the provided tools to answer the user request."""
                     break
             
             if last_assistant:
-                return last_assistant.get("content", ""), tools_called
+                return last_assistant.get("content", ""), tools_called, total_output_tokens
         
-        return "I apologize, but I encountered an issue processing your request. Please try again.", tools_called
+        return "I apologize, but I encountered an issue processing your request. Please try again.", tools_called, total_output_tokens
     
     async def _call_ollama_direct(self, messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """Call Ollama for direct response without function calling."""
@@ -423,6 +570,12 @@ Please use the provided tools to answer the user request."""
             return await self._call_openai_with_functions(messages, tools)
         elif provider == "anthropic":
             return await self._call_anthropic(messages, tools)
+        elif provider == "gemini":
+            return await self._call_gemini(messages, tools)
+        elif provider == "huggingface":
+            return await self._call_huggingface(messages, tools)
+        elif provider == "together":
+            return await self._call_together(messages, tools)
         
         # For unknown providers, return None
         print(f"⚠️ Unknown provider: {provider}")
@@ -471,7 +624,12 @@ Please use the provided tools to answer the user request."""
                         "content": message.content or "",
                         "tool_calls": []
                     }
-                }]
+                }],
+                "usage": {
+                    "prompt_tokens": response.usage.prompt_tokens,
+                    "completion_tokens": response.usage.completion_tokens,
+                    "total_tokens": response.usage.total_tokens
+                }
             }
             
             # Convert tool_calls to expected format
@@ -498,8 +656,23 @@ Please use the provided tools to answer the user request."""
     async def _call_anthropic(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """Call Anthropic Claude API."""
         from ..config import settings
+        from sqlalchemy import select
+        from ..models import UserSettings
+
+        api_key = settings.ANTHROPIC_API_KEY
         
-        if not settings.ANTHROPIC_API_KEY:
+        # BYOK: Check for user-provided API key
+        try:
+            stmt = select(UserSettings).where(UserSettings.user_id == self.user.id)
+            result = await self.db.execute(stmt)
+            user_settings = result.scalar_one_or_none()
+            if user_settings and user_settings.anthropic_api_key:
+                logger.info(f"Using BYOK (Anthropic) for user {self.user.id}")
+                api_key = user_settings.anthropic_api_key
+        except Exception as e:
+            logger.warning(f"Failed to fetch user settings for BYOK: {e}")
+
+        if not api_key:
             print("❌ Anthropic API key not configured")
             return None
         
@@ -530,7 +703,7 @@ Please use the provided tools to answer the user request."""
                 payload["system"] = system_content
             
             headers = {
-                "x-api-key": settings.ANTHROPIC_API_KEY,
+                "x-api-key": api_key,
                 "Content-Type": "application/json",
                 "anthropic-version": "2023-06-01"
             }
@@ -567,4 +740,185 @@ Please use the provided tools to answer the user request."""
             print(f"❌ Anthropic API error: {e}")
             import traceback
             print(f"❌ Traceback: {traceback.format_exc()}")
+            return None 
+
+    async def _call_gemini(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Call Google Gemini API."""
+        from ..config import settings
+        from sqlalchemy import select
+        from ..models import UserSettings
+
+        api_key = settings.GEMINI_API_KEY
+        
+        # BYOK: Check for user-provided API key
+        try:
+            stmt = select(UserSettings).where(UserSettings.user_id == self.user.id)
+            result = await self.db.execute(stmt)
+            user_settings = result.scalar_one_or_none()
+            if user_settings and user_settings.gemini_api_key:
+                logger.info(f"Using BYOK (Gemini) for user {self.user.id}")
+                api_key = user_settings.gemini_api_key
+        except Exception as e:
+            logger.warning(f"Failed to fetch user settings for BYOK: {e}")
+
+        if not api_key:
+            print("❌ Gemini API key not configured")
+            return None
+
+        try:
+            import aiohttp
+            
+            # Simple content generation for now
+            last_message = messages[-1].get("content", "")
+            
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+            
+            payload = {
+                "contents": [{
+                    "parts": [{"text": last_message}]
+                }]
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        try:
+                            content = result['candidates'][0]['content']['parts'][0]['text']
+                            return {
+                                "choices": [{
+                                    "message": {
+                                        "role": "assistant",
+                                        "content": content,
+                                        "tool_calls": []
+                                    }
+                                }]
+                            }
+                        except KeyError:
+                            print(f"❌ Gemini response format error: {result}")
+                            return None
+                    else:
+                        print(f"❌ Gemini error {response.status}: {await response.text()}")
+                        return None
+        except Exception as e:
+            print(f"❌ Gemini API error: {e}")
+            return None
+
+    async def _call_huggingface(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Call Hugging Face Inference API."""
+        from ..config import settings
+        from sqlalchemy import select
+        from ..models import UserSettings
+
+        api_key = settings.HUGGINGFACE_API_KEY
+        
+        # BYOK: Check for user-provided API key
+        try:
+            stmt = select(UserSettings).where(UserSettings.user_id == self.user.id)
+            result = await self.db.execute(stmt)
+            user_settings = result.scalar_one_or_none()
+            if user_settings and user_settings.huggingface_api_key:
+                logger.info(f"Using BYOK (HuggingFace) for user {self.user.id}")
+                api_key = user_settings.huggingface_api_key
+        except Exception as e:
+            logger.warning(f"Failed to fetch user settings for BYOK: {e}")
+
+        if not api_key:
+            print("❌ Hugging Face API key not configured")
+            return None
+
+        try:
+            import aiohttp
+            
+            # Use a default model if not specified
+            model = "mistralai/Mistral-7B-Instruct-v0.2"
+            url = f"https://api-inference.huggingface.co/models/{model}"
+            
+            headers = {"Authorization": f"Bearer {api_key}"}
+            last_message = messages[-1].get("content", "")
+            
+            # Simple text generation payload
+            payload = {
+                "inputs": last_message,
+                "parameters": {"max_new_tokens": 512, "return_full_text": False}
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=payload) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        # HF returns a list of objects with 'generated_text'
+                        if isinstance(result, list) and len(result) > 0:
+                            content = result[0].get('generated_text', '')
+                            return {
+                                "choices": [{
+                                    "message": {
+                                        "role": "assistant",
+                                        "content": content,
+                                        "tool_calls": []
+                                    }
+                                }]
+                            }
+                        return None
+                    else:
+                        print(f"❌ HuggingFace error {response.status}: {await response.text()}")
+                        return None
+        except Exception as e:
+            print(f"❌ HuggingFace API error: {e}")
+            return None
+
+    async def _call_together(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Call Together AI API (OpenAI Compatible)."""
+        from ..config import settings
+        from sqlalchemy import select
+        from ..models import UserSettings
+
+        api_key = settings.TOGETHER_API_KEY
+        
+        # BYOK: Check for user-provided API key
+        try:
+            stmt = select(UserSettings).where(UserSettings.user_id == self.user.id)
+            result = await self.db.execute(stmt)
+            user_settings = result.scalar_one_or_none()
+            if user_settings and user_settings.together_api_key:
+                logger.info(f"Using BYOK (Together) for user {self.user.id}")
+                api_key = user_settings.together_api_key
+        except Exception as e:
+            logger.warning(f"Failed to fetch user settings for BYOK: {e}")
+
+        if not api_key:
+            print("❌ Together API key not configured")
+            return None
+
+        try:
+            # Together is OpenAI compatible
+            from openai import AsyncOpenAI
+            
+            client = AsyncOpenAI(
+                api_key=api_key,
+                base_url="https://api.together.xyz/v1"
+            )
+            
+            model = "meta-llama/Llama-3-8b-chat-hf"
+            
+            response = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=1024,
+                temperature=0.7
+            )
+            
+            content = response.choices[0].message.content
+            
+            return {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": content,
+                        "tool_calls": []
+                    }
+                }]
+            }
+        except Exception as e:
+            print(f"❌ Together API error: {e}")
             return None 

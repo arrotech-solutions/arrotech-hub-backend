@@ -8,39 +8,67 @@ from ..models import SubscriptionTier, User
 # Plan Limitations Configuration
 PLAN_LIMITS: Dict[str, Dict[str, Any]] = {
     SubscriptionTier.FREE: {
-        "max_active_workflows": 1,
-        "max_ai_messages_daily": 5,
-        "allowed_connections": ["ga4"],
+        "max_active_workflows": 3,  # Increased from 1
+        "max_ai_messages_daily": 10,  # Increased from 5
+        "allowed_connections": ["mpesa", "slack", "context_tools"],
         "support_level": "community",
-        "reports": "standard"
+        "reports": "basic",
+        "team_members": 1,
+        "api_access": False
     },
-    SubscriptionTier.STARTER: {
+    SubscriptionTier.LITE: {  # NEW TIER - Biashara Lite
         "max_active_workflows": 10,
-        "max_ai_messages_daily": 100,
-        "allowed_connections": ["ga4", "slack", "hubspot", "mpesa"],
-        "support_level": "priority_email",
-        "reports": "daily_auto"
-    },
-    SubscriptionTier.TESTING: {
-        "max_active_workflows": 9999,  # Unlimited for testing
-        "max_ai_messages_daily": 9999,  # Unlimited for testing
-        "allowed_connections": ["*"],  # All allowed for testing
+        "max_ai_messages_daily": 50,
+        "allowed_connections": [
+            "mpesa", "slack", "context_tools",
+            "google_workspace", "gmail", "microsoft_outlook", 
+            "whatsapp_business", "zoho_crm"
+        ],
         "support_level": "email",
-        "reports": "daily_auto"
+        "reports": "weekly",
+        "team_members": 1,
+        "api_access": False
     },
-    SubscriptionTier.PRO: {
+    SubscriptionTier.PRO: {  # Previously STARTER, upgraded features
+        "max_active_workflows": 50,
+        "max_ai_messages_daily": 500,
+        "allowed_connections": [
+            # All LITE connections plus advanced integrations
+            "mpesa", "slack", "context_tools", "google_workspace", "gmail",
+            "microsoft_outlook", "whatsapp_business", "zoho_crm",
+            # Business & Marketing
+            "hubspot", "salesforce", "ga4", "google_analytics",
+            "facebook_marketing", "facebook", "instagram_graph", "instagram",
+            "linkedin_ads", "linkedin", "twitter_ads", "twitter",
+            # E-commerce
+            "shopify", "jumia", "kilimall",
+            # Payments
+            "stripe", "airtel_money", "airtel", "pesapal", "equity_bank", "equity",
+            # Productivity & Project Management
+            "asana", "trello", "clickup", "notion", "jira",
+            # Communication & Collaboration
+            "zoom", "microsoft_teams", "teams",
+            # Analytics & Accounting
+            "power_bi", "powerbi", "quickbooks", "quick_books", "zoho_books"
+        ],
+        "support_level": "priority_chat",
+        "reports": "daily_auto",
+        "team_members": 5,
+        "api_access": True,
+        "api_requests_daily": 5000
+    },
+    SubscriptionTier.ENTERPRISE: {  # NEW TIER
         "max_active_workflows": 9999,  # Unlimited
         "max_ai_messages_daily": 9999,  # Unlimited
-        "allowed_connections": ["*"],  # All allowed
+        "allowed_connections": ["*"],  # All connections allowed
         "support_level": "dedicated_whatsapp",
-        "reports": "real_time"
-    },
-    SubscriptionTier.ENTERPRISE: {
-        "max_active_workflows": 9999,
-        "max_ai_messages_daily": 9999,
-        "allowed_connections": ["*"],
-        "support_level": "dedicated_manager",
-        "reports": "custom"
+        "reports": "real_time_custom",
+        "team_members": 9999,  # Unlimited
+        "api_access": True,
+        "api_requests_daily": 999999,  # Unlimited
+        "white_label": True,
+        "sso": True,
+        "custom_integrations": 2  # Per year
     },
 }
 

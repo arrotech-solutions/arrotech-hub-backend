@@ -18,10 +18,9 @@ from .database import Base
 class SubscriptionTier(str, Enum):
     """Subscription tiers."""
     FREE = "free"
-    TESTING = "testing"
-    STARTER = "starter"
-    PRO = "pro"
-    ENTERPRISE = "enterprise"
+    LITE = "lite"  # NEW: Biashara Lite - KES 200/month
+    PRO = "pro"  # Renamed from STARTER - KES 2,500/month
+    ENTERPRISE = "enterprise"  # NEW: Enterprise - KES 10,000/month
 
 
 class ConnectionStatus(str, Enum):
@@ -351,6 +350,11 @@ class UserSettings(Base):
     api_rate_limit = Column(Integer, default=1000)  # requests per hour
     api_timeout = Column(Integer, default=30)  # seconds
     auto_refresh_tokens = Column(Boolean, default=True)
+    openai_api_key = Column(String, nullable=True)  # User provided OpenAI Key
+    anthropic_api_key = Column(String, nullable=True)  # User provided Anthropic Key
+    gemini_api_key = Column(String, nullable=True)  # User provided Gemini Key
+    huggingface_api_key = Column(String, nullable=True)  # User provided Hugging Face Key
+    together_api_key = Column(String, nullable=True)  # User provided Together AI Key
 
     # Dashboard Settings
     dashboard_theme = Column(String, default="light")  # light, dark, auto

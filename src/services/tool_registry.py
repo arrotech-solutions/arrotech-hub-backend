@@ -416,15 +416,87 @@ class ToolRegistry:
             },
             "teams_message_search": {
                 "name": "teams_message_search",
-                "description": "Search for messages in Microsoft Teams channels",
+                "description": "Search for messages or get recent chats from Microsoft Teams",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string"},
+                        "action": {"type": "string", "enum": ["search_messages", "get_recent_chats"], "default": "search_messages"},
+                        "query": {"type": "string", "description": "Required for search_messages"},
                         "channel_id": {"type": "string"},
                         "limit": {"type": "integer", "default": 20}
                     },
-                    "required": ["query"]
+                    "required": ["action"]
+                }
+            },
+            # Outlook Integration
+            "outlook_email_management": {
+                "name": "outlook_email_management",
+                "description": "Read, search, and send emails using Microsoft Outlook",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["read_emails", "search_emails", "send_email"]},
+                        "query": {"type": "string", "description": "Query for search"},
+                        "limit": {"type": "integer", "default": 10},
+                        "to_email": {"type": "string"},
+                        "subject": {"type": "string"},
+                        "content": {"type": "string"},
+                        "content_type": {"type": "string", "enum": ["text", "html"], "default": "text"}
+                    },
+                    "required": ["action"]
+                }
+            },
+            # Notion Integration
+            "notion_workspace_management": {
+                "name": "notion_workspace_management",
+                "description": "Search and manage pages in Notion workspace",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["search_pages", "create_page"]},
+                        "query": {"type": "string", "description": "Query for search"},
+                        "limit": {"type": "integer", "default": 10},
+                        "title": {"type": "string"},
+                        "content": {"type": "string"},
+                        "parent_id": {"type": "string", "description": "Page or Database ID parent"}
+                    },
+                    "required": ["action"]
+                }
+            },
+            # Trello Integration
+            "trello_project_management": {
+                "name": "trello_project_management",
+                "description": "Manage boards, lists and cards in Trello",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["get_boards", "search_cards", "create_card"]},
+                        "query": {"type": "string", "description": "Query for search"},
+                        "limit": {"type": "integer", "default": 10},
+                        "list_id": {"type": "string"},
+                        "name": {"type": "string", "description": "Card name"},
+                        "desc": {"type": "string", "description": "Card description"},
+                        "due": {"type": "string", "description": "Due date (ISO)"}
+                    },
+                    "required": ["action"]
+                }
+            },
+            # Jira Integration
+            "jira_issue_tracking": {
+                "name": "jira_issue_tracking",
+                "description": "Manage issues and projects in Jira",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["get_projects", "search_issues", "create_issue"]},
+                        "jql": {"type": "string", "description": "JQL query for search_issues"},
+                        "limit": {"type": "integer", "default": 10},
+                        "project_key": {"type": "string"},
+                        "summary": {"type": "string", "description": "Issue summary"},
+                        "description": {"type": "string", "description": "Issue description"},
+                        "issuetype": {"type": "string", "default": "Task"}
+                    },
+                    "required": ["action"]
                 }
             },
             # Zoom Integration

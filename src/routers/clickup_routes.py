@@ -17,9 +17,15 @@ clickup_service = ClickUpService()
 async def get_auth_url(user: User = Depends(get_current_user)):
     """Get the ClickUp OAuth URL."""
     try:
+        # Check tier-based access BEFORE allowing OAuth flow
+        from ..services.tier_gate import check_connection_access
+        check_connection_access(user, "clickup")
+        
         state = f"user_{user.id}"
         url = await clickup_service.get_auth_url(state=state)
         return {"url": url}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
