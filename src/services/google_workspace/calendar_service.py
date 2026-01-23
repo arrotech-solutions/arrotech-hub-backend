@@ -125,8 +125,8 @@ class CalendarService:
                 formatted_events.append({
                     'id': event.get('id'),
                     'summary': event.get('summary'),
-                    'start': event.get('start', {}).get('dateTime', event.get('start', {}).get('date')),
-                    'end': event.get('end', {}).get('dateTime', event.get('end', {}).get('date')),
+                    'start': event.get('start', {}), # Return full object
+                    'end': event.get('end', {}),     # Return full object
                     'location': event.get('location'),
                     'description': event.get('description'),
                     'attendees': event.get('attendees', []),

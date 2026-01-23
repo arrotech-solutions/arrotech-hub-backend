@@ -284,10 +284,10 @@ class PrecisionToolRouter:
             r'get.*zoom.*meeting': 'zoom_meeting_management',
             
             # Teams Tools
-            r'teams.*message': 'teams_send_message',
-            r'send.*teams.*message': 'teams_send_message',
-            r'teams.*notification': 'teams_send_message',
-            r'teams.*webhook': 'teams_send_message',
+            r'teams.*message': 'teams_team_communication',
+            r'send.*teams.*message': 'teams_team_communication',
+            r'teams.*notification': 'teams_team_communication',
+            r'teams.*webhook': 'teams_team_communication',
             
             # File Management Tools
             r'(upload|download).*file': 'file_management',
@@ -482,6 +482,15 @@ class PrecisionToolRouter:
             # Google Workspace - Analytics
             r'google.*analytics': 'google_workspace_analytics',
             r'ga4.*report': 'google_workspace_analytics',
+
+        # ClickUp Tools
+            r'clickup.*task': 'clickup_task_management',
+            r'create.*task.*clickup': 'clickup_task_management',
+            r'list.*task.*clickup': 'clickup_task_management',
+            r'my.*task': 'clickup_task_management',
+            r'clickup.*space': 'clickup_resource_management',
+            r'clickup.*folder': 'clickup_resource_management',
+            r'clickup.*list': 'clickup_resource_management',
 
             # Workflow Management
             r'manage.*workflow': 'workflow_management',
@@ -1122,14 +1131,30 @@ class PrecisionToolRouter:
                 "keywords": ["whatsapp", "media", "image", "video", "send"]
             },
             # Teams Tools
-            "teams_send_message": {
+            "teams_team_communication": {
                 "patterns": [
                     ["teams", "message"],
                     ["send", "teams", "message"],
-                    ["teams", "notification"],
+                    ["notify", "teams", "channel"],
                     ["teams", "webhook"]
                 ],
-                "keywords": ["teams", "message", "send", "notification", "webhook"]
+                "keywords": ["teams", "message", "send", "notify", "webhook"]
+            },
+            "teams_channel_management": {
+                "patterns": [
+                    ["create", "teams", "channel"],
+                    ["list", "teams", "channel"],
+                    ["get", "channel", "members"]
+                ],
+                "keywords": ["teams", "channel", "create", "list", "members"]
+            },
+            "teams_message_search": {
+                "patterns": [
+                    ["search", "teams", "message"],
+                    ["find", "teams", "message"],
+                    ["teams", "search"]
+                ],
+                "keywords": ["teams", "search", "message", "find", "query"]
             },
             # Zoom Tools
             "zoom_meeting_management": {
@@ -1138,9 +1163,53 @@ class PrecisionToolRouter:
                     ["create", "zoom", "meeting"],
                     ["schedule", "zoom", "meeting"],
                     ["list", "zoom", "meeting"],
-                    ["get", "zoom", "meeting"]
+                    ["get", "zoom", "meeting"],
+                    ["delete", "zoom", "meeting"]
                 ],
                 "keywords": ["zoom", "meeting", "create", "schedule", "list", "get"]
+            },
+            "zoom_meeting_operations": {
+                "patterns": [
+                    ["zoom", "meeting", "registrant"],
+                    ["get", "meeting", "id"],
+                    ["zoom", "participant"]
+                ],
+                "keywords": ["zoom", "meeting", "registrant", "participant", "details"]
+            },
+            "zoom_recording_management": {
+                "patterns": [
+                    ["zoom", "recording"],
+                    ["get", "zoom", "recording"],
+                    ["list", "zoom", "recordings"],
+                    ["delete", "recording"]
+                ],
+                "keywords": ["zoom", "recording", "get", "list", "delete"]
+            },
+            "zoom_user_management": {
+                "patterns": [
+                    ["zoom", "user"],
+                    ["get", "zoom", "user"],
+                    ["list", "zoom", "users"],
+                    ["check", "zoom", "user"]
+                ],
+                "keywords": ["zoom", "user", "get", "list", "account"]
+            },
+            "zoom_webinar_management": {
+                 "patterns": [
+                    ["zoom", "webinar"],
+                    ["create", "zoom", "webinar"],
+                    ["list", "zoom", "webinars"]
+                 ],
+                 "keywords": ["zoom", "webinar", "create", "list", "schedule"]
+            },
+            "zoom_analytics": {
+                 "patterns": [
+                    ["zoom", "report"],
+                    ["zoom", "analytics"],
+                    ["meeting", "report"],
+                    ["webinar", "report"]
+                 ],
+                 "keywords": ["zoom", "analytics", "report", "stats", "data"]
             },
             # Power BI Tools
             "powerbi_list_workspaces": {
@@ -1272,6 +1341,23 @@ class PrecisionToolRouter:
                     ["limit", "api", "call"]
                 ],
                 "keywords": ["rate", "limit", "throttle", "api"]
+            },
+            "clickup_task_management": {
+                "patterns": [
+                    ["clickup", "task"],
+                    ["list", "task"],
+                    ["create", "task"],
+                    ["my", "task"]
+                ],
+                "keywords": ["clickup", "task", "list", "create", "assign", "status"]
+            },
+            "clickup_resource_management": {
+                "patterns": [
+                    ["clickup", "space"],
+                    ["clickup", "folder"],
+                    ["clickup", "list"]
+                ],
+                "keywords": ["clickup", "space", "folder", "list", "hierarchy"]
             }
         }
     
@@ -1435,6 +1521,25 @@ class PrecisionToolRouter:
                 invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
                 if any(char in arguments['filename'] for char in invalid_chars):
                     errors.append(f"Filename contains invalid characters: {invalid_chars}")
+
+        # Teams-specific validation
+        if 'teams' in tool_name:
+            if 'channel' in arguments and arguments['channel']:
+                 # Basic check, though channel IDs vary heavily
+                 if len(arguments['channel']) < 2:
+                      errors.append("Teams channel ID/name seems too short")
+
+        # Zoom-specific validation
+        if 'zoom' in tool_name:
+             if 'meeting_id' in arguments:
+                  if not str(arguments['meeting_id']).isdigit():
+                       errors.append("Zoom meeting ID must be numeric")
+             if 'duration' in arguments:
+                  try:
+                       if int(arguments['duration']) <= 0:
+                            errors.append("Duration must be positive")
+                  except (ValueError, TypeError):
+                       errors.append("Duration must be a number")
         
         return errors
 

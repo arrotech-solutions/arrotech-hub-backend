@@ -20,7 +20,8 @@ from .database import init_db
 from .routers import (access_router, agent_router, analytics_router, api_router, auth_router, chat_router,
                       connection_router, creator_router, favorites_router, google_workspace_router, marketplace_router, 
                       mcp_router, mpesa_agent_router, notification_router, payment_router, preferences_router,
-                      settings_router, slack_agent_router, slack_routes, subscription_router, templates_router, whatsapp_routes, workflow_router, facebook_routes, instagram_routes, twitter_routes, clickup_routes)
+                      settings_router, slack_agent_router, slack_routes, subscription_router, templates_router, whatsapp_routes, workflow_router, facebook_routes, instagram_routes, twitter_routes, clickup_routes, teams_router, zoom_router,
+                      outlook_router, notion_router, trello_router, jira_router)
 from .services import (BillingService, ContentCreationService,
                        FileManagementService, HubSpotService,
                        RateLimitService, SlackService, SocialMediaService,
@@ -67,6 +68,11 @@ async def lifespan(app: FastAPI):
         logger.warning("Slack service initialization timed out")
     except Exception as e:
         logger.warning(f"Slack service initialization failed: {e}")
+
+    # Attach services to app state for dependency injection in routers
+    app.state.rate_limit_service = rate_limit_service
+    app.state.slack_service = slack_service
+    app.state.hubspot_service = hubspot_service
 
     # Start Workflow Scheduler
     try:
@@ -131,6 +137,12 @@ app.include_router(facebook_routes)
 app.include_router(instagram_routes)
 app.include_router(twitter_routes)
 app.include_router(clickup_routes.router)
+app.include_router(teams_router.router)
+app.include_router(zoom_router.router)
+app.include_router(outlook_router)
+app.include_router(notion_router)
+app.include_router(trello_router)
+app.include_router(jira_router)
 
 
 
@@ -302,7 +314,11 @@ async def run_mcp_server():
     async def call_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a tool call."""
         # Check rate limits
-        user_id = "default"  # In production, get from auth
+        # Check rate limits
+        # For MCP server mode (stdio), we might not have a full user context yet
+        # In a real deployment, we'd validate an auth token passed in arguments or headers
+        user_id = arguments.get("user_id", "default")
+        
         if not await rate_limit_service.check_limit(user_id):
             raise HTTPException(status_code=429, detail="Rate limit exceeded")
 

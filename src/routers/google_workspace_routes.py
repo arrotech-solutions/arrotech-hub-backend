@@ -43,6 +43,10 @@ async def get_auth_url(
     Generate Google OAuth authorization URL
     """
     try:
+        # Check tier-based access BEFORE allowing OAuth flow
+        from ..services.tier_gate import check_connection_access
+        check_connection_access(user, "google_workspace")
+        
         if not GOOGLE_CLIENT_ID:
             raise HTTPException(
                 status_code=500,
@@ -69,6 +73,8 @@ async def get_auth_url(
             "state": params["state"]
         }
     
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error generating Google Workspace auth URL: {e}")
         raise HTTPException(status_code=500, detail=str(e))

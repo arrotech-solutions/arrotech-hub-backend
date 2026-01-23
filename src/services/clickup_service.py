@@ -68,11 +68,17 @@ class ClickUpService:
             response.raise_for_status()
             return response.json()
 
-    async def get_team_tasks(self, access_token: str, team_id: str, assignee_id: str = None) -> Dict[str, Any]:
+    async def get_team_tasks(self, access_token: str, team_id: str, assignee_id: str = None, include_closed: bool = False) -> Dict[str, Any]:
         """Get tasks for a team (workspace), optionally filtered by assignee."""
+        # Note: ClickUp API v2 doesn't have a direct "get all team tasks" endpoint that is simple. 
+        # Usually one queries by list or uses filtered team view. 
+        # But for now, we'll try to use the filtering endpoint if available or fallback to space->list iteration.
+        # Actually, https://api.clickup.com/api/v2/team/{team_id}/task exists but it's legacy or specific filter.
+        # Let's verify documentation. 'GET /team/{team_id}/task' DOES exist for filtered tasks.
+        
         url = f"{self.BASE_URL}/team/{team_id}/task"
         headers = {"Authorization": access_token}
-        params = {}
+        params = {"include_closed": str(include_closed).lower()}
         if assignee_id:
             params["assignees"] = [assignee_id]
         
@@ -146,5 +152,28 @@ class ClickUpService:
         
         async with httpx.AsyncClient() as client:
             response = await client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+
+    async def update_task(self, access_token: str, task_id: str, status: str = None, name: str = None, description: str = None) -> Dict[str, Any]:
+        """Update a task (status, name, description)."""
+        url = f"{self.BASE_URL}/task/{task_id}"
+        headers = {
+            "Authorization": access_token,
+            "Content-Type": "application/json"
+        }
+        payload = {}
+        if status:
+            payload["status"] = status
+        if name:
+            payload["name"] = name
+        if description:
+            payload["description"] = description
+            
+        if not payload:
+             return {"success": False, "error": "No update parameters provided"}
+
+        async with httpx.AsyncClient() as client:
+            response = await client.put(url, headers=headers, json=payload)
             response.raise_for_status()
             return response.json()

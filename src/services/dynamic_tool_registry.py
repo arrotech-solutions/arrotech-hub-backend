@@ -416,7 +416,24 @@ class DynamicToolRegistry:
                     "required": ["operation"]
                 },
                 "category": "payments",
-                "always_available": True
+                "always_available": True,
+                "few_shot_examples": [
+                    {
+                        "user": "Show me today's M-Pesa payments",
+                        "tool_call": 'mpesa_payment_reconciliation(operation="get_summary", days=1)',
+                        "response": "Here is the summary of today's payments..."
+                    },
+                    {
+                        "user": "Find unmatched payments from last week",
+                        "tool_call": 'mpesa_payment_reconciliation(operation="get_unmatched", days=7)',
+                        "response": "Found 3 unmatched payments..."
+                    },
+                    {
+                         "user": "Create an invoice for 5000 shillings for John Doe",
+                         "tool_call": 'mpesa_payment_reconciliation(operation="create_invoice", amount=5000, customer_name="John Doe")',
+                         "response": "Invoice created for John Doe for KES 5,000."
+                    }
+                ]
             },
             # Bilingual & Context Intelligence - Always available
             "context_intelligence": {
@@ -491,6 +508,14 @@ class DynamicToolRegistry:
                 tools.extend(self._get_asana_tools(connection))
             elif connection.platform == "powerbi":
                 tools.extend(self._get_powerbi_tools(connection))
+            elif connection.platform == "outlook":
+                tools.extend(self._get_outlook_tools(connection))
+            elif connection.platform == "notion":
+                tools.extend(self._get_notion_tools(connection))
+            elif connection.platform == "trello":
+                tools.extend(self._get_trello_tools(connection))
+            elif connection.platform == "jira":
+                tools.extend(self._get_jira_tools(connection))
             elif connection.platform in platform_registry.platforms:
                 # Dynamically fetch tools for regional platforms (hr_hub, logistics_hub, etc.)
                 p_tools = platform_registry.get_platform_tools(connection.platform)
@@ -1054,6 +1079,203 @@ class DynamicToolRegistry:
                 "id": "powerbi_get_analytics_summary"
             }
         ]
+
+    def _get_outlook_tools(self, connection: Connection) -> List[Dict[str, Any]]:
+        """Get Outlook tools for a connection."""
+        return [
+            {
+                "name": "outlook_read_emails",
+                "description": "Read emails from Outlook",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "default": 20},
+                        "query": {"type": "string"}
+                    },
+                    "required": []
+                },
+                "connection_id": connection.id,
+                "platform": "outlook",
+                "status": "available",
+                "id": "outlook_read_emails"
+            },
+            {
+                "name": "outlook_send_email",
+                "description": "Send an email via Outlook",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "to_email": {"type": "string"},
+                        "subject": {"type": "string"},
+                        "content": {"type": "string"},
+                        "content_type": {"type": "string", "enum": ["text", "html"], "default": "text"}
+                    },
+                    "required": ["to_email", "subject", "content"]
+                },
+                "connection_id": connection.id,
+                "platform": "outlook",
+                "status": "available",
+                "id": "outlook_send_email"
+            },
+            {
+                "name": "outlook_search_emails",
+                "description": "Search for emails in Outlook",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer", "default": 20}
+                    },
+                    "required": ["query"]
+                },
+                "connection_id": connection.id,
+                "platform": "outlook",
+                "status": "available",
+                "id": "outlook_search_emails"
+            }
+        ]
+
+    def _get_notion_tools(self, connection: Connection) -> List[Dict[str, Any]]:
+        """Get Notion tools for a connection."""
+        return [
+            {
+                "name": "notion_search_pages",
+                "description": "Search pages in Notion",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer", "default": 10}
+                    },
+                    "required": ["query"]
+                },
+                "connection_id": connection.id,
+                "platform": "notion",
+                "status": "available",
+                "id": "notion_search_pages"
+            },
+            {
+                "name": "notion_create_page",
+                "description": "Create a new page in Notion",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "content": {"type": "string"},
+                        "parent_id": {"type": "string", "description": "Parent Page or Database ID"}
+                    },
+                    "required": ["title", "parent_id"]
+                },
+                "connection_id": connection.id,
+                "platform": "notion",
+                "status": "available",
+                "id": "notion_create_page"
+            }
+        ]
+
+    def _get_trello_tools(self, connection: Connection) -> List[Dict[str, Any]]:
+        """Get Trello tools for a connection."""
+        return [
+            {
+                "name": "trello_get_boards",
+                "description": "Get Trello boards",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                },
+                "connection_id": connection.id,
+                "platform": "trello",
+                "status": "available",
+                "id": "trello_get_boards"
+            },
+            {
+                "name": "trello_search_cards",
+                "description": "Search Trello cards",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer", "default": 10}
+                    },
+                    "required": ["query"]
+                },
+                "connection_id": connection.id,
+                "platform": "trello",
+                "status": "available",
+                "id": "trello_search_cards"
+            },
+            {
+                "name": "trello_create_card",
+                "description": "Create a Trello card",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "list_id": {"type": "string"},
+                        "name": {"type": "string"},
+                        "desc": {"type": "string"},
+                        "due": {"type": "string"}
+                    },
+                    "required": ["list_id", "name"]
+                },
+                "connection_id": connection.id,
+                "platform": "trello",
+                "status": "available",
+                "id": "trello_create_card"
+            }
+        ]
+
+    def _get_jira_tools(self, connection: Connection) -> List[Dict[str, Any]]:
+        """Get Jira tools for a connection."""
+        return [
+            {
+                "name": "jira_get_projects",
+                "description": "Get Jira projects",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                },
+                "connection_id": connection.id,
+                "platform": "jira",
+                "status": "available",
+                "id": "jira_get_projects"
+            },
+            {
+                "name": "jira_search_issues",
+                "description": "Search Jira issues using JQL",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "jql": {"type": "string"},
+                        "limit": {"type": "integer", "default": 10}
+                    },
+                    "required": ["jql"]
+                },
+                "connection_id": connection.id,
+                "platform": "jira",
+                "status": "available",
+                "id": "jira_search_issues"
+            },
+            {
+                "name": "jira_create_issue",
+                "description": "Create a Jira issue",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project_key": {"type": "string"},
+                        "summary": {"type": "string"},
+                        "description": {"type": "string"},
+                        "issuetype": {"type": "string"}
+                    },
+                    "required": ["project_key", "summary"]
+                },
+                "connection_id": connection.id,
+                "platform": "jira",
+                "status": "available",
+                "id": "jira_create_issue"
+            }
+        ]
     
     async def get_all_tools(self, db: AsyncSession) -> List[Dict[str, Any]]:
         """Get all tools (base tools + all platform tools)."""
@@ -1154,6 +1376,75 @@ class DynamicToolRegistry:
                 desc += f" (via {tool['platform']})"
             descriptions.append(desc)
         return "\n".join(descriptions)
+
+    def get_relevant_examples(self, user_query: str, tools: List[Dict[str, Any]]) -> str:
+        """
+        Get relevant few-shot examples based on user query keywords.
+        Returns formatted string of examples appropriate for the system prompt.
+        """
+        if not user_query:
+            return ""
+
+        relevant_examples = []
+        user_terms = set(user_query.lower().split())
+        
+        # Stopwords to ignore
+        stopwords = {"the", "a", "an", "is", "are", "to", "for", "of", "in", "on", "with", "please", "can", "you", "i", "need"}
+        keywords = user_terms - stopwords
+        
+        for tool in tools:
+            # Handle both nested 'function' format and flat format
+            actual_tool = tool.get('function', tool)
+            examples = actual_tool.get('few_shot_examples', tool.get('few_shot_examples', []))
+            
+            if not examples:
+                continue
+                
+            # Score this tool's relevance
+            tool_name = actual_tool.get('name', '').lower()
+            tool_desc = actual_tool.get('description', '').lower()
+            
+            # Simple keyword matching score
+            score = 0
+            if any(k in tool_name for k in keywords):
+                score += 3
+            if any(k in tool_desc for k in keywords):
+                score += 1
+            
+            # If relevant (score > 0) or we have very few keywords, include examples
+            # High threshold to avoid noise, but ensure at least some context if vague
+            if score > 0 or not keywords:
+                for ex in examples:
+                    # Also check if example text matches keywords
+                    ex_text = str(ex).lower()
+                    if any(k in ex_text for k in keywords):
+                        score += 1
+                    
+                    relevant_examples.append((score, actual_tool.get('name'), ex))
+
+        # Sort by score desc
+        relevant_examples.sort(key=lambda x: x[0], reverse=True)
+        
+        # Take top 5 most relevant
+        top_examples = relevant_examples[:5]
+        
+        examples_text = ""
+        for _, name, ex in top_examples:
+            examples_text += f"### Example ({name}):\n"
+            if isinstance(ex, dict):
+                examples_text += f"User: \"{ex.get('user', '')}\"\n"
+                if "Thought" in ex: # Support existing ReAct examples if present
+                    examples_text += f"Thought: {ex.get('Thought')}\n"
+                else:
+                    # Generate a synthetic thought for the example if missing (Self-Consistency)
+                    examples_text += f"Thought: User wants to perform action with {name}. I will call the tool with the provided arguments.\n"
+                    
+                examples_text += f"Tool Call: {ex.get('tool_call', '')}\n"
+                examples_text += f"Response: {ex.get('response', '')}\n\n"
+            else:
+                examples_text += f"{ex}\n\n"
+                
+        return examples_text
 
 
 # Global dynamic tool registry instance

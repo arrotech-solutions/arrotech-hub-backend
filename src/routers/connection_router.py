@@ -103,6 +103,10 @@ async def create_connection(
 ):
     """Create a new connection."""
     try:
+        # Check tier-based access to this platform
+        from ..services.tier_gate import check_connection_access
+        check_connection_access(current_user, connection_data.platform)
+        
         # Validate platform using platform registry
         platform = platform_registry.get_platform(connection_data.platform)
         if not platform:

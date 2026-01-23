@@ -28,6 +28,10 @@ from ..routers.auth_router import get_current_user
 @router.get("/auth-url")
 async def get_auth_url(user: User = Depends(get_current_user)):
     """Generate WhatsApp (Meta) OAuth URL."""
+    # Check tier-based access BEFORE allowing OAuth flow
+    from ..services.tier_gate import check_connection_access
+    check_connection_access(user, "whatsapp_business")
+    
     if not settings.WHATSAPP_APP_ID or not settings.WHATSAPP_APP_SECRET:
         raise HTTPException(
             status_code=500, 

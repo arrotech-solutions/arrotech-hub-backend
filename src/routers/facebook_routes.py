@@ -27,6 +27,10 @@ FACEBOOK_SCOPES = "pages_show_list,pages_read_engagement"
 @router.get("/auth-url")
 async def get_auth_url(user: User = Depends(get_current_user)):
     """Generate Facebook OAuth URL."""
+    # Check tier-based access BEFORE allowing OAuth flow
+    from ..services.tier_gate import check_connection_access
+    check_connection_access(user, "facebook")
+    
     if not settings.FACEBOOK_APP_ID or not settings.FACEBOOK_APP_SECRET:
         raise HTTPException(
             status_code=500, 

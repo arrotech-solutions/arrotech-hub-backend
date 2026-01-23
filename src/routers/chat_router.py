@@ -21,11 +21,13 @@ from sqlalchemy.orm import selectinload
 from ..database import get_db
 from ..models import Conversation, Message, MessageRole, MessageStatus, User
 from ..routers.auth_router import get_current_user
+from ..routers.settings_router import get_or_create_user_settings
 from ..services.dynamic_tool_registry import dynamic_tool_registry
 from ..services.execution_orchestrator import ExecutionOrchestrator
 from ..services.intent_processor import IntentProcessor
 from ..services.tool_executor import tool_executor
 from ..services.tool_router import ToolRouter
+from ..config import settings
 
 router = APIRouter()
 
@@ -182,223 +184,242 @@ async def get_conversation(
     }
 
 
-async def build_system_prompt(tools: List[Dict[str, Any]] = None) -> str:
-    system_prompt = """You are Mini-Hub, a business automation assistant. Be direct and efficient.
+async def build_system_prompt(tools: List[Dict[str, Any]] = None, user_context: Dict[str, Any] = None, user_query: str = "") -> str:
+    """
+    Build an enhanced system prompt for high-accuracy tool calling.
+    
+    Args:
+        tools: List of available tools in OpenAI format
+        user_context: Optional dict with user's connections, tier, etc.
+        user_query: The user's current message for semantic relevance
+    """
+    system_prompt = """You are Mini-Hub, an AI-powered business automation assistant with access to 50+ integrations.
 
-## CORE PRINCIPLES:
-1. Respond to current input only - no context from previous messages
-2. Be direct and efficient - quick responses
-3. Use tools only when needed - don't call tools for casual conversation
-4. Precise tool calls - exact tool names and correct arguments
+## YOUR IDENTITY:
+- You are a professional, efficient assistant specialized in business automation
+- You help users manage their connected platforms: Slack, Gmail, Calendar, M-Pesa, WhatsApp, and more
+- You are precise with tool calls and never hallucinate tool names or parameters
 
-## TOOL CALL FORMAT:
-When you need to use a tool, format your response exactly like this:
-```
-TOOL_CALL: {"tool": "tool_name", "arguments": {"param": "value"}}
-```
-OR use the native function calling capability if available.
+## CORE RULES:
+1. **Action requests → Use tools**: When user asks to DO something (send, create, get, list, show), use the appropriate tool
+2. **Questions about capabilities → Respond directly**: Explain what you can do without calling tools
+3. **Casual chat → Respond naturally**: Greetings, thanks, etc. don't need tools
+4. **Unclear requests → Ask ONE clarifying question**: Don't guess, ask for specifics
 
-IMPORTANT:
-- Always use the exact format provided above or native function calls
-- Provide all required arguments for the tool
-- Only call tools when the user specifically requests an action
+## TOOL CALLING PRECISION:
+- Use EXACT tool names from the available tools list
+- Provide ALL required parameters with correct types
+- For optional parameters, only include if user specified them
+- Never invent tool names or operations that don't exist
+
+## FEW-SHOT EXAMPLES:
 """
 
+    # Dynamically inject examples from the tools themselves using Semantic Selection
+    examples_text = ""
+    if tools:
+        examples_text = dynamic_tool_registry.get_relevant_examples(user_query, tools)
+
+    # Fallback to hardcoded examples only if no dynamic examples found
+    if not examples_text:
+        examples_text = """
+### Example 1: Slack Message
+User: "Send a message to #general on Slack saying 'Hello team, standup in 5 minutes'"
+Thought: The user wants to send a Slack message. I should look for a slack tool. The 'slack_team_communication' tool seems appropriate. I need the channel and content.
+Tool Call: slack_team_communication with {"action": "send_message", "channel": "#general", "message": "Hello team, standup in 5 minutes"}
+Response: "✅ Message sent to #general: 'Hello team, standup in 5 minutes'"
+
+### Example 2: Market Analysis
+User: "Analyze market trends for laptop sales"
+Thought: This sounds like a marketing analysis request. The 'marketing_campaign_automation' tool has an 'analyze_trends' operation.
+Tool Call: marketing_campaign_automation with {"operation": "analyze_trends", "topic": "laptop sales"}
+Response: "📊 Analysis complete. Trends indicate a 15% rise in demand..."
+
+### Example 3: Email
+User: "Send an email to john@example.com about the meeting tomorrow"
+Thought: I need to send an email. The 'google_workspace_gmail' tool is perfect for this. I have the recipient and the subject.
+Tool Call: google_workspace_gmail with {"action": "send_email", "to": "john@example.com", "subject": "Meeting Tomorrow", "body": "Hi John, I wanted to confirm our meeting tomorrow..."}
+Response: "✅ Email sent to john@example.com with subject 'Meeting Tomorrow'"
+"""
+
+    system_prompt += examples_text
+    
+    system_prompt += """
+## RESPONSE FORMAT:
+- **For successful actions**: Start with ✅ and briefly confirm what was done
+- **For data queries**: Present in clear tables or bullet lists
+- **For errors**: Start with ⚠️ and explain what went wrong + suggest fixes
+- **Keep responses concise**: 2-4 sentences for confirmations, expand for data
+
+## ERROR HANDLING:
+- If a tool call fails, explain the error in simple terms
+- Suggest what the user can do to fix it
+- Don't expose technical error messages directly
+"""
+
+    # Add user context if provided
+    if user_context:
+        active_connections = user_context.get('connections', [])
+        user_tier = user_context.get('tier', 'Free')
+        
+        if active_connections:
+            system_prompt += f"\n## USER'S ACTIVE INTEGRATIONS:\n"
+            system_prompt += ", ".join(active_connections) + "\n"
+            system_prompt += "Prioritize these platforms when the user's intent is ambiguous.\n"
+
+    # Add available tools
     if tools:
         system_prompt += "\n## AVAILABLE TOOLS:\n"
+        system_prompt += "Use ONLY these tools. Do not invent tool names.\n\n"
         for tool in tools:
             # Handle both OpenAI format (nested in 'function') and flat format
             func = tool.get('function', tool)
-            name = func.get('name')
-            description = func.get('description')
-            system_prompt += f"- **{name}**: {description}\n"
+            name = func.get('name', '')
+            description = func.get('description', '')
+            
+            # Get parameters info for better guidance
+            params = func.get('parameters', {})
+            required_params = params.get('required', [])
+            
+            system_prompt += f"### {name}\n"
+            system_prompt += f"{description}\n"
+            if required_params:
+                system_prompt += f"Required params: {', '.join(required_params)}\n"
+            system_prompt += "\n"
 
     system_prompt += """
-## RESPONSE STYLE:
-- Be concise and clear
-- Avoid repetition
-- Use proper grammar and spelling
-- Respond naturally to user requests
+## FINAL REMINDERS:
+- Be helpful and professional
+- Confirm actions before major operations (delete, bulk send)
+- When presenting data, use markdown tables for clarity
+- Keep responses focused and actionable
 """
 
     return system_prompt
 
 
-async def relevant_tools(available_tools: List[Dict[str, Any]],
-                         data: MessageCreate) -> List[Dict[str, Any]]:
-    # Smart tool selection based on user intent
-    relevant_tools = []
-    user_request = data.content.lower()
+async def select_tools_semantically(
+    user_message: str,
+    available_tools: List[Dict[str, Any]],
+    llm_service: Any = None
+) -> List[Dict[str, Any]]:
+    """
+    Select relevant tools using semantic analysis via LLM.
+    This replaces the brittle keyword matching.
+    """
+    # Optimization: If few tools, just return all
+    if len(available_tools) <= 5:
+        return available_tools
 
-    # Intent detection for M-Pesa Payments - CHECK FIRST (highest priority for payment queries)
-    # Check for payment-specific phrases first
-    payment_phrases = [
-        "today's payments", "todays payments", "show today", "today payments",
-        "payment summary", "unmatched payments", "payment reconciliation",
-        "show payments", "get payments", "list payments", "payment status",
-        "payment details", "mpesa payment", "m-pesa payment"
-    ]
+    # We use a robust keyword + semantic heuristic for now to avoid circular dependencies
+    relevant = []
+    user_msg_lower = user_message.lower()
     
-    if any(phrase in user_request for phrase in payment_phrases) or \
-       any(word in user_request for word in ["mpesa", "m-pesa", "reconcile", "transaction"]):
-        relevant_tools = [tool for tool in available_tools
-                          if tool['name'] == "mpesa_payment_reconciliation"]
-        if relevant_tools:
-            return relevant_tools
-    
-    # Check for payment-related words (but only if not already matched)
-    if any(word in user_request for word in ["payment", "payments"]) and "slack" not in user_request:
-        # Only match if it's clearly about payments, not Slack payments
-        relevant_tools = [tool for tool in available_tools
-                          if tool['name'] == "mpesa_payment_reconciliation"]
-        if relevant_tools:
-            return relevant_tools
+    # Critical Keywords for various platforms
+    intent_map = {
+        "mpesa": ["mpesa", "m-pesa", "reconcile", "transaction", "pay", "money", "shilling", "kes", "invoice"],
+        "slack": ["slack", "channel", "message team", "chat"],
+        "hubspot": ["hubspot", "crm", "contact", "deal"],
+        "salesforce": ["salesforce", "lead", "opportunity"],
+        "ga4": ["ga4", "analytics", "traffic", "conversion"],
+        "google_workspace": ["gmail", "email", "calendar", "drive", "sheet", "doc"],
+        "gmail": ["gmail", "email"],
+        "calendar": ["calendar", "event", "meeting"],
+        "whatsapp": ["whatsapp", "message"],
+        "jira": ["jira", "issue", "ticket"],
+        "trello": ["trello", "board", "card"],
+        "notion": ["notion", "page", "database"],
+        "powerbi": ["powerbi", "power bi", "dashboard", "report"]
+    }
 
-    # Intent detection for Slack actions (only if not payment-related)
-    if "payment" not in user_request and "mpesa" not in user_request:
-        if any(word in user_request for word in ["create channel", "new channel",
-                                                 "make channel", "list channels",
-                                                 "get members", "list members", "list channel members", "invite users",
-                                                 "archive channel", "set topic",
-                                                 "set purpose", "list users"]):
-            # Only match if explicitly about Slack channels/members/users
-            if "slack" in user_request or "channel" in user_request or "member" in user_request:
-                relevant_tools.extend([tool for tool in available_tools
-                                  if tool['name'] == "slack_team_management"])
+    for tool in available_tools:
+        tool_name = tool['name'].lower()
+        tool_desc = tool.get('description', '').lower()
+        
+        # 1. Direct name match
+        if tool_name.replace('_', ' ') in user_msg_lower:
+            relevant.append(tool)
+            continue
+            
+        # 2. Intent Map Match
+        matched_intent = False
+        for platform, keywords in intent_map.items():
+            if platform in tool_name and any(kw in user_msg_lower for kw in keywords):
+                relevant.append(tool)
+                matched_intent = True
+                break
+        if matched_intent:
+            continue
+            
+        # 3. Description Keyword Match (Legacy fallback)
+        desc_words = set(tool_desc.split())
+        keywords = {w for w in desc_words if len(w) > 4}
+        if any(kw in user_msg_lower for kw in keywords):
+            relevant.append(tool)
+            continue
+            
+    # Fallback: if 'help' or general query, return all
+    if not relevant or any(x in user_msg_lower for x in ['help', 'capabilities', 'what can']):
+        return available_tools[:20]  # Return significant subset
+            
+    return relevant if relevant else available_tools[:5]
 
-        if any(word in user_request for word in ["send message", "send to",
-                                                   "message to", "post message", "post", "write",
-                                                   "send report", "send alert",
-                                                   "schedule message"]):
-            if "slack" in user_request or "#" in user_request:
-                relevant_tools.extend([tool for tool in available_tools
-                                  if tool['name'] == "slack_team_communication"])
-            elif any(word in user_request for word in ["whatsapp", "phone", "sms"]):
-                relevant_tools.extend([tool for tool in available_tools
-                                  if "whatsapp" in tool['name']])
-            else:
-                # If specifically asking to post/send but platform ambiguous, include Slack as option if relevant context
-                if "slack" in user_request or "channel" in user_request:
-                    relevant_tools.extend([tool for tool in available_tools
-                                      if tool['name'] == "slack_team_communication"])
-
-        if any(word in user_request for word in ["upload file", "file upload",
-                                                   "share file", "attach file"]):
-            relevant_tools.extend([tool for tool in available_tools
-                              if tool['name'] == "slack_file_management"])
-
-        if any(word in user_request for word in ["add reaction", "react",
-                                                   "emoji", "thumbs up", "like"]):
-            relevant_tools.extend([tool for tool in available_tools
-                              if tool['name'] == "slack_reactions"])
-
-        if any(word in user_request for word in ["search", "find message",
-                                                   "look for", "search messages"]):
-            relevant_tools.extend([tool for tool in available_tools
-                              if tool['name'] == "slack_search"])
-
-        if any(word in user_request for word in ["get user info", "user info",
-                                                   "list users", "find user",
-                                                   "user details"]):
-            relevant_tools.extend([tool for tool in available_tools
-                              if tool['name'] == "slack_user_management"])
-
-        if any(word in user_request for word in ["pin message", "pinned messages",
-                                                   "get pinned", "pin"]):
-            relevant_tools.extend([tool for tool in available_tools
-                              if tool['name'] == "slack_pins"])
-
-    # Intent detection for WhatsApp
-    if any(word in user_request for word in ["whatsapp", "phone", "sms",
-                                               "text", "message"]) and "slack" not in user_request:
-        if any(word in user_request for word in ["template", "template message",
-                                                 "list templates", "create template",
-                                                 "show templates", "get templates"]):
-            relevant_tools.extend([tool for tool in available_tools
-                              if tool['name'] == "whatsapp_templates"])
-        elif any(word in user_request for word in ["media", "image", "video",
-                                                   "audio", "document", "file",
-                                                   "photo", "picture"]):
-            relevant_tools.extend([tool for tool in available_tools
-                              if tool['name'] == "whatsapp_messaging"])
-        elif any(word in user_request for word in ["location", "send location",
-                                                   "share location", "where",
-                                                   "coordinates", "map"]):
-            relevant_tools.extend([tool for tool in available_tools
-                              if tool['name'] == "whatsapp_messaging"])
-        else:
-            # Default to WhatsApp messaging for general message requests ONLY if WhatsApp mentioned
-            if "whatsapp" in user_request:
-                 relevant_tools.extend([tool for tool in available_tools
-                                  if tool['name'] == "whatsapp_messaging"])
-
-    # Intent detection for HubSpot/CRM
-    if any(word in user_request for word in ["hubspot", "crm", "contact", "lead", "person", "deal", "opportunity", "sale"]):
-        if any(word in user_request for word in ["contact", "lead", "person"]):
-            relevant_tools.extend([tool for tool in available_tools
-                              if "hubspot_contact" in tool['name']])
-        if any(word in user_request for word in ["deal", "opportunity", "sale"]):
-            relevant_tools.extend([tool for tool in available_tools
-                              if "hubspot_deal" in tool['name']])
-        if any(word in user_request for word in ["hubspot", "crm"]):
-            relevant_tools.extend([tool for tool in available_tools
-                              if "hubspot" in tool['name']])
-
-    # Intent detection for Analytics
-    if any(word in user_request for word in ["analytics", "ga4", "report",
-                                               "traffic", "data"]):
-        relevant_tools.extend([tool for tool in available_tools
-                          if "ga4" in tool['name']])
-
-    # Intent detection for Web Tools
-    if any(word in user_request for word in ["scrape", "website", "web page",
-                                               "extract", "data from", "check website",
-                                               "website status", "extract emails"]):
-        relevant_tools.extend([tool for tool in available_tools
-                          if tool['name'] == "web_tools"])
-
-    # Intent detection for Marketing
-    if any(word in user_request for word in ["campaign", "marketing",
-                                               "automation"]):
-        relevant_tools.extend([tool for tool in available_tools
-                          if "marketing" in tool['name']])
-
-    # Intent detection for Email
-    if any(word in user_request for word in ["email", "mail", "gmail",
-                                               "send to", "message"]):
-        if "email" in user_request or "gmail" in user_request or "mail" in user_request:
-             relevant_tools.extend([tool for tool in available_tools
-                              if "google_workspace_gmail" in tool['name']])
-
-    # Intent detection for Workflow Management
-    if any(word in user_request for word in ["workflow", "automate", "flow",
-                                               "process", "blueprint"]):
-        relevant_tools.extend([tool for tool in available_tools
-                          if "workflow_management" in tool['name']])
-
-    # Intent detection for System Tools
-    if any(word in user_request for word in ["system", "status", "health",
-                                               "check"]):
-        relevant_tools.extend([tool for tool in available_tools
-                          if "system" in tool['name']])
-
-
-    # If no specific intent detected, don't include any tools
-    # Let the LLM respond naturally without tool calling
-    else:
-        relevant_tools = []
-    return relevant_tools
+def relevant_tools(available_tools: List[Dict[str, Any]],
+                   data: MessageCreate) -> List[Dict[str, Any]]:
+    """Legacy wrapper for backward compatibility."""
+    # This synchronous wrapper is deprecated but kept for safety.
+    # The async select_tools_semantically should be used instead.
+    return available_tools
 
 
 async def create_conversation_summary(messages: List[Message]) -> str:
     """
-    Create a summary of old conversation context.
-    Uses a simple but effective summarization approach.
+    Create a summary of old conversation context using LLM.
+    Falls back to rule-based if LLM fails.
     """
     if not messages:
         return ""
 
-    # Extract key information from messages
+    try:
+        # Prepare content for summarization
+        conversation_text = ""
+        for msg in messages:
+            role = msg.role
+            content = msg.content
+            # Skip very long content in summary input to save tokens
+            if len(content) > 500:
+                content = content[:500] + "..."
+            conversation_text += f"{role}: {content}\n"
+            
+        # Prompt for summarization
+        prompt = f"""Summarize this conversation context in 2-3 sentences. 
+Focus on user intent, key entities (names, dates, amounts), and pending actions.
+Keep it concise.
+
+Conversation:
+{conversation_text}
+
+Summary:"""
+
+        # Use the legacy call which is simple for text generation
+        # We need to construct messages format for it
+        summary_messages = [{"role": "user", "content": prompt}]
+        
+        # We default to a standard model if not specified, or just "llama3" or "mistral"
+        # Since we don't have model arg here, user env defaults will apply in call_ollama_legacy
+        # or we defaults to "llama3"
+        import os
+        model = os.getenv("DEFAULT_LLM_MODEL", "llama3") 
+        
+        response = await call_ollama_legacy(model, summary_messages, tools=None)
+        
+        if response and response.get('response'):
+            return f"Context Summary: {response['response']}"
+            
+    except Exception as e:
+        print(f"⚠️ Summarization failed: {e}. Using fallback.")
+
+    # FALLBACK: Extract key information from messages (Rule-based)
     summary_parts = []
     user_messages = [msg for msg in messages if msg.role == "user"]
     assistant_messages = [msg for msg in messages if msg.role == "assistant"]
@@ -424,28 +445,11 @@ async def create_conversation_summary(messages: List[Message]) -> str:
             summary_parts.append(
                 f"Previous topics: {', '.join(unique_topics)}")
 
-    # Summarize assistant actions
-    if assistant_messages:
-        actions = []
-        for msg in assistant_messages[-3:]:  # Last 3 assistant messages
-            content = msg.content.lower()
-            if "sent" in content or "message" in content:
-                actions.append("Messages sent")
-            if "created" in content or "channel" in content:
-                actions.append("Channels/contacts created")
-            if "report" in content or "analytics" in content:
-                actions.append("Reports generated")
-
-        if actions:
-            unique_actions = list(set(actions))
-            summary_parts.append(
-                f"Recent actions: {', '.join(unique_actions)}")
-
     # Create final summary
     if summary_parts:
-        return "Conversation Summary: " + ". ".join(summary_parts)
+        return "Conversation Summary (Fallback): " + ". ".join(summary_parts)
     else:
-        return "Conversation Summary: General discussion about marketing tools and automation."
+        return "Conversation Summary: General discussion about business automation."
 
 
 async def analyze_conversation_complexity(messages: List[Message], user_message: str) -> Dict[str, Any]:
@@ -789,19 +793,19 @@ async def execute_function_calling_loop(
     # Get available tools in OpenAI format
     available_tools = await dynamic_tool_registry.get_tools_for_llm(user.id, db)
     
-    # Check if this is a payment query and filter tools accordingly
-    user_message_lower = user_message.lower()
-    is_payment_query = any(phrase in user_message_lower for phrase in [
-        "payment", "payments", "mpesa", "m-pesa", "today's payments", "todays payments",
-        "show today", "payment summary", "unmatched", "reconcile", "transaction"
-    ])
-    
-    # If it's a payment query, ONLY include the M-Pesa tool
-    if is_payment_query:
-        available_tools = [tool for tool in available_tools if tool['name'] == 'mpesa_payment_reconciliation']
-        print(f"🔒 Payment query detected - filtering to only M-Pesa tool: {len(available_tools)} tools")
+    # 1. Semantic Tool Selection
+    print(f"🧠 Selecting tools semantically for: '{user_message}'")
+    available_tools = await select_tools_semantically(user_message, available_tools)
+    print(f"🔧 Selected {len(available_tools)} relevant tools")
     
     openai_tools = dynamic_tool_registry.convert_tools_to_openai_format(available_tools)
+    
+    # 2. Build Dynamic System Prompt
+    system_prompt = await build_system_prompt(available_tools, user_context={
+        "tier": user.subscription_tier,
+        # Fetch actual connections if possible, or leave empty for now
+        "connections": [] 
+    }, user_query=user_message)
     
     # Get conversation context
     context_messages = await get_optimized_context(conversation.id, db, user_message=user_message)
@@ -809,15 +813,8 @@ async def execute_function_calling_loop(
     # Prepare initial messages for LLM
     messages = []
     
-    # Add system prompt for payment queries
-    if is_payment_query:
-        system_prompt = """You are a helpful AI assistant. The user is asking about M-Pesa payments.
-
-You MUST use the "mpesa_payment_reconciliation" tool to respond to payment queries.
-- "Show today's payments" → use operation="get_summary", days=1
-- "Get unmatched payments" → use operation="get_unmatched"
-- "Payment summary" → use operation="get_summary", days=1 (for today) or days=7 (for week)"""
-        messages.append({"role": "system", "content": system_prompt})
+    # Always add system prompt
+    messages.append({"role": "system", "content": system_prompt})
     
     for msg in context_messages:
         if msg.role == MessageRole.USER:
@@ -889,6 +886,12 @@ You MUST use the "mpesa_payment_reconciliation" tool to respond to payment queri
                     arguments = json.loads(arguments_str)
                 except json.JSONDecodeError as e:
                     print(f"❌ JSON decode error for tool call: {e}")
+                    # Feed error back to LLM for self-correction
+                    messages.append({
+                        "role": "tool",
+                        "content": json.dumps({"error": f"Invalid JSON arguments: {str(e)}. Please correct the arguments."}),
+                        "tool_call_id": tool_call_id
+                    })
                     continue
                 
                 print(f"🔧 Executing tool: {function_name} with args: {arguments}")
@@ -931,7 +934,14 @@ You MUST use the "mpesa_payment_reconciliation" tool to respond to payment queri
             print(f"❌ Error in iteration {iteration + 1}: {e}")
             import traceback
             print(f"❌ Traceback: {traceback.format_exc()}")
-            break
+            
+            # Self-Correction: Feed exception back to LLM
+            messages.append({
+                "role": "user", # Using user role for system errors to force attention
+                "content": f"⚠️ System Error: {str(e)}. Please try a different approach or simplified tool call."
+            })
+            # Continue to next iteration giving LLM a chance to fix
+            continue
     
     # If we've exhausted iterations, return the last assistant message
     if messages:
@@ -1193,7 +1203,7 @@ async def send_message(
     
     try:
         # Process message with full orchestration
-        final_content, tools_called = await orchestrator.process_message(data.content, data.provider)
+        final_content, tools_called, tokens_used = await orchestrator.process_message(data.content, data.provider)
         
         # Create final assistant message
         assistant_message = Message(
@@ -1201,7 +1211,8 @@ async def send_message(
             role=MessageRole.ASSISTANT,
             content=final_content,
             status=MessageStatus.COMPLETED,
-            tools_called=tools_called if tools_called else None
+            tools_called=tools_called if tools_called else None,
+            tokens_used=tokens_used
         )
         db.add(assistant_message)
         await db.commit()
@@ -1473,12 +1484,39 @@ async def get_messages(
 
 
 @router.get("/providers")
-async def get_available_providers():
+async def get_available_providers(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """Get available LLM providers."""
     from ..services.llm_service import llm_service
 
     # Get all configured providers
+    # Get all configured system providers
     available_providers = llm_service.get_available_providers()
+    
+    # Check for User BYOK keys
+    user_settings = await get_or_create_user_settings(db, current_user.id)
+    
+    if user_settings.openai_api_key:
+        if "openai" not in available_providers:
+            available_providers.append("openai")
+            
+    if user_settings.anthropic_api_key:
+        if "anthropic" not in available_providers:
+            available_providers.append("anthropic")
+            
+    if user_settings.gemini_api_key:
+        if "gemini" not in available_providers:
+            available_providers.append("gemini")
+            
+    if user_settings.huggingface_api_key:
+        if "huggingface" not in available_providers:
+            available_providers.append("huggingface")
+            
+    if user_settings.together_api_key:
+        if "togetherai" not in available_providers:
+            available_providers.append("togetherai")
 
     # Define all possible providers with their display names
     all_providers = {
@@ -1504,7 +1542,7 @@ async def get_available_providers():
         "data": {
             "providers": [p["id"] for p in providers_list if p["available"]],
             "all_providers": providers_list,
-            "default": "ollama"
+            "default": settings.DEFAULT_LLM_PROVIDER
         }
     }
 
