@@ -340,8 +340,9 @@ class AnthropicProvider(LLMProvider):
         max_tokens: Optional[int] = None
     ) -> LLMResponse:
         try:
+            model = getattr(settings, 'ANTHROPIC_MODEL', 'claude-3-5-sonnet-20240620')
             payload = {
-                "model": "claude-3-sonnet-20240229",
+                "model": model,
                 "messages": messages,
                 "temperature": temperature,
                 "max_tokens": max_tokens or 1024

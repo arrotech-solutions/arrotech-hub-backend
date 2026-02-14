@@ -35,6 +35,15 @@ class WorkflowSchedulerService:
             id='workflow_sync_job',
             replace_existing=True
         )
+
+        # Add TikTok Schedule Checker (Every 60s)
+        self.scheduler.add_job(
+            self.check_tiktok_schedules,
+            'interval',
+            seconds=60,
+            id='tiktok_schedule_job',
+            replace_existing=True
+        )
         
         self.scheduler.start()
         logger.info("Workflow Scheduler Service started. Syncing initial workflows...")
@@ -142,3 +151,57 @@ class WorkflowSchedulerService:
                 
             except Exception as e:
                 logger.error(f"❌ Failed to execute scheduled workflow {workflow_id}: {e}")
+
+    async def check_tiktok_schedules(self):
+        """
+        Check for scheduled TikTok posts that are due and publish them.
+        """
+        logger.info("Checking for due TikTok posts...")
+        session_maker = get_session_maker()
+        async with session_maker() as db:
+            try:
+                from ..models import TikTokVideo
+                
+                # Find due posts
+                now = datetime.utcnow()
+                stmt = select(TikTokVideo).where(
+                    TikTokVideo.status == "scheduled",
+                    TikTokVideo.scheduled_for <= now
+                )
+                result = await db.execute(stmt)
+                due_posts = result.scalars().all()
+                
+                if not due_posts:
+                    # DEBUG: Check what the next scheduled post is to verify TZ issues
+                    stmt_future = select(TikTokVideo).where(
+                         TikTokVideo.status == "scheduled"
+                    ).order_by(TikTokVideo.scheduled_for.asc()).limit(1)
+                    res_future = await db.execute(stmt_future)
+                    next_post = res_future.scalar_one_or_none()
+                    if next_post:
+                       logger.info(f"DEBUG SCHEDULER: No due posts. Next post is: {next_post.scheduled_for} vs Now(UTC): {now}")
+                    return
+
+                logger.info(f"Found {len(due_posts)} due TikTok posts to publish.")
+                
+                from ..services.tiktok_service import TikTokService
+                tiktok_service = TikTokService(db)
+
+                for post in due_posts:
+                    success = await tiktok_service.publish_video(post)
+                    
+                    if success:
+                        logger.info(f"✅ Published post {post.id}")
+                        post.status = "published"
+                        post.published_at = now
+                        # post.tiktok_video_id set by service
+                    else:
+                        logger.error(f"❌ Failed to publish post {post.id}")
+                        post.status = "failed"
+                    
+                await db.commit()
+                await tiktok_service.close()
+                logger.info(f"Processed {len(due_posts)} posts.")
+                
+            except Exception as e:
+                logger.error(f"Error checking TikTok schedules: {e}")

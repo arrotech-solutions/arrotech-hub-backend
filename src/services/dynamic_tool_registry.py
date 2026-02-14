@@ -877,6 +877,7 @@ class DynamicToolRegistry:
                         "name": {"type": "string", "description": "Name of the task"},
                         "notes": {"type": "string", "description": "Task description"},
                         "project_id": {"type": "string", "description": "Project ID to add task to"},
+                        "projects": {"type": "array", "items": {"type": "string"}, "description": "List of project IDs to add task to"},
                         "assignee": {"type": "string", "description": "User ID to assign task to"},
                         "due_date": {"type": "string", "description": "Due date (YYYY-MM-DD format)"}
                     },
@@ -895,7 +896,8 @@ class DynamicToolRegistry:
                     "properties": {
                         "project_id": {"type": "string", "description": "Project ID to list tasks from"},
                         "assignee": {"type": "string", "description": "User ID to filter tasks by assignee"},
-                        "limit": {"type": "integer", "description": "Number of tasks to retrieve", "default": 50}
+                        "limit": {"type": "integer", "description": "Number of tasks to retrieve", "default": 50},
+                        "opt_fields": {"type": "array", "items": {"type": "string"}, "description": "List of fields to include in the response"}
                     },
                     "required": []
                 },
@@ -946,7 +948,24 @@ class DynamicToolRegistry:
                 "connection_id": connection.id,
                 "platform": "asana",
                 "status": "available",
+                "status": "available",
                 "id": "asana_get_workspaces"
+            },
+            {
+                "name": "asana_get_users",
+                "description": "Get all users in the workspace or team",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": {"type": "string", "description": "Workspace ID to get users from"},
+                        "team_id": {"type": "string", "description": "Team ID to filter users"}
+                    },
+                    "required": []
+                },
+                "connection_id": connection.id,
+                "platform": "asana",
+                "status": "available",
+                "id": "asana_get_users"
             }
         ]
     
@@ -1291,13 +1310,75 @@ class DynamicToolRegistry:
         
         return tools
     
+    
+    def _find_internal_tool(self, tool_name: str) -> Optional[Dict[str, Any]]:
+        """Try to find a tool definition in the internal tool generation methods."""
+        # Map of platform keys to their generation methods
+        # This matches the logic in get_user_tools
+        platform_methods = {
+            "slack": self._get_slack_tools,
+            "hubspot": self._get_hubspot_tools,
+            "salesforce": self._get_salesforce_tools,
+            "ga4": self._get_ga4_tools,
+            "asana": self._get_asana_tools,
+            "powerbi": self._get_powerbi_tools,
+            "outlook": self._get_outlook_tools,
+            "notion": self._get_notion_tools,
+            "trello": self._get_trello_tools,
+            "jira": self._get_jira_tools
+        }
+
+        # Check if tool name starts with any known platform prefix to optimize
+        # This is a heuristic, but most internal tools follow {platform}_{action}
+        target_platform = None
+        for platform in platform_methods.keys():
+            if tool_name.startswith(f"{platform}_"):
+                target_platform = platform
+                break
+        
+        # If we identified a potential platform, check it first
+        platforms_to_check = [target_platform] if target_platform else platform_methods.keys()
+
+        # Create a dummy connection for schema generation
+        # We only need the ID to be present, the actual ID doesn't matter for validation
+        dummy_connection = Connection(
+            id="dummy_validation_id",
+            platform="dummy",
+            config={},
+            status=ConnectionStatus.ACTIVE
+        )
+
+        for platform in platforms_to_check:
+            if not platform: continue
+            
+            generator = platform_methods.get(platform)
+            if generator:
+                try:
+                    dummy_connection.platform = platform
+                    tools = generator(dummy_connection)
+                    for tool in tools:
+                        if tool["name"] == tool_name:
+                            return tool
+                except Exception as e:
+                    logger.warning(f"Error checking internal tools for platform {platform}: {e}")
+                    continue
+        
+        return None
+
     def get_tool(self, tool_name: str) -> Optional[Dict[str, Any]]:
         """Get a specific tool by name."""
         # Check base tools first
         if tool_name in self.base_tools:
             return self.base_tools[tool_name]
         
-        # Check platform tools
+        # Check internal dynamic tools (Slack, Asana, etc.)
+        # This fixes the issue where fine-grained tools used by frontend (e.g. asana_list_tasks)
+        # weren't found because PlatformRegistry uses coarse-grained tools (e.g. asana_task_management)
+        internal_tool = self._find_internal_tool(tool_name)
+        if internal_tool:
+            return internal_tool
+
+        # Check generic platform tools from registry
         for platform_id in platform_registry.platforms:
             platform_tools = platform_registry.get_platform_tools(platform_id)
             for tool in platform_tools:

@@ -21,7 +21,8 @@ from .routers import (access_router, agent_router, analytics_router, api_router,
                       connection_router, creator_router, favorites_router, google_workspace_router, marketplace_router, 
                       mcp_router, mpesa_agent_router, notification_router, payment_router, preferences_router,
                       settings_router, slack_agent_router, slack_routes, subscription_router, templates_router, whatsapp_routes, workflow_router, facebook_routes, instagram_routes, twitter_routes, clickup_routes, teams_router, zoom_router,
-                      outlook_router, notion_router, trello_router, jira_router)
+                      outlook_router, notion_router, trello_router, jira_router, whatsapp_webhook, whatsapp_contacts, whatsapp_broadcast, tiktok_routes, ai_router, support_router, kra_router, productivity_router, asana_router,
+                      blog_router, employee_router)
 from .services import (BillingService, ContentCreationService,
                        FileManagementService, HubSpotService,
                        RateLimitService, SlackService, SocialMediaService,
@@ -133,6 +134,9 @@ app.include_router(subscription_router.router)
 app.include_router(google_workspace_router)  # Already has /api/google-workspace prefix
 app.include_router(slack_routes) # Already has /api/slack prefix
 app.include_router(whatsapp_routes)
+app.include_router(whatsapp_webhook.router)  # WhatsApp incoming messages webhook
+app.include_router(whatsapp_contacts.router)  # WhatsApp contacts, messages, auto-reply API
+app.include_router(whatsapp_broadcast.router)  # WhatsApp broadcast campaigns
 app.include_router(facebook_routes)
 app.include_router(instagram_routes)
 app.include_router(twitter_routes)
@@ -143,6 +147,15 @@ app.include_router(outlook_router)
 app.include_router(notion_router)
 app.include_router(trello_router)
 app.include_router(jira_router)
+app.include_router(jira_router)
+app.include_router(tiktok_routes.router)
+app.include_router(ai_router.router)
+app.include_router(support_router.router)  # Help & Support ticket endpoint
+app.include_router(kra_router.router)
+app.include_router(productivity_router.router)  # Phase 5: Productivity analytics
+app.include_router(asana_router.router)
+app.include_router(blog_router)  # Blog service - public + admin endpoints
+app.include_router(employee_router)  # Employee management + admin subscribers
 
 
 

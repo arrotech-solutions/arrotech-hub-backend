@@ -48,6 +48,10 @@ class PaymentVerificationRequest(BaseModel):
     checkout_request_id: str
 
 
+class PaystackVerificationRequest(BaseModel):
+    reference: str
+
+
 @router.post("/mpesa/initiate")
 async def initiate_mpesa_payment(
     request: MpesaPaymentRequest,
@@ -113,6 +117,118 @@ async def verify_mpesa_payment(
                 "error": result["error"]
             }
 
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Payment verification failed: {str(e)}"
+        )
+
+
+
+@router.get("/paystack/config")
+async def get_paystack_config(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get Paystack public key."""
+    if not payment_service.paystack_public_key:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Paystack configuration error"
+        )
+    
+    return {
+        "success": True,
+        "data": {
+            "key": payment_service.paystack_public_key
+        }
+    }
+
+
+@router.post("/paystack/webhook")
+async def paystack_webhook(
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Handle Paystack webhook events.
+    Verifies signature and dispatches to service.
+    """
+    try:
+        # Get signature and payload
+        signature = request.headers.get("x-paystack-signature")
+        payload = await request.body()
+        
+        if not signature:
+            logger.warning("Paystack webhook missing signature")
+            # Paystack expects 200 even if ignored, but we 400 for security
+            raise HTTPException(status_code=400, detail="Missing signature")
+            
+        # Verify signature via service
+        if not payment_service.validate_paystack_signature(payload, signature):
+            logger.warning("Invalid Paystack webhook signature")
+            raise HTTPException(status_code=400, detail="Invalid signature")
+            
+        event = json.loads(payload)
+        
+        # Process event
+        await payment_service.process_paystack_webhook(event, db)
+        
+        return status.HTTP_200_OK
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing Paystack webhook: {str(e)}")
+        # Return 200 to acknowledge receipt to Paystack even if interna error, 
+        # to prevent retries of bad events. But mostly 500 is better for debugging.
+        # Paystack retries 500s.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail="Webhook processing failed"
+        )
+
+
+@router.post("/approve-transfer")
+async def approve_transfer_webhook(
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Alias for /paystack/webhook to satisfy specific user requirement.
+    https://yourserver.com/approve-transfer
+    """
+    return await paystack_webhook(request, db)
+
+
+@router.post("/paystack/verify")
+async def verify_paystack_payment(
+    request: PaystackVerificationRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Verify Paystack payment status and update subscription."""
+    try:
+        # Pass user_id and db to service to handle persistence
+        result = await payment_service.verify_paystack_payment(
+            reference=request.reference,
+            db=db,
+            user_id=current_user.id
+        )
+
+        if result["success"]:
+            return {
+                "success": True,
+                "data": result
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result.get("error", "Verification failed")
+            )
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -42,6 +42,73 @@ class AsanaService:
         self._initialized = True
         logger.info("Asana service initialized")
 
+    def get_auth_url(self, user_id: str) -> str:
+        """Get Asana OAuth authorization URL."""
+        client_id = settings.ASANA_CLIENT_ID
+        # Redirect to Frontend to handle the code exchange
+        redirect_uri = f"{settings.FRONTEND_URL}/connections"
+        # Embed user_id in state to link connection to correct user
+        state = f"asana_connection::{user_id}"
+        return (
+            f"https://app.asana.com/-/oauth_authorize?"
+            f"client_id={client_id}&"
+            f"redirect_uri={redirect_uri}&"
+            f"response_type=code&"
+            f"state={state}&"
+            f"scope=default&"
+            f"display_ui=always" # Force login/consent screen (Asana specific)
+        )
+
+    async def get_token_from_code(self, code: str) -> Dict[str, Any]:
+        """Exchange authorization code for access token."""
+        client_id = settings.ASANA_CLIENT_ID
+        client_secret = settings.ASANA_CLIENT_SECRET
+        # Must match the redirect_uri used in get_auth_url
+        redirect_uri = f"{settings.FRONTEND_URL}/connections"
+        
+        url = "https://app.asana.com/-/oauth_token"
+        data = {
+            "grant_type": "authorization_code",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+            "code": code
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, data=data) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    error_text = await response.text()
+                    logger.error(f"Failed to get Asana token: {error_text}")
+                    return None
+
+    async def refresh_access_token(self, refresh_token: str) -> Dict[str, Any]:
+        """Refresh Asana access token using refresh token."""
+        client_id = settings.ASANA_CLIENT_ID
+        client_secret = settings.ASANA_CLIENT_SECRET
+        # Must match the redirect_uri used in initial auth? (Usually not strictly required for refresh but good practice)
+        redirect_uri = f"{settings.FRONTEND_URL}/connections"
+        
+        url = "https://app.asana.com/-/oauth_token"
+        data = {
+            "grant_type": "refresh_token",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+            "refresh_token": refresh_token
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, data=data) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    error_text = await response.text()
+                    logger.error(f"Failed to refresh Asana token: {error_text}")
+                    return {"error": error_text, "success": False}
+
     async def _make_request(
         self, 
         method: str, 
@@ -92,7 +159,11 @@ class AsanaService:
             if response.status < 400:
                 return {"success": True, "data": response_data}
             else:
-                error_msg = response_data.get("errors", [{}])[0].get("message", f"HTTP {response.status}")
+                errors = response_data.get("errors", [])
+                if isinstance(errors, list) and len(errors) > 0:
+                    error_msg = errors[0].get("message", f"HTTP {response.status}")
+                else:
+                    error_msg = f"HTTP {response.status}: {response_data}"
                 return {"success": False, "error": error_msg}
 
         except Exception as e:

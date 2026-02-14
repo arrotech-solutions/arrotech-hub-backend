@@ -16,11 +16,19 @@ from .database import Base
 
 
 class SubscriptionTier(str, Enum):
-    """Subscription tiers."""
-    FREE = "free"
-    LITE = "lite"  # NEW: Biashara Lite - KES 200/month
-    PRO = "pro"  # Renamed from STARTER - KES 2,500/month
-    ENTERPRISE = "enterprise"  # NEW: Enterprise - KES 10,000/month
+    """Subscription tiers - Kenya-first Arrotech Hub pricing."""
+    FREE = "free"           # KES 0 - Unified Visibility
+    STARTER = "starter"     # KES 1,500 - Unified Action
+    BUSINESS = "business"   # KES 5,000 - Unified Operations
+    PRO = "pro"             # KES 10,000 - Unified Command Center (Agency)
+    ENTERPRISE = "enterprise"  # Custom pricing
+
+
+class UserRole(str, Enum):
+    """User roles for access control."""
+    USER = "user"
+    EMPLOYEE = "employee"
+    ADMIN = "admin"
 
 
 class ConnectionStatus(str, Enum):
@@ -123,6 +131,29 @@ class SubscriptionStatus(str, Enum):
     GRACE_PERIOD = "grace_period"
 
 
+class WhatsAppMessageDirection(str, Enum):
+    """WhatsApp message direction."""
+    INCOMING = "incoming"
+    OUTGOING = "outgoing"
+
+
+class WhatsAppMessageStatus(str, Enum):
+    """WhatsApp message delivery status."""
+    PENDING = "pending"
+    SENT = "sent"
+    DELIVERED = "delivered"
+    READ = "read"
+    FAILED = "failed"
+
+
+class WhatsAppAutoReplyTrigger(str, Enum):
+    """Auto-reply trigger types."""
+    FIRST_MESSAGE = "first_message"  # First time contact messages
+    KEYWORD = "keyword"  # Contains specific keywords
+    BUSINESS_HOURS = "business_hours"  # Outside business hours
+    ALL = "all"  # Respond to all messages (AI mode)
+
+
 class User(Base):
     """User model."""
     __tablename__ = "users"
@@ -136,6 +167,10 @@ class User(Base):
     subscription_status = Column(String, default=SubscriptionStatus.ACTIVE)
     subscription_end_date = Column(DateTime(timezone=True), nullable=True)
     stripe_customer_id = Column(String, nullable=True)
+    paystack_customer_code = Column(String, nullable=True)  # NEW: For Paystack
+    paystack_authorization_code = Column(String, nullable=True)  # NEW: For recurring charges
+    role = Column(String, nullable=True, default=UserRole.USER)  # user, employee, admin
+    permissions = Column(JSON, nullable=True)  # Employee permissions dict
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -150,6 +185,7 @@ class User(Base):
     workflow_downloads = relationship("WorkflowDownload", back_populates="user")
     workflow_reviews = relationship("WorkflowReview", back_populates="user")
     creator_profile = relationship("CreatorProfile", back_populates="user", uselist=False)
+    tiktok_profile = relationship("TikTokProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")
 
 
 class Conversation(Base):
@@ -438,6 +474,44 @@ class UsageLog(Base):
 
     # Relationships
     user = relationship("User", back_populates="usage_logs")
+
+
+class UsageRecord(Base):
+    """
+    Monthly usage records for AI actions and automation runs.
+    Tracks usage against plan limits for feature gating.
+    """
+    __tablename__ = "usage_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    
+    # Period tracking (monthly)
+    period_start = Column(DateTime(timezone=True), nullable=False, index=True)
+    period_end = Column(DateTime(timezone=True), nullable=False)
+    
+    # Usage counters
+    ai_actions_count = Column(Integer, default=0)
+    automation_runs_count = Column(Integer, default=0)
+    
+    # Limit tracking (snapshot of plan limits at period start)
+    ai_actions_limit = Column(Integer, nullable=False)
+    automation_runs_limit = Column(Integer, nullable=False)
+    
+    # Warning flags
+    ai_warning_sent = Column(Boolean, default=False)  # 80% threshold
+    automation_warning_sent = Column(Boolean, default=False)  # 80% threshold
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Unique constraint on user + period
+    __table_args__ = (
+        Index('ix_usage_records_user_period', 'user_id', 'period_start', unique=True),
+    )
+
+    # Relationships
+    user = relationship("User", backref="usage_records")
 
 
 class Payment(Base):
@@ -838,6 +912,286 @@ class AccessRequest(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 
+# ============================================================================
+# WhatsApp Integration Models - For viral auto-reply and chatbot features
+# ============================================================================
+
+class WhatsAppContact(Base):
+    """WhatsApp contact/customer model."""
+    __tablename__ = "whatsapp_contacts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    phone_number = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=True)  # User-assigned name
+    profile_name = Column(String, nullable=True)  # From WhatsApp profile
+    
+    # Contact metadata
+    tags = Column(JSON, nullable=True)  # ["vip", "new-customer", "lead"]
+    notes = Column(Text, nullable=True)
+    metadata_ = Column(JSON, nullable=True)  # Custom fields
+    
+    # Engagement tracking
+    first_message_at = Column(DateTime(timezone=True), nullable=True)
+    last_message_at = Column(DateTime(timezone=True), nullable=True)
+    message_count = Column(Integer, default=0)
+    is_blocked = Column(Boolean, default=False)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    user = relationship("User", backref="whatsapp_contacts")
+    messages = relationship("WhatsAppMessage", back_populates="contact", order_by="WhatsAppMessage.created_at.desc()")
+    
+    # Unique constraint: one phone per user
+    __table_args__ = (
+        UniqueConstraint("user_id", "phone_number", name="uix_user_phone"),
+        Index("ix_whatsapp_contacts_user_last_msg", "user_id", "last_message_at"),
+    )
+
+
+class WhatsAppMessage(Base):
+    """WhatsApp message model for conversation history."""
+    __tablename__ = "whatsapp_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    contact_id = Column(Integer, ForeignKey("whatsapp_contacts.id"), nullable=False, index=True)
+    
+    # Message details
+    direction = Column(String, nullable=False)  # incoming/outgoing
+    message_type = Column(String, default="text")  # text, image, video, document, location, template
+    content = Column(Text, nullable=True)  # Text content or caption
+    media_url = Column(String, nullable=True)  # URL for media messages
+    media_mime_type = Column(String, nullable=True)
+    
+    # WhatsApp IDs
+    whatsapp_message_id = Column(String, unique=True, index=True, nullable=True)
+    context_message_id = Column(String, nullable=True)  # Reply-to message ID
+    
+    # Delivery status
+    status = Column(String, default=WhatsAppMessageStatus.PENDING)
+    error_message = Column(Text, nullable=True)
+    
+    # Auto-reply tracking
+    is_auto_reply = Column(Boolean, default=False)
+    auto_reply_rule_id = Column(Integer, ForeignKey("whatsapp_auto_replies.id"), nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    delivered_at = Column(DateTime(timezone=True), nullable=True)
+    read_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # Relationships
+    user = relationship("User", backref="whatsapp_messages")
+    contact = relationship("WhatsAppContact", back_populates="messages")
+    auto_reply_rule = relationship("WhatsAppAutoReply", backref="triggered_messages")
+    
+    __table_args__ = (
+        Index("ix_whatsapp_messages_user_created", "user_id", "created_at"),
+    )
+
+
+class WhatsAppAutoReply(Base):
+    """Auto-reply rules for WhatsApp automation."""
+    __tablename__ = "whatsapp_auto_replies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    
+    # Rule identification
+    name = Column(String, nullable=False)  # "Welcome Message", "Price List", etc.
+    description = Column(Text, nullable=True)
+    
+    # Trigger configuration
+    trigger_type = Column(String, nullable=False)  # first_message, keyword, business_hours, all
+    trigger_value = Column(String, nullable=True)  # For keyword: "hi|hello|hey", for hours: JSON
+    
+    # Response configuration
+    response_type = Column(String, default="text")  # text, template, ai
+    response_content = Column(Text, nullable=True)  # The message or template name
+    response_template_params = Column(JSON, nullable=True)  # Template parameters
+    
+    # AI configuration (if response_type = "ai")
+    ai_context = Column(Text, nullable=True)  # Additional context for AI
+    ai_max_tokens = Column(Integer, default=150)
+    
+    # Rule settings
+    is_active = Column(Boolean, default=True)
+    priority = Column(Integer, default=0)  # Higher = checked first
+    
+    # Usage tracking
+    times_triggered = Column(Integer, default=0)
+    last_triggered_at = Column(DateTime(timezone=True), nullable=True)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    user = relationship("User", backref="whatsapp_auto_replies")
+    
+    __table_args__ = (
+        Index("ix_whatsapp_auto_replies_user_active", "user_id", "is_active"),
+    )
+
+
+class WhatsAppBusinessProfile(Base):
+    """Business profile for WhatsApp AI chatbot context."""
+    __tablename__ = "whatsapp_business_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+    
+    # Business info
+    business_name = Column(String, nullable=True)
+    description = Column(Text, nullable=True)
+    industry = Column(String, nullable=True)
+    
+    # Products/Services (for AI context)
+    products = Column(JSON, nullable=True)  # [{"name": "...", "price": 100, "description": "..."}]
+    services = Column(JSON, nullable=True)
+    
+    # FAQs for AI to reference
+    faqs = Column(JSON, nullable=True)  # [{"question": "...", "answer": "..."}]
+    
+    # Default messages
+    greeting_message = Column(Text, nullable=True)  # First contact message
+    away_message = Column(Text, nullable=True)  # Outside business hours
+    
+    # Business hours (JSON format)
+    # {"monday": {"open": "08:00", "close": "18:00"}, "tuesday": {...}, ...}
+    business_hours = Column(JSON, nullable=True)
+    timezone = Column(String, default="Africa/Nairobi")
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    user = relationship("User", backref="whatsapp_business_profile", uselist=False)
+
+
+class WhatsAppBroadcastStatus(str, Enum):
+    """Broadcast campaign status."""
+    DRAFT = "draft"
+    SCHEDULED = "scheduled"
+    SENDING = "sending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class WhatsAppTemplate(Base):
+    """Cached WhatsApp message templates from Meta."""
+    __tablename__ = "whatsapp_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    
+    # Template info from Meta
+    template_id = Column(String, nullable=False)  # Meta's template ID
+    name = Column(String, nullable=False)
+    language = Column(String, default="en")
+    category = Column(String, nullable=True)  # MARKETING, UTILITY, AUTHENTICATION
+    status = Column(String, nullable=True)  # APPROVED, PENDING, REJECTED
+    
+    # Template content
+    components = Column(JSON, nullable=True)  # Header, body, footer, buttons
+    
+    # Usage tracking
+    times_used = Column(Integer, default=0)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    synced_at = Column(DateTime(timezone=True), nullable=True)  # Last sync from Meta
+    
+    # Relationships
+    user = relationship("User", backref="whatsapp_templates")
+    
+    __table_args__ = (
+        UniqueConstraint("user_id", "template_id", name="uq_user_template"),
+        Index("ix_whatsapp_templates_user_name", "user_id", "name"),
+    )
+
+
+class WhatsAppBroadcast(Base):
+    """Bulk message broadcast campaigns."""
+    __tablename__ = "whatsapp_broadcasts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    
+    # Campaign info
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    
+    # Message content
+    message_type = Column(String, default="template")  # template, text
+    template_id = Column(Integer, ForeignKey("whatsapp_templates.id"), nullable=True)
+    template_variables = Column(JSON, nullable=True)  # Variables to replace in template
+    text_content = Column(Text, nullable=True)  # For plain text broadcasts
+    
+    # Targeting
+    target_type = Column(String, default="all")  # all, tag, selected
+    target_tag = Column(String, nullable=True)  # For tag-based targeting
+    target_contact_ids = Column(JSON, nullable=True)  # List of contact IDs
+    
+    # Scheduling
+    status = Column(SQLEnum(WhatsAppBroadcastStatus), default=WhatsAppBroadcastStatus.DRAFT)
+    scheduled_at = Column(DateTime(timezone=True), nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # Statistics
+    total_recipients = Column(Integer, default=0)
+    sent_count = Column(Integer, default=0)
+    delivered_count = Column(Integer, default=0)
+    read_count = Column(Integer, default=0)
+    failed_count = Column(Integer, default=0)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    user = relationship("User", backref="whatsapp_broadcasts")
+    template = relationship("WhatsAppTemplate", backref="broadcasts")
+    
+    __table_args__ = (
+        Index("ix_whatsapp_broadcasts_user_status", "user_id", "status"),
+        Index("ix_whatsapp_broadcasts_scheduled", "status", "scheduled_at"),
+    )
+
+
+class WhatsAppBroadcastRecipient(Base):
+    """Individual recipient status in a broadcast."""
+    __tablename__ = "whatsapp_broadcast_recipients"
+
+    id = Column(Integer, primary_key=True, index=True)
+    broadcast_id = Column(Integer, ForeignKey("whatsapp_broadcasts.id"), nullable=False)
+    contact_id = Column(Integer, ForeignKey("whatsapp_contacts.id"), nullable=False)
+    
+    # Status tracking
+    status = Column(String, default="pending")  # pending, sent, delivered, read, failed
+    whatsapp_message_id = Column(String, nullable=True)  # From WhatsApp API
+    error_message = Column(Text, nullable=True)
+    
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+    delivered_at = Column(DateTime(timezone=True), nullable=True)
+    read_at = Column(DateTime(timezone=True), nullable=True)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationships
+    broadcast = relationship("WhatsAppBroadcast", backref="recipients")
+    contact = relationship("WhatsAppContact", backref="broadcast_messages")
+    
+    __table_args__ = (
+        UniqueConstraint("broadcast_id", "contact_id", name="uq_broadcast_contact"),
+        Index("ix_broadcast_recipients_status", "broadcast_id", "status"),
+    )
+
+
 class Task(BaseModel):
     """Represents a single task in a task plan."""
     id: int
@@ -866,3 +1220,248 @@ class IntentClassifier(BaseModel):
     requires_tools: bool
     suggested_tools: List[str] = []
     explanation: Optional[str] = None
+
+class TikTokProfile(Base):
+    """TikTok creator profile."""
+    __tablename__ = "tiktok_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    tiktok_user_id = Column(String, index=True)  # OpenID
+    username = Column(String, index=True)
+    display_name = Column(String)
+    avatar_url = Column(String, nullable=True)
+    follower_count = Column(Integer, default=0)
+    following_count = Column(Integer, default=0)
+    likes_count = Column(Integer, default=0)
+    video_count = Column(Integer, default=0)
+    accessToken = Column(String)  # Encrypted in production
+    refreshToken = Column(String)
+    is_active = Column(Boolean, default=True)
+    
+    # Monetization - Wallet System
+    wallet_balance = Column(Numeric(10, 2), default=0.0)  # KES balance from premium link sales
+    mpesa_withdrawal_number = Column(String, nullable=True)  # M-Pesa number for payouts
+    last_synced_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    user = relationship("User", back_populates="tiktok_profile")
+    videos = relationship("TikTokVideo", back_populates="profile", cascade="all, delete-orphan")
+
+
+class TikTokVideo(Base):
+    """TikTok video content (posted or scheduled)."""
+    __tablename__ = "tiktok_videos"
+
+    id = Column(Integer, primary_key=True, index=True)
+    profile_id = Column(Integer, ForeignKey("tiktok_profiles.id"), index=True)
+    tiktok_video_id = Column(String, nullable=True) # ID returned by TikTok API, e.g. "v_pub_file~..."
+    
+    # Content
+    caption = Column(String)
+    video_url = Column(String) # Path to local file or URL
+    cover_image_url = Column(String, nullable=True)
+    privacy_level = Column(String, default="SELF_ONLY") # SELF_ONLY, FRIENDS_MANAGER, PUBLIC_TO_EVERYONE
+    
+    # Status
+    status = Column(String, default="draft") # draft, scheduled, published, failed
+    scheduled_for = Column(DateTime, nullable=True)
+    published_at = Column(DateTime, nullable=True)
+    
+    # Metrics (Viral Stats)
+    view_count = Column(Integer, default=0)
+    like_count = Column(Integer, default=0)
+    comment_count = Column(Integer, default=0)
+    share_count = Column(Integer, default=0)
+    viral_score = Column(Float, default=0.0)  # Calculated metric
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    profile = relationship("TikTokProfile", back_populates="videos")
+
+
+class PremiumLink(Base):
+    """Paywalled links for Link-in-Bio."""
+    __tablename__ = "premium_links"
+
+    id = Column(Integer, primary_key=True, index=True)
+    profile_id = Column(Integer, ForeignKey("tiktok_profiles.id"), index=True)
+    
+    title = Column(String, nullable=False)
+    url = Column(String, nullable=False) # The content URL (hidden until paid)
+    price = Column(Numeric(10, 2), default=0.0) # KES
+    description = Column(String, nullable=True)
+    
+    is_active = Column(Boolean, default=True)
+    total_sales = Column(Integer, default=0)
+    total_revenue = Column(Numeric(10, 2), default=0.0)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    profile = relationship("TikTokProfile", backref="premium_links")
+
+
+class CreatorTransaction(Base):
+    """Track transactions from premium link sales (revenue split ledger)."""
+    __tablename__ = "creator_transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    profile_id = Column(Integer, ForeignKey("tiktok_profiles.id"), index=True)
+    premium_link_id = Column(Integer, ForeignKey("premium_links.id"), nullable=True, index=True)
+    
+    # Payment details
+    paystack_reference = Column(String, unique=True, nullable=True, index=True)
+    fan_email = Column(String, nullable=True)
+    fan_phone = Column(String, nullable=True)
+    
+    # Amounts in KES
+    gross_amount = Column(Numeric(10, 2), nullable=False)  # Total paid by fan
+    platform_fee = Column(Numeric(10, 2), nullable=False)  # Arrotech's cut (e.g., 10%)
+    creator_amount = Column(Numeric(10, 2), nullable=False)  # Creator's share (e.g., 90%)
+    paystack_fee = Column(Numeric(10, 2), default=0.0)  # Paystack's cut (for reference)
+    
+    # Status
+    status = Column(String, default="pending")  # pending, completed, failed, refunded
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    profile = relationship("TikTokProfile", backref="transactions")
+    premium_link = relationship("PremiumLink", backref="transactions")
+
+
+class TipTransaction(Base):
+    """Tip/donation transactions from fans to creators."""
+    __tablename__ = "tip_transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    profile_id = Column(Integer, ForeignKey("tiktok_profiles.id"), index=True)
+    
+    # Fan info
+    fan_email = Column(String, nullable=True)
+    fan_name = Column(String, nullable=True)
+    fan_message = Column(Text, nullable=True)  # Optional message with tip
+    
+    # Payment details
+    paystack_reference = Column(String, unique=True, nullable=True, index=True)
+    amount = Column(Numeric(10, 2), nullable=False)  # KES
+    platform_fee = Column(Numeric(10, 2), nullable=False)  # Arrotech's cut
+    creator_amount = Column(Numeric(10, 2), nullable=False)  # Creator's share
+    
+    # Status
+    status = Column(String, default="pending")  # pending, completed, failed
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationships
+    profile = relationship("TikTokProfile", backref="tips")
+
+
+class LinkClickAnalytics(Base):
+    """Track clicks and views on premium links for analytics."""
+    __tablename__ = "link_click_analytics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    premium_link_id = Column(Integer, ForeignKey("premium_links.id"), index=True)
+    
+    # Event type
+    event_type = Column(String, nullable=False)  # "view", "click", "purchase"
+    
+    # Source tracking
+    referrer = Column(String, nullable=True)  # Where the click came from
+    source = Column(String, nullable=True)  # tiktok, whatsapp, instagram, other
+    user_agent = Column(String, nullable=True)
+    ip_hash = Column(String, nullable=True)  # Hashed for privacy
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Index for efficient queries
+    __table_args__ = (
+        Index('ix_link_analytics_date', 'premium_link_id', 'created_at'),
+    )
+    
+    # Relationships
+    premium_link = relationship("PremiumLink", backref="analytics")
+
+
+class FanContact(Base):
+    """Collected fan contacts from purchases and tips."""
+    __tablename__ = "fan_contacts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    profile_id = Column(Integer, ForeignKey("tiktok_profiles.id"), index=True)
+    
+    # Contact info
+    email = Column(String, nullable=False)
+    phone = Column(String, nullable=True)
+    name = Column(String, nullable=True)
+    
+    # Source tracking
+    source_type = Column(String, nullable=False)  # "premium_link", "tip", "subscription"
+    source_link_id = Column(Integer, ForeignKey("premium_links.id"), nullable=True)
+    
+    # Engagement stats
+    total_spent = Column(Numeric(10, 2), default=0.0)  # Total KES spent
+    purchase_count = Column(Integer, default=0)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Unique constraint: one email per creator
+    __table_args__ = (
+        UniqueConstraint('profile_id', 'email', name='uq_fan_creator_email'),
+    )
+    
+    # Relationships
+    profile = relationship("TikTokProfile", backref="fans")
+    source_link = relationship("PremiumLink", backref="fan_contacts")
+
+
+class BlogCategory(Base):
+    """Blog category model."""
+    __tablename__ = "blog_categories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, unique=True)
+    slug = Column(String, nullable=False, unique=True, index=True)
+    description = Column(Text, nullable=True)
+    color = Column(String, nullable=True)
+    post_count = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    posts = relationship("BlogPostModel", back_populates="category")
+
+
+class BlogPostModel(Base):
+    """Blog post model for company blog."""
+    __tablename__ = "blog_posts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    slug = Column(String, unique=True, nullable=False, index=True)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=False)
+    content = Column(Text, nullable=False)
+    cover_image = Column(String, nullable=True)
+    author_name = Column(String, nullable=False)
+    author_avatar = Column(String, nullable=True)
+    category_id = Column(Integer, ForeignKey("blog_categories.id"), nullable=True)
+    tags = Column(JSON, nullable=True)
+    status = Column(String, default="draft")  # draft, published, archived
+    is_featured = Column(Boolean, default=False)
+    read_time = Column(String, nullable=True)
+    views_count = Column(Integer, default=0)
+    published_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    category = relationship("BlogCategory", back_populates="posts")
+

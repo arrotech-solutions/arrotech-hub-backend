@@ -4,7 +4,7 @@ Handles OAuth 2.0 authorization flow for Microsoft Outlook integration.
 """
 import logging
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,14 +63,24 @@ async def get_auth_url(
 
 @router.get("/callback")
 async def oauth_callback(
-    code: str,
-    state: str,
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+    error_description: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ) -> Any:
     """
     Handle OAuth callback and exchange authorization code for tokens
     """
     try:
+        # Handle OAuth errors
+        if error:
+            logger.error(f"Outlook OAuth Error: {error} - {error_description}")
+            return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error={error_description or error}")
+
+        if not code or not state:
+            return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error=Missing code or state parameter")
+
         if not OUTLOOK_CLIENT_ID or not OUTLOOK_CLIENT_SECRET:
             error_msg = "Outlook OAuth is not configured"
             return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error={error_msg}")

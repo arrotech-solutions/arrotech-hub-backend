@@ -23,6 +23,9 @@ from .agent_router import router as agent_router
 from .google_workspace_routes import router as google_workspace_router
 from .slack_routes import router as slack_routes
 from .whatsapp_routes import router as whatsapp_routes
+from . import whatsapp_webhook  # WhatsApp incoming messages webhook
+from . import whatsapp_contacts  # WhatsApp contacts, messages, auto-reply API
+from . import whatsapp_broadcast  # WhatsApp broadcast campaigns
 from .facebook_routes import router as facebook_routes
 from .instagram_routes import router as instagram_routes
 from .twitter_routes import router as twitter_routes
@@ -30,12 +33,17 @@ from .outlook_router import router as outlook_router
 from .notion_router import router as notion_router
 from .trello_router import router as trello_router
 from .jira_router import router as jira_router
+from .blog_router import router as blog_router
+from .employee_router import router as employee_router
 
 __all__ = [
     "analytics_router", "mcp_router", "api_router", "auth_router", "chat_router",
     "connection_router", "creator_router", "favorites_router", "marketplace_router", 
     "mpesa_agent_router", "notification_router", "payment_router", "preferences_router", 
     "settings_router", "slack_agent_router", "templates_router", "workflow_router", "agent_router",
-    "google_workspace_router", "slack_routes", "whatsapp_routes", "facebook_routes", "instagram_routes", "twitter_routes",
-    "outlook_router", "notion_router", "trello_router", "jira_router"
+    "google_workspace_router", "slack_routes", "whatsapp_routes", "whatsapp_webhook", "whatsapp_contacts",
+    "whatsapp_broadcast", "facebook_routes", "instagram_routes", "twitter_routes",
+    "outlook_router", "notion_router", "trello_router", "jira_router",
+    "blog_router", "employee_router"
 ]
+

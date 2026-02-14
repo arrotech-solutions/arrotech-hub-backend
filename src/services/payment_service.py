@@ -12,9 +12,11 @@ import stripe
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import logging
 from ..config import settings
-from ..models import Payment
+from ..models import Payment, User, SubscriptionStatus  # Make sure User and SubscriptionStatus are imported
 
+logger = logging.getLogger(__name__)
 
 class PaymentService:
     def __init__(self):
@@ -28,6 +30,11 @@ class PaymentService:
         self.mpesa_passkey = settings.MPESA_PASSKEY
         self.mpesa_shortcode = settings.MPESA_BUSINESS_SHORT_CODE
         self.mpesa_callback_url = settings.MPESA_CALLBACK_URL
+
+        # Paystack configuration
+        self.paystack_secret_key = settings.PAYSTACK_SECRET_KEY
+        self.paystack_public_key = settings.PAYSTACK_PUBLIC_KEY
+        self.paystack_base_url = "https://api.paystack.co"
 
         # Only log M-Pesa config if credentials are provided
         if self.mpesa_consumer_key:
@@ -57,7 +64,7 @@ class PaymentService:
         self.token_expiry = None
 
     def _format_phone_number(self, phone_number: str) -> str:
-        """Format phone number for M-Pesa API."""
+        """Format phone number for M-Pesa API (international format 254...)."""
         # Remove all non-digit characters
         cleaned = re.sub(r'\D', '', phone_number)
 
@@ -70,6 +77,27 @@ class PaymentService:
             return '254' + cleaned
         elif len(cleaned) == 9:
             return '254' + cleaned
+        else:
+            raise ValueError(f"Invalid phone number format: {phone_number}")
+
+    def _format_phone_local(self, phone_number: str) -> str:
+        """
+        Format phone number to LOCAL Kenyan format (07XXXXXXXX or 01XXXXXXXX).
+        Required by Paystack for mobile_money transfers.
+        """
+        # Remove all non-digit characters
+        cleaned = re.sub(r'\D', '', phone_number)
+        
+        # Convert to local format
+        if cleaned.startswith('254'):
+            # 254711371265 -> 0711371265
+            return '0' + cleaned[3:]
+        elif cleaned.startswith('0'):
+            # Already local format
+            return cleaned
+        elif cleaned.startswith('7') or cleaned.startswith('1'):
+            # 711371265 -> 0711371265
+            return '0' + cleaned
         else:
             raise ValueError(f"Invalid phone number format: {phone_number}")
 
@@ -443,6 +471,170 @@ class PaymentService:
                 "error": f"Payment verification error: {str(e)}"
             }
 
+    async def verify_paystack_payment(
+        self,
+        reference: str,
+        db: Optional[AsyncSession] = None,
+        user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Verify Paystack payment and update user subscription.
+        
+        Args:
+            reference: Paystack transaction reference
+            db: Database session for persistence
+            user_id: ID of the user who made the payment
+            
+        Returns:
+            Dict with success status and payment details
+        """
+        logger.info(f"[PAYSTACK] Starting verification for reference: {reference}, user_id: {user_id}")
+        
+        try:
+            # Validate configuration
+            if not self.paystack_secret_key:
+                logger.error("[PAYSTACK] Secret key not configured")
+                return {"success": False, "error": "Paystack not configured"}
+
+            # Call Paystack API to verify
+            url = f"{self.paystack_base_url}/transaction/verify/{reference}"
+            headers = {"Authorization": f"Bearer {self.paystack_secret_key}"}
+            
+            logger.info(f"[PAYSTACK] Calling API: {url}")
+            response = requests.get(url, headers=headers, timeout=30)
+            
+            if response.status_code != 200:
+                logger.error(f"[PAYSTACK] API returned status {response.status_code}: {response.text}")
+                return {"success": False, "error": f"Paystack API error: {response.status_code}"}
+
+            result = response.json()
+            logger.info(f"[PAYSTACK] API response status: {result.get('status')}, data.status: {result.get('data', {}).get('status')}")
+
+            # Check if payment was successful
+            if not (result.get("status") and result.get("data", {}).get("status") == "success"):
+                error_msg = result.get("message", "Payment verification failed")
+                logger.error(f"[PAYSTACK] Verification failed: {error_msg}")
+                return {"success": False, "status": "failed", "error": error_msg}
+
+            # Payment verified successfully
+            data = result["data"]
+            amount_kobo = data.get("amount", 0)
+            amount_kes = amount_kobo / 100  # Convert from kobo to KES
+            metadata = data.get("metadata") or {}
+            
+            logger.info(f"[PAYSTACK] Payment verified: amount={amount_kes} KES, metadata={metadata}")
+
+            # Persist to database if session provided
+            if db and user_id:
+                from sqlalchemy import select
+                from ..models import Payment, User, SubscriptionStatus
+                
+                # Check for duplicate transaction
+                existing = await db.execute(
+                    select(Payment).where(Payment.transaction_id == str(data.get("id")))
+                )
+                if existing.scalar_one_or_none():
+                    logger.warning(f"[PAYSTACK] Payment {reference} already processed")
+                    return {"success": True, "status": "completed", "message": "Payment already processed"}
+
+                # Create payment record
+                payment = Payment(
+                    user_id=user_id,
+                    payment_method="paystack",
+                    amount=amount_kes,
+                    currency=data.get("currency", "KES"),
+                    status="completed",
+                    transaction_id=str(data.get("id")),
+                    reference=reference,
+                    payment_metadata={
+                        "reference": reference,
+                        "customer_email": data.get("customer", {}).get("email"),
+                        "plan": metadata.get("plan"),
+                        "raw_metadata": metadata
+                    }
+                )
+                db.add(payment)
+                logger.info(f"[PAYSTACK] Created payment record for user {user_id}")
+
+                # Update user subscription
+                user_result = await db.execute(select(User).where(User.id == user_id))
+                user = user_result.scalar_one_or_none()
+                
+                if user:
+                    # Determine plan tier from metadata or amount
+                    plan_id = None
+                    
+                    # Check custom_fields format (Paystack standard)
+                    if "custom_fields" in metadata:
+                        for field in metadata["custom_fields"]:
+                            if field.get("variable_name") == "plan":
+                                plan_id = field.get("value")
+                                break
+                    
+                    # Check direct plan in metadata
+                    if not plan_id and "plan" in metadata:
+                        plan_id = metadata["plan"]
+                    
+                    # Fallback: determine tier from amount
+                    if not plan_id:
+                        if amount_kes >= 10000:
+                            plan_id = "enterprise"
+                        elif amount_kes >= 2500:
+                            plan_id = "pro"
+                        elif amount_kes >= 200:
+                            plan_id = "lite"
+                    
+                    logger.info(f"[PAYSTACK] Determined plan_id: {plan_id} for amount: {amount_kes}")
+                    
+                    if plan_id and plan_id != "free":
+                        user.subscription_tier = plan_id
+                        user.subscription_status = SubscriptionStatus.ACTIVE
+                        
+                        # Extend subscription by 30 days
+                        now = datetime.now()
+                        if user.subscription_end_date and user.subscription_end_date > now:
+                            user.subscription_end_date += timedelta(days=30)
+                        else:
+                            user.subscription_end_date = now + timedelta(days=30)
+                        
+                        # Store Paystack customer data for future use
+                        customer = data.get("customer", {})
+                        if customer.get("customer_code"):
+                            user.paystack_customer_code = customer["customer_code"]
+                        
+                        authorization = data.get("authorization", {})
+                        if authorization.get("reusable") and authorization.get("authorization_code"):
+                            user.paystack_authorization_code = authorization["authorization_code"]
+                        
+                        logger.info(f"[PAYSTACK] Updated user {user_id}: tier={plan_id}, end_date={user.subscription_end_date}")
+                    else:
+                        logger.warning(f"[PAYSTACK] No valid plan_id determined, user tier not updated")
+
+                await db.commit()
+                logger.info(f"[PAYSTACK] Database commit successful for user {user_id}")
+
+            return {
+                "success": True,
+                "status": "completed",
+                "transaction_id": str(data.get("id")),
+                "reference": reference,
+                "amount": amount_kobo,
+                "amount_kes": amount_kes,
+                "currency": data.get("currency"),
+                "customer_email": data.get("customer", {}).get("email"),
+                "plan": metadata.get("plan")
+            }
+
+        except requests.exceptions.Timeout:
+            logger.error(f"[PAYSTACK] Request timeout for reference: {reference}")
+            return {"success": False, "error": "Payment verification timed out"}
+        except requests.exceptions.RequestException as e:
+            logger.error(f"[PAYSTACK] Request error: {str(e)}")
+            return {"success": False, "error": f"Network error: {str(e)}"}
+        except Exception as e:
+            logger.error(f"[PAYSTACK] Unexpected error: {str(e)}", exc_info=True)
+            return {"success": False, "error": f"Verification error: {str(e)}"}
+
     # Stripe Webhook Handlers
     async def handle_payment_intent_succeeded(
         self,
@@ -663,3 +855,370 @@ class PaymentService:
             }
         else:
             return {"success": False, "error": f"Unsupported operation: {operation}"}
+
+    async def initialize_paystack_transaction(
+        self,
+        email: str,
+        amount_kes: float,
+        metadata: Dict[str, Any],
+        callback_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Initialize a Paystack transaction for premium link purchases.
+        
+        Args:
+            email: Customer email (required by Paystack)
+            amount_kes: Amount in KES (will be converted to kobo for Paystack)
+            metadata: Transaction metadata (link_id, creator_profile_id, etc.)
+            callback_url: URL to redirect after payment
+            
+        Returns:
+            Dict with authorization_url to redirect user to Paystack checkout
+        """
+        logger.info(f"[PAYSTACK] Initializing transaction for {email}, amount={amount_kes} KES")
+        
+        if not self.paystack_secret_key:
+            logger.error("[PAYSTACK] Secret key not configured")
+            return {"success": False, "error": "Paystack not configured"}
+        
+        try:
+            url = f"{self.paystack_base_url}/transaction/initialize"
+            headers = {
+                "Authorization": f"Bearer {self.paystack_secret_key}",
+                "Content-Type": "application/json"
+            }
+            
+            # Paystack expects amount in kobo (smallest currency unit)
+            # For KES: 1 KES = 100 kobo equivalent
+            amount_kobo = int(amount_kes * 100)
+            
+            payload = {
+                "email": email,
+                "amount": amount_kobo,
+                "currency": "KES",
+                "metadata": metadata,
+                "channels": ["mobile_money", "card"]  # Enable M-Pesa
+            }
+            
+            if callback_url:
+                payload["callback_url"] = callback_url
+            
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            
+            if response.status_code != 200:
+                logger.error(f"[PAYSTACK] Init failed: {response.text}")
+                return {"success": False, "error": f"Paystack error: {response.status_code}"}
+            
+            result = response.json()
+            
+            if result.get("status"):
+                data = result.get("data", {})
+                logger.info(f"[PAYSTACK] Transaction initialized: ref={data.get('reference')}")
+                return {
+                    "success": True,
+                    "authorization_url": data.get("authorization_url"),
+                    "access_code": data.get("access_code"),
+                    "reference": data.get("reference")
+                }
+            else:
+                return {"success": False, "error": result.get("message", "Initialization failed")}
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"[PAYSTACK] Network error: {str(e)}")
+            return {"success": False, "error": f"Network error: {str(e)}"}
+        except Exception as e:
+            logger.error(f"[PAYSTACK] Unexpected error: {str(e)}")
+            return {"success": False, "error": f"Error: {str(e)}"}
+
+    def calculate_revenue_split(
+        self,
+        gross_amount: float,
+        platform_fee_percent: float = 10.0
+    ) -> Dict[str, float]:
+        """
+        Calculate the revenue split between platform and creator.
+        
+        Args:
+            gross_amount: Total amount paid by fan (KES)
+            platform_fee_percent: Platform's cut (default 10%)
+            
+        Returns:
+            Dict with platform_fee and creator_amount
+        """
+        from decimal import Decimal, ROUND_HALF_UP
+        
+        gross = Decimal(str(gross_amount))
+        fee_percent = Decimal(str(platform_fee_percent)) / Decimal("100")
+        
+        platform_fee = (gross * fee_percent).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        creator_amount = (gross - platform_fee).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        
+        return {
+            "gross_amount": float(gross),
+            "platform_fee": float(platform_fee),
+            "creator_amount": float(creator_amount),
+            "platform_fee_percent": platform_fee_percent
+        }
+
+    async def create_paystack_transfer_recipient(
+        self,
+        name: str,
+        phone_number: str,
+        bank_code: str = "MPESA"  # For M-Pesa mobile money
+    ) -> Dict[str, Any]:
+        """
+        Create a transfer recipient for Paystack (M-Pesa number).
+        
+        Args:
+            name: Recipient's name
+            phone_number: M-Pesa number (will be formatted)
+            bank_code: "MPESA" for Safaricom M-Pesa
+            
+        Returns:
+            Dict with recipient_code if successful
+        """
+        try:
+            # Format phone for Paystack - must be LOCAL Kenyan format (07XXXXXXXX)
+            # Paystack mobile_money requires local format, NOT international (254...)
+            formatted_phone = self._format_phone_local(phone_number)
+            
+            # Validate Kenya phone number length (10 digits starting with 0)
+            if len(formatted_phone) != 10 or not formatted_phone.startswith('0'):
+                return {"success": False, "error": f"Invalid phone number format: {formatted_phone}. Expected 07XXXXXXXX or 01XXXXXXXX"}
+            
+            url = f"{self.paystack_base_url}/transferrecipient"
+            headers = {
+                "Authorization": f"Bearer {self.paystack_secret_key}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "type": "mobile_money",
+                "name": name,
+                "account_number": formatted_phone,
+                "bank_code": bank_code,  # "MPESA" for Safaricom
+                "currency": "KES"
+            }
+            
+            logger.info(f"[PAYSTACK] Creating transfer recipient: phone={formatted_phone}, name={name}, bank_code={bank_code}")
+            
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            result = response.json()
+            
+            logger.info(f"[PAYSTACK] Transfer recipient response: {result}")
+            
+            if result.get("status"):
+                data = result.get("data", {})
+                logger.info(f"[PAYSTACK] Created transfer recipient: {data.get('recipient_code')}")
+                return {
+                    "success": True,
+                    "recipient_code": data.get("recipient_code"),
+                    "details": data
+                }
+            else:
+                error_msg = result.get("message", "Failed to create recipient")
+                logger.error(f"[PAYSTACK] Failed to create recipient: {error_msg}, full response: {result}")
+                return {"success": False, "error": error_msg}
+                
+        except Exception as e:
+            logger.error(f"[PAYSTACK] Error creating recipient: {str(e)}")
+            return {"success": False, "error": str(e)}
+
+    async def initiate_paystack_transfer(
+        self,
+        amount_kes: float,
+        recipient_code: str,
+        reason: str = "Creator Withdrawal"
+    ) -> Dict[str, Any]:
+        """
+        Initiate a Paystack transfer to send funds to M-Pesa.
+        
+        Args:
+            amount_kes: Amount in KES
+            recipient_code: Recipient code from create_paystack_transfer_recipient
+            reason: Transfer description
+            
+        Returns:
+            Dict with transfer_code and status
+        """
+        try:
+            url = f"{self.paystack_base_url}/transfer"
+            headers = {
+                "Authorization": f"Bearer {self.paystack_secret_key}",
+                "Content-Type": "application/json"
+            }
+            
+            # Amount in kobo
+            amount_kobo = int(amount_kes * 100)
+            
+            payload = {
+                "source": "balance",
+                "amount": amount_kobo,
+                "recipient": recipient_code,
+                "reason": reason,
+                "currency": "KES"
+            }
+            
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            result = response.json()
+            
+            if result.get("status"):
+                data = result.get("data", {})
+                logger.info(f"[PAYSTACK] Transfer initiated: {data.get('transfer_code')}, status={data.get('status')}")
+                return {
+                    "success": True,
+                    "transfer_code": data.get("transfer_code"),
+                    "status": data.get("status"),
+                    "amount": amount_kes,
+                    "reference": data.get("reference")
+                }
+            else:
+                logger.error(f"[PAYSTACK] Transfer failed: {result.get('message')}")
+                return {"success": False, "error": result.get("message", "Transfer failed")}
+                
+        except Exception as e:
+            logger.error(f"[PAYSTACK] Transfer error: {str(e)}")
+            return {"success": False, "error": str(e)}
+
+
+    def validate_paystack_signature(self, payload: bytes, signature: str) -> bool:
+        """Validate Paystack webhook signature."""
+        import hmac
+        import hashlib
+        
+        if not self.paystack_secret_key:
+            return False
+            
+        computed_hash = hmac.new(
+            self.paystack_secret_key.encode('utf-8'),
+            payload,
+            hashlib.sha512
+        ).hexdigest()
+        
+        return computed_hash == signature
+
+    async def process_paystack_webhook(self, event: Dict[str, Any], db: AsyncSession) -> Dict[str, Any]:
+        """
+        Process Paystack webhook events.
+        Handles: transfer.success, transfer.failed, transfer.reversed
+        """
+        event_type = event.get("event")
+        data = event.get("data", {})
+        
+        logger.info(f"[PAYSTACK WEBHOOK] Processing event: {event_type}")
+        
+        if event_type == "transfer.success":
+            return await self.handle_transfer_success(data, db)
+        elif event_type == "transfer.failed":
+            return await self.handle_transfer_failed(data, db)
+        elif event_type == "transfer.reversed":
+            return await self.handle_transfer_reversed(data, db)
+        
+        return {"processed": False, "reason": "Event ignored"}
+
+    async def handle_transfer_success(self, data: Dict[str, Any], db: AsyncSession) -> Dict[str, Any]:
+        """Handle successful transfer event."""
+        from sqlalchemy import select
+        from ..models import CreatorTransaction, Notification
+        
+        reference = data.get("reference")
+        
+        # Find transaction
+        result = await db.execute(
+            select(CreatorTransaction).where(CreatorTransaction.paystack_reference == reference)
+        )
+        transaction = result.scalar_one_or_none()
+        
+        if not transaction:
+             # Try finding by pending reference convention if applicable
+             # For now, simplistic match
+             logger.warning(f"[PAYSTACK] Transfer {reference} not found in DB")
+             return {"processed": False, "error": "Transaction not found"}
+             
+        if transaction.status == "completed":
+            return {"processed": True, "message": "Already completed"}
+            
+        # Update status
+        transaction.status = "completed"
+        transaction.updated_at = datetime.utcnow()
+        
+        # Notify user (if we had a reference to the user, typically via profile_id)
+        # We need to fetch profile to get user_id for notification
+        from ..models import TikTokProfile
+        profile = await db.get(TikTokProfile, transaction.profile_id)
+        
+        if profile:
+            notification = Notification(
+                user_id=profile.user_id,
+                notification_type="withdrawal_completed",
+                title="Withdrawal Successful ✅",
+                message=f"Your withdrawal of KES {abs(transaction.creator_amount)} has been sent to M-Pesa.",
+                actor_id=profile.user_id, # System
+                action_url="/wallet",
+                metadata={"amount": abs(transaction.creator_amount), "reference": reference}
+            )
+            db.add(notification)
+            
+        await db.commit()
+        logger.info(f"[PAYSTACK] Transfer {reference} marked as completed")
+        
+        return {"processed": True, "status": "completed"}
+
+    async def handle_transfer_failed(self, data: Dict[str, Any], db: AsyncSession) -> Dict[str, Any]:
+        """Handle failed transfer event (Refund logic)."""
+        from sqlalchemy import select
+        from ..models import CreatorTransaction, TikTokProfile, Notification
+        from decimal import Decimal
+        
+        reference = data.get("reference")
+        
+        # Find transaction
+        result = await db.execute(
+            select(CreatorTransaction).where(CreatorTransaction.paystack_reference == reference)
+        )
+        transaction = result.scalar_one_or_none()
+        
+        if not transaction:
+             logger.warning(f"[PAYSTACK] Transfer {reference} not found for failure processing")
+             return {"processed": False, "error": "Transaction not found"}
+             
+        if transaction.status == "failed":
+            return {"processed": True, "message": "Already failed"}
+            
+        # Update status
+        transaction.status = "failed"
+        transaction.updated_at = datetime.utcnow()
+        
+        # REFUND: Add amount back to wallet
+        # creator_amount is negative for withdrawals, so we subtract it (double negative = positive)
+        # Or better, just take abs value
+        refund_amount = abs(transaction.creator_amount)
+        
+        profile = await db.get(TikTokProfile, transaction.profile_id)
+        if profile:
+            current_balance = profile.wallet_balance or Decimal("0.0")
+            profile.wallet_balance = current_balance + Decimal(str(refund_amount))
+            
+            error_reason = data.get("reason", "Transfer failed")
+            
+            # Notify user
+            notification = Notification(
+                user_id=profile.user_id,
+                notification_type="withdrawal_failed",
+                title="Withdrawal Failed ❌",
+                message=f"Withdrawal of KES {refund_amount} failed. Funds have been returned to your wallet.",
+                actor_id=profile.user_id,
+                action_url="/wallet",
+                metadata={"reason": error_reason, "amount": refund_amount}
+            )
+            db.add(notification)
+            
+        await db.commit()
+        logger.info(f"[PAYSTACK] Transfer {reference} marked as failed and refunded")
+        
+        return {"processed": True, "status": "failed", "refunded": True}
+
+    async def handle_transfer_reversed(self, data: Dict[str, Any], db: AsyncSession) -> Dict[str, Any]:
+        """Handle reversed transfer event (Same as failed)."""
+        logger.info(f"[PAYSTACK] Handling transfer reversal for {data.get('reference')}")
+        return await self.handle_transfer_failed(data, db)

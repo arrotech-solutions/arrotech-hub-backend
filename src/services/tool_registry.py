@@ -1342,8 +1342,23 @@ class ToolRegistry:
             "required": ["operation"]
         })
 
+        # KRA GavaConnect
+        kra_tools = ["kra_pin_checker", "kra_id_checker", "kra_nil_return"]
+        register_domain_tools(kra_tools, "KRA Tax operations for PIN verification and NIL return filing", {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["check_pin", "check_id", "file_nil_return"]},
+                "pin": {"type": "string"},
+                "id_number": {"type": "string"},
+                "tax_obligation": {"type": "string"},
+                "period_from": {"type": "string"},
+                "period_to": {"type": "string"}
+            },
+            "required": ["operation"]
+        })
+        
         # logistics
-        logistics_tools = ["amitruck", "lori_systems", "sendy", "busybee", "fargo_courier", "g4s"]
+        logistics_tools = ["lori_systems", "sendy", "amitruck", "sokowatch"]
         register_domain_tools(logistics_tools, "Logistics operations for tracking, booking, and fare calculation", {
             "type": "object",
             "properties": {

@@ -588,6 +588,114 @@ class PlatformRegistry:
             test_function="test_facebook_connection"
         )
 
+        # TikTok Platform
+        tiktok_capabilities = [
+            PlatformCapability(
+                name="Video Publishing",
+                description="Upload and schedule videos to TikTok",
+                tool_name="tiktok_video_publishing",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "video_url": {"type": "string"},
+                        "caption": {"type": "string"},
+                        "scheduled_time": {"type": "string"}
+                    },
+                    "required": ["video_url"]
+                },
+                operations=["upload_video", "schedule_video"]
+            ),
+            PlatformCapability(
+                name="Viral Analytics",
+                description="Track viral scores and engagement",
+                tool_name="tiktok_analytics",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "metric": {"type": "string"}
+                    }
+                },
+                operations=["get_viral_score"]
+            )
+        ]
+
+        self.platforms["tiktok"] = Platform(
+            id="tiktok",
+            name="TikTok",
+            description="Viral video sharing and social networking",
+            icon="tiktok",
+            features=[
+                "Video scheduling",
+                "Viral score tracking",
+                "Sheng caption generator",
+                "Link-in-Bio monetization"
+            ],
+            capabilities=tiktok_capabilities,
+            config_schema={
+                 "type": "object",
+                 "properties": {
+                     "access_token": {"type": "string"}
+                 },
+                 "required": []
+            },
+            test_function="test_tiktok_connection"
+        )
+
+        # Asana Platform
+        asana_capabilities = [
+            PlatformCapability(
+                name="Task Management",
+                description="Manage Asana tasks, projects, and users",
+                tool_name="asana_task_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": [
+                                "list", "get", "create", "update", "delete",
+                                "search", "get_project", "list_projects",
+                                "create_project", "get_workspaces", "get_teams",
+                                "get_users", "create_subtask"
+                            ]
+                        },
+                        "task_id": {"type": "string"},
+                        "project_id": {"type": "string"},
+                        "workspace_id": {"type": "string"},
+                        "name": {"type": "string"},
+                        "notes": {"type": "string"},
+                        "assignee": {"type": "string"},
+                        "due_date": {"type": "string"},
+                        "limit": {"type": "integer"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=[
+                    "list_tasks", "get_task", "create_task", "update_task", "delete_task",
+                    "search_tasks", "get_project", "list_projects", "create_project",
+                    "get_workspaces", "get_teams", "get_users", "create_subtask"
+                ]
+            )
+        ]
+
+        self.platforms["asana"] = Platform(
+            id="asana",
+            name="Asana",
+            description="Project management and collaboration tool",
+            icon="asana",
+            features=["Task management", "Project planning", "Team collaboration"],
+            capabilities=asana_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "access_token": {"type": "string", "description": "Asana Access Token"},
+                    "workspace_id": {"type": "string", "description": "Asana Workspace ID"}
+                },
+                "required": ["access_token"]
+            },
+            test_function="test_asana_connection"
+        )
+
         # Twitter Platform
         twitter_capabilities = [
             PlatformCapability(
@@ -2600,6 +2708,107 @@ class PlatformRegistry:
         register_domain_tools(utility_tools, utility_names, utility_caps, "zap",
                              {"type": "object", "properties": {"account_no": {"type": "string"}}, "required": ["account_no"]},
                              ["Bill automation", "Usage tracking", "Outage reports"])
+
+        # 9. KRA Portal
+        kra_capabilities = [
+            PlatformCapability(
+                name="PIN Checker",
+                description="Verify KRA PIN details and taxpayer existence.",
+                tool_name="kra_pin_check",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "pin": {"type": "string", "description": "The KRA PIN to verify (starting with P)"},
+                        "id_number": {"type": "string", "description": "Optional: National ID number if PIN is unknown"}
+                    },
+                    "required": ["pin"]
+                },
+                operations=["verify_pin"]
+            ),
+            PlatformCapability(
+                name="TCC Validator",
+                description="Check if a taxpayer is compliant and has a valid Tax Compliance Certificate.",
+                tool_name="kra_tcc_check",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "pin": {"type": "string"},
+                        "tcc_number": {"type": "string", "description": "The TCC certificate number to validate"}
+                    },
+                    "required": ["pin", "tcc_number"]
+                },
+                operations=["verify_compliance"]
+            ),
+            PlatformCapability(
+                name="NIL Return Filer",
+                description="Automate the filing of NIL returns for Income Tax Individual.",
+                tool_name="kra_nil_return",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "pin": {"type": "string"},
+                        "obligation": {"type": "string", "default": "Income Tax - Individual"},
+                        "period_from": {"type": "string", "description": "Start date (YYYY-MM-DD)"},
+                        "period_to": {"type": "string", "description": "End date (YYYY-MM-DD)"}
+                    },
+                    "required": ["pin", "period_from", "period_to"]
+                },
+                operations=["file_nil"]
+            ),
+            PlatformCapability(
+                name="e-Slip Verifier",
+                description="Verify the validity and amount of KRA payment slips.",
+                tool_name="kra_eslip_verify",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "pin": {"type": "string"},
+                        "eslip_number": {"type": "string", "description": "The e-Slip number (Payment Registration Number)"}
+                    },
+                    "required": ["pin", "eslip_number"]
+                },
+                operations=["verify_payment"]
+            ),
+            PlatformCapability(
+                name="eTIMS Activator",
+                description="Initialize eTIMS (Electronic Tax Invoice Management System) for a business.",
+                tool_name="kra_etims_init",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "pin": {"type": "string"},
+                        "branch_id": {"type": "string", "default": "00"},
+                        "description": {"type": "string", "description": "Business/Device description"}
+                    },
+                    "required": ["pin"]
+                },
+                operations=["init_etims"]
+            )
+        ]
+
+        self.platforms["kra_portal"] = Platform(
+            id="kra_portal",
+            name="KRA Portal",
+            description="Official Kenya Revenue Authority integrations for tax compliance, PIN checks, and NIL filing.",
+            icon="kra",
+            features=[
+                "PIN Verification",
+                "Compliance Checks (TCC)",
+                "Automated NIL Returns",
+                "e-Slip Validation",
+                "eTIMS Integration"
+            ],
+            capabilities=kra_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "pin": {"type": "string", "description": "User's primary KRA PIN"},
+                    "auth_type": {"type": "string", "default": "service_activation"}
+                },
+                "required": ["pin"]
+            },
+            test_function="test_kra_connection"
+        )
 
     
     def get_platform(self, platform_id: str) -> Optional[Platform]:

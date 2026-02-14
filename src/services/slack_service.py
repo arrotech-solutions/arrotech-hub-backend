@@ -109,8 +109,9 @@ class SlackService:
             }
 
     async def send_message(self, channel: str, message: str,
-                           blocks: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
-        """Send a message to a Slack channel."""
+                           blocks: Optional[List[Dict[str, Any]]] = None,
+                           thread_ts: Optional[str] = None) -> Dict[str, Any]:
+        """Send a message to a Slack channel, optionally as a thread reply."""
         if not self.client:
             raise Exception("Slack client not initialized")
 
@@ -123,6 +124,10 @@ class SlackService:
 
             if blocks:
                 message_data["blocks"] = blocks
+            
+            # Add thread_ts for threaded replies
+            if thread_ts:
+                message_data["thread_ts"] = thread_ts
 
             # Send message
             response = self.client.chat_postMessage(**message_data)
@@ -131,6 +136,7 @@ class SlackService:
                 "success": response["ok"],
                 "message_ts": response.get("ts"),
                 "channel": channel,
+                "thread_ts": thread_ts,
                 "error": response.get("error") if not response["ok"] else None
             }
 
@@ -777,6 +783,166 @@ class SlackService:
 
         except Exception as e:
             logger.error(f"Error uploading file to Slack: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def upload_file_from_content(
+        self, 
+        channel: str, 
+        filename: str, 
+        content: str,  # Base64 encoded content
+        title: str = None, 
+        comment: str = None,
+        thread_ts: str = None
+    ) -> Dict[str, Any]:
+        """Upload a file to Slack from base64 content (for browser uploads)."""
+        if not self.client:
+            raise Exception("Slack client not initialized")
+
+        try:
+            import base64
+            
+            # Decode base64 content to bytes
+            file_content = base64.b64decode(content)
+            
+            logger.info(f"📤 Starting file upload from content to Slack: {filename} (size: {len(file_content)} bytes)")
+            
+            # Step 1: Get upload URL and file ID
+            upload_url_response = self.client.files_getUploadURLExternal(
+                filename=filename,
+                length=len(file_content)
+            )
+            
+            if not upload_url_response["ok"]:
+                return {
+                    "success": False,
+                    "error": f"Failed to get upload URL: {upload_url_response.get('error', 'Unknown error')}"
+                }
+            
+            upload_url = upload_url_response["upload_url"]
+            file_id = upload_url_response["file_id"]
+            
+            logger.info(f"📤 Got upload URL and file ID: {file_id}")
+            
+            # Step 2: Upload file binary to the temporary URL
+            file_size_mb = len(file_content) / (1024 * 1024)
+            if file_size_mb > 50:
+                return {
+                    "success": False,
+                    "error": f"File too large: {file_size_mb:.1f}MB (Slack limit is 50MB)"
+                }
+            
+            timeout_seconds = max(30, int(file_size_mb * 2))
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    upload_url,
+                    data=file_content,
+                    headers={'Content-Type': 'application/octet-stream'},
+                    timeout=aiohttp.ClientTimeout(total=timeout_seconds)
+                ) as response:
+                    if response.status != 200:
+                        return {
+                            "success": False,
+                            "error": f"Failed to upload file binary: HTTP {response.status}"
+                        }
+            
+            logger.info("📤 File binary uploaded successfully")
+            
+            # Step 3: Complete the upload and share to channel
+            logger.info(f"📤 Step 3: Completing upload with channel={channel}, thread_ts={thread_ts}")
+            
+            # Resolve channel name to ID if needed
+            channel_id = channel
+            if not channel.startswith('C') and not channel.startswith('D') and not channel.startswith('G'):
+                # This might be a channel name, try to find the ID
+                try:
+                    channels_response = self.client.conversations_list(types="public_channel,private_channel")
+                    if channels_response["ok"]:
+                        for ch in channels_response.get("channels", []):
+                            if ch.get("name") == channel or ch.get("name") == channel.lstrip('#'):
+                                channel_id = ch.get("id")
+                                logger.info(f"📤 Resolved channel name '{channel}' to ID '{channel_id}'")
+                                break
+                except Exception as e:
+                    logger.warning(f"Could not resolve channel name to ID: {e}")
+            
+            complete_params = {
+                'files': [{'id': file_id, 'title': title or filename}],
+                'channel_ids': [channel_id]
+            }
+            
+            if comment:
+                complete_params['initial_comment'] = comment
+            
+            # Note: thread_ts may not be supported in files_completeUploadExternal
+            # We'll complete the upload first without thread_ts, then share to thread
+            logger.info(f"📤 Completing upload with params: {complete_params}")
+            complete_response = self.client.files_completeUploadExternal(**complete_params)
+            logger.info(f"📤 Complete response ok: {complete_response.get('ok')}")
+            
+            if complete_response["ok"]:
+                logger.info(f"📤 File upload completed successfully! File ID: {file_id}")
+                
+                # Check if the file was actually shared
+                file_info = complete_response.get("files", [{}])[0]
+                shares = file_info.get("shares", {})
+                is_shared = False
+                
+                # If shares is not empty, it means it was shared
+                if shares and (shares.get("public") or shares.get("private")):
+                    is_shared = True
+                
+                # If thread_ts is provided, share the file to the thread
+                if thread_ts:
+                    logger.info(f"📤 Sharing file to thread: {thread_ts}")
+                    try:
+                        permalink = file_info.get("permalink", "")
+                        share_response = self.client.chat_postMessage(
+                            channel=channel_id,
+                            thread_ts=thread_ts,
+                            text=f"<{permalink}|{filename}>" if permalink else filename,
+                            unfurl_links=True,
+                            unfurl_media=True
+                        )
+                        logger.info(f"📤 File shared to thread: {share_response.get('ok')}")
+                    except Exception as share_error:
+                        logger.warning(f"📤 Could not share file to thread: {share_error}")
+                        
+                # If NOT a thread reply, easier verification: if 'shares' is empty, we must share it manually to the channel
+                elif not is_shared:
+                    logger.info(f"📤 File not automatically shared to channel. Sharing manually to {channel_id}")
+                    try:
+                        permalink = file_info.get("permalink", "")
+                        share_response = self.client.chat_postMessage(
+                            channel=channel_id,
+                            text=f"<{permalink}|{filename}>" if permalink else filename,
+                            unfurl_links=True,
+                            unfurl_media=True
+                        )
+                        logger.info(f"📤 File shared to channel: {share_response.get('ok')}")
+                    except Exception as share_error:
+                        logger.warning(f"📤 Could not share file to channel: {share_error}")
+                
+                return {
+                    "success": True,
+                    "file_id": file_id,
+                    "file_name": filename,
+                    "channel": channel_id,
+                    "thread_ts": thread_ts
+                }
+            else:
+                error_msg = complete_response.get('error', 'Unknown error')
+                logger.error(f"📤 File upload completion failed: {error_msg}")
+                return {
+                    "success": False,
+                    "error": f"Failed to complete upload: {error_msg}"
+                }
+
+        except Exception as e:
+            logger.error(f"Error uploading file content to Slack: {e}")
             return {
                 "success": False,
                 "error": str(e)

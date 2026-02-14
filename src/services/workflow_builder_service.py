@@ -19,6 +19,10 @@ from .dynamic_tool_registry import DynamicToolRegistry
 from .llm_service import LLMService
 from .tool_executor import ToolExecutor
 from .feature_flags import FeatureGate
+# Note: get_or_create_usage_record imported inside execute_workflow() to avoid circular import
+
+import logging
+logger = logging.getLogger(__name__)
 
 
 class WorkflowBuilderService:
@@ -354,6 +358,31 @@ class WorkflowBuilderService:
         workflow = await self.get_workflow(workflow_id, user_id, db)
         if not workflow:
             raise ValueError("Workflow not found")
+        
+        # ===== AUTOMATION RUN USAGE TRACKING =====
+        # Get user for usage tracking
+        user_stmt = select(User).where(User.id == user_id)
+        user_result = await db.execute(user_stmt)
+        user = user_result.scalar_one_or_none()
+        
+        if user:
+            try:
+                # Lazy import to avoid circular dependency
+                from ..routers.subscription_router import get_or_create_usage_record
+                usage_record = await get_or_create_usage_record(db, user)
+                # Check if at limit
+                if usage_record.automation_runs_count >= usage_record.automation_runs_limit:
+                    logger.warning(f"User {user_id} exceeded automation run limit: {usage_record.automation_runs_count}/{usage_record.automation_runs_limit}")
+                    raise ValueError(f"Monthly automation run limit reached ({usage_record.automation_runs_limit}). Please upgrade to continue.")
+                # Increment counter
+                usage_record.automation_runs_count += 1
+                await db.commit()
+                logger.info(f"Automation run tracked: {usage_record.automation_runs_count}/{usage_record.automation_runs_limit}")
+            except ValueError:
+                raise  # Re-raise limit exceeded error
+            except Exception as tracking_error:
+                logger.error(f"Failed to track automation run: {tracking_error}")
+        # ===== END USAGE TRACKING =====
         
         # Create execution record
         execution = WorkflowExecution(

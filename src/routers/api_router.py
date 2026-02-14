@@ -5,6 +5,7 @@ API router for Mini-Hub MCP Server.
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from . import kra_router
 
 from ..database import get_db
 from ..services import BillingService, RateLimitService
@@ -142,8 +143,9 @@ async def get_pricing():
                     "Custom integrations",
                     "White-glove setup",
                     "Dedicated support",
-                    "Custom rate limits"
                 ]
             }
         }
     }
+
+router.include_router(kra_router.router)
