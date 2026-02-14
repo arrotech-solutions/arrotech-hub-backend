@@ -1,7 +1,7 @@
 
 import logging
 import os
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import httpx
 from ..config import settings
 
@@ -138,7 +138,69 @@ class ClickUpService:
             response.raise_for_status()
             return response.json()
 
-    async def create_task(self, access_token: str, list_id: str, name: str, description: str = None) -> Dict[str, Any]:
+    async def get_list_members(self, access_token: str, list_id: str) -> Dict[str, Any]:
+        """Get members who can be assigned to tasks in a list."""
+        # ClickUp doesn't have a direct "list members" endpoint, but we can get list details or use the space members
+        # Often getting the list returns members if expanded.
+        # Alternatively, we can get Task members. 
+        # Best bet: GET /list/{list_id} returns "members"? No.
+        # GET /list/{list_id}/member - Only available for Spaces?
+        # Let's fallback to getting team members? No, that's too broad.
+        # But commonly we assume team members can be assigned. 
+        # Let's try getting the list content via GET /list/{list_id} which might contain members info or access
+        # If not, we resort to Team members which we already have potentially?
+        
+        # New strategy: ClickUp assigns from workspace (team) members usually.
+        # So providing get_team_members is usually sufficient. But list_id allows us to find the team_id if needed.
+        # For simplicity, we will expose get_team_members if we have team_id.
+        pass
+
+    async def get_team_members(self, access_token: str, team_id: str) -> Dict[str, Any]:
+        """Get members of a team (workspace)."""
+        # GET /team is actually what we use for 'get_teams' which includes members usually?
+        # Let's check get_teams response. It returns 'teams' array which contains 'members'.
+        # So we can reuse get_teams but filter for specific team_id if provided.
+        
+        url = f"{self.BASE_URL}/team"
+        headers = {"Authorization": access_token}
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            
+            teams = data.get("teams", [])
+            target_team = None
+            if team_id:
+                for t in teams:
+                    if t.get("id") == team_id:
+                        target_team = t
+                        break
+            else:
+                target_team = teams[0] if teams else None
+                
+            if not target_team:
+                return {"success": False, "error": "Team not found"}
+                
+            members = []
+            for m in target_team.get("members", []):
+                # Handle inconsistent ClickUp API structure: sometimes user data is wrapped in "user", sometimes it's at the root
+                if "user" in m:
+                    user = m.get("user", {})
+                else:
+                    user = m
+
+                members.append({
+                    "id": user.get("id"),
+                    "username": user.get("username"),
+                    "email": user.get("email"),
+                    "profilePicture": user.get("profilePicture"),
+                    "initials": user.get("initials")
+                })
+                
+            return {"success": True, "members": members}
+
+    async def create_task(self, access_token: str, list_id: str, name: str, description: str = None, assignees: List[int] = None, priority: int = None, due_date: int = None, start_date: int = None) -> Dict[str, Any]:
         """Create a new task in a list."""
         url = f"{self.BASE_URL}/list/{list_id}/task"
         headers = {
@@ -150,13 +212,22 @@ class ClickUpService:
             "description": description
         }
         
+        if assignees:
+            payload["assignees"] = assignees
+        if priority:
+            payload["priority"] = priority
+        if due_date:
+            payload["due_date"] = due_date
+        if start_date:
+            payload["start_date"] = start_date
+        
         async with httpx.AsyncClient() as client:
             response = await client.post(url, headers=headers, json=payload)
             response.raise_for_status()
             return response.json()
 
-    async def update_task(self, access_token: str, task_id: str, status: str = None, name: str = None, description: str = None) -> Dict[str, Any]:
-        """Update a task (status, name, description)."""
+    async def update_task(self, access_token: str, task_id: str, status: str = None, name: str = None, description: str = None, due_date: int = None, start_date: int = None, assignees: Dict[str, List[int]] = None, priority: int = None) -> Dict[str, Any]:
+        """Update a task (status, name, description, dates, assignees, priority)."""
         url = f"{self.BASE_URL}/task/{task_id}"
         headers = {
             "Authorization": access_token,
@@ -169,6 +240,16 @@ class ClickUpService:
             payload["name"] = name
         if description:
             payload["description"] = description
+        if due_date is not None:
+            payload["due_date"] = due_date
+        if start_date is not None:
+            payload["start_date"] = start_date
+        if priority is not None:
+            payload["priority"] = priority
+        if assignees:
+            # ClickUp update assignees structure is tricky, often it wants { "add": [...], "rem": [...] }
+            # For simplicity let's assume valid payload passed from executor
+            payload["assignees"] = assignees
             
         if not payload:
              return {"success": False, "error": "No update parameters provided"}

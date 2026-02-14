@@ -15,6 +15,7 @@ from .tool_executor import ToolExecutor, tool_executor
 from .tool_validator import ToolArgumentValidator
 from .tool_router import ToolRouter
 from .feature_flags import FeatureGate
+# Note: get_or_create_usage_record imported lazily inside process_message() to avoid circular import
 try:
     import tiktoken
 except ImportError:
@@ -65,10 +66,31 @@ class ExecutionOrchestrator:
         try:
             print(f"🎯 Orchestrating message processing for: '{content[:50]}...'")
             
-            # Step 0: Check AI message limits
-            daily_count = await self.get_daily_message_count(self.db, self.user.id)
-            if not FeatureGate.can_use_ai_message(self.user, daily_count):
-                return f"Plan limit reached: Your {self.user.subscription_tier} plan allows {FeatureGate.get_limits(self.user.subscription_tier)['max_ai_messages_daily']} AI messages per day. Please upgrade to continue.", [], 0
+            # Step 0: Check AI message limits (skip for BYOK users)
+            # If the user has their own API key for this provider, they shouldn't be rate-limited
+            is_byok = False
+            try:
+                from sqlalchemy import select
+                from ..models import UserSettings
+                stmt = select(UserSettings).where(UserSettings.user_id == self.user.id)
+                result = await self.db.execute(stmt)
+                user_settings = result.scalar_one_or_none()
+                if user_settings:
+                    byok_keys = {
+                        "openai": user_settings.openai_api_key,
+                        "anthropic": user_settings.anthropic_api_key,
+                        "gemini": getattr(user_settings, 'gemini_api_key', None),
+                    }
+                    is_byok = bool(byok_keys.get(provider))
+                    if is_byok:
+                        print(f"🔑 BYOK detected for provider '{provider}' - skipping rate limit")
+            except Exception as e:
+                logger.warning(f"Failed to check BYOK status: {e}")
+
+            if not is_byok:
+                daily_count = await self.get_daily_message_count(self.db, self.user.id)
+                if not FeatureGate.can_use_ai_message(self.user, daily_count):
+                    return f"Plan limit reached: Your {self.user.subscription_tier} plan allows {FeatureGate.get_limits(self.user.subscription_tier)['max_ai_messages_daily']} AI messages per day. Please upgrade to continue.", [], 0
 
             # Step 1: Classify intent
             intent_classifier = await self.intent_processor.classify_intent(content)
@@ -113,6 +135,23 @@ class ExecutionOrchestrator:
             
               # Execute function calling loop
             response_content, tools_called, output_tokens = await self._execute_function_calling_loop(provider, messages, openai_tools)
+
+            # ===== AI ACTION USAGE TRACKING =====
+            # Increment AI action counter for this chat message
+            try:
+                # Lazy import to avoid circular dependency
+                from ..routers.subscription_router import get_or_create_usage_record
+                usage_record = await get_or_create_usage_record(self.db, self.user)
+                # Check if at limit BEFORE incrementing (soft enforcement - user already got response)
+                if usage_record.ai_actions_count >= usage_record.ai_actions_limit:
+                    logger.warning(f"User {self.user.id} exceeded AI action limit: {usage_record.ai_actions_count}/{usage_record.ai_actions_limit}")
+                # Increment counter
+                usage_record.ai_actions_count += 1
+                await self.db.commit()
+                logger.info(f"AI action tracked: {usage_record.ai_actions_count}/{usage_record.ai_actions_limit}")
+            except Exception as tracking_error:
+                logger.error(f"Failed to track AI action: {tracking_error}")
+            # ===== END USAGE TRACKING =====
 
             # Count input tokens
             from ..config import settings

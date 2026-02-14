@@ -151,7 +151,7 @@ async def oauth_callback(
             existing_connection.config = {
                 "client_id": GOOGLE_CLIENT_ID,
                 "client_secret": GOOGLE_CLIENT_SECRET,
-                "refresh_token": tokens.get("refresh_token"),
+                "refresh_token": tokens.get("refresh_token") or existing_connection.config.get("refresh_token"),
                 "access_token": tokens.get("access_token"),
                 "email": user_info.get("email"),
                 "name": user_info.get("name"),

@@ -116,41 +116,49 @@ def check_ai_message_limit(user: User, daily_message_count: int) -> None:
 def get_tier_for_platform(platform: str) -> str:
     """
     Determine the minimum tier required for a platform.
+    Based on allowed_connections in feature_flags.py PLAN_LIMITS.
     
     Args:
         platform: Platform ID
         
     Returns:
-        Formatted tier name (e.g., "Biashara Lite", "Business Pro")
+        Formatted tier name (e.g., "Starter", "Business", "Pro")
     """
     platform_lower = platform.lower().replace("_", "").replace("-", "")
     
-    # Enterprise-only platforms
-    enterprise_platforms = ["sap", "oracle", "customerp"]
-    if any(p in platform_lower for p in enterprise_platforms):
-        return "Enterprise"
+    # FREE tier platforms (from feature_flags.py FREE.allowed_connections)
+    free_platforms = [
+        "gmail", "outlook", "microsoftoutlook",
+        "slack", "microsoftteams", "teams", "whatsapp", "whatsappbusiness",
+        "googlecalendar", "googleworkspace",  # Google Workspace now FREE for read-only access
+        "jira", "trello", "asana", "clickup",
+        "mpesa", "contexttools"
+    ]
+    if any(p in platform_lower for p in free_platforms):
+        return "Free"
     
-    # Business Pro platforms
-    pro_platforms = [
+    # STARTER tier platforms (added in STARTER.allowed_connections)
+    starter_platforms = [
+        "zohocrm", "kraportal", "outlookcalendar"
+    ]
+    if any(p in platform_lower for p in starter_platforms):
+        return "Starter"
+    
+    # BUSINESS tier platforms (added in BUSINESS.allowed_connections)
+    business_platforms = [
         "hubspot", "salesforce", "ga4", "googleanalytics",
-        "facebook", "instagram", "linkedin", "twitter",
-        "shopify", "jumia", "kilimall", "stripe",
-        "airtel", "pesapal", "equity", "asana", "trello",
-        "clickup", "notion", "jira", "zoom", "microsoftteams",
-        "teams", "powerbi", "quickbooks", "zohobooks"
+        "facebook", "facebookmarketing", "instagram", "instagramgraph",
+        "linkedin", "linkedinads", "twitter", "twitterads", "tiktok",
+        "shopify", "jumia", "kilimall",
+        "stripe", "airtel", "airtelmoney", "pesapal", "equity", "equitybank",
+        "zoom", "notion",
+        "powerbi", "quickbooks", "zohobooks"
     ]
-    if any(p in platform_lower for p in pro_platforms):
-        return "Business Pro"
+    if any(p in platform_lower for p in business_platforms):
+        return "Business"
     
-    # Biashara Lite platforms
-    lite_platforms = [
-        "googleworkspace", "gmail", "microsoftoutlook",
-        "outlook", "whatsappbusiness", "whatsapp", "zohocrm"
-    ]
-    if any(p in platform_lower for p in lite_platforms):
-        return "Biashara Lite"
-    
-    # Free tier default
+    # PRO/ENTERPRISE platforms - wildcard access
+    # Everything else defaults to Free (if not recognized)
     return "Free"
 
 
@@ -166,7 +174,8 @@ def get_next_tier(current_tier: str) -> str:
     """
     tier_hierarchy = [
         SubscriptionTier.FREE,
-        SubscriptionTier.LITE,
+        SubscriptionTier.STARTER,
+        SubscriptionTier.BUSINESS,
         SubscriptionTier.PRO,
         SubscriptionTier.ENTERPRISE
     ]
@@ -178,8 +187,8 @@ def get_next_tier(current_tier: str) -> str:
     except ValueError:
         pass
     
-    # Default to LITE if current tier not found
-    return SubscriptionTier.LITE
+    # Default to STARTER if current tier not found
+    return SubscriptionTier.STARTER
 
 
 def format_tier_name(tier: str) -> str:
@@ -187,18 +196,25 @@ def format_tier_name(tier: str) -> str:
     Format tier for user-friendly display.
     
     Args:
-        tier: Tier identifier (e.g., 'free', 'lite', 'pro')
+        tier: Tier identifier (e.g., 'free', 'starter', 'business', 'pro')
         
     Returns:
-        Formatted tier name (e.g., 'Free', 'Biashara Lite', 'Business Pro')
+        Formatted tier name (e.g., 'Free', 'Starter', 'Business', 'Pro')
     """
     tier_names = {
         SubscriptionTier.FREE: "Free",
-        SubscriptionTier.LITE: "Biashara Lite",
-        SubscriptionTier.PRO: "Business Pro",
-        SubscriptionTier.ENTERPRISE: "Enterprise"
+        SubscriptionTier.STARTER: "Starter",
+        SubscriptionTier.BUSINESS: "Business",
+        SubscriptionTier.PRO: "Pro",
+        SubscriptionTier.ENTERPRISE: "Enterprise",
+        # Also handle string values directly
+        "free": "Free",
+        "starter": "Starter",
+        "business": "Business",
+        "pro": "Pro",
+        "enterprise": "Enterprise"
     }
-    return tier_names.get(tier, tier.title())
+    return tier_names.get(tier, tier.title() if isinstance(tier, str) else str(tier))
 
 
 def format_platform_name(platform: str) -> str:
@@ -229,7 +245,8 @@ def format_platform_name(platform: str) -> str:
         "power_bi": "Power BI",
         "quick_books": "QuickBooks",
         "zoho_crm": "Zoho CRM",
-        "zoho_books": "Zoho Books"
+        "zoho_books": "Zoho Books",
+        "kra_portal": "KRA Portal"
     }
     
     if platform in special_names:

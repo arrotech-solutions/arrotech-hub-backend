@@ -72,7 +72,8 @@ class OutlookService:
             "redirect_uri": redirect_uri,
             "response_mode": "query",
             "scope": " ".join(scopes),
-            "state": state
+            "state": state,
+            "prompt": "select_account"
         }
         
         base_url = f"https://login.microsoftonline.com/{self.tenant_id}/oauth2/v2.0/authorize"
@@ -97,7 +98,9 @@ class OutlookService:
         async with aiohttp.ClientSession() as session:
             async with session.post(token_url, data=data) as response:
                 if response.status == 200:
-                    return await response.json()
+                    token_data = await response.json()
+                    logger.info(f"Token Exchange Success. Scopes: {token_data.get('scope')}")
+                    return token_data
                 else:
                     error_text = await response.text()
                     raise Exception(f"Failed to exchange token: {response.status} - {error_text}")
@@ -111,15 +114,19 @@ class OutlookService:
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
         }
-
+        
         # Select standard fields + bodyPreview + body
         # Note: body is complex, might need specific select syntax or just default
         url = f"https://graph.microsoft.com/v1.0/me/messages?$top={limit}&$orderby=receivedDateTime desc&$select=id,receivedDateTime,subject,from,isRead,bodyPreview,body,webLink"
+        
+        logger.info(f"Fetching Outlook emails. URL: {url}")
+        logger.info(f"Token Preview: {self.access_token[:50]}...")
 
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers) as response:
                 if response.status == 200:
                     data = await response.json()
+                    logger.info(f"Outlook API Success. Items: {len(data.get('value', []))}")
                     emails = []
                     for msg in data.get("value", []):
                         emails.append({
@@ -140,7 +147,16 @@ class OutlookService:
                         "count": len(emails)
                     }
                 else:
-                    text = await response.text()
+                    try:
+                        error_json = await response.json()
+                        text = str(error_json)
+                    except:
+                        text = await response.text()
+                    
+                    all_headers = dict(response.headers)
+                    logger.error(f"Outlook API Error: {response.status} {response.reason}")
+                    logger.error(f"Response Headers: {all_headers}")
+                    logger.error(f"Response Body: {text}")
                     return {"success": False, "error": f"Failed to fetch emails: {text}"}
 
     async def send_email(self, to_email: str, subject: str, content: str, content_type: str = "text", cc: Optional[str] = None, bcc: Optional[str] = None) -> Dict[str, Any]:

@@ -49,7 +49,8 @@ class JiraService:
 
         scopes = [
             "read:jira-work", 
-            "write:jira-work", 
+            "write:jira-work",
+            "read:jira-user",  # Required for fetching assignable users
             "read:me", # For accessible-resources
             "offline_access"
         ]
@@ -172,62 +173,85 @@ class JiraService:
             
         return {"success": True, "projects": projects, "count": len(projects)}
 
+    async def get_users(self, project_key: str = None) -> Dict[str, Any]:
+        """Get assignable users for a project."""
+        # /rest/api/3/user/assignable/search
+        params = {}
+        if project_key:
+            params["project"] = project_key
+        
+        response = await self._request("GET", "rest/api/3/user/assignable/search", params=params)
+        
+        if isinstance(response, dict) and "error" in response:
+            return response
+            
+        users = []
+        for u in response:
+            users.append({
+                "id": u.get("accountId"),
+                "accountId": u.get("accountId"),
+                "displayName": u.get("displayName"),
+                "emailAddress": u.get("emailAddress"),
+                "avatarUrl": u.get("avatarUrls", {}).get("48x48"),
+                "active": u.get("active")
+            })
+            
+        return {"success": True, "users": users, "count": len(users)}
+
     async def search_issues(self, jql: str, limit: int = 10) -> Dict[str, Any]:
         """Search issues using JQL."""
         payload = {
             "jql": jql,
             "maxResults": limit,
-            "fields": ["summary", "status", "priority", "assignee", "created", "project"]
+            "fields": ["summary", "status", "priority", "assignee", "created", "project", "description", "duedate"]
         }
-        # Updated to use new JQL search endpoint
+        
+        # Primary search endpoint
         response = await self._request("POST", "rest/api/3/search", json_data=payload)
         
+        # Check if we got an error that suggests migrating to another endpoint
         if isinstance(response, dict) and "error" in response:
-            # Fallback/Retry logic or just try the new endpoint directly if the above is the one that failed.
-            # The user said the error output showed failure on 'rest/api/3/search'?
-            # "The requested API has been removed... migrate to .../jql"
-            # So I should use "rest/api/3/search/jql`?
-            pass
-            
-        # Let's trust the error message and use /search for now?
-        # Actually, let's look at the error again.
-        # "The requested API ... migrate to .../jql API"
-        # Checks online: `POST /rest/api/3/search` is indeed deprecated? 
-        # Ref: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/#api-rest-api-3-search-post
-        # It seems `POST /rest/api/3/search` IS correct.
-        # Maybe the user is on an older version or something?
-        # BUT the error is explicit.
-        # I will change to `rest/api/3/search` -> `rest/api/3/search`?
-        # Wait, the error implies I am hitting a removed API.
-        # Maybe the `jql` argument in body is the issue?
-        # Let's try `rest/api/3/search` (which I was using).
-        # Oh, maybe I should use `rest/api/3/search` with `jql` query param instead of body?
-        # No, `POST` uses body.
-        
-        # NOTE: I will update the URL to `rest/api/3/search/jql` as explicitly requested by error.
-        response = await self._request("POST", "rest/api/3/search/jql", json_data=payload)
-
-        if isinstance(response, dict) and "error" in response:
-             return response
+            error_msg = str(response.get("error", ""))
+            if "/search/jql" in error_msg:
+                logger.info("Migrating to rest/api/3/search/jql as suggested by API error")
+                response = await self._request("POST", "rest/api/3/search/jql", json_data=payload)
+            else:
+                return response
 
         issues = []
         for i in response.get("issues", []):
             fields = i.get("fields", {})
+            # Extract plain text from description ADF
+            description_text = ""
+            desc_adf = fields.get("description")
+            if desc_adf and isinstance(desc_adf, dict):
+                try:
+                    # Very basic ADF to text conversion
+                    for content in desc_adf.get("content", []):
+                        for item in content.get("content", []):
+                            if item.get("type") == "text":
+                                description_text += item.get("text", "")
+                        description_text += "\n"
+                except:
+                    description_text = str(desc_adf)
+
             issues.append({
                 "id": i.get("id"),
                 "key": i.get("key"),
                 "summary": fields.get("summary"),
+                "description": description_text.strip(),
                 "status": (fields.get("status") or {}).get("name"),
-                "assignee": (fields.get("assignee") or {}).get("displayName") if fields.get("assignee") else "Unassigned",
+                "assignee": fields.get("assignee"),
                 "priority": (fields.get("priority") or {}).get("name"),
                 "project": (fields.get("project") or {}).get("name"),
                 "created": fields.get("created"),
+                "due_date": fields.get("duedate") or fields.get("due") or fields.get("due_date"),
                 "url": i.get("self")
             })
             
         return {"success": True, "issues": issues, "count": len(issues)}
 
-    async def create_issue(self, project_key: str, summary: str, description: str = "", issuetype: str = "Task", status: str = "To Do") -> Dict[str, Any]:
+    async def create_issue(self, project_key: str, summary: str, description: str = "", issuetype: str = "Task", status: str = "To Do", assignee_id: str = None, priority: str = None, duedate: str = None) -> Dict[str, Any]:
         """Create a new issue and optionally transition to specified status."""
         
         # Build ADF for description if using API v3 - Jira mandates ADF (Atlassian Document Format) for v3 'description'
@@ -258,6 +282,13 @@ class JiraService:
             }
         }
         
+        if assignee_id:
+            payload["fields"]["assignee"] = {"id": assignee_id}
+        if priority:
+            payload["fields"]["priority"] = {"name": priority}
+        if duedate:
+            payload["fields"]["duedate"] = duedate
+        
         if description_adf:
              payload["fields"]["description"] = description_adf
              
@@ -286,6 +317,57 @@ class JiraService:
                 "status": status
             }
         }
+
+    async def update_issue(self, issue_key: str, summary: str = None, description: str = None, status: str = None, assignee_id: str = None, priority: str = None, due_date: str = None) -> Dict[str, Any]:
+        """Update an issue fields and optionally transition status."""
+        logger.info(f"update_issue called: issue_key={issue_key}, summary={summary}, description={description[:50] if description else None}, status={status}, assignee_id={assignee_id}, priority={priority}, due_date={due_date}")
+        
+        payload = {"fields": {}}
+        
+        if summary:
+            payload["fields"]["summary"] = summary
+            
+        if description:
+             description_adf = {
+                 "type": "doc",
+                 "version": 1,
+                 "content": [
+                     {
+                         "type": "paragraph",
+                         "content": [
+                             {
+                                 "type": "text",
+                                 "text": description
+                             }
+                         ]
+                     }
+                 ]
+             }
+             payload["fields"]["description"] = description_adf
+
+        if assignee_id:
+            payload["fields"]["assignee"] = {"id": assignee_id}
+        if priority:
+            payload["fields"]["priority"] = {"name": priority}
+        if due_date:
+            payload["fields"]["duedate"] = due_date
+
+        logger.info(f"update_issue payload: {payload}")
+
+        # If we have fields to update
+        if payload["fields"]:
+            response = await self._request("PUT", f"rest/api/3/issue/{issue_key}", json_data=payload)
+            logger.info(f"update_issue API response: {response}")
+            if isinstance(response, dict) and "error" in response:
+                return response
+                
+        # Handle status transition separately
+        if status:
+             # Check current status first maybe? Or just try transition
+             transition_result = await self._transition_issue(issue_key, status)
+             logger.info(f"transition_issue result: {transition_result}")
+             
+        return {"success": True, "message": "Issue updated"}
 
     async def _transition_issue(self, issue_key: str, target_status: str) -> Dict[str, Any]:
         """Transition an issue to a new status."""
@@ -318,4 +400,6 @@ class JiraService:
             return {"success": True, "message": f"Transitioned to {target_status}"}
         
         return result
+
+
 

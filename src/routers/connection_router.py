@@ -26,6 +26,7 @@ from ..services.hr_service import HRService
 from ..services.logistics_service import LogisticsService
 from ..services.lead_intelligence_service import LeadIntelligenceService
 from ..services.bilingual_service import BilingualService
+from ..services.kra_service import kra_service
 
 router = APIRouter()
 
@@ -53,6 +54,11 @@ class ConnectionCreate(BaseModel):
 class ConnectionUpdate(BaseModel):
     name: str
     status: str
+    config: Dict[str, Any]
+
+
+class ConnectionTest(BaseModel):
+    platform: str
     config: Dict[str, Any]
 
 
@@ -313,6 +319,34 @@ async def test_connection(
         )
 
 
+@router.post("/test")
+async def test_new_connection(
+    test_data: ConnectionTest,
+    current_user: User = Depends(get_current_user)
+):
+    """Test a connection configuration before saving."""
+    try:
+        # Check tier-based access
+        from ..services.tier_gate import check_connection_access
+        check_connection_access(current_user, test_data.platform)
+        
+        test_result = await test_platform_connection(
+            test_data.platform,
+            test_data.config
+        )
+        return test_result
+    except HTTPException as e:
+        return {
+            "success": False,
+            "error": e.detail.get("message") if isinstance(e.detail, dict) else str(e.detail)
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
 async def test_platform_connection(platform: str, config: Dict[str, Any]) -> Dict[str, Any]:
     """Test connection for a specific platform."""
     try:
@@ -325,6 +359,30 @@ async def test_platform_connection(platform: str, config: Dict[str, Any]) -> Dic
             return await whatsapp_service.test_connection(config)
         elif platform == "facebook":
             return await test_facebook_connection(config)
+        elif platform == "tiktok":
+            # Instantiate service on the fly or use global if available. 
+            # Global 'tiktok_service' isn't initialized in this file yet.
+            # Let's import inside or init. Ideally we should init at top, 
+            # but for now let's just create a temporary one or import properly.
+            # Best practice: Init at top.
+            from ..services.tiktok_service import TikTokService
+            # We need a DB session. This function doesn't receive one.
+            # Refactor: pass db to test_platform_connection? 
+            # Or use a simpler test that doesn't require DB if possible, 
+            # but TikTokService needs DB in init.
+            # Workaround: For test_connection, maybe we don't need DB if we just check token?
+            # Creating a mock DB session or `None` if the service handles it.
+            # Looking at TikTokService.init: self.db = db.
+            # looking at test_connection: it doesn't use self.db.
+            # So passing None is safe for this specific method.
+            service = TikTokService(None) 
+            try:
+                result = await service.test_connection(config)
+                await service.close()
+                return result
+            except Exception as e:
+                 await service.close()
+                 return {"success": False, "error": str(e)}
         elif platform == "twitter":
             return await test_twitter_connection(config)
         elif platform == "linkedin":
@@ -349,6 +407,8 @@ async def test_platform_connection(platform: str, config: Dict[str, Any]) -> Dic
             return await lead_service.test_connection(config)
         elif platform == "context_intelligence":
             return await context_service.test_connection(config)
+        elif platform == "kra_portal":
+            return await test_kra_connection(config)
         else:
             return {
                 "success": False,
@@ -735,3 +795,68 @@ async def get_available_platforms():
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get platforms: {str(e)}"
         )
+async def test_kra_connection(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Test KRA connection by verifying app-level tokens and taxpayer PIN."""
+    try:
+        # 1. Test app-level authentication
+        app_auth_success = await kra_service.test_connection()
+        if not app_auth_success:
+            return {
+                "success": False,
+                "error": "Failed to authenticate with KRA GavaConnect. Check app credentials."
+            }
+            
+        # 2. Verify the provided PIN using the PIN Checker API
+        pin = config.get("pin")
+        if not pin:
+            return {
+                "success": False,
+                "error": "KRA PIN is required for connection."
+            }
+            
+        pin_result = await kra_service.check_pin(pin)
+        
+        if not pin_result.get("success"):
+            error_msg = str(pin_result.get('error', ''))
+            status_code = pin_result.get('status_code', 0)
+            
+            # Allow saving if Gateway Timeout (504) or Server Error (5xx) occurs
+            # This presumes Auth succeeded (checked above) but KRA Backend is flaky
+            if status_code == 504 or "Gateway Timeout" in error_msg:
+                 return {
+                    "success": True,
+                    "message": "Connection saved (Warning: KRA PIN Check timed out, but keys are valid)",
+                    "data": {
+                        "pin": pin,
+                        "taxpayer_name": "KRA User (Unverified - Timeout)",
+                        "status": "Active (Assumed)"
+                    }
+                }
+            
+            return {
+                "success": False,
+                "error": f"Invalid KRA PIN or API error: {error_msg}"
+            }
+            
+        # Parse PINDATA from the new /checker/v1/pinbypin endpoint
+        data_block = pin_result.get("data", {})
+        pin_data = data_block.get("PINDATA", {})
+        
+        # Extract fields with fallbacks
+        taxpayer_name = pin_data.get("Name") or data_block.get("taxpayerName") or "Verified Taxpayer"
+        pin_status = pin_data.get("StatusOfPIN") or data_block.get("pinStatus") or "Active"
+        
+        return {
+            "success": True,
+            "message": "KRA connection test successful",
+            "data": {
+                "pin": pin,
+                "taxpayer_name": taxpayer_name,
+                "status": pin_status
+            }
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"KRA connection test failed: {str(e)}"
+        }

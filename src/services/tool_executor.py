@@ -34,6 +34,7 @@ from .hr_service import HRService
 from .lead_intelligence_service import LeadIntelligenceService
 from .logistics_service import LogisticsService
 from .bilingual_service import BilingualService
+from .kra_service import KraService
 from .payment_service import PaymentService
 from .ecommerce_service import EcommerceService
 from .accounting_service import AccountingService
@@ -91,6 +92,7 @@ class ToolExecutor:
             "utility": UtilitiesService(),
             "workflow": WorkflowService(),
             "clickup": ClickUpService(),
+            "kra": KraService(),
         }
         # Initialize services
         self._initialized = False
@@ -133,6 +135,12 @@ class ToolExecutor:
                     "error": f"Plan restriction: Your {user.subscription_tier} plan does not have access to the '{self._get_platform_from_tool(tool_name)}' integration. Please upgrade.",
                     "result": None
                 }
+            
+            # Check feature access for write operations (FREE tier = read-only)
+            write_access_denied = self._check_write_operation_access(tool_name, arguments, user)
+            if write_access_denied:
+                return write_access_denied
+
 
             # Route to appropriate service based on tool name
             if tool_name.startswith("slack_"):
@@ -186,6 +194,8 @@ class ToolExecutor:
                 return await self._execute_context_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("clickup_"):
                 return await self._execute_clickup_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("kra_"):
+                return await self._execute_kra_tool(tool_name, arguments, user, db)
             elif tool_name.endswith("_payment_ops"):
                 return await self._execute_fintech_tool(tool_name, arguments, user, db)
             elif tool_name.endswith("_ecommerce_ops"):
@@ -222,6 +232,95 @@ class ToolExecutor:
             return True # If no specific platform, allow it (e.g. content_creation, web_tools)
             
         return FeatureGate.has_connection_access(user, platform)
+    
+    def _check_write_operation_access(self, tool_name: str, arguments: Dict[str, Any], user: User) -> Optional[Dict[str, Any]]:
+        """
+        Check if user has access to perform write operations based on their tier.
+        Returns None if access granted, or error dict if denied.
+        
+        FREE tier users can only READ. This method blocks:
+        - Email sending (inbox_send)
+        - Calendar creating/editing (calendar_create_edit)
+        - Task creating/updating (tasks_create_update)
+        
+        Checks both tool name AND the 'operation'/'action' argument.
+        """
+        # Get operation from arguments (different tools use different keys)
+        operation = arguments.get("operation", "").lower() if arguments else ""
+        action = arguments.get("action", "").lower() if arguments else ""
+        
+        # DEBUG LOGGING
+        print(f"🔍 [FEATURE GATE DEBUG] Tool: {tool_name}, Operation: {operation}, Action: {action}")
+        print(f"🔍 [FEATURE GATE DEBUG] User ID: {user.id}, Tier: {user.subscription_tier}")
+        
+        # Define write operations and their required feature flags
+        # Format: (tool_prefix, [operations_or_actions_that_are_write])
+        WRITE_CHECKS = {
+            "inbox_send": {
+                # Google Workspace Gmail
+                "google_workspace_gmail": ["send_email", "send", "reply", "forward", "compose"],
+                # Outlook
+                "outlook_email": ["send_email", "send", "reply", "forward"],
+                "outlook": ["send_email", "reply_email"],
+                # Slack
+                "slack": ["send_message", "post_message"],
+                # Teams
+                "teams": ["send_message", "post_message"],
+                # WhatsApp
+                "whatsapp": ["send_message", "send_template"],
+            },
+            "calendar_create_edit": {
+                # Google Workspace Calendar
+                "google_workspace_calendar": ["create", "create_event", "update", "update_event", "delete", "delete_event"],
+                # Outlook Calendar
+                "outlook_calendar": ["create_event", "update_event", "delete_event"],
+                "outlook": ["create_event", "update_event"],
+            },
+            "tasks_create_update": {
+                # Jira
+                "jira": ["create_issue", "update_issue", "add_comment", "transition_issue", "create", "update"],
+                # Trello
+                "trello": ["create_card", "update_card", "move_card", "create", "update"],
+                # Asana
+                "asana": ["create_task", "update_task", "create_project", "add_comment", "create", "update"],
+                # ClickUp
+                "clickup": ["create_task", "update_task", "create", "update"],
+            },
+        }
+        
+        # Check each feature category
+        for feature_flag, tool_operations in WRITE_CHECKS.items():
+            for tool_prefix, blocked_operations in tool_operations.items():
+                # Check if tool matches this prefix
+                if tool_name.startswith(tool_prefix) or tool_name == tool_prefix:
+                    print(f"🔍 [FEATURE GATE DEBUG] Tool prefix match: {tool_prefix}")
+                    print(f"🔍 [FEATURE GATE DEBUG] Blocked operations: {blocked_operations}")
+                    print(f"🔍 [FEATURE GATE DEBUG] Checking: '{operation}' in {blocked_operations} = {operation in blocked_operations}")
+                    print(f"🔍 [FEATURE GATE DEBUG] Checking: '{action}' in {blocked_operations} = {action in blocked_operations}")
+                    
+                    # Check if operation or action is a write operation
+                    if operation in blocked_operations or action in blocked_operations:
+                        # Check if user has this feature
+                        has_access = FeatureGate.has_feature(user, feature_flag)
+                        print(f"🔍 [FEATURE GATE DEBUG] Checking has_feature({user.subscription_tier}, {feature_flag}) = {has_access}")
+                        
+                        if not has_access:
+                            upgrade_msg = FeatureGate.get_upgrade_message(user.subscription_tier, feature_flag)
+                            logger.info(f"Feature gate blocked {tool_name}/{operation or action} for user {user.id} (tier: {user.subscription_tier}, required: {feature_flag})")
+                            print(f"🚫 [FEATURE GATE] BLOCKED: {tool_name}/{operation or action} for {user.subscription_tier} tier")
+                            return {
+                                "success": False,
+                                "error": upgrade_msg,
+                                "upgrade_required": True,
+                                "required_feature": feature_flag,
+                                "current_tier": user.subscription_tier,
+                                "result": None
+                            }
+                        else:
+                            print(f"✅ [FEATURE GATE] ALLOWED: {tool_name}/{operation or action} - user has {feature_flag}")
+        
+        print(f"✅ [FEATURE GATE] No write operation detected, allowing: {tool_name}")
+        return None  # Access granted
 
     def _get_platform_from_tool(self, tool_name: str) -> Optional[str]:
         """Map tool name to platform string."""
@@ -242,6 +341,7 @@ class ToolExecutor:
         if tool_name.startswith("lead_intelligence_"): return "lead_intelligence"
         if tool_name.startswith("logistics_"): return "logistics_hub"
         if tool_name.startswith("clickup_"): return "clickup"
+        if tool_name.startswith("kra_"): return "kra_portal"
         
         # Kenyan Specific Mappings
         if tool_name.endswith("_payment_ops"): return tool_name.replace("_payment_ops", "")
@@ -303,6 +403,7 @@ class ToolExecutor:
             channel = arguments.get("channel", "")
             message = arguments.get("message", "")
             file_path = arguments.get("file_path") # Get the file_path from arguments
+            thread_ts = arguments.get("thread_ts") # Get thread_ts for threaded replies
 
             # Ensure channel has # prefix if it's not already prefixed and doesn't look like a Slack ID
             def is_slack_id(c):
@@ -332,17 +433,47 @@ class ToolExecutor:
                     }
                 else:
                     # Original send_message logic if no file_path
-                    print(f"💬 Sending message to Slack channel {channel}: {message}")
+                    print(f"💬 Sending message to Slack channel {channel}: {message}" + (f" (thread: {thread_ts})" if thread_ts else ""))
+                    
+                    # Check for attachments from frontend (base64 encoded)
+                    attachments = arguments.get("attachments", [])
+                    upload_results = []
+                    
+                    if attachments:
+                        print(f"📎 Uploading {len(attachments)} attachment(s) to Slack...")
+                        for attachment in attachments:
+                            filename = attachment.get("filename", "file")
+                            content = attachment.get("content", "")
+                            if content:
+                                upload_result = await slack_service.upload_file_from_content(
+                                    channel=channel,
+                                    filename=filename,
+                                    content=content,
+                                    comment=None,  # Don't add comment for each file
+                                    thread_ts=thread_ts
+                                )
+                                upload_results.append(upload_result)
+                                print(f"📤 Uploaded {filename}: {upload_result.get('success', False)}")
+                    
+                    # Send the message
                     result = await slack_service.send_message(
-                        channel, message
+                        channel, message, thread_ts=thread_ts
                     )
+                    
+                    # Combine results
+                    if upload_results:
+                        result["attachments_uploaded"] = len([r for r in upload_results if r.get("success")])
+                        result["attachment_errors"] = [r.get("error") for r in upload_results if not r.get("success")]
+                    
                     return {
                         "success": result.get("success", False),
-                        "result": result.get("message") or result.get("error") or f"Message sent to {channel}",
+                        "result": result.get("message") or result.get("error") or f"Message sent to {channel}" + (f" with {len(upload_results)} attachment(s)" if upload_results else "") + (" as thread reply" if thread_ts else ""),
                         "data": result,
                         "processed_arguments": {
                             "channel": channel,
-                            "message": message
+                            "message": message,
+                            "thread_ts": thread_ts,
+                            "attachments": len(attachments) if attachments else 0
                         }
                     }
             elif action == "send_report":
@@ -1499,6 +1630,16 @@ class ToolExecutor:
                     "result": f"Found {result.get('count', 0)} boards",
                     "data": result
                 }
+            elif action == "get_board_members":
+                board_id = arguments.get("board_id")
+                if not board_id:
+                     return {"success": False, "error": "Board ID required for get_board_members"}
+                result = await trello_service.get_board_members(board_id)
+                return {
+                    "success": result.get("success", False),
+                    "result": f"Found {result.get('count', 0)} members",
+                    "data": result
+                }
             elif action == "search_cards":
                 query = arguments.get("query", "")
                 limit = arguments.get("limit", 10)
@@ -1526,10 +1667,13 @@ class ToolExecutor:
                 desc = arguments.get("desc", "")
                 due = arguments.get("due")
                 
+                start = arguments.get("start")
+                idMembers = arguments.get("idMembers")
+                
                 if not list_id or not name:
                      return {"success": False, "error": "List ID and Name required for create_card"}
                 
-                result = await trello_service.create_card(list_id, name, desc, due)
+                result = await trello_service.create_card(list_id, name, desc, due, start, idMembers)
                 return {
                     "success": result.get("success", False),
                     "result": "Card created",
@@ -1542,10 +1686,14 @@ class ToolExecutor:
                 desc = arguments.get("desc")
                 closed = arguments.get("closed")
                 
+                due = arguments.get("due")
+                start = arguments.get("start")
+                idMembers = arguments.get("idMembers")
+                
                 if not card_id:
                      return {"success": False, "error": "Card ID required for update_card"}
                 
-                result = await trello_service.update_card(card_id, list_id, name, desc, closed)
+                result = await trello_service.update_card(card_id, list_id, name, desc, closed, due, start, idMembers)
                 return {
                     "success": result.get("success", False),
                     "result": "Card updated",
@@ -1640,6 +1788,14 @@ class ToolExecutor:
                     "result": f"Found {result.get('count', 0)} projects",
                     "data": result
                 }
+            elif action == "get_users":
+                project_key = arguments.get("project_key") # Optional
+                result = await execute_with_retry(jira_service.get_users, project_key)
+                return {
+                    "success": result.get("success", False),
+                    "result": f"Found {result.get('count', 0)} users",
+                    "data": result
+                }
             elif action == "search_issues":
                 jql = arguments.get("jql", "")
                 limit = arguments.get("limit", 10)
@@ -1657,11 +1813,14 @@ class ToolExecutor:
                 description = arguments.get("description", "")
                 issuetype = arguments.get("issuetype", "Task")
                 status = arguments.get("status", "To Do")
+                assignee_id = arguments.get("assignee_id")
+                priority = arguments.get("priority")
+                duedate = arguments.get("duedate")
                 
                 if not project_key or not summary:
                      return {"success": False, "error": "Project Key and Summary required for create_issue"}
                 
-                result = await execute_with_retry(jira_service.create_issue, project_key, summary, description, issuetype, status)
+                result = await execute_with_retry(jira_service.create_issue, project_key, summary, description, issuetype, status, assignee_id, priority, duedate)
                 return {
                     "success": result.get("success", False),
                     "result": "Issue created",
@@ -1670,15 +1829,45 @@ class ToolExecutor:
             elif action == "update_issue":
                 issue_key = arguments.get("issue_key")
                 status = arguments.get("status")
+                summary = arguments.get("summary")
+                description = arguments.get("description")
+                due_date = arguments.get("due_date")
                 
-                if not issue_key or not status:
-                     return {"success": False, "error": "Issue Key and Status required for update_issue"}
+                if not issue_key:
+                     return {"success": False, "error": "Issue Key required for update_issue"}
                 
-                result = await execute_with_retry(jira_service._transition_issue, issue_key, status)
+                results = []
+                success = True
+                
+                # Update status if provided
+                if status:
+                    res = await execute_with_retry(jira_service._transition_issue, issue_key, status)
+                    results.append(res)
+                    if not res.get("success"):
+                        success = False
+                
+                # Update summary/description/due_date/priority/assignee if provided
+                if summary or description or due_date or arguments.get("priority") or arguments.get("assignee_id"):
+                    res = await execute_with_retry(
+                        jira_service.update_issue, 
+                        issue_key=issue_key, 
+                        summary=summary, 
+                        description=description, 
+                        assignee_id=arguments.get("assignee_id"),
+                        priority=arguments.get("priority"),
+                        due_date=due_date
+                    )
+                    results.append(res)
+                    if not res.get("success"):
+                        success = False
+                
+                if not status and not summary and not description and not due_date and not arguments.get("assignee_id") and not arguments.get("priority"):
+                    return {"success": False, "error": "At least one field (status, summary, description, due_date, assignee_id, priority) must be provided to update"}
+
                 return {
-                    "success": result.get("success", False),
-                    "result": f"Issue updated to {status}",
-                    "data": result
+                    "success": success,
+                    "result": f"Issue updated" if success else "Issue update failed partially or fully",
+                    "data": results[0] if len(results) == 1 else results
                 }
             else:
                  return {"success": False, "error": f"Unknown Jira action: {action}"}
@@ -2755,21 +2944,95 @@ class ToolExecutor:
             await asana_service.initialize(config)
             print(f"🔧 Initialized Asana service with user access token for user {user.id}")
             
-            # Route to specific Asana tool
+            # Get refresh token for auto-refresh capability
+            refresh_token = connection.config.get("refresh_token")
+            
+            # ===== AUTO TOKEN REFRESH WRAPPER =====
+            async def execute_with_token_refresh(func, *args, **kwargs):
+                """Execute Asana function with automatic token refresh on expiration."""
+                # First attempt
+                res = await func(*args, **kwargs)
+                
+                # Check for token expiration errors
+                error_msg = str(res.get("error", ""))
+                is_token_expired = (
+                    not res.get("success") and 
+                    ("expired" in error_msg.lower() or "401" in error_msg or "bearer token" in error_msg.lower())
+                )
+                
+                if is_token_expired and refresh_token:
+                    logger.info(f"Asana token expired for user {user.id}. Attempting refresh...")
+                    try:
+                        # Refresh the token
+                        new_tokens = await asana_service.refresh_access_token(refresh_token)
+                        new_access_token = new_tokens.get("access_token")
+                        new_refresh_token = new_tokens.get("refresh_token")
+                        
+                        if new_access_token:
+                            # Update DB connection config
+                            config_update = connection.config.copy()
+                            config_update["access_token"] = new_access_token
+                            if new_refresh_token:
+                                config_update["refresh_token"] = new_refresh_token
+                            
+                            connection.config = config_update
+                            from sqlalchemy.orm.attributes import flag_modified
+                            flag_modified(connection, "config")
+                            await db.commit()
+                            logger.info(f"Asana token refreshed and saved for user {user.id}")
+                            
+                            # Re-initialize the service with new token
+                            asana_service.access_token = new_access_token
+                            asana_service._initialized = True
+                            
+                            # Retry the operation
+                            return await func(*args, **kwargs)
+                        else:
+                            logger.error("Token refresh returned no access_token")
+                    except Exception as e:
+                        logger.error(f"Failed to refresh Asana token: {e}")
+                        # Return user-friendly error for reconnection
+                        return {
+                            "success": False,
+                            "error": "Asana token expired. Please reconnect your Asana account in Settings > Connections."
+                        }
+                
+                return res
+            # ===== END TOKEN REFRESH WRAPPER =====
+            
+            # Route to specific Asana tool (with auto-refresh)
             if tool_name == "asana_create_project":
-                return await self._execute_asana_create_project(arguments, asana_service, connection)
+                return await execute_with_token_refresh(
+                    self._execute_asana_create_project, arguments, asana_service, connection
+                )
             elif tool_name == "asana_list_projects":
-                return await self._execute_asana_list_projects(arguments, asana_service, connection)
+                return await execute_with_token_refresh(
+                    self._execute_asana_list_projects, arguments, asana_service, connection
+                )
             elif tool_name == "asana_create_task":
-                return await self._execute_asana_create_task(arguments, asana_service, connection)
+                return await execute_with_token_refresh(
+                    self._execute_asana_create_task, arguments, asana_service, connection
+                )
             elif tool_name == "asana_list_tasks":
-                return await self._execute_asana_list_tasks(arguments, asana_service, connection)
+                return await execute_with_token_refresh(
+                    self._execute_asana_list_tasks, arguments, asana_service, connection
+                )
             elif tool_name == "asana_add_comment":
-                return await self._execute_asana_add_comment(arguments, asana_service, connection)
+                return await execute_with_token_refresh(
+                    self._execute_asana_add_comment, arguments, asana_service, connection
+                )
             elif tool_name == "asana_get_teams":
-                return await self._execute_asana_get_teams(arguments, asana_service, connection)
+                return await execute_with_token_refresh(
+                    self._execute_asana_get_teams, arguments, asana_service, connection
+                )
             elif tool_name == "asana_get_workspaces":
-                return await self._execute_asana_get_workspaces(arguments, asana_service, connection)
+                return await execute_with_token_refresh(
+                    self._execute_asana_get_workspaces, arguments, asana_service, connection
+                )
+            elif tool_name == "asana_get_users":
+                return await execute_with_token_refresh(
+                    self._execute_asana_get_users, arguments, asana_service, connection
+                )
             else:
                 return {
                     "success": False,
@@ -2782,6 +3045,8 @@ class ToolExecutor:
                 "error": f"Asana tool execution failed: {str(e)}"
             }
     
+
+
     async def _execute_google_workspace_tool(
         self,
         tool_name: str,
@@ -2823,9 +3088,28 @@ class ToolExecutor:
             credentials_data = {
                 "client_id": client_id,
                 "client_secret": client_secret,
-                "refresh_token": refresh_token
+                "refresh_token": refresh_token,
+                "access_token": connection.config.get("access_token"),
+                "scopes": connection.config.get("scopes")
             }
             base_client = GoogleWorkspaceBaseClient(credentials_data)
+            
+            # Check for token refresh and persist if changed
+            try:
+                if base_client.refresh_token_if_needed():
+                    updated_creds = base_client.get_updated_credentials()
+                    # Check if access token changed
+                    if updated_creds.get("access_token") != connection.config.get("access_token"):
+                        # Update connection config with new credentials
+                        new_config = dict(connection.config)
+                        new_config.update(updated_creds)
+                        connection.config = new_config
+                        await db.commit()
+                        await db.refresh(connection)
+            except Exception as e:
+                # Log error but proceed; tool execution specific errors will be caught later
+                if 'logger' in locals() or 'logger' in globals():
+                    logger.warning(f"Error persisting Google Workspace token: {e}")
             
             operation = arguments.get("operation")
             
@@ -2840,6 +3124,7 @@ class ToolExecutor:
                         body=arguments.get("body"),
                         cc=arguments.get("cc"),
                         bcc=arguments.get("bcc"),
+                        attachments=arguments.get("attachments"),
                         html=arguments.get("html", False)
                     )
                 elif operation == "read_emails":
@@ -3264,11 +3549,16 @@ class ToolExecutor:
                         "error": "workspace_id is required for task creation. Please ensure your Asana connection includes a workspace_id."
                     }
 
+            # Support 'projects' list or single 'project_id'
+            projects = arguments.get("projects")
+            if not projects and project_id:
+                projects = [project_id]
+
             result = await asana_service.create_task(
                 name=name,
                 notes=notes,
                 workspace_id=workspace_id,
-                projects=[project_id] if project_id else None,
+                projects=projects,
                 assignee=assignee,
                 due_date=due_date
             )
@@ -3305,21 +3595,53 @@ class ToolExecutor:
             assignee = arguments.get("assignee")
             limit = arguments.get("limit", 50)
 
+            opt_fields = arguments.get("opt_fields")
+            
             # Ensure we have workspace_id for task listing
             if not workspace_id:
                 # Try to get workspace_id from the service's initialized config
                 if asana_service.workspace_id:
                     workspace_id = asana_service.workspace_id
                 else:
-                    return {
-                        "success": False,
-                        "error": "workspace_id is required for task listing. Please ensure your Asana connection includes a workspace_id."
-                    }
+                    # improved fallback: try to fetch user's workspaces and use the first one
+                    debug_info = "No attempts made"
+                    try:
+                        workspaces_result = await asana_service.get_workspaces()
+                        debug_info = f"Fetch result: {workspaces_result}"
+                        
+                        if workspaces_result.get("success"):
+                            workspaces_data = workspaces_result.get("data")
+                            workspaces_list = []
+
+                            if isinstance(workspaces_data, list):
+                                workspaces_list = workspaces_data
+                            elif isinstance(workspaces_data, dict) and "data" in workspaces_data:
+                                workspaces_list = workspaces_data.get("data")
+                            
+                            if workspaces_list and isinstance(workspaces_list, list) and len(workspaces_list) > 0:
+                                workspace_id = workspaces_list[0].get("gid")
+                                logger.info(f"Auto-selected workspace {workspace_id} for task listing")
+                            else:
+                                debug_info += f", No workspaces found (parsed list: {workspaces_list})"
+                    except Exception as ws_e:
+                        logger.warning(f"Failed to auto-fetch workspaces: {ws_e}")
+                        debug_info = f"Exception: {repr(ws_e)}"
+
+                    if not workspace_id:
+                        return {
+                            "success": False,
+                            "error": f"workspace_id is required for task listing. Please ensure your Asana connection includes a workspace_id. Debug: {debug_info}"
+                        }
+
+            # Asana requires either project, tag, section, or (assignee + workspace)
+            if not project_id and not assignee:
+                assignee = "me"
 
             result = await asana_service.list_tasks(
                 workspace_id=workspace_id,
                 project_id=project_id,
                 assignee=assignee,
+                opt_fields=opt_fields,
                 limit=limit
             )
 
@@ -3456,6 +3778,25 @@ class ToolExecutor:
                 "success": False,
                 "error": f"Failed to get Asana workspaces: {str(e)}"
             }
+
+    async def _execute_asana_get_users(
+        self,
+        arguments: Dict[str, Any],
+        asana_service: AsanaService,
+        connection: Connection
+    ) -> Dict[str, Any]:
+        """Execute Asana get users tool."""
+        workspace_id = arguments.get("workspace_id")
+        team_id = arguments.get("team_id")
+        
+        result = await asana_service.get_users(workspace_id, team_id)
+        
+        users = result.get("data", [])
+        return {
+            "success": result.get("success", False),
+            "result": f"Found {len(users)} users",
+            "data": result
+        }
 
     async def _execute_powerbi_tool(
         self,
@@ -4162,6 +4503,52 @@ class ToolExecutor:
             logger.error(f"Error executing content creation tool: {e}")
             return {"success": False, "error": str(e)}
 
+    async def _execute_workflow_management_tool(
+        self,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute workflow management tools."""
+        return await self.services["workflow"].execute_tool(arguments, user, db)
+
+    async def _execute_kra_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute KRA-related tools."""
+        kra_service = self.services["kra"]
+        operation = arguments.get("operation")
+        
+        if tool_name == "kra_pin_checker" or operation == "check_pin":
+            pin = arguments.get("pin")
+            if not pin:
+                return {"success": False, "error": "PIN is required"}
+            return await kra_service.check_pin(pin)
+            
+        elif tool_name == "kra_id_checker" or operation == "check_id":
+            id_number = arguments.get("id_number")
+            if not id_number:
+                return {"success": False, "error": "ID Number is required"}
+            return await kra_service.get_pin_by_id(id_number)
+            
+        elif tool_name == "kra_nil_return" or operation == "file_nil_return":
+            pin = arguments.get("pin")
+            tax_obligation = arguments.get("tax_obligation", "Income Tax - Resident Individual")
+            period_from = arguments.get("period_from")
+            period_to = arguments.get("period_to")
+            
+            if not all([pin, period_from, period_to]):
+                return {"success": False, "error": "PIN, period_from, and period_to are required"}
+                
+            return await kra_service.file_nil_return(pin, tax_obligation, period_from, period_to)
+            
+        else:
+             return {"success": False, "error": f"Unknown KRA operation: {operation}"}
+
     async def _execute_mpesa_tool(
         self,
         arguments: Dict[str, Any],
@@ -4776,15 +5163,34 @@ Description: {payment.description or 'N/A'}"""
                         access_token,
                         arguments.get("list_id"),
                         arguments.get("name"),
-                        arguments.get("description")
+                        arguments.get("description"),
+                        arguments.get("assignees"),
+                        arguments.get("priority"),
+                        arguments.get("due_date"),
+                        arguments.get("start_date")
                     )
                 elif operation == "update_task":
+                    # ClickUp requires assignees in {add: [...], rem: [...]} format for updates
+                    raw_assignees = arguments.get("assignees")
+                    formatted_assignees = None
+                    if raw_assignees:
+                        # If already in dict format with add/rem keys, use as-is
+                        if isinstance(raw_assignees, dict) and ("add" in raw_assignees or "rem" in raw_assignees):
+                            formatted_assignees = raw_assignees
+                        # If it's a list, convert to {add: [...]} format
+                        elif isinstance(raw_assignees, list):
+                            formatted_assignees = {"add": raw_assignees}
+                    
                     return await clickup_service.update_task(
                         access_token,
                         arguments.get("task_id"),
                         arguments.get("status"),
                         arguments.get("name"),
-                        arguments.get("description")
+                        arguments.get("description"),
+                        arguments.get("due_date"),
+                        arguments.get("start_date"),
+                        formatted_assignees,
+                        arguments.get("priority")
                     )
                 elif operation == "get_tasks":
                     return await clickup_service.get_tasks(
@@ -4806,6 +5212,18 @@ Description: {payment.description or 'N/A'}"""
                     )
                 elif operation == "get_teams":
                     return await clickup_service.get_teams(access_token)
+                elif operation == "get_team_members":
+                    team_id = arguments.get("team_id")
+                    if not team_id:
+                         # Default to first team if not provided
+                         teams_res = await clickup_service.get_teams(access_token)
+                         if teams_res.get("success") and teams_res.get("data", {}).get("teams"):
+                             team_id = teams_res.get("data", {}).get("teams")[0].get("id")
+                    
+                    if not team_id:
+                        return {"success": False, "error": "Team ID required or could not be determined"}
+                        
+                    return await clickup_service.get_team_members(access_token, team_id)
                 else:
                     return {"success": False, "error": f"Unsupported operation: {operation}"}
             
@@ -4813,6 +5231,89 @@ Description: {payment.description or 'N/A'}"""
             
         except Exception as e:
             logger.error(f"Error executing ClickUp tool: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_kra_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute KRA-related tools."""
+        try:
+            kra_service = self.services["kra"]
+            
+            # Get user's KRA connection to retrieve the PIN
+            result = await db.execute(
+                select(Connection)
+                .filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == "kra_portal",
+                    Connection.status == ConnectionStatus.ACTIVE
+                )
+            )
+            connection = result.scalar_one_or_none()
+            
+            # PIN can be provided in arguments OR retrieved from connection config
+            pin = arguments.get("pin")
+            if not pin and connection:
+                pin = connection.config.get("pin")
+                
+            if not pin:
+                return {
+                    "success": False,
+                    "error": "KRA PIN not found. Please connect your KRA account or provide a PIN.",
+                    "result": None
+                }
+                
+            if tool_name == "kra_pin_check":
+                result = await kra_service.check_pin(pin)
+                return {
+                    "success": result.get("success", False),
+                    "result": f"PIN Verification result for {pin}",
+                    "data": result
+                }
+                
+            elif tool_name == "kra_tcc_validator":
+                result = await kra_service.validate_tcc(pin)
+                return {
+                    "success": result.get("success", False),
+                    "result": f"TCC Validation result for {pin}",
+                    "data": result
+                }
+                
+            elif tool_name == "kra_nil_return_filer":
+                result = await kra_service.file_nil_return(pin)
+                return {
+                    "success": result.get("success", False),
+                    "result": f"NIL Return Filing result for {pin}",
+                    "data": result
+                }
+                
+            elif tool_name == "kra_eslip_verifier":
+                eslip_number = arguments.get("eslip_number")
+                if not eslip_number:
+                    return {"success": False, "error": "e-Slip number is required"}
+                result = await kra_service.verify_eslip(eslip_number)
+                return {
+                    "success": result.get("success", False),
+                    "result": f"e-Slip Verification result for {eslip_number}",
+                    "data": result
+                }
+                
+            elif tool_name == "kra_etims_activator":
+                result = await kra_service.activate_etims(pin)
+                return {
+                    "success": result.get("success", False),
+                    "result": f"eTIMS Activation result for {pin}",
+                    "data": result
+                }
+                
+            return {"success": False, "error": f"Unknown KRA tool: {tool_name}"}
+            
+        except Exception as e:
+            logger.error(f"Error executing KRA tool: {e}")
             return {"success": False, "error": str(e)}
 
     async def _execute_system_tool(

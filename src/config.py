@@ -57,9 +57,37 @@ class BaseConfig(BaseSettings):
     TWITTER_CLIENT_ID: Optional[str] = None
     TWITTER_CLIENT_SECRET: Optional[str] = None
 
+    # TikTok Configuration
+    TIKTOK_CLIENT_KEY: Optional[str] = None
+    TIKTOK_CLIENT_SECRET: Optional[str] = None
+
+    # KRA GavaConnect Configuration (Multi-App)
+    KRA_ENV: str = "sandbox"  # sandbox or production
+    
+    # App 1a: Identity - PIN Checker (By PIN)
+    KRA_IDENTITY_PIN_KEY: Optional[str] = None
+    KRA_IDENTITY_PIN_SECRET: Optional[str] = None
+
+    # App 1b: Identity - ID Checker (By National ID)
+    KRA_IDENTITY_ID_KEY: Optional[str] = None
+    KRA_IDENTITY_ID_SECRET: Optional[str] = None
+    
+    # App 2: Filing (NIL Returns, Tax Returns)
+    KRA_NIL_FILING_KEY: Optional[str] = None
+    KRA_NIL_FILING_SECRET: Optional[str] = None
+    
+    # App 3: eTIMS (Device Init, eSlips)
+    KRA_ETIMS_KEY: str = "wHMPOgfwO6..."
+    KRA_ETIMS_SECRET: str = "2GMNiibyAA..."
+
+    KRA_INDIVIDUAL_PIN_REGISTRATION_KEY: str = "wHMPOgfwO6..." 
+    KRA_INDIVIDUAL_PIN_REGISTRATION_SECRET: str = "2GMNiibyAA..."
+
     # Asana API Configuration
     ASANA_ACCESS_TOKEN: Optional[str] = None
     ASANA_WORKSPACE_ID: Optional[str] = None
+    ASANA_CLIENT_ID: Optional[str] = None
+    ASANA_CLIENT_SECRET: Optional[str] = None
 
     # Power BI Configuration
     POWERBI_CLIENT_ID: Optional[str] = None
@@ -81,6 +109,14 @@ class BaseConfig(BaseSettings):
     # Jira Configuration
     JIRA_CLIENT_ID: Optional[str] = None
     JIRA_CLIENT_SECRET: Optional[str] = None
+
+    # WhatsApp Business Configuration
+    WHATSAPP_VERIFY_TOKEN: Optional[str] = None
+    WHATSAPP_TOKEN: Optional[str] = None
+    WHATSAPP_PHONE_NUMBER_ID: Optional[str] = None
+    WHATSAPP_BUSINESS_ACCOUNT_ID: Optional[str] = None
+    WHATSAPP_APP_ID: Optional[str] = None
+    WHATSAPP_APP_SECRET: Optional[str] = None
 
     # LLM API Keys
     OPENAI_API_KEY: Optional[str] = None
@@ -107,6 +143,13 @@ class BaseConfig(BaseSettings):
     # Together AI Settings
     TOGETHER_MODEL: str = "togethercomputer/llama-2-7b-chat"
 
+    # Anthropic Settings
+    ANTHROPIC_MODEL: str = "claude-3-5-sonnet-20240620"
+
+    # Paystack
+    PAYSTACK_SECRET_KEY: Optional[str] = None
+    PAYSTACK_PUBLIC_KEY: Optional[str] = None
+
     # Stripe
     STRIPE_SECRET_KEY: Optional[str] = None
     STRIPE_WEBHOOK_SECRET: Optional[str] = None
@@ -131,6 +174,9 @@ class BaseConfig(BaseSettings):
     MPESA_BUSINESS_SHORT_CODE: Optional[str] = None
     MPESA_CALLBACK_URL: Optional[str] = None
     MPESA_ENVIRONMENT: str = "sandbox"  # sandbox or live
+
+    # Support Email Configuration
+    SUPPORT_EMAIL_PASSWORD: Optional[str] = None
 
     # Server Settings
     HOST: str = "0.0.0.0"
@@ -160,6 +206,12 @@ class BaseConfig(BaseSettings):
     # Admin Configuration
     ADMIN_EMAIL: Optional[str] = None
     ADMIN_PASSWORD: Optional[str] = None
+
+    # Google OAuth Configuration
+    GOOGLE_CLIENT_ID: Optional[str] = None
+
+    # Microsoft OAuth Configuration
+    MICROSOFT_CLIENT_ID: Optional[str] = None
 
     class Config:
         env_file = ".env"

@@ -26,6 +26,19 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 import json
+import httpx
+
+from ..config import settings
+
+
+class GoogleAuthRequest(BaseModel):
+    """Request model for Google OAuth authentication."""
+    credential: str  # Google ID token
+
+
+class MicrosoftAuthRequest(BaseModel):
+    """Request model for Microsoft OAuth authentication."""
+    access_token: str  # Microsoft access token
 
 
 class UserRegister(BaseModel):
@@ -159,26 +172,26 @@ async def register(
         
     # Check if the email has been approved for access
     # 0. Check for Admin bypass
-    from ..config import settings
-    if settings.ADMIN_EMAIL and user_data.email == settings.ADMIN_EMAIL:
-        pass # Skip access checks for admin
-    else:
-        access_result = await db.execute(
-            select(AccessRequest).where(AccessRequest.email == user_data.email)
-        )
-        access_request = access_result.scalar_one_or_none()
+    # from ..config import settings
+    # if settings.ADMIN_EMAIL and user_data.email == settings.ADMIN_EMAIL:
+    #     pass # Skip access checks for admin
+    # else:
+    #     access_result = await db.execute(
+    #         select(AccessRequest).where(AccessRequest.email == user_data.email)
+    #     )
+    #     access_request = access_result.scalar_one_or_none()
         
-        if not access_request:
-             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Please request access first."
-            )
+    #     if not access_request:
+    #          raise HTTPException(
+    #             status_code=status.HTTP_403_FORBIDDEN,
+    #             detail="Please request access first."
+    #         )
         
-        if access_request.status != AccessRequestStatus.APPROVED:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Your email has not been approved for access yet. Please join the waitlist."
-            )
+    #     if access_request.status != AccessRequestStatus.APPROVED:
+    #         raise HTTPException(
+    #             status_code=status.HTTP_403_FORBIDDEN,
+    #             detail="Your email has not been approved for access yet. Please join the waitlist."
+    #         )
 
     # Create new user
     hashed_password = get_password_hash(user_data.password)
@@ -215,6 +228,186 @@ async def register(
     }
 
 
+@router.post("/google")
+async def google_auth(
+    request: Request,
+    data: GoogleAuthRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Authenticate user with Google OAuth.
+    Verifies the Google ID token and creates/logs in the user.
+    """
+    try:
+        # Verify Google ID token using Google's tokeninfo endpoint
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"https://oauth2.googleapis.com/tokeninfo?id_token={data.credential}"
+            )
+            
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid Google token"
+                )
+            
+            google_user = response.json()
+        
+        # Verify the audience (client ID) matches our app
+        google_client_id = getattr(settings, 'GOOGLE_CLIENT_ID', None)
+        if google_client_id and google_user.get('aud') != google_client_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token was not issued for this application"
+            )
+        
+        # Extract user info from Google response
+        email = google_user.get('email')
+        name = google_user.get('name', email.split('@')[0])
+        picture = google_user.get('picture')
+        
+        if not email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email not provided by Google"
+            )
+        
+        # Check if user exists
+        result = await db.execute(
+            select(User).where(User.email == email)
+        )
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            # Create new user (Sign Up flow)
+            api_key = secrets.token_urlsafe(32)
+            # Generate a random password hash for Google users (they won't use it)
+            random_password = secrets.token_urlsafe(32)
+            hashed_password = get_password_hash(random_password)
+            
+            user = User(
+                email=email,
+                name=name,
+                password_hash=hashed_password,
+                api_key=api_key
+            )
+            
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
+        
+        # Create access token
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.email}, expires_delta=access_token_expires
+        )
+        
+        return {
+            "success": True,
+            "data": {
+                "token": access_token,
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "name": user.name,
+                    "subscription_tier": user.subscription_tier
+                }
+            }
+        }
+        
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Failed to verify Google token"
+        )
+
+
+@router.post("/microsoft")
+async def microsoft_auth(
+    request: Request,
+    data: MicrosoftAuthRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Authenticate user with Microsoft OAuth.
+    Verifies the Microsoft access token and creates/logs in the user.
+    """
+    try:
+        # Use Microsoft Graph API to get user info
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://graph.microsoft.com/v1.0/me",
+                headers={"Authorization": f"Bearer {data.access_token}"}
+            )
+            
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid Microsoft token"
+                )
+            
+            ms_user = response.json()
+        
+        # Extract user info from Microsoft response
+        email = ms_user.get('mail') or ms_user.get('userPrincipalName')
+        name = ms_user.get('displayName', email.split('@')[0] if email else 'User')
+        
+        if not email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email not provided by Microsoft"
+            )
+        
+        # Check if user exists
+        result = await db.execute(
+            select(User).where(User.email == email)
+        )
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            # Create new user (Sign Up flow)
+            api_key = secrets.token_urlsafe(32)
+            # Generate a random password hash for Microsoft users (they won't use it)
+            random_password = secrets.token_urlsafe(32)
+            hashed_password = get_password_hash(random_password)
+            
+            user = User(
+                email=email,
+                name=name,
+                password_hash=hashed_password,
+                api_key=api_key
+            )
+            
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
+        
+        # Create access token
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.email}, expires_delta=access_token_expires
+        )
+        
+        return {
+            "success": True,
+            "data": {
+                "token": access_token,
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "name": user.name,
+                    "subscription_tier": user.subscription_tier
+                }
+            }
+        }
+        
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Failed to verify Microsoft token"
+        )
+
+
 @router.post("/login")
 async def login(
     request: Request,
@@ -228,32 +421,32 @@ async def login(
         raise HTTPException(status_code=429, detail="Too many login attempts. Please try again later.")
 
     # 0. Check for Admin bypass
-    from ..config import settings
-    if settings.ADMIN_EMAIL and user_data.email == settings.ADMIN_EMAIL:
-        pass # Skip access checks for admin
-    else:
-        # 1. Check Access Request Status
-        access_result = await db.execute(
-            select(AccessRequest).where(AccessRequest.email == user_data.email)
-        )
-        access_request = access_result.scalar_one_or_none()
+    # from ..config import settings
+    # if settings.ADMIN_EMAIL and user_data.email == settings.ADMIN_EMAIL:
+    #     pass # Skip access checks for admin
+    # else:
+    #     # 1. Check Access Request Status
+    #     access_result = await db.execute(
+    #         select(AccessRequest).where(AccessRequest.email == user_data.email)
+    #     )
+    #     access_request = access_result.scalar_one_or_none()
         
-        # If they aren't on the list at all
-        if not access_request:
-            # Check if they really are a user (legacy support)
-            user_check = await db.execute(select(User).where(User.email == user_data.email))
-            if not user_check.scalar_one_or_none():
-                 raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Please request access first."
-                )
+    #     # If they aren't on the list at all
+    #     if not access_request:
+    #         # Check if they really are a user (legacy support)
+    #         user_check = await db.execute(select(User).where(User.email == user_data.email))
+    #         if not user_check.scalar_one_or_none():
+    #              raise HTTPException(
+    #                 status_code=status.HTTP_403_FORBIDDEN,
+    #                 detail="Please request access first."
+    #             )
         
-        # If they are on the list but pending/rejected
-        elif access_request.status != AccessRequestStatus.APPROVED:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You are on the list awaiting approval."
-            )
+    #     # If they are on the list but pending/rejected
+    #     elif access_request.status != AccessRequestStatus.APPROVED:
+    #         raise HTTPException(
+    #             status_code=status.HTTP_403_FORBIDDEN,
+    #             detail="You are on the list awaiting approval."
+    #         )
 
     # 2. Proceed with Standard Login (User Check)
     result = await db.execute(
@@ -311,7 +504,11 @@ async def get_current_user_info(
             "id": current_user.id,
             "email": current_user.email,
             "name": current_user.name,
-            "subscription_tier": current_user.subscription_tier
+            "subscription_tier": current_user.subscription_tier,
+            "subscription_status": current_user.subscription_status,
+            "subscription_end_date": current_user.subscription_end_date.isoformat() if current_user.subscription_end_date else None,
+            "role": getattr(current_user, 'role', 'user') or 'user',
+            "permissions": getattr(current_user, 'permissions', {}) or {},
         }
     }
 

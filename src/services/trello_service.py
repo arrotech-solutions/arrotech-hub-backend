@@ -190,7 +190,8 @@ class TrelloService:
             "modelTypes": "cards",
             "cards_limit": limit,
             "partial": "true",  # Allow partial matches
-            "card_list": "true"  # Include list info
+            "card_list": "true",  # Include list info
+            "card_fields": "all"   # Include description and other fields
         }
         response = await self._request("GET", "search", params=params)
         
@@ -229,12 +230,33 @@ class TrelloService:
                 "list": {"name": list_name, "id": list_id},
                 "listName": list_name,  # For easier frontend access
                 "due": c.get("due"),
+                "desc": c.get("desc"),
                 "closed": c.get("closed")
             })
             
         return {"success": True, "cards": cards, "count": len(cards)}
 
-    async def create_card(self, list_id: str, name: str, desc: str = "", due: str = None) -> Dict[str, Any]:
+    async def get_board_members(self, board_id: str) -> Dict[str, Any]:
+        """Get members of a board."""
+        # /boards/{id}/members
+        response = await self._request("GET", f"boards/{board_id}/members")
+        
+        if isinstance(response, dict) and "error" in response:
+            return response
+            
+        members = []
+        for m in response:
+            members.append({
+                "id": m.get("id"),
+                "username": m.get("username"),
+                "fullName": m.get("fullName"),
+                "avatarUrl": f"{m.get('avatarUrl')}/50.png" if m.get("avatarUrl") else None,
+                "initials": m.get("initials")
+            })
+            
+        return {"success": True, "members": members, "count": len(members)}
+
+    async def create_card(self, list_id: str, name: str, desc: str = "", due: str = None, start: str = None, idMembers: str = None) -> Dict[str, Any]:
         """Create a new card on a list."""
         payload = {
             "idList": list_id,
@@ -243,9 +265,12 @@ class TrelloService:
         }
         if due:
             payload["due"] = due
+        if start:
+            payload["start"] = start
+        if idMembers:
+            payload["idMembers"] = idMembers
             
-        response = await self._request("POST", "cards", params=payload) # Trello often takes query params for POST too, but body preferred usually. 
-        # API says: POST /1/cards - Arguments in query or body. Using "params" often works robustly with Trello.
+        response = await self._request("POST", "cards", params=payload) 
         
         if isinstance(response, dict) and "error" in response:
             return response
@@ -260,7 +285,7 @@ class TrelloService:
             }
         }
 
-    async def update_card(self, card_id: str, list_id: str = None, name: str = None, desc: str = None, closed: bool = None) -> Dict[str, Any]:
+    async def update_card(self, card_id: str, list_id: str = None, name: str = None, desc: str = None, closed: bool = None, due: str = None, start: str = None, idMembers: str = None) -> Dict[str, Any]:
         """Update a card (move to list, rename, close, etc)."""
         payload = {}
         if list_id:
@@ -271,6 +296,12 @@ class TrelloService:
             payload["desc"] = desc
         if closed is not None:
              payload["closed"] = str(closed).lower()
+        if due:
+            payload["due"] = due
+        if start:
+            payload["start"] = start
+        if idMembers:
+            payload["idMembers"] = idMembers
 
         if not payload:
              return {"success": False, "error": "No update parameters provided"}

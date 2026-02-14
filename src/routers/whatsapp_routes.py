@@ -148,10 +148,64 @@ async def oauth_callback(
             )
             connection = result.scalar_one_or_none()
             
+            # Try to fetch WABA and Phone Number ID from Meta API
+            phone_number_id = None
+            business_account_id = None
+            setup_needed = True
+            
+            try:
+                # Get the user's shared WhatsApp Business Accounts
+                debug_resp = await client.get(
+                    f"{FACEBOOK_GRAPH_URL}/debug_token",
+                    params={
+                        "input_token": access_token,
+                        "access_token": f"{settings.WHATSAPP_APP_ID}|{settings.WHATSAPP_APP_SECRET}"
+                    }
+                )
+                debug_data = debug_resp.json()
+                logger.info(f"WhatsApp debug token response: {debug_data}")
+                
+                # Check granular scopes for WABA IDs
+                if debug_data.get("data", {}).get("granular_scopes"):
+                    for scope in debug_data["data"]["granular_scopes"]:
+                        if scope.get("scope") == "whatsapp_business_messaging":
+                            target_ids = scope.get("target_ids", [])
+                            if target_ids:
+                                business_account_id = target_ids[0]  # First WABA
+                                logger.info(f"Found WABA ID from scopes: {business_account_id}")
+                                break
+                
+                # If we found a WABA, get its phone numbers
+                if business_account_id:
+                    phones_resp = await client.get(
+                        f"{FACEBOOK_GRAPH_URL}/{business_account_id}/phone_numbers",
+                        params={"access_token": access_token}
+                    )
+                    phones_data = phones_resp.json()
+                    logger.info(f"WhatsApp phone numbers response: {phones_data}")
+                    
+                    if phones_data.get("data"):
+                        # Take the first phone number
+                        phone_number_id = phones_data["data"][0].get("id")
+                        logger.info(f"Found Phone Number ID: {phone_number_id}")
+                        setup_needed = False
+                        
+            except Exception as fetch_error:
+                logger.warning(f"Could not auto-fetch WABA/Phone ID: {fetch_error}")
+            
+            # If still no phone_number_id, try from env as fallback
+            if not phone_number_id and settings.WHATSAPP_PHONE_NUMBER_ID:
+                phone_number_id = settings.WHATSAPP_PHONE_NUMBER_ID
+                business_account_id = settings.WHATSAPP_BUSINESS_ACCOUNT_ID
+                setup_needed = False
+                logger.info(f"Using phone_number_id from env: {phone_number_id}")
+            
             config_data = {
                 "access_token": access_token,
                 "auth_type": "oauth",
-                "setup_needed": True # Flag to tell UI to ask for Phone ID selection if we can't auto-detect
+                "phone_number_id": phone_number_id,
+                "business_account_id": business_account_id,
+                "setup_needed": setup_needed
             }
 
             if connection:

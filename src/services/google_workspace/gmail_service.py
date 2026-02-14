@@ -44,6 +44,9 @@ class GmailService:
             html: Whether body is HTML
         """
         try:
+            print(f"📧 [GMAIL DEBUG] send_email called! to={to}, subject={subject}")
+            import traceback
+            print(f"📧 [GMAIL DEBUG] Call stack:\n{''.join(traceback.format_stack()[-5:])}")
             service = self.base_client.get_service(self.service_name, self.version)
             
             # Create message
@@ -55,7 +58,12 @@ class GmailService:
                 if attachments:
                     for attachment in attachments:
                         part = MIMEBase('application', 'octet-stream')
-                        part.set_payload(attachment['content'])
+                        # Content from frontend is base64 encoded, decode it first
+                        content = attachment['content']
+                        if isinstance(content, str):
+                            # Decode base64 string to bytes
+                            content = base64.b64decode(content)
+                        part.set_payload(content)
                         encoders.encode_base64(part)
                         part.add_header(
                             'Content-Disposition',
