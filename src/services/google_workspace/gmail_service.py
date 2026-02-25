@@ -44,9 +44,6 @@ class GmailService:
             html: Whether body is HTML
         """
         try:
-            print(f"📧 [GMAIL DEBUG] send_email called! to={to}, subject={subject}")
-            import traceback
-            print(f"📧 [GMAIL DEBUG] Call stack:\n{''.join(traceback.format_stack()[-5:])}")
             service = self.base_client.get_service(self.service_name, self.version)
             
             # Create message
@@ -381,6 +378,114 @@ class GmailService:
                     'headers': {h['name']: h['value'] for h in headers},
                     'payload': message.get('payload')
                 }
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    async def watch_inbox(
+        self,
+        topic_name: Optional[str] = None,
+        label_ids: Optional[List[str]] = None,
+        label_filter_action: str = 'include'
+    ) -> Dict[str, Any]:
+        """
+        Set up Gmail push notifications via Google Cloud Pub/Sub.
+        
+        When configured, Gmail will send notifications to the Pub/Sub topic
+        whenever matching emails arrive, enabling event-driven processing
+        instead of polling.
+        
+        Args:
+            topic_name: Full Pub/Sub topic name. Defaults to GMAIL_PUBSUB_TOPIC from settings.
+            label_ids: List of label IDs to watch (e.g., ['INBOX']). If None, watches all.
+            label_filter_action: 'include' to only watch specified labels, 'exclude' to watch all except specified
+        """
+        try:
+            # Use platform-configured topic if not explicitly provided
+            if not topic_name:
+                from ...config import settings
+                topic_name = settings.GMAIL_PUBSUB_TOPIC
+            service = self.base_client.get_service(self.service_name, self.version)
+            
+            watch_request = {
+                'topicName': topic_name,
+                'labelFilterAction': label_filter_action
+            }
+            
+            if label_ids:
+                watch_request['labelIds'] = label_ids
+            
+            result = service.users().watch(
+                userId='me',
+                body=watch_request
+            ).execute()
+            
+            return {
+                'success': True,
+                'history_id': result.get('historyId'),
+                'expiration': result.get('expiration'),
+                'message': f'Gmail watch set up. Notifications will be sent to {topic_name}. Expires at {result.get("expiration")}.'
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    async def stop_watch(self) -> Dict[str, Any]:
+        """
+        Stop receiving Gmail push notifications.
+        Cancels the current watch subscription.
+        """
+        try:
+            service = self.base_client.get_service(self.service_name, self.version)
+            
+            service.users().stop(userId='me').execute()
+            
+            return {
+                'success': True,
+                'message': 'Gmail watch stopped successfully.'
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    async def mark_as_read(
+        self,
+        message_ids: List[str]
+    ) -> Dict[str, Any]:
+        """
+        Mark messages as read by removing the UNREAD label.
+        Useful after processing emails in the auto-responder workflow.
+        
+        Args:
+            message_ids: List of message IDs to mark as read
+        """
+        try:
+            service = self.base_client.get_service(self.service_name, self.version)
+            
+            body = {
+                'ids': message_ids,
+                'removeLabelIds': ['UNREAD']
+            }
+            
+            service.users().messages().batchModify(
+                userId='me',
+                body=body
+            ).execute()
+            
+            return {
+                'success': True,
+                'modified_count': len(message_ids),
+                'message': f'Marked {len(message_ids)} message(s) as read.'
             }
             
         except Exception as e:

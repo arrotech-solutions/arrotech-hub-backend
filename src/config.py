@@ -23,6 +23,9 @@ class BaseConfig(BaseSettings):
 
     # API Keys
     HUBSPOT_API_KEY: Optional[str] = None
+    HUBSPOT_CLIENT_ID: Optional[str] = None
+    HUBSPOT_CLIENT_SECRET: Optional[str] = None
+    HUBSPOT_REDIRECT_URI: str = "https://mini-hub.fly.dev/connections"
     GA4_PROPERTY_ID: Optional[str] = None
     GA4_CREDENTIALS_FILE: Optional[str] = None
     SLACK_BOT_TOKEN: Optional[str] = None
@@ -192,8 +195,12 @@ class BaseConfig(BaseSettings):
     ALLOWED_ORIGINS: list = [
         "http://localhost:3000",
         "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+        "http://localhost:5176",
         "https://hub.arrotechsolutions.com",
-        "https://arrotechsolutions.com"
+        "https://arrotechsolutions.com",
+        "https://blog.arrotechsolutions.com"
     ]
 
     # JWT Settings
@@ -209,6 +216,10 @@ class BaseConfig(BaseSettings):
 
     # Google OAuth Configuration
     GOOGLE_CLIENT_ID: Optional[str] = None
+
+    # Google Cloud / Gmail Pub/Sub Configuration
+    GCP_PROJECT_ID: str = "mini-hub-466619"
+    GMAIL_PUBSUB_TOPIC: str = "projects/mini-hub-466619/topics/gmail-notifications"
 
     # Microsoft OAuth Configuration
     MICROSOFT_CLIENT_ID: Optional[str] = None
@@ -285,7 +296,11 @@ class ProductionConfig(BaseConfig):
         "https://arrotechsolutions.com",
         "https://mini-hub.fly.dev",
         "http://localhost:3000",
-        "http://localhost:5173"
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+        "http://localhost:5176",
+        "https://blog.arrotechsolutions.com"
     ]
 
     class Config:

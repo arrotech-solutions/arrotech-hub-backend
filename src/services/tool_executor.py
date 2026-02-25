@@ -38,6 +38,7 @@ from .kra_service import KraService
 from .payment_service import PaymentService
 from .ecommerce_service import EcommerceService
 from .accounting_service import AccountingService
+from .email_template_service import email_template_service
 from .agritech_service import AgritechService
 from .health_service import HealthService
 from .utilities_service import UtilitiesService
@@ -172,6 +173,8 @@ class ToolExecutor:
                 return await self._execute_asana_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("google_workspace_"):
                 return await self._execute_google_workspace_tool(tool_name, arguments, user, db)
+            elif tool_name == "email_template":
+                return await self._execute_email_template_tool(arguments, user, db)
             elif tool_name.startswith("powerbi_"):
                 return await self._execute_powerbi_tool(tool_name, arguments, user, db)
             elif tool_name == "file_management":
@@ -3164,6 +3167,18 @@ class ToolExecutor:
                     return await service.get_email_details(
                         message_id=arguments.get("message_id")
                     )
+                elif operation == "watch_inbox":
+                    return await service.watch_inbox(
+                        topic_name=arguments.get("topic_name"),
+                        label_ids=arguments.get("label_ids", ["INBOX"]),
+                        label_filter_action=arguments.get("label_filter_action", "include")
+                    )
+                elif operation == "stop_watch":
+                    return await service.stop_watch()
+                elif operation == "mark_as_read":
+                    return await service.mark_as_read(
+                        message_ids=arguments.get("message_ids")
+                    )
             
             elif tool_name == "google_workspace_calendar":
                 service = CalendarService(base_client)
@@ -3409,6 +3424,50 @@ class ToolExecutor:
             return {
                 "success": False,
                 "error": f"Google Workspace tool execution failed: {str(e)}"
+            }
+
+    async def _execute_email_template_tool(
+        self,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute email template operations for the auto-responder workflow."""
+        try:
+            operation = arguments.get("operation")
+
+            if operation == "get_template":
+                return await email_template_service.get_template(
+                    category=arguments.get("category", "general")
+                )
+            elif operation == "list_templates":
+                return await email_template_service.list_templates()
+            elif operation == "create_template":
+                return await email_template_service.create_template(
+                    category=arguments.get("category"),
+                    body=arguments.get("body"),
+                    subject_prefix=arguments.get("subject_prefix", "Re: "),
+                    priority=arguments.get("priority", "medium")
+                )
+            elif operation == "delete_template":
+                return await email_template_service.delete_template(
+                    category=arguments.get("category")
+                )
+            elif operation == "render_template":
+                return await email_template_service.render_template(
+                    category=arguments.get("category", "general"),
+                    variables=arguments.get("variables", {})
+                )
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown email template operation: {operation}"
+                }
+        except Exception as e:
+            logger.error(f"Error executing email template tool: {e}")
+            return {
+                "success": False,
+                "error": f"Email template tool execution failed: {str(e)}"
             }
 
     async def _execute_asana_create_project(

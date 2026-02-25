@@ -33,8 +33,10 @@ from .outlook_router import router as outlook_router
 from .notion_router import router as notion_router
 from .trello_router import router as trello_router
 from .jira_router import router as jira_router
+from .hubspot_routes import router as hubspot_routes
 from .blog_router import router as blog_router
 from .employee_router import router as employee_router
+from . import gmail_webhook  # Gmail Pub/Sub push notifications webhook
 
 __all__ = [
     "analytics_router", "mcp_router", "api_router", "auth_router", "chat_router",
@@ -44,6 +46,6 @@ __all__ = [
     "google_workspace_router", "slack_routes", "whatsapp_routes", "whatsapp_webhook", "whatsapp_contacts",
     "whatsapp_broadcast", "facebook_routes", "instagram_routes", "twitter_routes",
     "outlook_router", "notion_router", "trello_router", "jira_router",
-    "blog_router", "employee_router"
+    "blog_router", "employee_router", "gmail_webhook", "hubspot_routes"
 ]
 

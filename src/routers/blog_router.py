@@ -7,12 +7,14 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from pydantic import BaseModel
 from sqlalchemy import select, func as sa_func
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime
 
 from ..database import get_db
 from ..models import BlogPostModel, BlogCategory, User
-from ..routers.auth_router import get_current_user
+from ..routers.auth_router import get_current_user, get_optional_current_user
+from ..routers.employee_router import require_permission
 from ..config import settings
 
 router = APIRouter(prefix="/api/blog", tags=["blog"])
@@ -85,14 +87,26 @@ async def list_posts(
     status_filter: Optional[str] = Query(None, alias="status"),
     search: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
     """List blog posts (public: only published, admin: all)."""
-    query = select(BlogPostModel).order_by(BlogPostModel.created_at.desc())
+    
+    # Restrict non-published filters to authenticated editors
+    if status_filter and status_filter != "published":
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized to view non-published posts")
+        
+        perms = getattr(current_user, 'permissions', {}) or {}
+        is_admin_by_email = current_user.email == "developer@arrotech.com"
+        if getattr(current_user, 'role', 'user') != "admin" and not is_admin_by_email and not perms.get("blog_write"):
+             raise HTTPException(status_code=403, detail="Missing permission: blog_write")
+    
+    query = select(BlogPostModel).options(selectinload(BlogPostModel.category)).order_by(BlogPostModel.created_at.desc())
 
     # Default to published only for public access
     if not status_filter:
         query = query.where(BlogPostModel.status == "published")
-    else:
+    elif status_filter != "all":
         query = query.where(BlogPostModel.status == status_filter)
 
     if category:
@@ -137,6 +151,7 @@ async def list_featured_posts(
     """Get featured blog posts."""
     result = await db.execute(
         select(BlogPostModel)
+        .options(selectinload(BlogPostModel.category))
         .where(BlogPostModel.is_featured == True, BlogPostModel.status == "published")
         .order_by(BlogPostModel.published_at.desc())
         .limit(limit)
@@ -149,7 +164,9 @@ async def list_featured_posts(
 async def get_post(slug: str, db: AsyncSession = Depends(get_db)):
     """Get a single blog post by slug."""
     result = await db.execute(
-        select(BlogPostModel).where(BlogPostModel.slug == slug)
+        select(BlogPostModel)
+        .options(selectinload(BlogPostModel.category))
+        .where(BlogPostModel.slug == slug)
     )
     post = result.scalar_one_or_none()
     if not post:
@@ -157,9 +174,13 @@ async def get_post(slug: str, db: AsyncSession = Depends(get_db)):
 
     # Increment views
     post.views_count = (post.views_count or 0) + 1
+    
+    # Serialize before commit to prevent lazy-loading issues on expired attributes
+    serialized_post = _serialize_post(post)
+    
     await db.commit()
 
-    return {"success": True, "post": _serialize_post(post)}
+    return {"success": True, "post": serialized_post}
 
 
 @router.get("/categories")
@@ -190,7 +211,7 @@ async def list_categories(db: AsyncSession = Depends(get_db)):
 @router.post("/posts")
 async def create_post(
     data: BlogPostCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("blog_write")),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new blog post."""
@@ -220,20 +241,31 @@ async def create_post(
 async def update_post(
     post_id: int,
     data: BlogPostUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("blog_write")),
     db: AsyncSession = Depends(get_db),
 ):
     """Update a blog post."""
-    result = await db.execute(select(BlogPostModel).where(BlogPostModel.id == post_id))
+    result = await db.execute(
+        select(BlogPostModel)
+        .options(selectinload(BlogPostModel.category))
+        .where(BlogPostModel.id == post_id)
+    )
     post = result.scalar_one_or_none()
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
 
     update_data = data.model_dump(exclude_unset=True)
 
-    # If publishing for the first time, set published_at
-    if update_data.get("status") == "published" and not post.published_at:
-        update_data["published_at"] = datetime.utcnow()
+    # If publishing for the first time, check permission and set published_at
+    if update_data.get("status") == "published" and post.status != "published":
+        # Additional permission check to publish
+        perms = getattr(current_user, 'permissions', {}) or {}
+        is_admin_by_email = current_user.email == "developer@arrotech.com" # Simplification for environment constraints, rely on role check primarily
+        if getattr(current_user, 'role', 'user') != "admin" and not is_admin_by_email and not perms.get("blog_publish"):
+             raise HTTPException(status_code=403, detail="Missing permission: blog_publish")
+        
+        if not post.published_at:
+            update_data["published_at"] = datetime.utcnow()
 
     for key, value in update_data.items():
         setattr(post, key, value)
@@ -247,7 +279,7 @@ async def update_post(
 @router.delete("/posts/{post_id}")
 async def delete_post(
     post_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("blog_publish")),
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a blog post."""
@@ -268,18 +300,23 @@ async def seed_blog_data(
     db: AsyncSession = Depends(get_db),
 ):
     """Seed initial blog categories and sample posts."""
-    # Check if categories already exist
-    existing = await db.execute(select(sa_func.count(BlogCategory.id)))
-    if (existing.scalar() or 0) > 0:
-        return {"success": True, "message": "Blog data already seeded"}
-
-    categories = [
-        BlogCategory(name="Engineering", slug="engineering", description="Technical deep-dives and engineering insights", color="#6366F1"),
-        BlogCategory(name="Product", slug="product", description="Product updates and roadmap", color="#8B5CF6"),
-        BlogCategory(name="Company", slug="company", description="Company news and culture", color="#EC4899"),
-        BlogCategory(name="Tutorials", slug="tutorials", description="Step-by-step guides and tutorials", color="#14B8A6"),
+    categories_data = [
+        {"name": "Automation", "slug": "automation", "description": "Workflows and AI automation", "color": "#7C3AED"},
+        {"name": "Productivity", "slug": "productivity", "description": "Tips to get more done", "color": "#2563EB"},
+        {"name": "Product Updates", "slug": "product-updates", "description": "New features and product news", "color": "#059669"},
+        {"name": "Engineering", "slug": "engineering", "description": "Technical deep-dives and engineering insights", "color": "#DC2626"},
+        {"name": "Business", "slug": "business", "description": "Business strategy and growth", "color": "#D97706"},
+        {"name": "Industry Trends", "slug": "industry-trends", "description": "Latest trends in technology and business", "color": "#8B5CF6"},
     ]
-    db.add_all(categories)
-    await db.commit()
+    
+    created_count = 0
+    for cat in categories_data:
+        existing = await db.execute(select(BlogCategory).where(BlogCategory.slug == cat["slug"]))
+        if not existing.scalar_one_or_none():
+            db.add(BlogCategory(**cat))
+            created_count += 1
+            
+    if created_count > 0:
+        await db.commit()
 
-    return {"success": True, "message": "Blog categories seeded", "categories_created": len(categories)}
+    return {"success": True, "message": f"{created_count} blog categories seeded", "categories_created": created_count}

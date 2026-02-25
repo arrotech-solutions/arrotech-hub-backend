@@ -4,12 +4,17 @@ Main application entry point for Mini-Hub MCP Server.
 
 import asyncio
 import logging
+import json
+import os
+import time
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import Any, Dict
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from mcp.server import Server
 from mcp.server.models import InitializationOptions
@@ -20,16 +25,41 @@ from .database import init_db
 from .routers import (access_router, agent_router, analytics_router, api_router, auth_router, chat_router,
                       connection_router, creator_router, favorites_router, google_workspace_router, marketplace_router, 
                       mcp_router, mpesa_agent_router, notification_router, payment_router, preferences_router,
-                      settings_router, slack_agent_router, slack_routes, subscription_router, templates_router, whatsapp_routes, workflow_router, facebook_routes, instagram_routes, twitter_routes, clickup_routes, teams_router, zoom_router,
+                      security_router, settings_router, slack_agent_router, slack_routes, subscription_router, templates_router, whatsapp_routes, workflow_router, facebook_routes, instagram_routes, twitter_routes, clickup_routes, teams_router, zoom_router,
                       outlook_router, notion_router, trello_router, jira_router, whatsapp_webhook, whatsapp_contacts, whatsapp_broadcast, tiktok_routes, ai_router, support_router, kra_router, productivity_router, asana_router,
-                      blog_router, employee_router)
+                      blog_router, employee_router, gmail_webhook, hubspot_routes, ws_router)
 from .services import (BillingService, ContentCreationService,
                        FileManagementService, HubSpotService,
                        RateLimitService, SlackService, SocialMediaService,
-                       WebToolsService, WorkflowSchedulerService)
+                       WebToolsService, WorkflowSchedulerService,
+                       cache_service)
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+
+# ─── Structured Logging ──────────────────────────────────────────────────────
+class JSONFormatter(logging.Formatter):
+    """JSON log formatter for production observability."""
+    def format(self, record):
+        log_data = {
+            "timestamp": self.formatTime(record),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info and record.exc_info[0]:
+            log_data["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_data)
+
+
+is_production = os.getenv("ENVIRONMENT", "development") == "production"
+
+if is_production:
+    handler = logging.StreamHandler()
+    handler.setFormatter(JSONFormatter())
+    logging.root.handlers = [handler]
+    logging.root.setLevel(logging.INFO)
+else:
+    logging.basicConfig(level=logging.INFO)
+
 logger = logging.getLogger(__name__)
 
 # Global services
@@ -70,10 +100,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Slack service initialization failed: {e}")
 
+    try:
+        await asyncio.wait_for(cache_service.initialize(), timeout=5.0)
+    except asyncio.TimeoutError:
+        logger.warning("Cache service initialization timed out")
+    except Exception as e:
+        logger.warning(f"Cache service initialization failed: {e}")
+
     # Attach services to app state for dependency injection in routers
     app.state.rate_limit_service = rate_limit_service
     app.state.slack_service = slack_service
     app.state.hubspot_service = hubspot_service
+    app.state.cache_service = cache_service
 
     # Start Workflow Scheduler
     try:
@@ -97,6 +135,83 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Add GZip compression middleware (compress responses > 500 bytes)
+app.add_middleware(GZipMiddleware, minimum_size=500)
+
+
+# ─── In-Memory Rate Limiting Middleware ───────────────────────────────────────
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """
+    Simple in-memory sliding-window rate limiter.
+    Auth endpoints: 5 requests/minute  |  General API: 60 requests/minute
+    """
+    def __init__(self, app):
+        super().__init__(app)
+        self._hits: dict[str, list[float]] = defaultdict(list)
+        self._auth_paths = {"/auth/login", "/auth/register", "/auth/forgot-password"}
+
+    def _cleanup(self, key: str, window: float):
+        now = time.time()
+        self._hits[key] = [t for t in self._hits[key] if now - t < window]
+
+    async def dispatch(self, request, call_next):
+        client_ip = request.client.host if request.client else "unknown"
+        path = request.url.path
+
+        # Choose limits based on endpoint
+        if path in self._auth_paths:
+            key = f"auth:{client_ip}"
+            limit, window = 5, 60.0
+        elif path.startswith("/auth/") or path.startswith("/api/"):
+            key = f"api:{client_ip}"
+            limit, window = 60, 60.0
+        else:
+            return await call_next(request)
+
+        self._cleanup(key, window)
+
+        if len(self._hits[key]) >= limit:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many requests. Please try again later."},
+                headers={"Retry-After": str(int(window))}
+            )
+
+        self._hits[key].append(time.time())
+        return await call_next(request)
+
+app.add_middleware(RateLimitMiddleware)
+
+
+# ─── Cache-Control Headers for Read-Only Endpoints ────────────────────────────
+class CacheHeaderMiddleware(BaseHTTPMiddleware):
+    """Add Cache-Control headers to cacheable read-only endpoints."""
+    # path prefix → max-age in seconds
+    CACHE_RULES = {
+        "/health": 10,
+        "/templates": 300,       # 5 minutes
+        "/": 60,                 # root info endpoint
+    }
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+
+        if request.method == "GET":
+            for prefix, max_age in self.CACHE_RULES.items():
+                if path == prefix or (prefix != "/" and path.startswith(prefix)):
+                    response.headers["Cache-Control"] = (
+                        f"public, max-age={max_age}, stale-while-revalidate={max_age * 2}"
+                    )
+                    break
+
+        return response
+
+app.add_middleware(CacheHeaderMiddleware)
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -118,6 +233,7 @@ app.include_router(connection_router, prefix="/connections",
 app.include_router(mcp_router, prefix="/mcp", tags=["mcp"])
 app.include_router(api_router, prefix="/api/v1", tags=["api"])
 app.include_router(settings_router, prefix="/settings", tags=["settings"])
+app.include_router(security_router.router, prefix="/api/v1/security", tags=["security"])
 app.include_router(chat_router, prefix="/chat", tags=["chat"])
 app.include_router(workflow_router, prefix="/workflows", tags=["workflows"])
 app.include_router(agent_router, prefix="/agents", tags=["agents"])
@@ -151,11 +267,14 @@ app.include_router(jira_router)
 app.include_router(tiktok_routes.router)
 app.include_router(ai_router.router)
 app.include_router(support_router.router)  # Help & Support ticket endpoint
+app.include_router(gmail_webhook.router)  # Gmail Pub/Sub push notifications webhook
 app.include_router(kra_router.router)
 app.include_router(productivity_router.router)  # Phase 5: Productivity analytics
+app.include_router(ws_router.router)
 app.include_router(asana_router.router)
 app.include_router(blog_router)  # Blog service - public + admin endpoints
 app.include_router(employee_router)  # Employee management + admin subscribers
+app.include_router(hubspot_routes)  # HubSpot OAuth connection flow
 
 
 
@@ -177,14 +296,42 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
+    """Enhanced health check with dependency status."""
     import datetime
-    import os
+
+    checks = {}
+    overall = "healthy"
+
+    # Check Redis
+    try:
+        if cache_service.redis_client:
+            cache_service.redis_client.ping()
+            checks["redis"] = "connected"
+        else:
+            checks["redis"] = "disconnected"
+    except Exception:
+        checks["redis"] = "error"
+
+    # Check DB pool
+    try:
+        from .database import get_engine
+        engine = get_engine()
+        pool = engine.pool
+        checks["db_pool"] = {
+            "size": pool.size(),
+            "checked_in": pool.checkedin(),
+            "checked_out": pool.checkedout(),
+            "overflow": pool.overflow(),
+        }
+    except Exception:
+        checks["db_pool"] = "error"
+        overall = "degraded"
+
     return {
-        "status": "healthy", 
+        "status": overall,
         "timestamp": datetime.datetime.utcnow().isoformat(),
-        "port": os.getenv("PORT", "not set"),
-        "environment": settings.ENVIRONMENT
+        "environment": settings.ENVIRONMENT,
+        "checks": checks
     }
 
 
@@ -402,7 +549,7 @@ def main():
             port=port,
             reload=False if is_prod else settings.RELOAD,
             log_level="info" if is_prod else settings.LOG_LEVEL.lower(),
-            workers=1
+            workers=2 if is_prod else 1
         )
 
 

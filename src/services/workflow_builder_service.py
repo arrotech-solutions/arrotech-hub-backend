@@ -19,6 +19,7 @@ from .dynamic_tool_registry import DynamicToolRegistry
 from .llm_service import LLMService
 from .tool_executor import ToolExecutor
 from .feature_flags import FeatureGate
+from .websocket_manager import connection_manager
 # Note: get_or_create_usage_record imported inside execute_workflow() to avoid circular import
 
 import logging
@@ -399,6 +400,14 @@ class WorkflowBuilderService:
         db.add(execution)
         await db.flush()
         
+        # Notify clients that workflow execution started
+        if user_id:
+            await connection_manager.push_to_user(
+                user_id, 
+                "workflow_execution_started", 
+                {"workflow_id": workflow.id, "execution_id": execution.id}
+            )
+        
         try:
             # Initialize execution context with variables
             context = {
@@ -441,6 +450,19 @@ class WorkflowBuilderService:
         execution.completed_at = datetime.utcnow()
         await db.commit()
         await db.refresh(execution)
+        
+        # Notify clients that workflow execution completed
+        if user_id:
+            await connection_manager.push_to_user(
+                user_id, 
+                "workflow_execution_completed", 
+                {
+                    "workflow_id": workflow.id,
+                    "execution_id": execution.id,
+                    "status": execution.status.value if hasattr(execution.status, 'value') else str(execution.status),
+                    "completed_at": execution.completed_at.isoformat()
+                }
+            )
         
         return execution
     
@@ -532,6 +554,15 @@ class WorkflowBuilderService:
             # Update step execution with substituted parameters
             step_execution.input_data = substituted_params
             step_execution.status = WorkflowExecutionStatus.RUNNING
+            await db.commit() # Commit to make RUNNING status visible
+            
+            # Notify clients that step started
+            if user_id:
+                await connection_manager.push_to_user(
+                    user_id,
+                    "workflow_step_started",
+                    {"execution_id": execution_id, "step_id": step.id, "step_number": step.step_number}
+                )
             
             # Execute tool using the real ToolExecutor
             if user_id:
@@ -568,6 +599,19 @@ class WorkflowBuilderService:
         step_execution.completed_at = datetime.utcnow()
         await db.commit()
         await db.refresh(step_execution)
+        
+        # Notify clients that step finished
+        if user_id:
+            await connection_manager.push_to_user(
+                user_id,
+                "workflow_step_completed",
+                {
+                    "execution_id": execution_id,
+                    "step_id": step.id,
+                    "step_number": step.step_number,
+                    "status": step_execution.status.value if hasattr(step_execution.status, 'value') else str(step_execution.status)
+                }
+            )
         
         return step_execution
     

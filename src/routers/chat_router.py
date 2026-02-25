@@ -1103,10 +1103,106 @@ async def call_ollama_legacy(model: str, messages: List[Dict[str, Any]], tools: 
 
 
 async def call_llm_fallback(provider: str, model: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Fallback for providers that don't support function calling."""
-    # For now, just return None to indicate no function calling support
-    print(f"⚠️ No function calling support for provider: {provider}")
-    return None
+    """Fallback for non-Ollama providers - routes to appropriate provider API."""
+    from ..services.execution_orchestrator import ExecutionOrchestrator
+    
+    print(f"🔄 call_llm_fallback routing to provider: {provider}")
+    
+    # We need db and user context to use BYOK keys
+    # This function is called from execute_function_calling_loop which has these in scope
+    # For now, try to use the orchestrator's provider-specific methods
+    try:
+        # Import provider-specific call functions
+        if provider == "openai":
+            from ..config import settings
+            if not settings.OPENAI_API_KEY:
+                print(f"⚠️ No OpenAI API key configured for function calling fallback")
+                return None
+            
+            import openai
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+            
+            request_params = {
+                "model": getattr(settings, 'OPENAI_MODEL', 'gpt-4o'),
+                "messages": messages,
+                "temperature": getattr(settings, 'LLM_TEMPERATURE', 0.7),
+                "max_tokens": getattr(settings, 'LLM_MAX_TOKENS', 1024),
+            }
+            if tools:
+                request_params["tools"] = tools
+                request_params["tool_choice"] = "auto"
+            
+            response = await client.chat.completions.create(**request_params)
+            return response.model_dump()
+            
+        elif provider == "anthropic":
+            from ..config import settings
+            import aiohttp
+            
+            api_key = settings.ANTHROPIC_API_KEY
+            if not api_key:
+                print(f"⚠️ No Anthropic API key configured for function calling fallback")
+                return None
+            
+            # Convert messages to Anthropic format
+            anthropic_messages = []
+            system_content = ""
+            for msg in messages:
+                if msg.get("role") == "system":
+                    system_content = msg.get("content", "")
+                elif msg.get("role") in ["user", "assistant"]:
+                    anthropic_messages.append({
+                        "role": msg["role"],
+                        "content": msg.get("content", "")
+                    })
+            
+            payload = {
+                "model": "claude-sonnet-4-20250514",
+                "messages": anthropic_messages,
+                "max_tokens": getattr(settings, 'LLM_MAX_TOKENS', 1024) or 1024,
+                "temperature": getattr(settings, 'LLM_TEMPERATURE', 0.7) or 0.7,
+            }
+            if system_content:
+                payload["system"] = system_content
+            
+            headers = {
+                "x-api-key": api_key,
+                "Content-Type": "application/json",
+                "anthropic-version": "2023-06-01"
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://api.anthropic.com/v1/messages",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=60)
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        content = result.get("content", [{}])[0].get("text", "")
+                        return {
+                            "choices": [{
+                                "message": {
+                                    "role": "assistant",
+                                    "content": content,
+                                    "tool_calls": []
+                                }
+                            }]
+                        }
+                    else:
+                        error_text = await response.text()
+                        print(f"❌ Anthropic error in fallback: {response.status}: {error_text}")
+                        return None
+        else:
+            print(f"⚠️ No function calling support for provider: {provider}")
+            return None
+    except Exception as e:
+        print(f"❌ Error in call_llm_fallback for {provider}: {e}")
+        import traceback
+        print(f"❌ Traceback: {traceback.format_exc()}")
+        return None
 
 
 async def process_ollama(provider: str, data: MessageCreate, user: User, db: AsyncSession, conversation: Conversation, tools_called: List[Dict[str, Any]]) -> tuple[str, List[Dict[str, Any]], Conversation]:

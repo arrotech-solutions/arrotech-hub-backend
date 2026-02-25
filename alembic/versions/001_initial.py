@@ -8,14 +8,21 @@ Create Date: 2026-01-08
 from alembic import op
 import sqlalchemy as sa
 from src.database import Base
-# Import all models to ensure they are registered
+
+# Import all models to ensure they are registered with Base.metadata
 from src.models import (
     User, Subscription, UsageLog, Connection, UserSettings, 
     Conversation, Message, Workflow, WorkflowStep, WorkflowExecution,
     WorkflowStepExecution, WorkflowDownload, WorkflowReview, 
     Payment, CreatorProfile, WorkflowVersion, WorkflowAnalytics,
     Notification, WorkflowFavorite, UserPreferences, CreatorFollower,
-    ActivityFeedItem, MpesaPayment, MpesaAgentConfig
+    ActivityFeedItem, MpesaPayment, MpesaAgentConfig, UsageRecord,
+    Invoice, FraudSignal, AccessRequest, WhatsAppContact, WhatsAppMessage,
+    WhatsAppAutoReply, WhatsAppBusinessProfile, WhatsAppTemplate,
+    WhatsAppBroadcast, WhatsAppBroadcastRecipient, TikTokProfile,
+    TikTokVideo, PremiumLink, CreatorTransaction, TipTransaction,
+    LinkClickAnalytics, FanContact, BlogCategory, BlogPostModel,
+    WebAuthnCredential
 )
 
 # revision identifiers, used by Alembic.

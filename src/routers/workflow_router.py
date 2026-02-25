@@ -9,7 +9,8 @@ from sqlalchemy import func, select
 from ..database import get_db
 from ..models import (User, Workflow, WorkflowExecution,
                       WorkflowExecutionStatus, WorkflowStatus, WorkflowStep,
-                      WorkflowTriggerType, SubscriptionTier)
+                      WorkflowTriggerType, SubscriptionTier,
+                      Connection, ConnectionStatus)
 from ..services.workflow_builder_service import WorkflowBuilderService
 from .auth_router import get_current_user
 
@@ -407,6 +408,11 @@ async def update_workflow(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Workflow not found"
             )
+        
+        # Auto-activate Gmail watch_inbox when email-related workflow is enabled
+        watch_result = None
+        if data.status == "active":
+            watch_result = await _auto_activate_gmail_watch(workflow, user, db)
         
         return {
             "success": True,
@@ -1037,3 +1043,83 @@ async def get_conversation_tool_calls(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get conversation tool calls: {str(e)}"
         )
+
+
+async def _auto_activate_gmail_watch(workflow: Workflow, user: User, db: AsyncSession) -> dict:
+    """
+    Auto-activate Gmail watch_inbox() when an email-related workflow is set to active.
+    This sets up Pub/Sub push notifications so incoming emails trigger the webhook.
+    Best-effort: returns result but doesn't block workflow activation on failure.
+    """
+    try:
+        # Check if this workflow is email-related
+        is_email_workflow = False
+        name_lower = (workflow.name or "").lower()
+        desc_lower = (workflow.description or "").lower()
+        
+        # Check name/description
+        email_keywords = ["email auto", "auto-respond", "auto respond", "email respond", "gmail", "inbox"]
+        if any(kw in name_lower or kw in desc_lower for kw in email_keywords):
+            is_email_workflow = True
+        
+        # Check steps for Gmail tools
+        if not is_email_workflow and workflow.steps:
+            for step in workflow.steps:
+                tool_lower = (step.tool_name or "").lower()
+                if "gmail" in tool_lower or "email" in tool_lower:
+                    is_email_workflow = True
+                    break
+        
+        # Check trigger type
+        if workflow.trigger_type == WorkflowTriggerType.WEBHOOK:
+            is_email_workflow = True
+        
+        if not is_email_workflow:
+            return None
+        
+        logger.info(f"Email-related workflow '{workflow.name}' activated — setting up Gmail watch")
+        
+        # Find user's active Google Workspace connection
+        result = await db.execute(
+            select(Connection)
+            .filter(
+                Connection.user_id == user.id,
+                Connection.platform == "google_workspace",
+                Connection.status == ConnectionStatus.ACTIVE
+            )
+        )
+        gw_connection = result.scalars().first()
+        
+        if not gw_connection:
+            logger.warning(f"No Google Workspace connection for user {user.id} — cannot set up Gmail watch")
+            return {"watch_activated": False, "reason": "no_google_workspace_connection"}
+        
+        # Build Gmail service and call watch_inbox
+        from ..services.google_workspace.base_client import GoogleWorkspaceBaseClient
+        from ..services.google_workspace.gmail_service import GmailService
+        
+        credentials_data = {
+            "client_id": gw_connection.config.get("client_id"),
+            "client_secret": gw_connection.config.get("client_secret"),
+            "refresh_token": gw_connection.config.get("refresh_token"),
+            "access_token": gw_connection.config.get("access_token"),
+            "scopes": gw_connection.config.get("scopes")
+        }
+        base_client = GoogleWorkspaceBaseClient(credentials_data)
+        gmail_service = GmailService(base_client)
+        
+        watch_result = await gmail_service.watch_inbox(label_ids=["INBOX"])
+        
+        if watch_result.get("success"):
+            logger.info(
+                f"✅ Gmail watch activated for user {user.id}: "
+                f"expires at {watch_result.get('expiration')}"
+            )
+        else:
+            logger.error(f"❌ Gmail watch activation failed: {watch_result.get('error')}")
+        
+        return {"watch_activated": watch_result.get("success", False), "details": watch_result}
+    
+    except Exception as e:
+        logger.error(f"Auto-activate Gmail watch failed (non-blocking): {e}")
+        return {"watch_activated": False, "error": str(e)}

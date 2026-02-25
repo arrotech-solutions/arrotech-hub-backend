@@ -171,6 +171,7 @@ class User(Base):
     paystack_authorization_code = Column(String, nullable=True)  # NEW: For recurring charges
     role = Column(String, nullable=True, default=UserRole.USER)  # user, employee, admin
     permissions = Column(JSON, nullable=True)  # Employee permissions dict
+    login_challenge = Column(String, nullable=True)  # Challenge for WebAuthn in-flight authentication
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -186,6 +187,7 @@ class User(Base):
     workflow_reviews = relationship("WorkflowReview", back_populates="user")
     creator_profile = relationship("CreatorProfile", back_populates="user", uselist=False)
     tiktok_profile = relationship("TikTokProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    webauthn_credentials = relationship("WebAuthnCredential", back_populates="user", cascade="all, delete-orphan")
 
 
 class Conversation(Base):
@@ -405,6 +407,8 @@ class UserSettings(Base):
 
     # Security Settings
     two_factor_enabled = Column(Boolean, default=False)
+    totp_secret = Column(String, nullable=True)  # For TOTP authentication
+    backup_codes = Column(JSON, nullable=True)  # Hashed backup codes
     session_timeout = Column(Integer, default=30)  # minutes
     ip_whitelist = Column(JSON, nullable=True)  # List of allowed IPs
 
@@ -421,6 +425,24 @@ class UserSettings(Base):
 
     # Relationships
     user = relationship("User", back_populates="settings")
+
+
+class WebAuthnCredential(Base):
+    """WebAuthn credentials (Passkeys) for a user."""
+    __tablename__ = "webauthn_credentials"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    credential_id = Column(String, unique=True, index=True, nullable=False)
+    public_key = Column(String, nullable=False)
+    sign_count = Column(Integer, default=0)
+    transports = Column(JSON, nullable=True)
+    name = Column(String, nullable=True)  # e.g., "iPhone", "YubiKey"
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    user = relationship("User", back_populates="webauthn_credentials")
 
 
 class Connection(Base):
