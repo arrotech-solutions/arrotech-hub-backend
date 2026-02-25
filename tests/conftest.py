@@ -132,17 +132,16 @@ async def client(
 
     app.dependency_overrides[get_db] = override_get_db
 
-    # Always mock rate_limit_service to prevent 429s in tests.
-    # The real one may be set during app startup, so we override unconditionally.
-    from unittest.mock import AsyncMock, MagicMock
-    mock_rate_limit = MagicMock()
-    mock_rate_limit.check_limit = AsyncMock(return_value=True)
-    app.state.rate_limit_service = mock_rate_limit
-
     transport = ASGITransport(app=app)
     async with AsyncClient(
         transport=transport, base_url="http://test"
     ) as ac:
+        # Mock rate_limit_service AFTER client creation, because ASGITransport
+        # triggers the app startup event which sets the real RateLimitService.
+        from unittest.mock import AsyncMock, MagicMock
+        mock_rate_limit = MagicMock()
+        mock_rate_limit.check_limit = AsyncMock(return_value=True)
+        app.state.rate_limit_service = mock_rate_limit
         yield ac
 
     app.dependency_overrides.clear()
