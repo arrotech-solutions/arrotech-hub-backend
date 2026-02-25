@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy.orm import selectinload
+
 from ..models import Workflow, WorkflowStatus, WorkflowVisibility, WorkflowLicense, User
 from ..database import get_db
 
@@ -89,7 +91,7 @@ class WorkflowService:
         """Get a specific workflow."""
         try:
             result = await db.execute(
-                select(Workflow).filter(Workflow.id == workflow_id)
+                select(Workflow).filter(Workflow.id == workflow_id).options(selectinload(Workflow.steps))
             )
             workflow = result.scalar_one_or_none()
 

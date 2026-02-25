@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import HTTPBearer
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
@@ -20,13 +20,14 @@ from ..database import get_db
 from ..models import (
     User, AccessRequest, AccessRequestStatus, SubscriptionTier,
     UserSettings, Connection, UsageLog, Workflow, Conversation,
-    CreatorProfile, Invoice, MpesaPayment
+    CreatorProfile, Invoice, MpesaPayment, WebAuthnCredential
 )
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 import json
 import httpx
+import pyotp
 
 from ..config import settings
 
@@ -74,6 +75,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SECRET_KEY = "your-secret-key-here"  # In production, use environment variable
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
+REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -87,15 +89,40 @@ def get_password_hash(password: str) -> str:
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    """Create a JWT access token."""
+    """Create a short-lived JWT access token (30 min)."""
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
         expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
+    to_encode.update({"exp": expire, "type": "access"})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+
+def create_refresh_token(data: dict) -> str:
+    """Create a long-lived JWT refresh token (7 days)."""
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire, "type": "refresh"})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def _build_auth_response(user: User, access_token: str, refresh_token: str) -> dict:
+    """Build a standard auth response with both tokens."""
+    return {
+        "success": True,
+        "data": {
+            "token": access_token,
+            "refresh_token": refresh_token,
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "name": user.name,
+                "subscription_tier": user.subscription_tier
+            }
+        }
+    }
 
 
 async def get_current_user(
@@ -145,6 +172,24 @@ async def get_current_user(
                  )
 
     return user
+
+
+async def get_optional_current_user(
+    token: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+    db: AsyncSession = Depends(get_db)
+) -> Optional[User]:
+    """Get the current user from the JWT token if present, else return None."""
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        email = payload.get("sub")
+        if not email:
+            return None
+        result = await db.execute(select(User).where(User.email == email))
+        return result.scalar_one_or_none()
+    except Exception:
+        return None
 
 
 @router.post("/register")
@@ -208,24 +253,13 @@ async def register(
     await db.commit()
     await db.refresh(user)
 
-    # Create access token
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    # Create tokens
     access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
+        data={"sub": user.email}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
+    refresh_token = create_refresh_token(data={"sub": user.email})
 
-    return {
-        "success": True,
-        "data": {
-            "token": access_token,
-            "user": {
-                "id": user.id,
-                "email": user.email,
-                "name": user.name,
-                "subscription_tier": user.subscription_tier
-            }
-        }
-    }
+    return _build_auth_response(user, access_token, refresh_token)
 
 
 @router.post("/google")
@@ -296,24 +330,13 @@ async def google_auth(
             await db.commit()
             await db.refresh(user)
         
-        # Create access token
-        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        # Create tokens
         access_token = create_access_token(
-            data={"sub": user.email}, expires_delta=access_token_expires
+            data={"sub": user.email}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         )
+        refresh_token = create_refresh_token(data={"sub": user.email})
         
-        return {
-            "success": True,
-            "data": {
-                "token": access_token,
-                "user": {
-                    "id": user.id,
-                    "email": user.email,
-                    "name": user.name,
-                    "subscription_tier": user.subscription_tier
-                }
-            }
-        }
+        return _build_auth_response(user, access_token, refresh_token)
         
     except httpx.RequestError as e:
         raise HTTPException(
@@ -382,24 +405,13 @@ async def microsoft_auth(
             await db.commit()
             await db.refresh(user)
         
-        # Create access token
-        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        # Create tokens
         access_token = create_access_token(
-            data={"sub": user.email}, expires_delta=access_token_expires
+            data={"sub": user.email}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         )
+        refresh_token = create_refresh_token(data={"sub": user.email})
         
-        return {
-            "success": True,
-            "data": {
-                "token": access_token,
-                "user": {
-                    "id": user.id,
-                    "email": user.email,
-                    "name": user.name,
-                    "subscription_tier": user.subscription_tier
-                }
-            }
-        }
+        return _build_auth_response(user, access_token, refresh_token)
         
     except httpx.RequestError as e:
         raise HTTPException(
@@ -450,7 +462,7 @@ async def login(
 
     # 2. Proceed with Standard Login (User Check)
     result = await db.execute(
-        select(User).where(User.email == user_data.email)
+        select(User).where(User.email == user_data.email).options(selectinload(User.settings))
     )
     user = result.scalar_one_or_none()
 
@@ -467,24 +479,172 @@ async def login(
         await db.commit()
         await db.refresh(user)
 
-    # Create access token
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
-    )
+    # 3. Check for 2FA
+    if user.settings and user.settings.two_factor_enabled:
+        # User has 2FA enabled. Issue a temporary token instead of full access.
+        temp_token = create_access_token(
+            data={"sub": user.email, "type": "2fa_pending"}, 
+            expires_delta=timedelta(minutes=5)
+        )
+        return {
+            "success": True,
+            "requires_2fa": True,
+            "data": {
+                "2fa_token": temp_token,
+                "has_totp": bool(user.settings.totp_secret),
+                "passkeys_count": len(user.webauthn_credentials) if hasattr(user, 'webauthn_credentials') else 0 # Need to load this if used
+            },
+            "message": "Two-factor authentication required."
+        }
 
-    return {
-        "success": True,
-        "data": {
-            "token": access_token,
-            "user": {
-                "id": user.id,
-                "email": user.email,
-                "name": user.name,
-                "subscription_tier": user.subscription_tier
+    # 4. Standard Flow: Create tokens
+    access_token = create_access_token(
+        data={"sub": user.email}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    refresh_token = create_refresh_token(data={"sub": user.email})
+
+    return _build_auth_response(user, access_token, refresh_token)
+
+class VerifyTOTPLoginRequest(BaseModel):
+    two_factor_token: str
+    code: str
+
+@router.post("/login/2fa/totp")
+async def login_2fa_totp(
+    data: VerifyTOTPLoginRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Verify TOTP code during login flow using the temporary 2fa_token."""
+    try:
+        payload = jwt.decode(data.two_factor_token, SECRET_KEY, algorithms=[ALGORITHM])
+        email = payload.get("sub")
+        token_type = payload.get("type")
+        
+        if not email or token_type != "2fa_pending":
+             raise HTTPException(status_code=401, detail="Invalid 2FA token.")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Expired or invalid 2FA token.")
+        
+    result = await db.execute(select(User).where(User.email == email).options(selectinload(User.settings)))
+    user = result.scalar_one_or_none()
+    
+    if not user or not user.settings or not user.settings.totp_secret:
+        raise HTTPException(status_code=400, detail="User not configured for TOTP.")
+        
+    totp = pyotp.TOTP(user.settings.totp_secret)
+    if not totp.verify(data.code):
+        raise HTTPException(status_code=401, detail="Invalid authenticator code.")
+        
+    # Valid code, issue full tokens
+    access_token = create_access_token(data={"sub": user.email}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    refresh_token = create_refresh_token(data={"sub": user.email})
+    
+    return _build_auth_response(user, access_token, refresh_token)
+
+
+class VerifyBackupCodeRequest(BaseModel):
+    two_factor_token: str
+    code: str
+
+@router.post("/login/2fa/backup")
+async def login_2fa_backup(
+    data: VerifyBackupCodeRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Verify a backup code during login flow."""
+    try:
+        payload = jwt.decode(data.two_factor_token, SECRET_KEY, algorithms=[ALGORITHM])
+        email = payload.get("sub")
+        token_type = payload.get("type")
+        
+        if not email or token_type != "2fa_pending":
+             raise HTTPException(status_code=401, detail="Invalid 2FA token.")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Expired or invalid 2FA token.")
+        
+    result = await db.execute(select(User).where(User.email == email).options(selectinload(User.settings)))
+    user = result.scalar_one_or_none()
+    
+    if not user or not user.settings or not user.settings.backup_codes:
+        raise HTTPException(status_code=400, detail="No backup codes configured.")
+        
+    # Check if backup code matches any hashed code
+    matched_hash = None
+    for hashed_code in user.settings.backup_codes:
+        if verify_password(data.code, hashed_code):
+            matched_hash = hashed_code
+            break
+            
+    if not matched_hash:
+        raise HTTPException(status_code=401, detail="Invalid backup code.")
+        
+    # Remove the used backup code
+    new_codes = [c for c in user.settings.backup_codes if c != matched_hash]
+    user.settings.backup_codes = new_codes
+    await db.commit()
+    
+    # Issue full tokens
+    access_token = create_access_token(data={"sub": user.email}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    refresh_token = create_refresh_token(data={"sub": user.email})
+    
+    return _build_auth_response(user, access_token, refresh_token)
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
+@router.post("/refresh")
+async def refresh_token(
+    data: RefreshTokenRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Exchange a valid refresh token for a new access token."""
+    try:
+        payload = jwt.decode(data.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        
+        # Ensure it's actually a refresh token
+        if payload.get("type") != "refresh":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token type"
+            )
+        
+        email = payload.get("sub")
+        if not email:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid refresh token"
+            )
+        
+        # Verify user still exists
+        result = await db.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found"
+            )
+        
+        # Issue a new access token
+        new_access_token = create_access_token(
+            data={"sub": email},
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        )
+        
+        return {
+            "success": True,
+            "data": {
+                "token": new_access_token,
             }
         }
-    }
+    
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token. Please log in again."
+        )
 
 
 @router.post("/logout")

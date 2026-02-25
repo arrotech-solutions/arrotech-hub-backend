@@ -58,20 +58,17 @@ def get_engine() -> AsyncEngine:
         _engine = create_async_engine(
             db_url,
             echo=is_dev,
-            # Connection pool settings
-            pool_size=10,          # Base pool size (was 5)
-            max_overflow=20,       # Extra connections under load (was 10)
-            pool_timeout=30,       # Seconds to wait for connection
-            pool_recycle=1800,     # Recycle connections after 30 min
-            pool_pre_ping=True,    # Test connections before use
+            # Connection pool settings (conservative for free tier DB)
+            pool_size=5 if not is_dev else 10,     # Base pool size
+            max_overflow=10 if not is_dev else 20, # Extra connections under load
+            pool_timeout=30,                       # Seconds to wait for connection
+            pool_recycle=1800,                     # Recycle connections after 30 min
+            pool_pre_ping=True,                    # Test connections before use
         )
     return _engine
 
 
-# Property-like access to engine
-@property
-def engine() -> AsyncEngine:
-    return get_engine()
+# Create base class for models
 
 
 # Create base class for models

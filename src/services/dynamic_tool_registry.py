@@ -471,6 +471,46 @@ class DynamicToolRegistry:
                 },
                 "category": "localization",
                 "always_available": True
+            },
+            # Email Template Management - Always available
+            "email_template": {
+                "name": "email_template",
+                "description": "Manage email auto-reply templates. Create, update, render, and list templates by category (support, sales, billing, general, partnership, feedback). Templates support variable substitution for sender_name, original_subject, ticket_id, and company_name.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["get_template", "list_templates", "create_template", "delete_template", "render_template"],
+                            "description": "Operation to perform"
+                        },
+                        "category": {
+                            "type": "string",
+                            "description": "Template category (e.g., 'support', 'sales', 'billing', 'general')"
+                        },
+                        "body": {
+                            "type": "string",
+                            "description": "Template body with {variable} placeholders (for create_template)"
+                        },
+                        "subject_prefix": {
+                            "type": "string",
+                            "description": "Prefix for reply subject line",
+                            "default": "Re: "
+                        },
+                        "priority": {
+                            "type": "string",
+                            "enum": ["high", "medium", "low"],
+                            "description": "Template priority level"
+                        },
+                        "variables": {
+                            "type": "object",
+                            "description": "Variables for template rendering (e.g., {sender_name: 'John', company_name: 'Acme'})"
+                        }
+                    },
+                    "required": ["operation"]
+                },
+                "category": "email",
+                "always_available": True
             }
         }
     
@@ -516,6 +556,8 @@ class DynamicToolRegistry:
                 tools.extend(self._get_trello_tools(connection))
             elif connection.platform == "jira":
                 tools.extend(self._get_jira_tools(connection))
+            elif connection.platform == "google_workspace":
+                tools.extend(self._get_google_workspace_tools(connection))
             elif connection.platform in platform_registry.platforms:
                 # Dynamically fetch tools for regional platforms (hr_hub, logistics_hub, etc.)
                 p_tools = platform_registry.get_platform_tools(connection.platform)
@@ -634,19 +676,60 @@ class DynamicToolRegistry:
         """Get HubSpot tools for a connection."""
         return [
             {
-                "name": "hubspot_list_contacts",
-                "description": "List contacts from HubSpot CRM",
+                "name": "hubspot_contact_operations",
+                "description": "Comprehensive HubSpot contact management - read, create, update, search, and segment contacts",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "limit": {"type": "integer", "description": "Number of contacts to retrieve", "default": 10}
+                        "operation": {"type": "string", "enum": ["read", "create", "update", "search", "segment"]},
+                        "contact_data": {"type": "object", "description": "Contact fields: email (required), firstname, lastname, company, phone"},
+                        "filters": {"type": "object", "description": "Filters for search/segment operations"},
+                        "limit": {"type": "integer", "default": 50},
+                        "contact_id": {"type": "string", "description": "Contact ID for update operations"},
+                        "properties": {"type": "array", "items": {"type": "string"}, "description": "Contact properties to include"}
                     },
-                    "required": []
+                    "required": ["operation"]
                 },
                 "connection_id": connection.id,
                 "platform": "hubspot",
                 "status": "available",
-                "id": "hubspot_list_contacts"
+                "id": "hubspot_contact_operations"
+            },
+            {
+                "name": "hubspot_deal_management",
+                "description": "Manage HubSpot deals - create, update, track, and analyze deal pipeline",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["read", "create", "update", "analyze", "add_note"]},
+                        "deal_data": {"type": "object", "description": "Deal fields: dealname, amount, dealstage, pipeline, etc."},
+                        "deal_id": {"type": "string", "description": "Deal ID for update/note operations"},
+                        "note": {"type": "string", "description": "Note text for add_note operation"},
+                        "filters": {"type": "object"},
+                        "limit": {"type": "integer", "default": 20}
+                    },
+                    "required": ["operation"]
+                },
+                "connection_id": connection.id,
+                "platform": "hubspot",
+                "status": "available",
+                "id": "hubspot_deal_management"
+            },
+            {
+                "name": "hubspot_analytics",
+                "description": "Get HubSpot analytics and performance metrics",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "start_date": {"type": "string", "description": "Start date (YYYY-MM-DD)"},
+                        "end_date": {"type": "string", "description": "End date (YYYY-MM-DD)"},
+                        "metrics": {"type": "array", "items": {"type": "string"}}
+                    }
+                },
+                "connection_id": connection.id,
+                "platform": "hubspot",
+                "status": "available",
+                "id": "hubspot_analytics"
             }
         ]
     
@@ -1295,6 +1378,164 @@ class DynamicToolRegistry:
                 "id": "jira_create_issue"
             }
         ]
+
+    def _get_google_workspace_tools(self, connection: Connection) -> List[Dict[str, Any]]:
+        """Get Google Workspace tools for a connection."""
+        return [
+            {
+                "name": "google_workspace_gmail",
+                "description": "Gmail operations: send emails, read inbox, search emails, manage labels, create drafts, watch inbox for push notifications, and mark emails as read. Supports operations: send_email, read_emails, search_emails, create_label, apply_label, create_draft, delete_email, get_email_details, watch_inbox, stop_watch, mark_as_read.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["send_email", "read_emails", "search_emails", "create_label", "apply_label", "create_draft", "delete_email", "get_email_details", "watch_inbox", "stop_watch", "mark_as_read"],
+                            "description": "Gmail operation to perform"
+                        },
+                        "to": {"type": "string", "description": "Recipient email (for send_email, create_draft)"},
+                        "subject": {"type": "string", "description": "Email subject"},
+                        "body": {"type": "string", "description": "Email body (plain text or HTML)"},
+                        "cc": {"type": "string", "description": "CC recipients (comma-separated)"},
+                        "bcc": {"type": "string", "description": "BCC recipients"},
+                        "html": {"type": "boolean", "description": "Whether body is HTML", "default": False},
+                        "query": {"type": "string", "description": "Gmail search query (for read/search)"},
+                        "max_results": {"type": "integer", "description": "Max emails to retrieve", "default": 10},
+                        "label_ids": {"type": "array", "items": {"type": "string"}, "description": "Label IDs"},
+                        "label_name": {"type": "string", "description": "Label name (for create_label)"},
+                        "message_id": {"type": "string", "description": "Message ID"},
+                        "message_ids": {"type": "array", "items": {"type": "string"}, "description": "Message IDs (for apply_label, mark_as_read)"},
+                        "topic_name": {"type": "string", "description": "Pub/Sub topic (for watch_inbox)"},
+                        "label_filter_action": {"type": "string", "enum": ["include", "exclude"], "default": "include"}
+                    },
+                    "required": ["operation"]
+                },
+                "connection_id": connection.id,
+                "platform": "google_workspace",
+                "status": "available",
+                "id": "google_workspace_gmail"
+            },
+            {
+                "name": "google_workspace_calendar",
+                "description": "Google Calendar operations: create events, list events, update events, delete events, check availability, and create meetings with Google Meet.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["create_event", "list_events", "update_event", "delete_event", "check_availability", "create_meeting"],
+                            "description": "Calendar operation to perform"
+                        },
+                        "summary": {"type": "string", "description": "Event title"},
+                        "start_time": {"type": "string", "description": "Start time (ISO 8601)"},
+                        "end_time": {"type": "string", "description": "End time (ISO 8601)"},
+                        "description": {"type": "string", "description": "Event description"},
+                        "location": {"type": "string"},
+                        "attendees": {"type": "array", "items": {"type": "string"}, "description": "Attendee email addresses"},
+                        "timezone": {"type": "string", "default": "Africa/Nairobi"},
+                        "event_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                "connection_id": connection.id,
+                "platform": "google_workspace",
+                "status": "available",
+                "id": "google_workspace_calendar"
+            },
+            {
+                "name": "google_workspace_drive",
+                "description": "Google Drive operations: upload, download, list, search, create folders, share, move, and get metadata for files.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["upload_file", "download_file", "list_files", "create_folder", "delete_file", "share_file", "search_files", "get_metadata", "move_file"],
+                            "description": "Drive operation to perform"
+                        },
+                        "filename": {"type": "string"},
+                        "content": {"type": "string", "description": "File content (for upload)"},
+                        "mime_type": {"type": "string", "default": "application/octet-stream"},
+                        "file_id": {"type": "string"},
+                        "folder_id": {"type": "string"},
+                        "query": {"type": "string"},
+                        "email": {"type": "string", "description": "Email to share with"},
+                        "role": {"type": "string", "enum": ["reader", "writer", "commenter"], "default": "reader"}
+                    },
+                    "required": ["operation"]
+                },
+                "connection_id": connection.id,
+                "platform": "google_workspace",
+                "status": "available",
+                "id": "google_workspace_drive"
+            },
+            {
+                "name": "google_workspace_sheets",
+                "description": "Google Sheets operations: create spreadsheets, read/write ranges, append rows, clear ranges, batch update, and get spreadsheet info.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["create_spreadsheet", "read_range", "write_range", "append_rows", "clear_range", "batch_update", "get_info"],
+                            "description": "Sheets operation to perform"
+                        },
+                        "spreadsheet_id": {"type": "string"},
+                        "range_name": {"type": "string"},
+                        "values": {"type": "array"},
+                        "title": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                "connection_id": connection.id,
+                "platform": "google_workspace",
+                "status": "available",
+                "id": "google_workspace_sheets"
+            },
+            {
+                "name": "google_workspace_docs",
+                "description": "Google Docs operations: create documents, read content, insert/append text, find-replace, format text, insert tables, batch update, and export as PDF.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["create_document", "read_document", "insert_text", "append_text", "replace_text", "format_text", "insert_table", "batch_update", "export_pdf"],
+                            "description": "Docs operation to perform"
+                        },
+                        "document_id": {"type": "string"},
+                        "title": {"type": "string"},
+                        "text": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                "connection_id": connection.id,
+                "platform": "google_workspace",
+                "status": "available",
+                "id": "google_workspace_docs"
+            },
+            {
+                "name": "google_workspace_analytics",
+                "description": "Google Analytics 4 operations: get traffic data, conversions, user behavior, custom reports, and e-commerce data.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["get_traffic", "get_conversions", "get_user_behavior", "get_custom_report", "get_ecommerce_data"],
+                            "description": "Analytics operation to perform"
+                        },
+                        "property_id": {"type": "string"},
+                        "hours": {"type": "integer", "default": 24}
+                    },
+                    "required": ["operation"]
+                },
+                "connection_id": connection.id,
+                "platform": "google_workspace",
+                "status": "available",
+                "id": "google_workspace_analytics"
+            }
+        ]
     
     async def get_all_tools(self, db: AsyncSession) -> List[Dict[str, Any]]:
         """Get all tools (base tools + all platform tools)."""
@@ -1325,7 +1566,8 @@ class DynamicToolRegistry:
             "outlook": self._get_outlook_tools,
             "notion": self._get_notion_tools,
             "trello": self._get_trello_tools,
-            "jira": self._get_jira_tools
+            "jira": self._get_jira_tools,
+            "google_workspace": self._get_google_workspace_tools
         }
 
         # Check if tool name starts with any known platform prefix to optimize

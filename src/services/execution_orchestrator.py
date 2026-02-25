@@ -189,23 +189,70 @@ class ExecutionOrchestrator:
         messages.append({"role": "user", "content": content})
         
         # Call LLM for direct response
+        logger.error(f"BYOK_DEBUG: _generate_direct_response called with provider='{provider}', messages_count={len(messages)}")
         if provider == "ollama":
             response = await self._call_ollama_direct(messages)
         else:
             response = await self._call_llm_fallback(provider, messages)
         
         if response:
+            # Check if the response is an error dict from the provider
+            if isinstance(response, dict) and response.get('error'):
+                error_msg = response.get('error_message', 'Unknown provider error')
+                logger.error(f"BYOK_DEBUG: Provider returned error: {error_msg}")
+                return f"⚠️ {error_msg}", [], 0
+            
             assistant_message = response.get('choices', [{}])[0].get('message', {})
-            content = assistant_message.get('content', '')
-            if content:
+            resp_content = assistant_message.get('content', '')
+            if resp_content:
                 # Extract tokens
                 usage = response.get('usage', {})
                 total_tokens = usage.get('total_tokens', 0)
-                return content, [], total_tokens
+                return resp_content, [], total_tokens
         
-        # Fallback response when LLM is not available
-        print(f"⚠️ LLM not available, providing fallback response")
-        fallback_response = f"I understand you're asking about: '{content[:100]}...'. I'm here to help with your questions and can assist with various tasks when you need them. How can I be of assistance?"
+        # BYOK Fallback: Try user's own API keys if primary provider failed
+        logger.error(f"BYOK_DEBUG: Primary provider '{provider}' returned None, trying BYOK fallback...")
+        last_error_msg = None
+        try:
+            from sqlalchemy import select
+            from ..models import UserSettings
+            stmt = select(UserSettings).where(UserSettings.user_id == self.user.id)
+            result = await self.db.execute(stmt)
+            user_settings = result.scalar_one_or_none()
+            if user_settings:
+                byok_providers = []
+                if user_settings.anthropic_api_key:
+                    byok_providers.append("anthropic")
+                if user_settings.openai_api_key:
+                    byok_providers.append("openai")
+                if getattr(user_settings, 'gemini_api_key', None):
+                    byok_providers.append("gemini")
+                
+                for byok_provider in byok_providers:
+                    if byok_provider == provider:
+                        continue  # Already tried this one
+                    print(f"🔑 Trying BYOK fallback provider: {byok_provider}")
+                    fallback_response = await self._call_llm_fallback(byok_provider, messages)
+                    if fallback_response:
+                        # Check for error dict
+                        if isinstance(fallback_response, dict) and fallback_response.get('error'):
+                            last_error_msg = fallback_response.get('error_message')
+                            continue
+                        assistant_message = fallback_response.get('choices', [{}])[0].get('message', {})
+                        resp_content = assistant_message.get('content', '')
+                        if resp_content:
+                            usage = fallback_response.get('usage', {})
+                            total_tokens = usage.get('total_tokens', 0)
+                            print(f"✅ BYOK fallback succeeded with {byok_provider}")
+                            return resp_content, [], total_tokens
+        except Exception as byok_error:
+            logger.warning(f"BYOK fallback failed: {byok_error}")
+        
+        # Final fallback response when no LLM is available
+        print(f"⚠️ No LLM available (including BYOK), providing fallback response")
+        if last_error_msg:
+            return f"⚠️ {last_error_msg}", [], 0
+        fallback_response = f"I'm unable to connect to any AI provider right now. Please check your API key settings or try selecting a different provider."
         return fallback_response, [], 0
     
     async def _execute_with_function_calling(self, content: str, provider: str, relevant_tools: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
@@ -623,8 +670,23 @@ class ExecutionOrchestrator:
     async def _call_openai_with_functions(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """Call OpenAI API with function calling support."""
         from ..config import settings
+        from sqlalchemy import select
+        from ..models import UserSettings
+
+        api_key = settings.OPENAI_API_KEY
         
-        if not settings.OPENAI_API_KEY:
+        # BYOK: Check for user-provided API key
+        try:
+            stmt = select(UserSettings).where(UserSettings.user_id == self.user.id)
+            result = await self.db.execute(stmt)
+            user_settings = result.scalar_one_or_none()
+            if user_settings and user_settings.openai_api_key:
+                logger.info(f"Using BYOK (OpenAI) for user {self.user.id}")
+                api_key = user_settings.openai_api_key
+        except Exception as e:
+            logger.warning(f"Failed to fetch user settings for BYOK: {e}")
+
+        if not api_key:
             print("❌ OpenAI API key not configured")
             return None
         
@@ -632,7 +694,7 @@ class ExecutionOrchestrator:
             import openai
             from openai import AsyncOpenAI
             
-            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+            client = AsyncOpenAI(api_key=api_key)
             
             # Build request parameters
             model = getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
@@ -698,22 +760,28 @@ class ExecutionOrchestrator:
         from sqlalchemy import select
         from ..models import UserSettings
 
+        logger.error(f"BYOK_DEBUG: _call_anthropic entered for user {self.user.id}")
+
         api_key = settings.ANTHROPIC_API_KEY
+        user_settings = None
         
         # BYOK: Check for user-provided API key
         try:
             stmt = select(UserSettings).where(UserSettings.user_id == self.user.id)
             result = await self.db.execute(stmt)
             user_settings = result.scalar_one_or_none()
+            logger.error(f"BYOK_DEBUG: UserSettings found: {user_settings is not None}, has anthropic key: {bool(user_settings and user_settings.anthropic_api_key) if user_settings else False}")
             if user_settings and user_settings.anthropic_api_key:
-                logger.info(f"Using BYOK (Anthropic) for user {self.user.id}")
+                logger.error(f"BYOK_DEBUG: Using BYOK (Anthropic) for user {self.user.id}")
                 api_key = user_settings.anthropic_api_key
         except Exception as e:
-            logger.warning(f"Failed to fetch user settings for BYOK: {e}")
+            logger.error(f"BYOK_DEBUG: Failed to fetch user settings for BYOK: {e}")
 
         if not api_key:
-            print("❌ Anthropic API key not configured")
+            logger.error(f"BYOK_DEBUG: Anthropic - NO API key found (system key: {bool(settings.ANTHROPIC_API_KEY)}, user_settings found: {user_settings is not None}, user_settings has key: {bool(user_settings and user_settings.anthropic_api_key) if user_settings else 'N/A'})")
             return None
+        
+        logger.error(f"BYOK_DEBUG: Anthropic API key resolved (starts with: {api_key[:8]}..., length: {len(api_key)})")
         
         try:
             import aiohttp
@@ -732,7 +800,7 @@ class ExecutionOrchestrator:
                     })
             
             payload = {
-                "model": "claude-3-sonnet-20240229",
+                "model": "claude-sonnet-4-20250514",
                 "messages": anthropic_messages,
                 "max_tokens": settings.LLM_MAX_TOKENS or 1024,
                 "temperature": settings.LLM_TEMPERATURE or 0.7,
@@ -772,14 +840,21 @@ class ExecutionOrchestrator:
                         }
                     else:
                         error_text = await response.text()
-                        print(f"❌ Anthropic error {response.status}: {error_text}")
-                        return None
+                        logger.error(f"BYOK_DEBUG: Anthropic API error response {response.status}: {error_text[:500]}")
+                        # Parse the error message for user-friendly display
+                        try:
+                            import json as _json
+                            error_data = _json.loads(error_text)
+                            error_msg = error_data.get("error", {}).get("message", error_text)
+                        except Exception:
+                            error_msg = error_text
+                        return {"error": True, "error_message": f"Anthropic API error: {error_msg}", "status": response.status}
                         
         except Exception as e:
-            print(f"❌ Anthropic API error: {e}")
+            logger.error(f"BYOK_DEBUG: Anthropic API exception: {e}")
             import traceback
-            print(f"❌ Traceback: {traceback.format_exc()}")
-            return None 
+            logger.error(f"BYOK_DEBUG: Traceback: {traceback.format_exc()}")
+            return {"error": True, "error_message": f"Failed to connect to Anthropic API: {str(e)}"}
 
     async def _call_gemini(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """Call Google Gemini API."""
