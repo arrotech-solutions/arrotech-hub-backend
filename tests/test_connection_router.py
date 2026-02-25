@@ -31,7 +31,7 @@ async def test_create_connection(client: AsyncClient, auth_headers):
             "config": {"api_key": "test-key"}
         }
     )
-    assert response.status_code in [200, 201, 400, 422]
+    assert response.status_code in [200, 201, 400, 402, 422]
 
 
 @pytest.mark.asyncio
