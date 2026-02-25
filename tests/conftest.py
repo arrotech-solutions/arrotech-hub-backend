@@ -132,13 +132,12 @@ async def client(
 
     app.dependency_overrides[get_db] = override_get_db
 
-    # Initialize app.state services that are normally set during startup
-    # The startup event doesn't fire in tests, so we mock these manually
-    if not hasattr(app.state, 'rate_limit_service') or app.state.rate_limit_service is None:
-        from unittest.mock import AsyncMock, MagicMock
-        mock_rate_limit = MagicMock()
-        mock_rate_limit.check_limit = AsyncMock(return_value=True)
-        app.state.rate_limit_service = mock_rate_limit
+    # Always mock rate_limit_service to prevent 429s in tests.
+    # The real one may be set during app startup, so we override unconditionally.
+    from unittest.mock import AsyncMock, MagicMock
+    mock_rate_limit = MagicMock()
+    mock_rate_limit.check_limit = AsyncMock(return_value=True)
+    app.state.rate_limit_service = mock_rate_limit
 
     transport = ASGITransport(app=app)
     async with AsyncClient(
