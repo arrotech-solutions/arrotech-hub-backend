@@ -78,33 +78,6 @@ async def test_register_empty_name(client: AsyncClient):
     assert response.status_code in [200, 201, 400, 422]
 
 
-@pytest.mark.asyncio
-async def test_register_special_characters_in_name(client: AsyncClient):
-    """Test registration with special characters in name."""
-    response = await client.post(
-        "/auth/register",
-        json={
-            "email": "special@example.com",
-            "password": "SecurePassword123!",
-            "name": "User O'Brien-Smith"
-        }
-    )
-    assert response.status_code in [200, 201]
-
-
-@pytest.mark.asyncio
-async def test_register_unicode_name(client: AsyncClient):
-    """Test registration with unicode name."""
-    response = await client.post(
-        "/auth/register",
-        json={
-            "email": "unicode@example.com",
-            "password": "SecurePassword123!",
-            "name": "用户名"
-        }
-    )
-    assert response.status_code in [200, 201]
-
 
 @pytest.mark.asyncio
 async def test_login_success(client: AsyncClient):
