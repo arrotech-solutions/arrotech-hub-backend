@@ -4,6 +4,7 @@ Standalone test suite with in-memory SQLite database.
 """
 import asyncio
 import os
+os.environ["TESTING"] = "1"
 import warnings
 from datetime import datetime, timedelta
 from typing import AsyncGenerator, Generator

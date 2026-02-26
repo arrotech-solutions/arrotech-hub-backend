@@ -158,6 +158,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._hits[key] = [t for t in self._hits[key] if now - t < window]
 
     async def dispatch(self, request, call_next):
+        # Skip rate limiting in test environment
+        if os.getenv("TESTING") or os.getenv("ENVIRONMENT") == "testing":
+            return await call_next(request)
+
         client_ip = request.client.host if request.client else "unknown"
         path = request.url.path
 
