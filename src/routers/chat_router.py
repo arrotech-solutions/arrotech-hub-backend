@@ -26,7 +26,7 @@ from ..services.dynamic_tool_registry import dynamic_tool_registry
 from ..services.execution_orchestrator import ExecutionOrchestrator
 from ..services.intent_processor import IntentProcessor
 from ..services.tool_executor import tool_executor
-from ..services.tool_router import ToolRouter
+from ..services.tool_selector import ToolRouter
 from ..config import settings
 
 router = APIRouter()

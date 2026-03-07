@@ -113,6 +113,17 @@ class BaseConfig(BaseSettings):
     JIRA_CLIENT_ID: Optional[str] = None
     JIRA_CLIENT_SECRET: Optional[str] = None
 
+    # QuickBooks Online Configuration
+    QUICKBOOKS_CLIENT_ID: Optional[str] = None
+    QUICKBOOKS_CLIENT_SECRET: Optional[str] = None
+    QUICKBOOKS_REDIRECT_URI: Optional[str] = None
+    QUICKBOOKS_ENVIRONMENT: str = "sandbox"  # "sandbox" or "production"
+
+    # Airtable Configuration
+    AIRTABLE_CLIENT_ID: Optional[str] = None
+    AIRTABLE_CLIENT_SECRET: Optional[str] = None
+    AIRTABLE_REDIRECT_URI: Optional[str] = None
+
     # WhatsApp Business Configuration
     WHATSAPP_VERIFY_TOKEN: Optional[str] = None
     WHATSAPP_TOKEN: Optional[str] = None

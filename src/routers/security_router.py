@@ -5,6 +5,7 @@ Security router for Mini-Hub MCP Server. Handles 2FA, TOTP, and WebAuthn (Passke
 import base64
 import json
 import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -35,6 +36,7 @@ from webauthn.helpers.structs import (
 from ..database import get_db
 from ..models import User, UserSettings, WebAuthnCredential
 from .auth_router import get_current_user, get_password_hash, verify_password
+from ..services.email_service import email_service
 
 # Configuration
 from ..config import settings
@@ -42,7 +44,7 @@ RP_ID = getattr(settings, 'RP_ID', "localhost")
 RP_NAME = getattr(settings, 'RP_NAME', "Arrotech Hub")
 ORIGIN = getattr(settings, 'FRONTEND_URL', "http://localhost:3000")
 
-router = APIRouter(prefix="/security", tags=["security"])
+router = APIRouter(tags=["security"])
 
 @router.get("/2fa/status")
 async def get_2fa_status(
@@ -50,15 +52,25 @@ async def get_2fa_status(
     db: AsyncSession = Depends(get_db)
 ):
     """Get the current 2FA status for the user."""
-    # Ensure settings are loaded
-    user = await db.get(User, current_user.id, options=[selectinload(User.settings), selectinload(User.webauthn_credentials)])
+    # Ensure settings and credentials are loaded properly with execute
+    result = await db.execute(
+        select(User)
+        .where(User.id == current_user.id)
+        .options(selectinload(User.settings), selectinload(User.webauthn_credentials))
+    )
+    user = result.scalar_one_or_none()
     
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
     return {
         "success": True,
         "data": {
             "two_factor_enabled": user.settings.two_factor_enabled if user.settings else False,
             "has_totp": bool(user.settings and user.settings.totp_secret),
-            "passkeys_count": len(user.webauthn_credentials) if hasattr(user, 'webauthn_credentials') else 0,
+            "has_email_2fa": bool(user.settings and user.settings.email_2fa_enabled),
+            "default_2fa_method": user.settings.default_2fa_method if user.settings else "totp",
+            "passkeys_count": len(user.webauthn_credentials) if hasattr(user, 'webauthn_credentials') and user.webauthn_credentials else 0,
             "has_backup_codes": bool(user.settings and user.settings.backup_codes)
         }
     }
@@ -92,9 +104,19 @@ async def setup_totp(
     user.settings.totp_secret = secret
     await db.commit()
     
+    # DEBUG: Verify the secret was saved correctly
+    await db.refresh(user.settings)
+    saved_secret = user.settings.totp_secret
+    print(f"[2FA SETUP] Generated secret:  {secret}")
+    print(f"[2FA SETUP] Saved in DB:       {saved_secret}")
+    print(f"[2FA SETUP] Secrets match:     {secret == saved_secret}")
+    
     # Generate Provisioning URI
     totp = pyotp.TOTP(secret)
     uri = totp.provisioning_uri(name=user.email, issuer_name="Arrotech Hub")
+    
+    # DEBUG: Log URI so we can check what the QR encodes
+    print(f"[2FA SETUP] Provisioning URI:  {uri}")
     
     # Generate QR Code
     qr = qrcode.QRCode(version=1, box_size=10, border=4)
@@ -122,16 +144,41 @@ async def verify_totp_setup(
     db: AsyncSession = Depends(get_db)
 ):
     """Verify the first TOTP code and enable 2FA, generate backup codes."""
-    user = await db.get(User, current_user.id, options=[selectinload(User.settings)])
+    # Use RAW SQL to completely bypass ORM identity map and session cache
+    from sqlalchemy import text
+    raw_result = await db.execute(
+        text("SELECT totp_secret FROM user_settings WHERE user_id = :uid"),
+        {"uid": current_user.id}
+    )
+    raw_row = raw_result.fetchone()
     
-    if not user.settings or not user.settings.totp_secret:
+    if not raw_row or not raw_row[0]:
         raise HTTPException(status_code=400, detail="TOTP setup not initiated.")
-        
-    totp = pyotp.TOTP(user.settings.totp_secret)
-    if not totp.verify(data.code):
+    
+    stored_secret = raw_row[0]
+    totp = pyotp.TOTP(stored_secret)
+    
+    # DEBUG: Log details to diagnose verification failures (remove after fixing)
+    import time
+    server_time = int(time.time())
+    expected_code = totp.now()
+    print(f"[2FA DEBUG] Server Unix Time: {server_time}")
+    print(f"[2FA DEBUG] Expected TOTP code: {expected_code}")
+    print(f"[2FA DEBUG] Submitted code:     {data.code}")
+    print(f"[2FA DEBUG] FULL Secret (RAW SQL): {stored_secret}")
+    print(f"[2FA DEBUG] Codes match:        {expected_code == data.code}")
+    print(f"[2FA DEBUG] verify(window=5):   {totp.verify(data.code, valid_window=5)}")
+    
+    if not totp.verify(data.code, valid_window=10):
         raise HTTPException(status_code=400, detail="Invalid verification code.")
         
-    # Valid code, enable 2FA
+    # Valid code - now load user via ORM to update settings
+    result = await db.execute(
+        select(User).where(User.id == current_user.id).options(selectinload(User.settings))
+    )
+    user = result.scalar_one()
+    
+    # Enable 2FA
     user.settings.two_factor_enabled = True
     
     # Generate 10 backup codes
@@ -149,28 +196,123 @@ async def verify_totp_setup(
         }
     }
 
+class Disable2FARequest(BaseModel):
+    method: Optional[str] = "all" # 'totp', 'email', 'all'
+
 @router.post("/2fa/disable")
 async def disable_2fa(
-    verify_data: BaseModel, # Accept any model just to require a body, could require password
+    verify_data: Disable2FARequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Disable all 2FA methods (TOTP, backup codes). Password requirement generally recommended."""
-    # TODO: Require password validation before disabling
-    
+    """Disable specific or all 2FA methods."""
     user = await db.get(User, current_user.id, options=[selectinload(User.settings), selectinload(User.webauthn_credentials)])
     
     if user.settings:
-        user.settings.two_factor_enabled = False
-        user.settings.totp_secret = None
-        user.settings.backup_codes = None
+        if verify_data.method == "totp":
+            user.settings.totp_secret = None
+        elif verify_data.method == "email":
+            user.settings.email_2fa_enabled = False
+        else: # 'all'
+            user.settings.two_factor_enabled = False
+            user.settings.email_2fa_enabled = False
+            user.settings.totp_secret = None
+            user.settings.backup_codes = None
+            
+        # If neither TOTP nor Email is enabled, turn off the global flag
+        if not user.settings.totp_secret and not user.settings.email_2fa_enabled:
+             user.settings.two_factor_enabled = False
     
-    # Delete passkeys
-    for cred in list(user.webauthn_credentials):
-        await db.delete(cred)
+    if verify_data.method == "all":
+        # Delete passkeys
+        for cred in list(user.webauthn_credentials):
+            await db.delete(cred)
+            
+    await db.commit()
+    return {"success": True, "message": f"Two-factor authentication ({verify_data.method}) disabled."}
+
+# --- Email 2FA Setup ---
+
+class VerifyEmailSetupRequest(BaseModel):
+    code: str
+
+@router.post("/2fa/email/setup")
+async def setup_email_2fa(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Generate an OTP and send it via email to verify the user wants to enable Email 2FA."""
+    user = await db.get(User, current_user.id, options=[selectinload(User.settings)])
+    if not user.settings:
+        user_settings = UserSettings(user_id=user.id)
+        db.add(user_settings)
+        user.settings = user_settings
+        
+    otp = "".join(str(secrets.randbelow(10)) for _ in range(6))
+    user.login_otp = otp
+    user.login_otp_expiry = datetime.now(timezone.utc) + timedelta(minutes=5)
+    await db.commit()
+    
+    await email_service.send_2fa_otp_email(user.email, otp)
+    
+    return {
+        "success": True,
+        "message": "Verification code sent to your email."
+    }
+
+@router.post("/2fa/email/verify")
+async def verify_email_setup(
+    data: VerifyEmailSetupRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Verify the email OTP and enable Email 2FA."""
+    user = await db.get(User, current_user.id, options=[selectinload(User.settings)])
+    
+    if not user.login_otp or not user.login_otp_expiry:
+        raise HTTPException(status_code=400, detail="No active Email 2FA setup session.")
+        
+    # Make sure we compare aware datetimes
+    now = datetime.now(timezone.utc)
+    if not user.login_otp_expiry.tzinfo:
+        user.login_otp_expiry = user.login_otp_expiry.replace(tzinfo=timezone.utc)
+
+    if now > user.login_otp_expiry:
+        user.login_otp = None
+        user.login_otp_expiry = None
+        await db.commit()
+        raise HTTPException(status_code=400, detail="Verification code expired.")
+        
+    if user.login_otp != data.code:
+        raise HTTPException(status_code=400, detail="Invalid verification code.")
+        
+    # Valid code, enable 2FA
+    if not user.settings:
+        user_settings = UserSettings(user_id=user.id)
+        db.add(user_settings)
+        user.settings = user_settings
+
+    user.settings.email_2fa_enabled = True
+    user.settings.two_factor_enabled = True
+    user.login_otp = None
+    user.login_otp_expiry = None
+    
+    # Generate 10 backup codes if none exist
+    raw_backup_codes = []
+    if not user.settings.backup_codes:
+        raw_backup_codes = [secrets.token_hex(4) for _ in range(10)]
+        hashed_backup_codes = [get_password_hash(code) for code in raw_backup_codes]
+        user.settings.backup_codes = hashed_backup_codes
         
     await db.commit()
-    return {"success": True, "message": "Two-factor authentication disabled."}
+    
+    return {
+        "success": True,
+        "message": "Email Two-factor authentication enabled successfully.",
+        "data": {
+            "backup_codes": raw_backup_codes if raw_backup_codes else None
+        }
+    }
 
 # --- WebAuthn (Passkeys) Setup ---
 

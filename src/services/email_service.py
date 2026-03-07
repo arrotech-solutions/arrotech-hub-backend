@@ -430,6 +430,67 @@ class EmailService:
         html = self._get_base_template(content, "Reset Your Password")
         return await self.send_email(to_email, "🔐 Reset your Mini-Hub password", html)
 
+    async def send_org_invitation_email(
+        self,
+        to_email: str,
+        org_name: str,
+        inviter_name: str,
+        role: str,
+        invite_url: str,
+    ) -> bool:
+        """Send organization invitation email."""
+        content = f"""
+        <h2>You've been invited to join {org_name} 🏢</h2>
+        <p>Hi there,</p>
+        <p><strong>{inviter_name}</strong> has invited you to join
+        <strong>{org_name}</strong> on Arrotech Hub as a <strong>{role}</strong>.</p>
+
+        <div class="stats-box">
+            <p><strong>Organization:</strong> {org_name}</p>
+            <p><strong>Your Role:</strong> {role.capitalize()}</p>
+            <p><strong>Invited by:</strong> {inviter_name}</p>
+        </div>
+
+        <p>Click the button below to accept the invitation:</p>
+
+        <a href="{invite_url}" class="button">Join {org_name}</a>
+
+        <p style="margin-top: 30px; color: #666; font-size: 14px;">
+            This invitation expires in 7 days. If you don't have an Arrotech Hub
+            account yet, you'll be asked to create one first.
+        </p>
+        """
+
+        html = self._get_base_template(content, f"Join {org_name}")
+        return await self.send_email(
+            to_email,
+            f"🏢 {inviter_name} invited you to join {org_name}",
+            html,
+            text_content=f"{inviter_name} invited you to join {org_name} on Arrotech Hub as a {role}. Accept here: {invite_url}",
+        )
+
+    async def send_2fa_otp_email(
+        self,
+        to_email: str,
+        otp: str
+    ) -> bool:
+        """Send a 2FA OTP code via email."""
+        content = f"""
+        <h2>Your Verification Code 🔐</h2>
+        <p>Use the following 6-digit code to verify your identity:</p>
+        
+        <div style="background-color: #f3f4f6; color: #111827; font-size: 32px; font-weight: bold; letter-spacing: 0.25em; padding: 20px; text-align: center; border-radius: 8px; margin: 30px 0; font-family: monospace;">
+            {otp}
+        </div>
+        
+        <p style="margin-top: 30px; color: #666; font-size: 14px;">
+            This code will expire in 5 minutes. If you didn't request this, please secure your account immediately.
+        </p>
+        """
+        
+        html = self._get_base_template(content, "Login Verification Code")
+        return await self.send_email(to_email, "🔐 Your Arrotech Hub Login Code", html, text_content=f"Your login code is: {otp}")
+
 
 # Create singleton instance
 email_service = EmailService()

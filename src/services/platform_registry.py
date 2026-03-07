@@ -819,6 +819,107 @@ class PlatformRegistry:
             test_function="test_clickup_connection"
         )
 
+        # QuickBooks Platform
+        quickbooks_capabilities = [
+            PlatformCapability(
+                name="Company Info",
+                description="Get connected company information",
+                tool_name="quickbooks_get_company_info",
+                input_schema={
+                    "type": "object",
+                    "properties": {}
+                },
+                operations=["get_company_info"]
+            ),
+            PlatformCapability(
+                name="Invoices",
+                description="Manage invoices: list and create",
+                tool_name="quickbooks_invoices",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_invoices", "create_invoice"]},
+                        "start_date": {"type": "string"},
+                        "end_date": {"type": "string"},
+                        "status": {"type": "string"},
+                        "customer_id": {"type": "string"},
+                        "line_items": {"type": "array", "items": {"type": "object"}},
+                        "due_date": {"type": "string"},
+                        "email": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_invoices", "create_invoice"]
+            ),
+            PlatformCapability(
+                name="Financial Reports",
+                description="Get Profit and Loss and Balance Sheet reports",
+                tool_name="quickbooks_reports",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_profit_loss", "get_balance_sheet"]},
+                        "start_date": {"type": "string"},
+                        "end_date": {"type": "string"},
+                        "date": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_profit_loss", "get_balance_sheet"]
+            ),
+            PlatformCapability(
+                name="Accounts & Customers",
+                description="List chart of accounts and customers",
+                tool_name="quickbooks_lists",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_accounts", "get_customers"]},
+                        "account_type": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_accounts", "get_customers"]
+            ),
+            PlatformCapability(
+                name="Generic Query",
+                description="Run generic QuickBooks SQl queries",
+                tool_name="quickbooks_query",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["query"]},
+                        "entity": {"type": "string"},
+                        "where_clause": {"type": "string"}
+                    },
+                    "required": ["operation", "entity"]
+                },
+                operations=["query"]
+            )
+        ]
+
+        self.platforms["quickbooks"] = Platform(
+            id="quickbooks",
+            name="QuickBooks Online",
+            description="Accounting and financial management platform",
+            icon="quickbooks",
+            features=[
+                "Invoicing & billing",
+                "Financial reporting",
+                "Customer management",
+                "Chart of accounts"
+            ],
+            capabilities=quickbooks_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "realm_id": {"type": "string", "description": "QuickBooks Company ID"}
+                },
+                "required": ["realm_id"]
+            },
+            test_function="test_quickbooks_connection"
+        )
+
         # LinkedIn Platform
         linkedin_capabilities = [
             PlatformCapability(
@@ -2808,6 +2909,59 @@ class PlatformRegistry:
                 "required": ["pin"]
             },
             test_function="test_kra_connection"
+        )
+
+        # 10. Airtable
+        airtable_capabilities = [
+            PlatformCapability(
+                name="Bases & Schema",
+                description="List bases and get base schemas",
+                tool_name="airtable_schema",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["list_bases", "get_base_schema"]},
+                        "base_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["list_bases", "get_base_schema"]
+            ),
+            PlatformCapability(
+                name="Records",
+                description="Get, create, and update records in Airtable",
+                tool_name="airtable_records",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_records", "create_records", "update_records"]},
+                        "base_id": {"type": "string"},
+                        "table_id_or_name": {"type": "string"},
+                        "max_records": {"type": "integer"},
+                        "records": {"type": "array", "items": {"type": "object"}}
+                    },
+                    "required": ["operation", "base_id", "table_id_or_name"]
+                },
+                operations=["get_records", "create_records", "update_records"]
+            )
+        ]
+        
+        self.platforms["airtable"] = Platform(
+            id="airtable",
+            name="Airtable",
+            description="Connect Airtable to read and write records across your bases.",
+            icon="layout-grid",
+            features=["List Bases", "View Schemas", "Manage Records"],
+            capabilities=airtable_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "access_token": {"type": "string"},
+                    "refresh_token": {"type": "string"}
+                },
+                "required": ["access_token", "refresh_token"]
+            },
+            test_function="test_airtable_connection"
         )
 
     

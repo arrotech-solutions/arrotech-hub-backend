@@ -20,22 +20,24 @@ from .slack_agent_router import router as slack_agent_router
 from .templates_router import router as templates_router
 from .workflow_router import router as workflow_router
 from .agent_router import router as agent_router
-from .google_workspace_routes import router as google_workspace_router
-from .slack_routes import router as slack_routes
-from .whatsapp_routes import router as whatsapp_routes
+from .google_workspace_router import router as google_workspace_router
+from .slack_router import router as slack_router
+from .whatsapp_router import router as whatsapp_router
 from . import whatsapp_webhook  # WhatsApp incoming messages webhook
 from . import whatsapp_contacts  # WhatsApp contacts, messages, auto-reply API
 from . import whatsapp_broadcast  # WhatsApp broadcast campaigns
-from .facebook_routes import router as facebook_routes
-from .instagram_routes import router as instagram_routes
-from .twitter_routes import router as twitter_routes
+from .facebook_router import router as facebook_router
+from .instagram_router import router as instagram_router
+from .twitter_router import router as twitter_router
 from .outlook_router import router as outlook_router
 from .notion_router import router as notion_router
 from .trello_router import router as trello_router
 from .jira_router import router as jira_router
-from .hubspot_routes import router as hubspot_routes
+from .hubspot_router import router as hubspot_router
 from .blog_router import router as blog_router
 from .employee_router import router as employee_router
+from .quickbooks_router import router as quickbooks_router
+from .airtable_router import router as airtable_router
 from . import gmail_webhook  # Gmail Pub/Sub push notifications webhook
 
 __all__ = [
@@ -43,9 +45,9 @@ __all__ = [
     "connection_router", "creator_router", "favorites_router", "marketplace_router", 
     "mpesa_agent_router", "notification_router", "payment_router", "preferences_router", 
     "settings_router", "slack_agent_router", "templates_router", "workflow_router", "agent_router",
-    "google_workspace_router", "slack_routes", "whatsapp_routes", "whatsapp_webhook", "whatsapp_contacts",
-    "whatsapp_broadcast", "facebook_routes", "instagram_routes", "twitter_routes",
+    "google_workspace_router", "slack_router", "whatsapp_router", "whatsapp_webhook", "whatsapp_contacts",
+    "whatsapp_broadcast", "facebook_router", "instagram_router", "twitter_router",
     "outlook_router", "notion_router", "trello_router", "jira_router",
-    "blog_router", "employee_router", "gmail_webhook", "hubspot_routes"
+    "blog_router", "employee_router", "quickbooks_router", "airtable_router", "gmail_webhook", "hubspot_router"
 ]
 
