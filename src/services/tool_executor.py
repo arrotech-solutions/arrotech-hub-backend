@@ -43,6 +43,8 @@ from .agritech_service import AgritechService
 from .health_service import HealthService
 from .utilities_service import UtilitiesService
 from .workflow_service import WorkflowService
+from .quickbooks_service import QuickBooksService
+from .airtable_service import AirtableService
 from .clickup_service import ClickUpService
 from .google_workspace import (
     GoogleWorkspaceBaseClient,
@@ -94,6 +96,8 @@ class ToolExecutor:
             "workflow": WorkflowService(),
             "clickup": ClickUpService(),
             "kra": KraService(),
+            "quickbooks": QuickBooksService(),
+            "airtable": AirtableService(),
         }
         # Initialize services
         self._initialized = False

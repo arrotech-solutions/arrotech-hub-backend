@@ -25,9 +25,9 @@ from .database import init_db
 from .routers import (access_router, agent_router, analytics_router, api_router, auth_router, chat_router,
                       connection_router, creator_router, favorites_router, google_workspace_router, marketplace_router, 
                       mcp_router, mpesa_agent_router, notification_router, payment_router, preferences_router,
-                      security_router, settings_router, slack_agent_router, slack_routes, subscription_router, templates_router, whatsapp_routes, workflow_router, facebook_routes, instagram_routes, twitter_routes, clickup_routes, teams_router, zoom_router,
-                      outlook_router, notion_router, trello_router, jira_router, whatsapp_webhook, whatsapp_contacts, whatsapp_broadcast, tiktok_routes, ai_router, support_router, kra_router, productivity_router, asana_router,
-                      blog_router, employee_router, gmail_webhook, hubspot_routes, ws_router)
+                      security_router, settings_router, slack_agent_router, slack_router, subscription_router, templates_router, whatsapp_router, workflow_router, facebook_router, instagram_router, twitter_router, clickup_router, teams_router, zoom_router,
+                      outlook_router, notion_router, trello_router, jira_router, whatsapp_webhook, whatsapp_contacts, whatsapp_broadcast, tiktok_router, ai_router, support_router, kra_router, productivity_router, asana_router,
+                      blog_router, employee_router, gmail_webhook, hubspot_router, ws_router, organization_router, quickbooks_router, airtable_router)
 from .services import (BillingService, ContentCreationService,
                        FileManagementService, HubSpotService,
                        RateLimitService, SlackService, SocialMediaService,
@@ -252,23 +252,22 @@ app.include_router(favorites_router, prefix="/favorites", tags=["favorites"])
 app.include_router(preferences_router, prefix="/preferences", tags=["preferences"])
 app.include_router(subscription_router.router)
 app.include_router(google_workspace_router)  # Already has /api/google-workspace prefix
-app.include_router(slack_routes) # Already has /api/slack prefix
-app.include_router(whatsapp_routes)
+app.include_router(slack_router) # Already has /api/slack prefix
+app.include_router(whatsapp_router)
 app.include_router(whatsapp_webhook.router)  # WhatsApp incoming messages webhook
 app.include_router(whatsapp_contacts.router)  # WhatsApp contacts, messages, auto-reply API
 app.include_router(whatsapp_broadcast.router)  # WhatsApp broadcast campaigns
-app.include_router(facebook_routes)
-app.include_router(instagram_routes)
-app.include_router(twitter_routes)
-app.include_router(clickup_routes.router)
+app.include_router(facebook_router)
+app.include_router(instagram_router)
+app.include_router(twitter_router)
+app.include_router(clickup_router.router)
 app.include_router(teams_router.router)
 app.include_router(zoom_router.router)
 app.include_router(outlook_router)
 app.include_router(notion_router)
 app.include_router(trello_router)
 app.include_router(jira_router)
-app.include_router(jira_router)
-app.include_router(tiktok_routes.router)
+app.include_router(tiktok_router.router)
 app.include_router(ai_router.router)
 app.include_router(support_router.router)  # Help & Support ticket endpoint
 app.include_router(gmail_webhook.router)  # Gmail Pub/Sub push notifications webhook
@@ -278,7 +277,10 @@ app.include_router(ws_router.router)
 app.include_router(asana_router.router)
 app.include_router(blog_router)  # Blog service - public + admin endpoints
 app.include_router(employee_router)  # Employee management + admin subscribers
-app.include_router(hubspot_routes)  # HubSpot OAuth connection flow
+app.include_router(hubspot_router)  # HubSpot OAuth connection flow
+app.include_router(quickbooks_router) # QuickBooks OAuth connection flow
+app.include_router(airtable_router) # Airtable OAuth connection flow
+app.include_router(organization_router.router, prefix="/api/v1/organizations", tags=["organizations"])
 
 
 

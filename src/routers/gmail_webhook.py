@@ -129,11 +129,12 @@ async def _process_gmail_notification_bg(email_address: str, history_id: Optiona
     try:
         logger.info(f"Background task starting for {email_address}, historyId: {history_id}")
         
-        # --- PART 1: Fetch Credentials (Short DB Transaction) ---
+        # --- PART 1: Fetch Credentials & Check Workflow Status (Short DB Transaction) ---
         connection = None
         user_id = None
         credentials_data = None
         company_name = "Our Team"
+        has_active_workflow = False
         
         async with session_maker() as db:
             result = await db.execute(
@@ -159,9 +160,41 @@ async def _process_gmail_notification_bg(email_address: str, history_id: Optiona
                     }
                     company_name = conn.config.get("company_name", company_name)
                     break
+            
+            # Check if the user has an ACTIVE email auto-responder workflow
+            if user_id:
+                wf_result = await db.execute(
+                    select(Workflow)
+                    .filter(
+                        Workflow.user_id == user_id,
+                        Workflow.status == WorkflowStatus.ACTIVE
+                    )
+                    .options(selectinload(Workflow.steps))
+                )
+                active_workflows = wf_result.scalars().all()
+                
+                for wf in active_workflows:
+                    name_lower = (wf.name or "").lower()
+                    desc_lower = (wf.description or "").lower()
+                    if any(kw in name_lower or kw in desc_lower
+                           for kw in ["email auto", "auto-respond", "auto respond", "email respond"]):
+                        has_active_workflow = True
+                        break
+                    # Fallback: check webhook trigger with Gmail/email steps
+                    if wf.trigger_type == WorkflowTriggerType.WEBHOOK:
+                        for step in (wf.steps or []):
+                            if "gmail" in (step.tool_name or "").lower() or "email" in (step.tool_name or "").lower():
+                                has_active_workflow = True
+                                break
+                        if has_active_workflow:
+                            break
         
         if not credentials_data:
             logger.warning(f"No active Google Workspace connection found for {email_address}")
+            return
+        
+        if not has_active_workflow:
+            logger.info(f"Email auto-responder workflow is not active for user {user_id} — skipping auto-replies")
             return
             
         # --- PART 2: Network IO (No DB Connection Held!) ---

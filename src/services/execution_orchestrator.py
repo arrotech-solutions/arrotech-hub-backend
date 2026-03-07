@@ -13,7 +13,7 @@ from .dynamic_tool_registry import dynamic_tool_registry
 from .intent_processor import IntentProcessor
 from .tool_executor import ToolExecutor, tool_executor
 from .tool_validator import ToolArgumentValidator
-from .tool_router import ToolRouter
+from .tool_selector import ToolRouter
 from .feature_flags import FeatureGate
 # Note: get_or_create_usage_record imported lazily inside process_message() to avoid circular import
 try:

@@ -3,7 +3,7 @@ Authentication router for Mini-Hub MCP Server.
 """
 
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -16,11 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..database import get_db
-from ..database import get_db
 from ..models import (
     User, AccessRequest, AccessRequestStatus, SubscriptionTier,
     UserSettings, Connection, UsageLog, Workflow, Conversation,
-    CreatorProfile, Invoice, MpesaPayment, WebAuthnCredential
+    CreatorProfile, Invoice, MpesaPayment, WebAuthnCredential,
+    Organization, OrganizationMember,
 )
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import JSONResponse
@@ -30,6 +30,7 @@ import httpx
 import pyotp
 
 from ..config import settings
+from ..services.email_service import email_service
 
 
 class GoogleAuthRequest(BaseModel):
@@ -95,7 +96,9 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
         expire = datetime.utcnow() + expires_delta
     else:
         expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire, "type": "access"})
+    if "type" not in to_encode:
+        to_encode["type"] = "access"
+    to_encode["exp"] = expire
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
@@ -108,7 +111,10 @@ def create_refresh_token(data: dict) -> str:
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def _build_auth_response(user: User, access_token: str, refresh_token: str) -> dict:
+def _build_auth_response(
+    user: User, access_token: str, refresh_token: str,
+    organizations: list = None, is_new_user: bool = False,
+) -> dict:
     """Build a standard auth response with both tokens."""
     return {
         "success": True,
@@ -120,9 +126,31 @@ def _build_auth_response(user: User, access_token: str, refresh_token: str) -> d
                 "email": user.email,
                 "name": user.name,
                 "subscription_tier": user.subscription_tier
-            }
+            },
+            "organizations": organizations or [],
+            "is_new_user": is_new_user,
         }
     }
+
+
+async def _get_user_orgs(db: AsyncSession, user_id: int) -> list:
+    """Fetch lightweight org list for auth response."""
+    result = await db.execute(
+        select(Organization, OrganizationMember.role)
+        .join(OrganizationMember, OrganizationMember.org_id == Organization.id)
+        .where(
+            OrganizationMember.user_id == user_id,
+            OrganizationMember.is_active == True,
+            Organization.is_active == True,
+        )
+    )
+    return [
+        {
+            "id": org.id, "name": org.name, "slug": org.slug,
+            "logo_url": org.logo_url, "role": role,
+        }
+        for org, role in result.all()
+    ]
 
 
 async def get_current_user(
@@ -259,7 +287,7 @@ async def register(
     )
     refresh_token = create_refresh_token(data={"sub": user.email})
 
-    return _build_auth_response(user, access_token, refresh_token)
+    return _build_auth_response(user, access_token, refresh_token, is_new_user=True)
 
 
 @router.post("/google")
@@ -312,6 +340,7 @@ async def google_auth(
         )
         user = result.scalar_one_or_none()
         
+        is_new = user is None
         if not user:
             # Create new user (Sign Up flow)
             api_key = secrets.token_urlsafe(32)
@@ -336,7 +365,8 @@ async def google_auth(
         )
         refresh_token = create_refresh_token(data={"sub": user.email})
         
-        return _build_auth_response(user, access_token, refresh_token)
+        orgs = await _get_user_orgs(db, user.id)
+        return _build_auth_response(user, access_token, refresh_token, organizations=orgs, is_new_user=is_new)
         
     except httpx.RequestError as e:
         raise HTTPException(
@@ -387,6 +417,7 @@ async def microsoft_auth(
         )
         user = result.scalar_one_or_none()
         
+        is_new = user is None
         if not user:
             # Create new user (Sign Up flow)
             api_key = secrets.token_urlsafe(32)
@@ -411,7 +442,8 @@ async def microsoft_auth(
         )
         refresh_token = create_refresh_token(data={"sub": user.email})
         
-        return _build_auth_response(user, access_token, refresh_token)
+        orgs = await _get_user_orgs(db, user.id)
+        return _build_auth_response(user, access_token, refresh_token, organizations=orgs, is_new_user=is_new)
         
     except httpx.RequestError as e:
         raise HTTPException(
@@ -462,7 +494,10 @@ async def login(
 
     # 2. Proceed with Standard Login (User Check)
     result = await db.execute(
-        select(User).where(User.email == user_data.email).options(selectinload(User.settings))
+        select(User).where(User.email == user_data.email).options(
+            selectinload(User.settings),
+            selectinload(User.webauthn_credentials)
+        )
     )
     user = result.scalar_one_or_none()
 
@@ -492,7 +527,9 @@ async def login(
             "data": {
                 "2fa_token": temp_token,
                 "has_totp": bool(user.settings.totp_secret),
-                "passkeys_count": len(user.webauthn_credentials) if hasattr(user, 'webauthn_credentials') else 0 # Need to load this if used
+                "has_email_2fa": bool(user.settings.email_2fa_enabled),
+                "default_2fa_method": user.settings.default_2fa_method or "totp",
+                "passkeys_count": len(user.webauthn_credentials) if hasattr(user, 'webauthn_credentials') else 0
             },
             "message": "Two-factor authentication required."
         }
@@ -503,7 +540,8 @@ async def login(
     )
     refresh_token = create_refresh_token(data={"sub": user.email})
 
-    return _build_auth_response(user, access_token, refresh_token)
+    orgs = await _get_user_orgs(db, user.id)
+    return _build_auth_response(user, access_token, refresh_token, organizations=orgs)
 
 class VerifyTOTPLoginRequest(BaseModel):
     two_factor_token: str
@@ -532,7 +570,12 @@ async def login_2fa_totp(
         raise HTTPException(status_code=400, detail="User not configured for TOTP.")
         
     totp = pyotp.TOTP(user.settings.totp_secret)
-    if not totp.verify(data.code):
+    if not totp.verify(data.code, valid_window=10):
+        # Adding debug logs to help diagnose if it fails again
+        import time
+        server_time = int(time.time())
+        expected_code = totp.now()
+        print(f"[2FA DEBUG] Login Code mismatch. Server Time: {server_time}, Expected: {expected_code}, Submitted: {data.code}")
         raise HTTPException(status_code=401, detail="Invalid authenticator code.")
         
     # Valid code, issue full tokens
@@ -588,6 +631,147 @@ async def login_2fa_backup(
     refresh_token = create_refresh_token(data={"sub": user.email})
     
     return _build_auth_response(user, access_token, refresh_token)
+
+
+class EmailOTPSendRequest(BaseModel):
+    two_factor_token: str
+
+@router.post("/login/2fa/email/send")
+async def login_2fa_email_send(
+    data: EmailOTPSendRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Explicitly send an email OTP during the login 2FA flow."""
+    try:
+        payload = jwt.decode(data.two_factor_token, SECRET_KEY, algorithms=[ALGORITHM])
+        email_addr = payload.get("sub")
+        token_type = payload.get("type")
+        
+        if not email_addr or token_type != "2fa_pending":
+             raise HTTPException(status_code=401, detail="Invalid 2FA token.")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Expired or invalid 2FA token.")
+        
+    result = await db.execute(select(User).where(User.email == email_addr).options(selectinload(User.settings)))
+    user = result.scalar_one_or_none()
+    
+    if not user or not user.settings or not user.settings.email_2fa_enabled:
+        raise HTTPException(status_code=400, detail="User not configured for Email 2FA.")
+    
+    otp = "".join(str(secrets.randbelow(10)) for _ in range(6))
+    user.login_otp = otp
+    user.login_otp_expiry = datetime.now(timezone.utc) + timedelta(minutes=5)
+    await db.commit()
+    
+    await email_service.send_2fa_otp_email(user.email, otp)
+    
+    # Mask the email for the frontend
+    parts = user.email.split("@")
+    masked = parts[0][:2] + "***@" + parts[1] if len(parts) == 2 else "***"
+    
+    return {
+        "success": True,
+        "message": f"Verification code sent to {masked}."
+    }
+
+
+class EmailOTPVerifyRequest(BaseModel):
+    two_factor_token: str
+    code: str
+
+@router.post("/login/2fa/email/verify")
+async def login_2fa_email_verify(
+    data: EmailOTPVerifyRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Verify the email OTP during the login 2FA flow and issue tokens."""
+    try:
+        payload = jwt.decode(data.two_factor_token, SECRET_KEY, algorithms=[ALGORITHM])
+        email_addr = payload.get("sub")
+        token_type = payload.get("type")
+        
+        if not email_addr or token_type != "2fa_pending":
+             raise HTTPException(status_code=401, detail="Invalid 2FA token.")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Expired or invalid 2FA token.")
+        
+    result = await db.execute(select(User).where(User.email == email_addr).options(selectinload(User.settings)))
+    user = result.scalar_one_or_none()
+    
+    if not user or not user.login_otp or not user.login_otp_expiry:
+        raise HTTPException(status_code=400, detail="No active email OTP session.")
+        
+    # Make sure we compare aware datetimes
+    now = datetime.now(timezone.utc)
+    expiry = user.login_otp_expiry
+    if expiry and not expiry.tzinfo:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    
+    if now > expiry:
+        user.login_otp = None
+        user.login_otp_expiry = None
+        await db.commit()
+        raise HTTPException(status_code=400, detail="Verification code expired. Please request a new one.")
+    
+    if user.login_otp != data.code:
+        raise HTTPException(status_code=401, detail="Invalid verification code.")
+        
+    # Valid code, clear OTP and issue full tokens
+    user.login_otp = None
+    user.login_otp_expiry = None
+    await db.commit()
+    
+    access_token = create_access_token(data={"sub": user.email}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    refresh_token = create_refresh_token(data={"sub": user.email})
+    
+    orgs = await _get_user_orgs(db, user.id)
+    return _build_auth_response(user, access_token, refresh_token, organizations=orgs)
+
+
+class SwitchOrgRequest(BaseModel):
+    org_id: Optional[int] = None  # None = switch to personal context
+
+
+@router.post("/switch-org")
+async def switch_org(
+    data: SwitchOrgRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Switch active organization context. Issues a new JWT with org_id."""
+    org_id = data.org_id
+
+    if org_id is not None:
+        # Verify user is a member of this org
+        result = await db.execute(
+            select(OrganizationMember).where(
+                OrganizationMember.org_id == org_id,
+                OrganizationMember.user_id == current_user.id,
+                OrganizationMember.is_active == True,
+            )
+        )
+        member = result.scalar_one_or_none()
+        if not member:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not a member of this organization",
+            )
+
+    # Issue new token with org context
+    token_data = {"sub": current_user.email}
+    if org_id is not None:
+        token_data["org_id"] = org_id
+
+    access_token = create_access_token(
+        data=token_data,
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+    )
+    refresh_token = create_refresh_token(data=token_data)
+
+    orgs = await _get_user_orgs(db, current_user.id)
+    return _build_auth_response(
+        current_user, access_token, refresh_token, organizations=orgs
+    )
 
 
 class RefreshTokenRequest(BaseModel):

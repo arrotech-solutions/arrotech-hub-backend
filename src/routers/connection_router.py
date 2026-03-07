@@ -27,6 +27,7 @@ from ..services.logistics_service import LogisticsService
 from ..services.lead_intelligence_service import LeadIntelligenceService
 from ..services.bilingual_service import BilingualService
 from ..services.kra_service import kra_service
+from ..services.airtable_service import AirtableService
 
 router = APIRouter()
 
@@ -409,6 +410,10 @@ async def test_platform_connection(platform: str, config: Dict[str, Any]) -> Dic
             return await context_service.test_connection(config)
         elif platform == "kra_portal":
             return await test_kra_connection(config)
+        elif platform == "quickbooks":
+            return await test_quickbooks_connection(config)
+        elif platform == "airtable":
+            return await test_airtable_connection(config)
         else:
             return {
                 "success": False,
@@ -419,6 +424,22 @@ async def test_platform_connection(platform: str, config: Dict[str, Any]) -> Dic
             "success": False,
             "error": f"Connection test failed: {str(e)}"
         }
+
+async def test_airtable_connection(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Test Airtable connection."""
+    try:
+        service = AirtableService(
+            access_token=config.get("access_token"),
+            refresh_token=config.get("refresh_token")
+        )
+        bases = await service.list_bases()
+        base_count = len(bases.get("bases", []))
+        return {
+            "success": True,
+            "message": f"Successfully connected to Airtable. Found {base_count} bases."
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Airtable validation failed: {str(e)}"}
 
 
 async def test_facebook_connection(config: Dict[str, Any]) -> Dict[str, Any]:

@@ -120,7 +120,6 @@ services:
       - ./alembic:/app/alembic
       - ./alembic.ini:/app/alembic.ini:ro
       - ./pytest.ini:/app/pytest.ini:ro
-      - ./mini-hub-466619-9e3676951f8a.json:/app/mini-hub-466619-9e3676951f8a.json:ro
       - app_logs:/app/logs
     command: python -m src.main
     restart: unless-stopped
@@ -173,7 +172,7 @@ services:
       - "5434:5432"  # Using 5434 to avoid conflict with local PostgreSQL
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
     restart: unless-stopped
     deploy:
       resources:
@@ -386,7 +385,7 @@ services:
     ports:
       - "80:80"
     volumes:
-      - ./nginx.dev.conf:/etc/nginx/nginx.conf:ro
+      - ./config/nginx/nginx.dev.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       - app
     restart: unless-stopped

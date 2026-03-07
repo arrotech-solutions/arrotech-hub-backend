@@ -126,6 +126,10 @@ async def init_db():
     async with eng.begin() as conn:
         # Import models to ensure they're registered with SQLAlchemy
         from .models import Subscription, UsageLog, User  # noqa: F401
+        from .models import (  # noqa: F401
+            Organization, OrganizationMember, OrganizationInvitation,
+            Department, AuditLogEntry,
+        )
 
         # Create all tables
         await conn.run_sync(Base.metadata.create_all)

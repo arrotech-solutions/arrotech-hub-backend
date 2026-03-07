@@ -154,6 +154,22 @@ class WhatsAppAutoReplyTrigger(str, Enum):
     ALL = "all"  # Respond to all messages (AI mode)
 
 
+class OrgRole(str, Enum):
+    """Organization member roles."""
+    OWNER = "owner"
+    ADMIN = "admin"
+    MEMBER = "member"
+    VIEWER = "viewer"
+
+
+class OrgInvitationStatus(str, Enum):
+    """Organization invitation status."""
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    DECLINED = "declined"
+    EXPIRED = "expired"
+
+
 class User(Base):
     """User model."""
     __tablename__ = "users"
@@ -172,6 +188,8 @@ class User(Base):
     role = Column(String, nullable=True, default=UserRole.USER)  # user, employee, admin
     permissions = Column(JSON, nullable=True)  # Employee permissions dict
     login_challenge = Column(String, nullable=True)  # Challenge for WebAuthn in-flight authentication
+    login_otp = Column(String, nullable=True)  # Temporary Email 2FA OTP code
+    login_otp_expiry = Column(DateTime(timezone=True), nullable=True)  # Expiry time for the OPT
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -188,6 +206,7 @@ class User(Base):
     creator_profile = relationship("CreatorProfile", back_populates="user", uselist=False)
     tiktok_profile = relationship("TikTokProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")
     webauthn_credentials = relationship("WebAuthnCredential", back_populates="user", cascade="all, delete-orphan")
+    organization_memberships = relationship("OrganizationMember", back_populates="user", cascade="all, delete-orphan")
 
 
 class Conversation(Base):
@@ -407,6 +426,8 @@ class UserSettings(Base):
 
     # Security Settings
     two_factor_enabled = Column(Boolean, default=False)
+    email_2fa_enabled = Column(Boolean, default=False)
+    default_2fa_method = Column(String, default="totp") # "totp" or "email"
     totp_secret = Column(String, nullable=True)  # For TOTP authentication
     backup_codes = Column(JSON, nullable=True)  # Hashed backup codes
     session_timeout = Column(Integer, default=30)  # minutes
@@ -1487,3 +1508,129 @@ class BlogPostModel(Base):
     # Relationships
     category = relationship("BlogCategory", back_populates="posts")
 
+
+# ============================================================================
+# Organization Models - Multi-tenant B2B organization onboarding
+# ============================================================================
+
+
+class Organization(Base):
+    """Organization model for company/team onboarding."""
+    __tablename__ = "organizations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    slug = Column(String, unique=True, nullable=False, index=True)
+    logo_url = Column(String, nullable=True)
+    description = Column(Text, nullable=True)
+    website = Column(String, nullable=True)
+    industry = Column(String, nullable=True)
+    company_size = Column(String, nullable=True)  # 1-10, 11-50, 51-200, 201-500, 500+
+    billing_email = Column(String, nullable=True)
+    subscription_tier = Column(String, default=SubscriptionTier.FREE)
+    settings = Column(JSON, nullable=True)  # Org-level settings and config
+    is_active = Column(Boolean, default=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    creator = relationship("User", foreign_keys=[created_by])
+    members = relationship("OrganizationMember", back_populates="organization", cascade="all, delete-orphan")
+    invitations = relationship("OrganizationInvitation", back_populates="organization", cascade="all, delete-orphan")
+    departments = relationship("Department", back_populates="organization", cascade="all, delete-orphan")
+    audit_log_entries = relationship("AuditLogEntry", back_populates="organization", cascade="all, delete-orphan")
+
+
+class OrganizationMember(Base):
+    """Membership link between users and organizations."""
+    __tablename__ = "organization_members"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String, default=OrgRole.MEMBER, nullable=False)
+    department_id = Column(Integer, ForeignKey("departments.id", ondelete="SET NULL"), nullable=True)
+    title = Column(String, nullable=True)  # e.g. "Engineering Lead"
+    is_active = Column(Boolean, default=True)
+    joined_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "user_id", name="uq_org_member"),
+        Index("ix_org_members_org_role", "org_id", "role"),
+    )
+
+    # Relationships
+    organization = relationship("Organization", back_populates="members")
+    user = relationship("User", back_populates="organization_memberships")
+    department = relationship("Department", back_populates="members")
+
+
+class OrganizationInvitation(Base):
+    """Pending invitations to join an organization."""
+    __tablename__ = "organization_invitations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    email = Column(String, nullable=False)
+    role = Column(String, default=OrgRole.MEMBER, nullable=False)
+    invited_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    token = Column(String, unique=True, nullable=False, index=True)
+    status = Column(String, default=OrgInvitationStatus.PENDING, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_org_invitations_email_status", "email", "status"),
+    )
+
+    # Relationships
+    organization = relationship("Organization", back_populates="invitations")
+    inviter = relationship("User", foreign_keys=[invited_by])
+
+
+class Department(Base):
+    """Departments within an organization."""
+    __tablename__ = "departments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    head_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "name", name="uq_department_name"),
+    )
+
+    # Relationships
+    organization = relationship("Organization", back_populates="departments")
+    head = relationship("User", foreign_keys=[head_id])
+    members = relationship("OrganizationMember", back_populates="department")
+
+
+class AuditLogEntry(Base):
+    """Immutable audit log for organization actions."""
+    __tablename__ = "audit_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    actor_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    action = Column(String, nullable=False)  # e.g. "member.added", "org.updated"
+    entity_type = Column(String, nullable=True)  # e.g. "member", "department"
+    entity_id = Column(String, nullable=True)  # ID of affected entity
+    details = Column(JSON, nullable=True)  # Additional context
+    ip_address = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_audit_log_org_created", "org_id", "created_at"),
+        Index("ix_audit_log_action", "org_id", "action"),
+    )
+
+    # Relationships
+    organization = relationship("Organization", back_populates="audit_log_entries")
+    actor = relationship("User", foreign_keys=[actor_id])
