@@ -579,29 +579,29 @@ class DynamicToolRegistry:
                             tool["id"] = tool["name"]
                             tools.append(tool)
         
-        # Filter for Free Tier
+        # Filter for Free Tier limitations (except in discovery mode where we want to show everything)
         user = await db.get(User, user_id)
         if user and user.subscription_tier == SubscriptionTier.FREE:
             allowed_tools = {
                 "mpesa_payment_reconciliation", 
                 "slack_send_message", 
-                "context_intelligence"
+                "context_intelligence",
+                "marketing_campaign_automation",
+                "campaign_performance_tracking",
+                "file_management",
+                "web_tools",
+                "content_creation",
+                "email_template"
             }
-            # Only filter if we aren't in strict discovery mode, or maybe we SHOULD filter even in discovery?
-            # The user said "users should have access to". This likely means execution access.
-            # But "access to" usually means "can see/use". 
-            # If I filter here, they won't even see other tools in the workflow builder if they are on free tier?
-            # Or maybe they see them but can't use them?
-            # User request: "users should have access to 1. mpesa... 2. ... 3. ..."
-            # This implies a restriction. I will filter the list.
             
-            # Use list comprehension to filter, keeping "always_available" base tools if needed?
-            # The prompt says "1. mpesa..., slack..., context...". 
-            # It doesn't mention base tools. But usually base tools like "marketing_campaign_automation" defined above are important.
-            # However, I will stick to what the user explicitly requested for now to be safe, or 
-            # maybe I should check if I should exclude base_tools.
-            # Since the user was very specific, I will filter strict.
-            tools = [t for t in tools if t["name"] in allowed_tools]
+            if include_all:
+                # In discovery mode, we keep all tools but mark tiered ones as upgrade_required
+                for tool in tools:
+                    if tool["name"] not in allowed_tools and tool.get("status") == "available":
+                        tool["status"] = "upgrade_required"
+            else:
+                # In strict mode, filter out tools not allowed implicitly by the tier
+                tools = [t for t in tools if t["name"] in allowed_tools]
         
         return tools
     
@@ -1632,8 +1632,8 @@ class DynamicToolRegistry:
     async def get_tools_for_llm(self, user_id: int = None, db: AsyncSession = None) -> List[Dict[str, Any]]:
         """Get tools in format suitable for LLM function calling."""
         if user_id and db:
-            # Get user-specific tools
-            return await self.get_user_tools(user_id, db)
+            # Get user-specific tools, including unconnected ones (so AI can see what's possible)
+            return await self.get_user_tools(user_id, db, include_all=True)
         else:
             # Get all tools
             return await self.get_all_tools(db)
