@@ -5095,6 +5095,25 @@ Description: {payment.description or 'N/A'}"""
             logger.error(f"Error in context_intelligence tool: {e}")
             return {"success": False, "error": str(e)}
 
+    async def _execute_context_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Route context_sentiment and context_translation to context_intelligence service."""
+        # Map specific separate tools to the single context_intelligence service operations
+        if tool_name == "context_sentiment":
+            operation_args = {"operation": "analyze_sentiment", **arguments}
+            return await self._execute_context_intelligence_tool(operation_args, user, db)
+            
+        elif tool_name == "context_translation":
+            operation_args = {"operation": "translate", **arguments}
+            return await self._execute_context_intelligence_tool(operation_args, user, db)
+            
+        elif tool_name == "context_business_check":
+            # For kra pin and tax compliance
+            operation = arguments.get("check_type", "verify_kra_pin")
+            operation_args = {"operation": operation, **arguments}
+            return await self._execute_context_intelligence_tool(operation_args, user, db)
+            
+        return {"success": False, "error": f"Unknown context tool: {tool_name}"}
+
     async def _execute_fintech_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
         """Execute Fintech related tools."""
         try:
