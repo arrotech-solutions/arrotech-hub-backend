@@ -470,29 +470,7 @@ class WorkflowBuilderService:
         """
         Evaluate conditional logic for workflow steps.
         """
-        if not condition:
-            return True
-            
-        if "if" in condition and condition.get("type") != "if":
-            try:
-                # Use jinja2 to evaluate boolean string expressions
-                from jinja2 import Environment
-                env = Environment()
-                expr = condition["if"]
-                
-                # Jinja needs {{ }} to evaluate expressions to strings
-                template_str = f"{{{{ {expr} }}}}"
-                
-                template = env.from_string(template_str)
-                result = template.render(**context)
-                
-                # Result is a string like "True" or "False"
-                return result.strip().lower() == "true"
-            except Exception as e:
-                logger.error(f"Error evaluating condition expression '{condition.get('if')}': {e}")
-                return False
-                
-        if condition.get("type") != "if":
+        if not condition or condition.get("type") != "if":
             return True
         
         field_path = condition.get("field", "")
