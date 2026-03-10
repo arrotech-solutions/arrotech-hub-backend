@@ -709,10 +709,10 @@ WORKFLOW_TEMPLATES = [
                 "tool_parameters": {
                     "action": "send_alert",
                     "channel": "#customer-service",
-                    "message": "Urgent Support Needed ({{step_1.data.sentiment}}): {{step_2.data.translated if input.message_lang != input.target_lang else input.customer_message}}"
+                    "message": "Urgent Support Needed ({{step_1.sentiment}}): {{step_2.translated if input.message_lang != input.target_lang else input.customer_message}}"
                 },
                 "description": "Alert support team on Slack",
-                "condition": {"if": "step_1.data.sentiment == 'negative' or step_1.data.sentiment == 'frustrated'"}
+                "condition": {"if": "step_1.sentiment == 'negative' or step_1.sentiment == 'frustrated'"}
             }
         ],
         "variables": {
