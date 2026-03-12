@@ -67,8 +67,6 @@ async def _trigger_zoho_workflows(user_id: int, payload: dict, db: AsyncSession)
             Workflow.user_id == user_id,
             Workflow.status == WorkflowStatus.ACTIVE,
             Workflow.trigger_type == WorkflowTriggerType.EVENT 
-            # Or manual if the UI saves them as manual right now, 
-            # but ideally it should be WorkflowTriggerType.EVENT for Webhook workflows.
         )
     )
     result = await db.execute(stmt)
@@ -76,35 +74,54 @@ async def _trigger_zoho_workflows(user_id: int, payload: dict, db: AsyncSession)
     
     logger.info(f"[ZOHO WEBHOOK] Found {len(workflows)} active workflows for user {user_id}")
     
+    # Determine the event type from the Zoho payload
+    event_type = payload.get("eventType", "").lower()  # e.g. "ticket_add", "ticket_update"
+    ticket_data = payload.get("payload", payload.get("entity", payload))
+    ticket_status = ""
+    if isinstance(ticket_data, dict):
+        ticket_status = (ticket_data.get("status") or ticket_data.get("statusType") or "").lower()
+    
+    is_ticket_created = event_type == "ticket_add"
+    is_ticket_updated = event_type == "ticket_update"
+    is_closed_or_resolved = ticket_status in ("closed", "resolved")
+    
+    logger.info(f"[ZOHO WEBHOOK] Event: {event_type}, Status: {ticket_status}, "
+                f"isCreated={is_ticket_created}, isUpdated={is_ticket_updated}, isClosed={is_closed_or_resolved}")
+    
     workflow_service = WorkflowBuilderService()
     
     for workflow in workflows:
         trigger_config = workflow.trigger_config or {}
-        # In a real app, you'd match the specific trigger (e.g., "zoho_ticket_created") 
-        # against the webhook payload's event type.
         
         platform = trigger_config.get("platform", "").lower()
-        # GAP 3 FIX: Frontend saves as "event_type", fallback to "trigger" for backwards compat
+        # Frontend saves as "event_type", fallback to "trigger" for backwards compat
         trigger_event = trigger_config.get("event_type", trigger_config.get("trigger", "")).lower()
         
-        # For KB Autopilot, we expect triggers like "Ticket Created" or "Ticket Status Updated"
         should_trigger = False
         
         if platform == "zoho":
-            if "ticket created" in trigger_event and "ticket" in str(payload).lower():
+            # "Ticket Created" workflows fire on Ticket_Add events
+            if "ticket created" in trigger_event and is_ticket_created:
                 should_trigger = True
-            elif "status updated" in trigger_event and "resolved" in str(payload).lower():
+            # "Status Updated" / "KB Draft" workflows fire on Ticket_Update with closed/resolved status
+            elif "status updated" in trigger_event and is_ticket_updated and is_closed_or_resolved:
                 should_trigger = True
+        
+        # Fallback: if no platform, match based on name/description BUT only for the right event type
+        if not platform:
+            wf_text = f"{workflow.name} {workflow.description}".lower()
+            if "zoho" in wf_text or "ticket" in wf_text:
+                # Try to match by workflow purpose
+                if ("resolver" in wf_text or "auto-reply" in wf_text or "auto resolve" in wf_text) and is_ticket_created:
+                    should_trigger = True
+                elif ("ingester" in wf_text or "draft" in wf_text or "article" in wf_text) and is_ticket_updated and is_closed_or_resolved:
+                    should_trigger = True
+                elif is_ticket_created:
+                    # Default fallback for unrecognized workflows: trigger on new tickets only
+                    should_trigger = True
                 
-        # If UI doesn't save standard structure yet, trigger fallback based on name or description
-        if not platform and ("zoho" in workflow.name.lower() or "ticket" in workflow.description.lower()):
-            should_trigger = True
-            
         if should_trigger:
             logger.info(f"[ZOHO WEBHOOK] Mapped to Workflow '{workflow.name}'. Executing...")
-            
-            # GAP 4 FIX: Zoho Desk webhooks may nest ticket data under 'payload' or 'entity'
-            ticket_data = payload.get("payload", payload.get("entity", payload))
             
             # Map Zoho payload to Arrotech standardized "Trigger" variables
             input_vars = {
@@ -129,3 +146,5 @@ async def _trigger_zoho_workflows(user_id: int, payload: dict, db: AsyncSession)
                 logger.info(f"[ZOHO WEBHOOK] Successfully triggered Workflow {workflow.id}")
             except Exception as e:
                 logger.error(f"[ZOHO WEBHOOK] Failed to execute Workflow {workflow.id}: {e}")
+        else:
+            logger.info(f"[ZOHO WEBHOOK] Skipped Workflow '{workflow.name}' (event doesn't match trigger)")

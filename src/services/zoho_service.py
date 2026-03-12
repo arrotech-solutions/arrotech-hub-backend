@@ -403,7 +403,10 @@ class ZohoService:
             if method.upper() == "GET":
                 response = requests.get(url, headers=headers, params=params)
             elif method.upper() == "POST":
+                import logging
+                logging.getLogger(__name__).info(f"[DESK_REQUEST] POST {url} orgId={headers.get('orgId')} body_keys={list(json_data.keys()) if json_data else 'none'}")
                 response = requests.post(url, headers=headers, json=json_data, params=params)
+                logging.getLogger(__name__).info(f"[DESK_REQUEST] Response: {response.status_code} {response.text[:500] if response.text else 'empty'}")
             else:
                 return {"success": False, "error": f"Unsupported method: {method}"}
 
@@ -455,100 +458,98 @@ class ZohoService:
             
         return {"success": True, "ticket": response}
 
+    async def _get_support_email(self, department_id: str = None) -> Optional[str]:
+        """
+        Resolve the support email address to use as 'fromEmailAddress' in ticket replies.
+        
+        Uses official Zoho Desk API endpoints:
+          1. GET /api/v1/mailReplyAddress  — the "from" address for outgoing replies
+          2. GET /api/v1/supportEmailAddress — the support inbox address (fallback)
+        """
+        # --- Strategy 1: MailReplyAddress (the FROM address for replies) ---
+        params = {}
+        if department_id:
+            params["departmentId"] = department_id
+        
+        reply_res = await self._desk_request("GET", "/desk/api/v1/mailReplyAddress", params=params)
+        logger.info(f"[ZOHO DESK] mailReplyAddress response: {reply_res}")
+        
+        addresses = []
+        if isinstance(reply_res, dict) and "data" in reply_res:
+            addresses = reply_res["data"]
+        elif isinstance(reply_res, list):
+            addresses = reply_res
+        
+        for addr in addresses:
+            if isinstance(addr, dict) and addr.get("address") and addr.get("isVerified", True):
+                logger.info(f"[ZOHO DESK] Found fromEmailAddress via mailReplyAddress: {addr['address']}")
+                return addr["address"]
+
+        # --- Strategy 2: SupportEmailAddress (the inbox address, also valid as FROM) ---
+        support_params = {}
+        if department_id:
+            support_params["departmentId"] = department_id
+        
+        support_res = await self._desk_request("GET", "/desk/api/v1/supportEmailAddress", params=support_params)
+        logger.info(f"[ZOHO DESK] supportEmailAddress response: {support_res}")
+        
+        support_addresses = []
+        if isinstance(support_res, dict) and "data" in support_res:
+            support_addresses = support_res["data"]
+        elif isinstance(support_res, list):
+            support_addresses = support_res
+        
+        for addr in support_addresses:
+            if isinstance(addr, dict) and addr.get("address"):
+                logger.info(f"[ZOHO DESK] Found fromEmailAddress via supportEmailAddress: {addr['address']}")
+                return addr["address"]
+
+        logger.warning("[ZOHO DESK] Could not resolve a support email from mailReplyAddress or supportEmailAddress.")
+        return None
+
     async def reply_ticket(self, ticket_id: str, reply_text: str) -> Dict[str, Any]:
         """Send a reply to an existing ticket."""
-        # The sendReply API requires fromEmailAddress, to, channel, and content.
-        
+
+        # 1. Fetch ticket details (needed for contact email & departmentId)
         ticket_res = await self._desk_request("GET", f"/desk/api/v1/tickets/{ticket_id}")
         if isinstance(ticket_res, dict) and "error" in ticket_res:
             return ticket_res
 
+        # 2. Determine the recipient (customer) email
         to_email = None
-        if "contact" in ticket_res:
-            to_email = ticket_res["contact"].get("email")
-        if not to_email and "email" in ticket_res:
-             to_email = ticket_res["email"]
+        contact = ticket_res.get("contact")
+        if isinstance(contact, dict):
+            to_email = contact.get("email")
+        if not to_email:
+            to_email = ticket_res.get("email")
 
-        logger.info(f"[ZOHO DESK] Replying to ticket {ticket_id}. To: {to_email}")
-
-        # 1. Try to find the From address from threads
-        from_email = None
-        threads_res = await self._desk_request("GET", f"/desk/api/v1/tickets/{ticket_id}/threads")
-        if isinstance(threads_res, dict) and "data" in threads_res:
-            for thread in threads_res["data"]:
-                if thread.get("direction") == "in" and thread.get("to"):
-                    from_email = thread.get("to")
-                    logger.info(f"[ZOHO DESK] Found From address in threads: {from_email}")
-                    break
-                elif thread.get("direction") == "out" and thread.get("from"):
-                    from_email = thread.get("from")
-                    logger.info(f"[ZOHO DESK] Found From address in threads (outbound): {from_email}")
-                    break
-        
-        # 2. Try fetching from department
-        if not from_email and "departmentId" in ticket_res:
-            dept_id = ticket_res["departmentId"]
-            dept_res = await self._desk_request("GET", f"/desk/api/v1/departments/{dept_id}")
-            if isinstance(dept_res, dict) and "email" in dept_res:
-                from_email = dept_res["email"]
-                logger.info(f"[ZOHO DESK] Found From address in department: {from_email}")
-
-        # 3. Try to fetch verified support emails (handling various response formats)
-        if not from_email:
-            for ep in ["/desk/api/v1/supportEmails", "/desk/api/v1/organization/supportEmails"]:
-                logger.info(f"[ZOHO DESK] Fetching support emails from {ep}")
-                support_res = await self._desk_request("GET", ep)
-                logger.info(f"[ZOHO DESK] Support email response: {support_res}")
-                emails = []
-                if isinstance(support_res, dict):
-                    emails = support_res.get("data", [])
-                elif isinstance(support_res, list):
-                    emails = support_res
-                
-                if emails and isinstance(emails, list):
-                    # Pick the first one that has an email field
-                    for e in emails:
-                        if isinstance(e, dict) and e.get("email"):
-                            from_email = e.get("email")
-                            logger.info(f"[ZOHO DESK] Found From address in {ep}: {from_email}")
-                            break
-                        elif isinstance(e, str) and "@" in e:
-                            from_email = e
-                            logger.info(f"[ZOHO DESK] Found From address string in {ep}: {from_email}")
-                            break
-                if from_email:
-                    break
-
-        # 4. Last fallbacks
-        if not from_email:
-            assignee = ticket_res.get("assignee")
-            if isinstance(assignee, dict):
-                from_email = assignee.get("email")
-                logger.info(f"[ZOHO DESK] Using assignee email: {from_email}")
+        # 3. Determine the sender (support) email
+        department_id = ticket_res.get("departmentId")
+        from_email = await self._get_support_email(department_id)
 
         if not from_email:
-            # Absolute fallback to the verified address identified by the user
-            from_email = "support@arrotechsolutions.zohodesk.com"
-            logger.info(f"[ZOHO DESK] Using absolute fallback: {from_email}")
+            return {"success": False, "error": "Could not determine fromEmailAddress. Please verify a support email is configured in Zoho Desk → Setup → Channels → Email."}
 
+        logger.info(f"[ZOHO DESK] Replying to ticket {ticket_id} | From: {from_email} | To: {to_email}")
+
+        # 4. Build and send the reply
         payload = {
             "channel": "EMAIL",
             "content": reply_text,
             "fromEmailAddress": from_email,
-            "contentType": "html" if "<" in reply_text else "plainText"
+            "contentType": "html" if "<" in reply_text else "plainText",
         }
-        
         if to_email:
             payload["to"] = to_email
 
-        logger.info(f"[ZOHO DESK] Sending reply with payload: {payload}")
         response = await self._desk_request("POST", f"/desk/api/v1/tickets/{ticket_id}/sendReply", json_data=payload)
-        
+
         if isinstance(response, dict) and "error" in response:
             logger.error(f"[ZOHO DESK] Reply failed: {response}")
             return response
-            
+
         return {"success": True, "reply": response}
+
 
     async def get_articles(self, limit: int = 50, category_id: Optional[str] = None) -> Dict[str, Any]:
         """Fetch help articles from Zoho Desk Knowledge Base."""

@@ -13,16 +13,23 @@ class KBAutopilotService:
 
     async def draft_article_from_ticket(self, ticket_id: str) -> Dict[str, Any]:
         """
-        Analyzes a ticket and its resolution to draft a Knowledge Base article.
+        Analyzes a ticket and its resolution to draft a Knowledge Base article,
+        then automatically creates it as a Draft in Zoho Desk KB.
         """
         # 1. Fetch ticket details
         ticket_res = await self.zoho._desk_request("GET", f"/desk/api/v1/tickets/{ticket_id}")
         if not ticket_res or "id" not in ticket_res:
             return {"success": False, "error": f"Ticket {ticket_id} not found."}
 
+        department_id = ticket_res.get("departmentId")
+
         # 2. Fetch conversation (replies/threads)
         threads_res = await self.zoho._desk_request("GET", f"/desk/api/v1/tickets/{ticket_id}/threads")
-        threads = threads_res.get("data", [])
+        threads = []
+        if isinstance(threads_res, dict):
+            threads = threads_res.get("data", [])
+        elif isinstance(threads_res, list):
+            threads = threads_res
 
         # 3. Construct context for LLM
         context = f"Subject: {ticket_res.get('subject')}\n"
@@ -30,9 +37,10 @@ class KBAutopilotService:
         context += "Conversation History:\n"
         
         for t in threads:
-            sender = t.get("from")
+            if not isinstance(t, dict):
+                continue
+            sender = t.get("from", "Unknown")
             content = t.get("content", "")
-            # Clean HTML if necessary (simplified for now)
             context += f"- From {sender}: {content[:500]}...\n"
 
         # 4. Generate Draft with LLM
@@ -63,10 +71,157 @@ class KBAutopilotService:
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             draft = json.loads(content)
-            return {"success": True, "draft": draft}
         except Exception as e:
             logger.error(f"Failed to parse LLM draft: {e}")
             return {"success": False, "error": "AI failed to generate a valid JSON draft."}
+
+        # 5. Find a KB category to put the article in
+        category_id = await self._find_or_get_default_category(draft.get("category_name", "General"))
+
+        if not category_id:
+            logger.warning("[KB AUTOPILOT] No KB category found. Returning draft without creating article in Zoho.")
+            return {"success": True, "draft": draft, "zoho_article": None, 
+                    "message": "Draft generated but could not be saved to Zoho KB — no categories found. Please create a KB category in Zoho Desk first."}
+
+        # 6. Create the article as a Draft in Zoho Desk KB
+        article_payload = {
+            "title": draft.get("title", "Untitled Article"),
+            "answer": draft.get("content", ""),
+            "status": "Draft",
+            "categoryId": int(category_id),
+            "permission": "ALL",
+        }
+
+        logger.info(f"[KB AUTOPILOT] Creating draft article in Zoho KB: {draft.get('title')}")
+        logger.info(f"[KB AUTOPILOT] Article payload: {article_payload}")
+        create_res = await self.zoho._desk_request("POST", "/desk/api/v1/articles", json_data=article_payload)
+        
+        if isinstance(create_res, dict) and create_res.get("id"):
+            logger.info(f"[KB AUTOPILOT] Draft article created in Zoho KB with ID: {create_res['id']}")
+            return {
+                "success": True, 
+                "draft": draft,
+                "zoho_article": {
+                    "id": create_res["id"],
+                    "title": create_res.get("title", draft.get("title")),
+                    "status": "Draft",
+                    "url": create_res.get("webUrl", "")
+                },
+                "message": f"Draft article '{draft.get('title')}' created in Zoho Desk KB."
+            }
+        else:
+            logger.warning(f"[KB AUTOPILOT] Failed to create article in Zoho KB: {create_res}")
+            return {
+                "success": True, 
+                "draft": draft,
+                "zoho_article": None,
+                "message": f"Draft generated but failed to save to Zoho KB: {create_res}"
+            }
+
+    async def _find_or_get_default_category(self, suggested_name: str) -> Optional[str]:
+        """
+        Find a KB section ID to use for creating articles.
+        Zoho articles need a section (child) ID, NOT a root category ID.
+        Flow: list root categories -> get category tree -> find/create a section.
+        """
+        try:
+            # Step 1: List root categories
+            categories_res = await self.zoho._desk_request("GET", "/desk/api/v1/kbRootCategories")
+            
+            categories = []
+            if isinstance(categories_res, dict) and "data" in categories_res:
+                categories = categories_res["data"]
+            elif isinstance(categories_res, list):
+                categories = categories_res
+
+            if not categories:
+                logger.warning("[KB AUTOPILOT] No KB root categories found.")
+                return None
+
+            # Step 2: Find the best matching root category by name
+            target_root = None
+            suggested_lower = suggested_name.lower()
+            
+            for cat in categories:
+                if not isinstance(cat, dict):
+                    continue
+                cat_name = cat.get("name", "")
+                translations = cat.get("translations", [])
+                translation_names = [t.get("name", "") for t in translations if isinstance(t, dict)]
+                all_names = [cat_name] + translation_names
+                
+                for name in all_names:
+                    if name and suggested_lower in name.lower():
+                        target_root = cat
+                        logger.info(f"[KB AUTOPILOT] Matched root category: {name} (ID: {cat.get('id')})")
+                        break
+                if target_root:
+                    break
+
+            # Fallback: use the first root category
+            if not target_root:
+                target_root = categories[0]
+                logger.info(f"[KB AUTOPILOT] Using default root category: {target_root.get('name')} (ID: {target_root.get('id')})")
+
+            root_id = target_root.get("id")
+            if not root_id:
+                return None
+
+            # Step 3: Get the category tree to find sections (children)
+            tree_res = await self.zoho._desk_request("GET", f"/desk/api/v1/kbRootCategories/{root_id}/categoryTree")
+            
+            if isinstance(tree_res, dict):
+                tree_id = tree_res.get("id")
+                tree_name = tree_res.get("name")
+                children = tree_res.get("children", [])
+                logger.info(f"[KB AUTOPILOT] Category tree: id={tree_id}, name={tree_name}, root_id={root_id}, children_count={len(children)}")
+                
+                if children:
+                    section = children[0]
+                    section_id = section.get("id")
+                    section_name = section.get("name", "Unknown")
+                    section_root = section.get("rootCategoryId")
+                    section_parent = section.get("parentCategoryId")
+                    logger.info(f"[KB AUTOPILOT] Section: id={section_id}, name={section_name}, rootCategoryId={section_root}, parentCategoryId={section_parent}")
+                    
+                    # Check if the section has its own children (sub-sections) — articles may need the deepest level
+                    sub_children = section.get("children", [])
+                    if sub_children:
+                        leaf = sub_children[0]
+                        leaf_id = leaf.get("id")
+                        leaf_name = leaf.get("name", "Unknown")
+                        logger.info(f"[KB AUTOPILOT] Using leaf sub-section: {leaf_name} (ID: {leaf_id})")
+                        return leaf_id
+                    
+                    return section_id
+            else:
+                children = []
+                logger.warning(f"[KB AUTOPILOT] Category tree response not a dict: {tree_res}")
+
+            # Step 4: No sections exist — create one
+            logger.info(f"[KB AUTOPILOT] No sections found under root category {root_id}. Creating 'General' section...")
+            section_data = {
+                "name": "General",
+                "description": "Auto-created section for KB articles",
+                "parentCategoryId": int(root_id),
+                "status": "SHOW_IN_HELPCENTER"
+            }
+            create_section_res = await self.zoho._desk_request(
+                "POST", "/desk/api/v1/kbSections", json_data=section_data
+            )
+            
+            if isinstance(create_section_res, dict) and create_section_res.get("id"):
+                section_id = create_section_res["id"]
+                logger.info(f"[KB AUTOPILOT] Created section 'General' (ID: {section_id})")
+                return section_id
+            else:
+                logger.warning(f"[KB AUTOPILOT] Failed to create section: {create_section_res}")
+                # Last resort: try using the root category ID directly
+                return root_id
+
+        except Exception as e:
+            logger.error(f"[KB AUTOPILOT] Error finding KB category: {e}")
+            return None
 
     async def auto_resolve_ticket(self, ticket_id: str) -> Dict[str, Any]:
         """
