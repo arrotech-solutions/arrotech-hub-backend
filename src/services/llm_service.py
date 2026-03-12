@@ -341,15 +341,29 @@ class AnthropicProvider(LLMProvider):
     ) -> LLMResponse:
         try:
             model = getattr(settings, 'ANTHROPIC_MODEL', 'claude-3-5-sonnet-20240620')
+            
+            # Anthropic requires system prompt as a top-level parameter
+            # and only 'user'/'assistant' roles in messages
+            system_prompt = ""
+            filtered_messages = []
+            for msg in messages:
+                if msg["role"] == "system":
+                    system_prompt += msg["content"] + "\n"
+                else:
+                    filtered_messages.append(msg)
+                    
             payload = {
                 "model": model,
-                "messages": messages,
+                "messages": filtered_messages,
                 "temperature": temperature,
                 "max_tokens": max_tokens or 1024
             }
+            
+            if system_prompt:
+                payload["system"] = system_prompt.strip()
 
             headers = {
-                "Authorization": f"Bearer {self.api_key}",
+                "x-api-key": self.api_key,
                 "Content-Type": "application/json",
                 "anthropic-version": "2023-06-01"
             }
@@ -362,16 +376,17 @@ class AnthropicProvider(LLMProvider):
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=60)
                 ) as response:
-                    response.raise_for_status()
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Anthropic API error: {response.status}, {error_text}")
+                        return LLMResponse(content="", error=f"Anthropic Error {response.status}: {error_text}")
+                        
                     result = await response.json()
-
                     content = result["content"][0]["text"]
 
                     return LLMResponse(
                         content=content,
-                        # Anthropic doesn't provide token usage in the same way
-                        tokens_used=None,
-                        # Tool calling support can be added here
+                        tokens_used=result.get("usage", {}).get("total_tokens"),
                         tools_called=None
                     )
 

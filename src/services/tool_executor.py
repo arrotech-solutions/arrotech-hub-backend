@@ -21,6 +21,8 @@ from .mpesa_reconciliation_service import MpesaReconciliationService
 from .powerbi_service import PowerBIService
 from .salesforce_service import SalesforceService
 from .slack_service import SlackService
+from .zoho_service import ZohoService
+from .kb_autopilot_service import KBAutopilotService
 from .social_media_service import SocialMediaService
 from .teams_service import TeamsService
 from .outlook_service import OutlookService
@@ -75,6 +77,8 @@ class ToolExecutor:
             "trello": TrelloService(),
             "jira": JiraService(),
             "zoom": ZoomService(),
+            "zoho": ZohoService(),
+            "kb_autopilot": KBAutopilotService(ZohoService()),
 
             "whatsapp": WhatsAppService(),
             "social_media": SocialMediaService(),
@@ -162,6 +166,8 @@ class ToolExecutor:
                 return await self._execute_jira_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("zoom_"):
                 return await self._execute_zoom_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("zoho_"):
+                return await self._execute_zoho_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("hubspot_"):
                 return await self._execute_hubspot_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("salesforce_"):
@@ -334,6 +340,7 @@ class ToolExecutor:
         if tool_name.startswith("slack_"): return "slack"
         if tool_name.startswith("teams_"): return "teams"
         if tool_name.startswith("zoom_"): return "zoom"
+        if tool_name.startswith("zoho_"): return "zoho"
         if tool_name.startswith("hubspot_"): return "hubspot"
         if tool_name.startswith("salesforce_"): return "salesforce"
 
@@ -2492,6 +2499,131 @@ class ToolExecutor:
             return {
                 "success": False,
                 "error": "No active GA4 connection found",
+                "result": None
+            }
+
+    async def _execute_zoho_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute Zoho-related tools."""
+        result = await db.execute(
+            select(Connection)
+            .filter(
+                Connection.user_id == user.id,
+                Connection.platform == "zoho",
+                Connection.status == ConnectionStatus.ACTIVE
+            )
+        )
+        connection = result.scalar_one_or_none()
+
+        if not connection:
+            return {
+                "success": False,
+                "error": "No active Zoho connection found",
+                "result": None
+            }
+
+        zoho_service = self.services["zoho"]
+        config = connection.config
+        
+        if config:
+            zoho_service.access_token = config.get("access_token")
+            zoho_service.api_domain = config.get("api_domain", "https://www.zohoapis.com")
+            zoho_service.refresh_token = config.get("refresh_token")
+
+        try:
+            if tool_name == "zoho_crm_operations":
+                operation = arguments.get("operation")
+                if operation == "get_contacts":
+                    return await zoho_service.get_contacts(arguments.get("limit", 50), arguments.get("page", 1))
+                elif operation == "create_contact":
+                    return await zoho_service.create_contact(arguments.get("contact_data", {}))
+                elif operation == "get_deals":
+                    return await zoho_service.get_deals(arguments.get("limit", 50), arguments.get("page", 1))
+                elif operation == "create_deal":
+                    return await zoho_service.create_deal(arguments.get("deal_data", {}))
+                elif operation == "update_deal_stage":
+                    return await zoho_service.update_deal_stage(arguments.get("deal_id", ""), arguments.get("stage", ""))
+                else:
+                    return {"success": False, "error": f"Unknown Zoho CRM operation: {operation}"}
+            
+            elif tool_name == "zoho_finance_operations":
+                operation = arguments.get("operation")
+                org_id = arguments.get("org_id")
+                if operation == "create_customer":
+                    return await zoho_service.create_customer(arguments.get("customer_data", {}), org_id)
+                elif operation == "get_invoices":
+                    return await zoho_service.get_invoices(arguments.get("limit", 50), org_id)
+                elif operation == "create_invoice":
+                    return await zoho_service.create_invoice(arguments.get("invoice_data", {}), org_id)
+                elif operation == "record_payment":
+                    return await zoho_service.record_payment(arguments.get("payment_data", {}), org_id)
+                elif operation == "get_expenses":
+                    return await zoho_service.get_expenses(arguments.get("limit", 50), org_id)
+                elif operation == "create_expense":
+                    return await zoho_service.create_expense(arguments.get("expense_data", {}), org_id)
+                else:
+                    return {"success": False, "error": f"Unknown Zoho Finance operation: {operation}"}
+                    
+            elif tool_name == "zoho_desk_operations":
+                operation = arguments.get("operation")
+                if operation == "get_tickets":
+                    return await zoho_service.get_tickets(arguments.get("limit", 50), arguments.get("department_id"))
+                elif operation == "create_ticket":
+                    return await zoho_service.create_ticket(arguments.get("ticket_data", {}))
+                elif operation == "reply_ticket":
+                    ticket_id = arguments.get("ticket_id", "")
+                    reply_text = arguments.get("reply_text", "")
+                    if not ticket_id:
+                        return {"success": False, "error": "ticket_id is required"}
+                    if not reply_text:
+                        return {"success": True, "message": "No reply text provided, skipping reply generation."}
+                    return await zoho_service.reply_ticket(ticket_id, reply_text)
+                elif operation == "get_articles":
+                    return await zoho_service.get_articles(arguments.get("limit", 50), arguments.get("category_id"))
+                elif operation == "search_articles":
+                    return await zoho_service.search_articles(arguments.get("query", ""))
+                elif operation == "create_article":
+                    return await zoho_service.create_article(arguments.get("article_data", {}))
+                elif operation == "draft_article_from_ticket":
+                    kb_autopilot = self.services["kb_autopilot"]
+                    kb_autopilot.zoho.access_token = zoho_service.access_token
+                    kb_autopilot.zoho.api_domain = zoho_service.api_domain
+                    kb_autopilot.zoho.refresh_token = zoho_service.refresh_token
+                    return await kb_autopilot.draft_article_from_ticket(arguments.get("ticket_id", ""))
+                elif operation == "auto_resolve_ticket":
+                    kb_autopilot = self.services["kb_autopilot"]
+                    kb_autopilot.zoho.access_token = zoho_service.access_token
+                    kb_autopilot.zoho.api_domain = zoho_service.api_domain
+                    kb_autopilot.zoho.refresh_token = zoho_service.refresh_token
+                    return await kb_autopilot.auto_resolve_ticket(arguments.get("ticket_id", ""))
+                elif operation == "analyze_knowledge_gaps":
+                    kb_autopilot = self.services["kb_autopilot"]
+                    kb_autopilot.zoho.access_token = zoho_service.access_token
+                    kb_autopilot.zoho.api_domain = zoho_service.api_domain
+                    kb_autopilot.zoho.refresh_token = zoho_service.refresh_token
+                    return await kb_autopilot.analyze_knowledge_gaps(arguments.get("department_id"))
+                else:
+                    return {"success": False, "error": f"Unknown Zoho Desk operation: {operation}"}
+                    
+            elif tool_name == "zoho_mail_operations":
+                return {"success": False, "error": "Zoho Mail operations not fully implemented yet."}
+            
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown Zoho tool: {tool_name}",
+                    "result": None
+                }
+        except Exception as e:
+            logger.error(f"Error executing Zoho tool {tool_name}: {str(e)}")
+            return {
+                "success": False,
+                "error": f"Zoho error: {str(e)}",
                 "result": None
             }
 
@@ -4731,7 +4863,7 @@ class ToolExecutor:
                     }
                 
                 # Format payments for display
-                payment_list = []
+                payment_list: List[Dict[str, Any]] = []
                 for payment in payments:
                     payment_list.append({
                         "transaction_id": payment.transaction_id,
@@ -5413,6 +5545,255 @@ Description: {payment.description or 'N/A'}"""
             logger.error(f"Error executing system tool: {e}")
             return {"success": False, "error": str(e)}
 
+    async def _execute_zoho_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute Zoho-related tools."""
+        try:
+            # Get user's Zoho connection
+            result = await db.execute(
+                select(Connection)
+                .filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == "zoho",
+                    Connection.status == ConnectionStatus.ACTIVE
+                )
+            )
+            connection = result.scalar_one_or_none()
+
+            if not connection:
+                return {
+                    "success": False,
+                    "error": "No active Zoho connection found. Please connect your Zoho account first."
+                }
+
+            zoho_service = self.services["zoho"]
+            if connection.config:
+                zoho_service.access_token = connection.config.get("access_token")
+                zoho_service.api_domain = connection.config.get("api_domain", "https://www.zohoapis.com")
+                zoho_service.refresh_token = connection.config.get("refresh_token")
+            
+            # The tool_name format is e.g. zoho_crm_operations, zoho_finance_operations
+            # We will route to the methods inside zoho_service
+            operation = arguments.get("operation")
+
+            if tool_name == "zoho_crm_operations":
+                if operation == "get_contacts":
+                    result = await zoho_service.get_contacts(arguments.get("per_page", 200), arguments.get("page", 1))
+                    if zoho_service.access_token != connection.config.get("access_token"):
+                        connection.config["access_token"] = zoho_service.access_token
+                        from sqlalchemy.orm.attributes import flag_modified
+                        flag_modified(connection, "config")
+                        await db.commit()
+                    return result
+                elif operation == "create_contact":
+                    # If passed as single object
+                    contact_data = arguments.get("contact_data", {})
+                    # If mapped as flat args
+                    if not contact_data and arguments.get("last_name"):
+                        contact_data = {
+                            "Last_Name": arguments.get("last_name"),
+                            "First_Name": arguments.get("first_name", ""),
+                            "Email": arguments.get("email", ""),
+                            "Phone": arguments.get("phone", "")
+                        }
+                    if not contact_data:
+                        return {"success": False, "error": "Contact data is required (must contain at least last_name)"}
+                    result = await zoho_service.create_contact(contact_data)
+                elif operation == "get_deals":
+                    result = await zoho_service.get_deals(arguments.get("per_page", 200), arguments.get("page", 1))
+                elif operation == "create_deal":
+                    deal_data = arguments.get("deal_data", {})
+                    if not deal_data and arguments.get("deal_name"):
+                        deal_data = {
+                            "Deal_Name": arguments.get("deal_name"),
+                            "Amount": arguments.get("amount"),
+                            "Closing_Date": arguments.get("closing_date"),
+                            "Stage": arguments.get("stage", "Qualification")
+                        }
+                    if not deal_data:
+                        return {"success": False, "error": "Deal data is required"}
+                    result = await zoho_service.create_deal(deal_data)
+                elif operation == "update_deal_stage":
+                    deal_id = arguments.get("deal_id")
+                    stage = arguments.get("stage")
+                    if not deal_id or not stage:
+                        return {"success": False, "error": "Both deal_id and stage are required"}
+                    result = await zoho_service.update_deal_stage(deal_id, stage)
+                else:
+                    return {"success": False, "error": f"Unknown CRM operation: {operation}"}
+                
+                if zoho_service.access_token != connection.config.get("access_token"):
+                    connection.config["access_token"] = zoho_service.access_token
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(connection, "config")
+                    await db.commit()
+                return result
+                    
+            elif tool_name == "zoho_finance_operations":
+                if operation == "create_customer":
+                    customer_data = arguments.get("customer_data", {})
+                    if not customer_data and (arguments.get("contact_name") or arguments.get("customer_name")):
+                        customer_data = {
+                            "contact_name": arguments.get("contact_name") or arguments.get("customer_name"),
+                            "company_name": arguments.get("company_name", ""),
+                            "email": arguments.get("email", "")
+                        }
+                    if not customer_data:
+                         return {"success": False, "error": "Customer data is required (must contain at least contact_name)"}
+                    result = await zoho_service.create_customer(customer_data)
+                elif operation == "create_invoice":
+                    invoice_data = arguments.get("invoice_data", {})
+                    if not invoice_data and arguments.get("customer_id") and arguments.get("items"):
+                        invoice_data = {
+                            "customer_id": arguments.get("customer_id"),
+                            "line_items": arguments.get("items", []),
+                            "date": arguments.get("date"),
+                            "due_date": arguments.get("due_date", "")
+                        }
+                    if not invoice_data:
+                         return {"success": False, "error": "Invoice data is required"}
+                    result = await zoho_service.create_invoice(invoice_data)
+                elif operation == "get_invoices":
+                    result = await zoho_service.get_invoices(limit=arguments.get("limit", 50))
+                elif operation == "record_payment":
+                    payment_data = arguments.get("payment_data", {})
+                    if not payment_data and arguments.get("invoice_id") and arguments.get("amount"):
+                        payment_data = {
+                            "invoice_id": arguments.get("invoice_id"),
+                            "customer_id": arguments.get("customer_id", ""),
+                            "amount": arguments.get("amount"),
+                            "date": arguments.get("date"),
+                            "payment_mode": arguments.get("payment_mode", "Cash")
+                        }
+                    if not payment_data:
+                        return {"success": False, "error": "Payment data is required (invoice_id and amount)"}
+                    result = await zoho_service.record_payment(payment_data)
+                elif operation == "create_expense":
+                    expense_data = arguments.get("expense_data", {})
+                    if not expense_data and arguments.get("amount") and arguments.get("account_id"):
+                        expense_data = {
+                            "account_id": arguments.get("account_id"),
+                            "date": arguments.get("date"),
+                            "amount": arguments.get("amount"),
+                            "description": arguments.get("description", "")
+                        }
+                    if not expense_data:
+                        return {"success": False, "error": "Expense data is required (amount and account_id)"}
+                    result = await zoho_service.create_expense(expense_data)
+                elif operation == "get_expenses":
+                    result = await zoho_service.get_expenses(limit=arguments.get("limit", 50))
+                else:
+                    return {"success": False, "error": f"Unknown Finance operation: {operation}"}
+                    
+                if zoho_service.access_token != connection.config.get("access_token"):
+                    connection.config["access_token"] = zoho_service.access_token
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(connection, "config")
+                    await db.commit()
+                return result
+            
+            elif tool_name == "zoho_desk_operations":
+                if operation == "get_tickets":
+                    result = await zoho_service.get_tickets(limit=arguments.get("limit", 50), department_id=arguments.get("department_id", ""))
+                elif operation == "create_ticket":
+                    ticket_data = arguments.get("ticket_data", {})
+                    if not ticket_data and arguments.get("subject") and arguments.get("department_id") and arguments.get("contact_id"):
+                        ticket_data = {
+                            "departmentId": arguments.get("department_id"),
+                            "contactId": arguments.get("contact_id"),
+                            "subject": arguments.get("subject"),
+                            "description": arguments.get("description", ""),
+                            "status": arguments.get("status", "Open")
+                        }
+                    if not ticket_data:
+                        return {"success": False, "error": "Ticket data is required"}
+                    result = await zoho_service.create_ticket(ticket_data)
+                elif operation == "reply_ticket":
+                    ticket_id = arguments.get("ticket_id")
+                    reply_text = arguments.get("reply_text")
+                    if not ticket_id:
+                        return {"success": False, "error": "ticket_id is required"}
+                    if not reply_text:
+                        # If reply_text is empty, the autonomous agent decided not to reply.
+                        # Do not fail the workflow step, just skip it gracefully.
+                        return {"success": True, "message": "No reply text provided, skipping reply generation."}
+                    result = await zoho_service.reply_ticket(ticket_id, reply_text)
+                elif operation == "get_articles":
+                    result = await zoho_service.get_articles(limit=arguments.get("limit", 50), category_id=arguments.get("category_id"))
+                elif operation == "search_articles":
+                    query = arguments.get("query")
+                    if not query:
+                        return {"success": False, "error": "query is required for search_articles"}
+                    result = await zoho_service.search_articles(query)
+                elif operation == "create_article":
+                    article_data = arguments.get("article_data")
+                    if not article_data:
+                        return {"success": False, "error": "article_data is required"}
+                    result = await zoho_service.create_article(article_data)
+                elif operation == "draft_article_from_ticket":
+                    ticket_id = arguments.get("ticket_id")
+                    if not ticket_id:
+                        return {"success": False, "error": "ticket_id is required"}
+                    kb_autopilot = self.services["kb_autopilot"]
+                    kb_autopilot.zoho = zoho_service # Ensure current token is used
+                    result = await kb_autopilot.draft_article_from_ticket(ticket_id)
+                elif operation == "analyze_knowledge_gaps":
+                    kb_autopilot = self.services["kb_autopilot"]
+                    kb_autopilot.zoho = zoho_service
+                    result = await kb_autopilot.analyze_knowledge_gaps(department_id=arguments.get("department_id"))
+                elif operation == "auto_resolve_ticket":
+                    ticket_id = arguments.get("ticket_id")
+                    if not ticket_id:
+                        return {"success": False, "error": "ticket_id is required"}
+                    kb_autopilot = self.services["kb_autopilot"]
+                    kb_autopilot.zoho = zoho_service
+                    result = await kb_autopilot.auto_resolve_ticket(ticket_id)
+                else:
+                    return {"success": False, "error": f"Unknown Desk operation: {operation}"}
+                
+                if zoho_service.access_token != connection.config.get("access_token"):
+                    connection.config["access_token"] = zoho_service.access_token
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(connection, "config")
+                    await db.commit()
+                return result
+                    
+            elif tool_name == "zoho_mail_operations":
+                if operation == "get_messages":
+                    result = await zoho_service.get_messages(limit=arguments.get("limit", 20), folder_id=arguments.get("folder_id", ""))
+                elif operation == "send_email":
+                    to_address = arguments.get("to_address")
+                    subject = arguments.get("subject")
+                    content = arguments.get("content")
+                    if not to_address or not subject or not content:
+                        return {"success": False, "error": "to_address, subject, and content are required"}
+                    result = await zoho_service.send_email(None, to_address, subject, content)
+                else:
+                    return {"success": False, "error": f"Unknown Mail operation: {operation}"}
+                
+                if zoho_service.access_token != connection.config.get("access_token"):
+                    connection.config["access_token"] = zoho_service.access_token
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(connection, "config")
+                    await db.commit()
+                return result
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown Zoho tool: {tool_name}"
+                }
+
+        except Exception as e:
+            logger.error(f"Error executing Zoho tool {tool_name}: {e}")
+            return {
+                "success": False,
+                "error": f"Internal error executing Zoho tool: {str(e)}"
+            }
 
 # Global tool executor instance
 tool_executor = ToolExecutor()

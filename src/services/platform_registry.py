@@ -641,6 +641,77 @@ class PlatformRegistry:
             test_function="test_tiktok_connection"
         )
 
+        # Zoho Platform
+        zoho_capabilities = [
+            PlatformCapability(
+                name="CRM Operations",
+                description="Manage Zoho CRM contacts, deals, and leads",
+                tool_name="zoho_crm_operations",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_contacts", "create_contact", "get_deals", "create_deal", "update_deal_stage"]}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_contacts", "create_contact", "get_deals", "create_deal", "update_deal_stage"]
+            ),
+            PlatformCapability(
+                name="Finance Operations",
+                description="Manage Zoho Books, Invoice, and Expenses",
+                tool_name="zoho_finance_operations",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_customer", "create_invoice", "get_invoices", "record_payment", "create_expense", "get_expenses"]}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["create_customer", "create_invoice", "get_invoices", "record_payment", "create_expense", "get_expenses"]
+            ),
+            PlatformCapability(
+                name="Desk Operations",
+                description="Manage Zoho Desk support tickets",
+                tool_name="zoho_desk_operations",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_tickets", "create_ticket", "reply_ticket"]}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_tickets", "create_ticket", "reply_ticket"]
+            ),
+            PlatformCapability(
+                name="Mail Operations",
+                description="Manage Zoho Mail communication",
+                tool_name="zoho_mail_operations",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_messages", "send_email"]}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_messages", "send_email"]
+            )
+        ]
+
+        self.platforms["zoho"] = Platform(
+            id="zoho",
+            name="Zoho",
+            description="Comprehensive suite of business software",
+            icon="zoho",
+            features=["CRM", "Finance", "Desk", "Mail"],
+            capabilities=zoho_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            },
+            test_function="test_zoho_connection"
+        )
+
         # Asana Platform
         asana_capabilities = [
             PlatformCapability(

@@ -416,6 +416,13 @@ class WorkflowBuilderService:
                 "steps": {}
             }
             
+            # GAP 1 FIX: Merge input_data keys to top-level context
+            # so Jinja2 can resolve {{Trigger.id}} directly (not {{input.Trigger.id}})
+            if input_data:
+                for key, value in input_data.items():
+                    if key not in context:  # Don't overwrite existing keys like 'input', 'workflow', 'steps'
+                        context[key] = value
+            
             # Execute steps in order
             for step in workflow.steps:
                 # Check conditional logic
@@ -432,6 +439,12 @@ class WorkflowBuilderService:
                 
                 # Also add to root context for easier variable access (e.g. {{step_1.field}})
                 context[f"step_{step.step_number}"] = step_result
+                
+                # GAP 2 FIX: Also store by operation name for intuitive access
+                # e.g. {{auto_resolve_ticket.resolved}} instead of {{step_2.resolved}}
+                operation_name = (step.tool_parameters or {}).get("operation", "")
+                if operation_name:
+                    context[operation_name] = step_result
                 
                 # Check if step failed
                 if step_execution.status == WorkflowExecutionStatus.FAILED:
