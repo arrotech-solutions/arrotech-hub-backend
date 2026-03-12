@@ -26,7 +26,7 @@ ZOHO_CLIENT_SECRET = os.getenv("ZOHO_CLIENT_SECRET")
 # Redirect URI = the BACKEND callback endpoint
 ZOHO_REDIRECT_URI = os.getenv(
     "ZOHO_REDIRECT_URI", 
-    "http://localhost:8000/api/zoho/callback" if os.getenv("ENVIRONMENT") == "development" else "https://mini-hub.fly.dev/api/zoho/callback"
+    "http://localhost:8000/api/zoho/callback" if os.getenv("ENVIRONMENT") == "development" else "https://prod.api.arrotechsolutions.com/api/zoho/callback"
 )
 
 # Frontend URL = where the user ends up after the backend processes the callback
