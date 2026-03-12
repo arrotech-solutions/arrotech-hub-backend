@@ -139,6 +139,11 @@ class BaseConfig(BaseSettings):
     TOGETHER_API_KEY: Optional[str] = None
     ANTHROPIC_API_KEY: Optional[str] = None
 
+    # Zoho Configuration
+    ZOHO_CLIENT_ID: Optional[str] = None
+    ZOHO_CLIENT_SECRET: Optional[str] = None
+    ZOHO_REDIRECT_URI: Optional[str] = None
+
     # LLM Settings
     DEFAULT_LLM_PROVIDER: str = "openai"
     LLM_TEMPERATURE: float = 0.7

@@ -558,6 +558,8 @@ class DynamicToolRegistry:
                 tools.extend(self._get_jira_tools(connection))
             elif connection.platform == "google_workspace":
                 tools.extend(self._get_google_workspace_tools(connection))
+            elif connection.platform == "zoho":
+                tools.extend(self._get_zoho_tools(connection))
             elif connection.platform in platform_registry.platforms:
                 # Dynamically fetch tools for regional platforms (hr_hub, logistics_hub, etc.)
                 p_tools = platform_registry.get_platform_tools(connection.platform)
@@ -1536,6 +1538,113 @@ class DynamicToolRegistry:
                 "id": "google_workspace_analytics"
             }
         ]
+
+    def _get_zoho_tools(self, connection: Connection) -> List[Dict[str, Any]]:
+        """Get Zoho tools for a connection."""
+        return [
+            {
+                "name": "zoho_crm_operations",
+                "description": "Comprehensive Zoho CRM operations: read/create contacts, deals, and update deal stages.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["get_contacts", "create_contact", "get_deals", "create_deal", "update_deal_stage"],
+                            "description": "CRM operation to perform"
+                        },
+                        "limit": {"type": "integer", "default": 50},
+                        "page": {"type": "integer", "default": 1},
+                        "contact_data": {"type": "object", "description": "Contact data for creation"},
+                        "deal_data": {"type": "object", "description": "Deal data for creation"},
+                        "deal_id": {"type": "string", "description": "Deal ID for update"},
+                        "stage": {"type": "string", "description": "New Deal stage"}
+                    },
+                    "required": ["operation"]
+                },
+                "connection_id": connection.id,
+                "platform": "zoho",
+                "status": "available",
+                "id": "zoho_crm_operations"
+            },
+            {
+                "name": "zoho_finance_operations",
+                "description": "Zoho Finance operations targeting Books/Invoice/Expense: create/read customers, invoices, record payments, and manage expenses.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["create_customer", "get_invoices", "create_invoice", "record_payment", "get_expenses", "create_expense"],
+                            "description": "Finance operation to perform"
+                        },
+                        "limit": {"type": "integer", "default": 50},
+                        "customer_data": {"type": "object", "description": "Customer payload"},
+                        "invoice_data": {"type": "object", "description": "Invoice payload"},
+                        "payment_data": {"type": "object", "description": "Payment payload"},
+                        "expense_data": {"type": "object", "description": "Expense payload"},
+                        "org_id": {"type": "string", "description": "Optional: Specific Finance Organization ID"}
+                    },
+                    "required": ["operation"]
+                },
+                "connection_id": connection.id,
+                "platform": "zoho",
+                "status": "available",
+                "id": "zoho_finance_operations"
+            },
+            {
+                "name": "zoho_desk_operations",
+                "description": "Zoho Desk support ticket operations: get tickets, create new tickets, and send replies.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["get_tickets", "create_ticket", "reply_ticket", "get_articles", "search_articles", "create_article", "draft_article_from_ticket", "analyze_knowledge_gaps", "auto_resolve_ticket"],
+                            "description": "Desk operation to perform"
+                        },
+                        "limit": {"type": "integer", "default": 50},
+                        "department_id": {"type": "string"},
+                        "ticket_data": {"type": "object", "description": "Ticket payload for creation"},
+                        "ticket_id": {"type": "string", "description": "Ticket ID to reply to"},
+                        "reply_text": {"type": "string", "description": "Reply content"},
+                        "category_id": {"type": "string", "description": "Category ID for articles"},
+                        "query": {"type": "string", "description": "Search query for articles"},
+                        "article_data": {"type": "object", "description": "Article payload for creation"}
+                    },
+                    "required": ["operation"]
+                },
+                "connection_id": connection.id,
+                "platform": "zoho",
+                "status": "available",
+                "id": "zoho_desk_operations"
+            },
+            {
+                "name": "zoho_mail_operations",
+                "description": "Zoho Mail operations: fetch messages and send new emails.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["get_messages", "send_email"],
+                            "description": "Mail operation to perform"
+                        },
+                        "limit": {"type": "integer", "default": 50},
+                        "account_id": {"type": "string", "description": "Specific Mail Account ID"},
+                        "folder_id": {"type": "string", "description": "Folder ID for getting messages"},
+                        "to_address": {"type": "string", "description": "Recipient email address"},
+                        "subject": {"type": "string", "description": "Email subject"},
+                        "content": {"type": "string", "description": "Email content (HTML or Text)"}
+                    },
+                    "required": ["operation"]
+                },
+                "connection_id": connection.id,
+                "platform": "zoho",
+                "status": "available",
+                "id": "zoho_mail_operations"
+            }
+        ]
     
     async def get_all_tools(self, db: AsyncSession) -> List[Dict[str, Any]]:
         """Get all tools (base tools + all platform tools)."""
@@ -1567,7 +1676,8 @@ class DynamicToolRegistry:
             "notion": self._get_notion_tools,
             "trello": self._get_trello_tools,
             "jira": self._get_jira_tools,
-            "google_workspace": self._get_google_workspace_tools
+            "google_workspace": self._get_google_workspace_tools,
+            "zoho": self._get_zoho_tools
         }
 
         # Check if tool name starts with any known platform prefix to optimize

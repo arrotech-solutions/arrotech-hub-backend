@@ -414,6 +414,8 @@ async def test_platform_connection(platform: str, config: Dict[str, Any]) -> Dic
             return await test_quickbooks_connection(config)
         elif platform == "airtable":
             return await test_airtable_connection(config)
+        elif platform == "zoho":
+            return await test_zoho_connection(config)
         else:
             return {
                 "success": False,
@@ -424,6 +426,32 @@ async def test_platform_connection(platform: str, config: Dict[str, Any]) -> Dic
             "success": False,
             "error": f"Connection test failed: {str(e)}"
         }
+
+async def test_zoho_connection(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Test Zoho connection."""
+    try:
+        from ..services.zoho_service import ZohoService
+        service = ZohoService()
+        if config:
+            service.access_token = config.get("access_token")
+            service.api_domain = config.get("api_domain", "https://www.zohoapis.com")
+        
+        # Test connection by fetching org data or similar
+        headers = {"Authorization": f"Zoho-oauthtoken {service.access_token}"}
+        async with service.client.get(f"{service.api_domain}/crm/v3/org", headers=headers) as resp:
+            if resp.status in (200, 204):
+                return {
+                    "success": True,
+                    "message": "Successfully connected to Zoho."
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Failed to connect to Zoho: HTTP {resp.status}"
+                }
+    except Exception as e:
+        return {"success": False, "error": f"Zoho validation failed: {str(e)}"}
+
 
 async def test_airtable_connection(config: Dict[str, Any]) -> Dict[str, Any]:
     """Test Airtable connection."""
