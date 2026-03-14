@@ -124,6 +124,11 @@ class BaseConfig(BaseSettings):
     AIRTABLE_CLIENT_SECRET: Optional[str] = None
     AIRTABLE_REDIRECT_URI: Optional[str] = None
 
+    # Xero Configuration
+    XERO_CLIENT_ID: Optional[str] = None
+    XERO_CLIENT_SECRET: Optional[str] = None
+    XERO_REDIRECT_URI: Optional[str] = None
+
     # WhatsApp Business Configuration
     WHATSAPP_VERIFY_TOKEN: Optional[str] = None
     WHATSAPP_TOKEN: Optional[str] = None

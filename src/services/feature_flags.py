@@ -214,7 +214,7 @@ PLAN_LIMITS: Dict[str, Dict[str, Any]] = {
             "google_workspace", "zoom",
             # Analytics & Accounting
             "powerbi", "power_bi",
-            "quickbooks", "quick_books", "zoho_books",
+            "quickbooks", "quick_books", "xero", "zoho_books",
             "kra_portal",
             # Other
             "context_tools"

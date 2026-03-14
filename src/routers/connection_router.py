@@ -28,6 +28,7 @@ from ..services.lead_intelligence_service import LeadIntelligenceService
 from ..services.bilingual_service import BilingualService
 from ..services.kra_service import kra_service
 from ..services.airtable_service import AirtableService
+from ..services.xero_service import XeroService
 
 router = APIRouter()
 
@@ -416,6 +417,8 @@ async def test_platform_connection(platform: str, config: Dict[str, Any]) -> Dic
             return await test_airtable_connection(config)
         elif platform == "zoho":
             return await test_zoho_connection(config)
+        elif platform == "xero":
+            return await test_xero_connection(config)
         else:
             return {
                 "success": False,
@@ -468,6 +471,15 @@ async def test_airtable_connection(config: Dict[str, Any]) -> Dict[str, Any]:
         }
     except Exception as e:
         return {"success": False, "error": f"Airtable validation failed: {str(e)}"}
+
+
+async def test_xero_connection(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Test Xero connection."""
+    try:
+        service = XeroService()
+        return await service.test_connection(config)
+    except Exception as e:
+        return {"success": False, "error": f"Xero validation failed: {str(e)}"}
 
 
 async def test_facebook_connection(config: Dict[str, Any]) -> Dict[str, Any]:
