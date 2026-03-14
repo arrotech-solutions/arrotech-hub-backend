@@ -991,6 +991,90 @@ class PlatformRegistry:
             test_function="test_quickbooks_connection"
         )
 
+        # Xero Platform
+        xero_capabilities = [
+            PlatformCapability(
+                name="Company Info",
+                description="Get connected organisation information",
+                tool_name="xero_get_company_info",
+                input_schema={"type": "object", "properties": {}},
+                operations=["get_company_info"]
+            ),
+            PlatformCapability(
+                name="Invoices",
+                description="Manage invoices: list and create",
+                tool_name="xero_invoices",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_invoices", "create_invoice"]},
+                        "start_date": {"type": "string"},
+                        "end_date": {"type": "string"},
+                        "status": {"type": "string"},
+                        "contact_id": {"type": "string"},
+                        "customer_id": {"type": "string"},
+                        "line_items": {"type": "array", "items": {"type": "object"}},
+                        "due_date": {"type": "string"},
+                        "reference": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_invoices", "create_invoice"]
+            ),
+            PlatformCapability(
+                name="Financial Reports",
+                description="Get Profit and Loss and Balance Sheet reports",
+                tool_name="xero_reports",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_profit_loss", "get_balance_sheet"]},
+                        "start_date": {"type": "string"},
+                        "end_date": {"type": "string"},
+                        "date": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_profit_loss", "get_balance_sheet"]
+            ),
+            PlatformCapability(
+                name="Accounts & Contacts",
+                description="List chart of accounts and contacts",
+                tool_name="xero_lists",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_accounts", "get_customers", "get_contacts"]},
+                        "account_type": {"type": "string"},
+                        "max_results": {"type": "integer"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_accounts", "get_customers", "get_contacts"]
+            ),
+        ]
+        self.platforms["xero"] = Platform(
+            id="xero",
+            name="Xero",
+            description="Accounting and invoicing platform",
+            icon="xero",
+            features=[
+                "Invoicing & billing",
+                "Financial reporting",
+                "Contact management",
+                "Chart of accounts"
+            ],
+            capabilities=xero_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "tenant_id": {"type": "string", "description": "Xero tenant (organisation) ID"}
+                },
+                "required": ["tenant_id"]
+            },
+            test_function="test_xero_connection"
+        )
+
         # LinkedIn Platform
         linkedin_capabilities = [
             PlatformCapability(

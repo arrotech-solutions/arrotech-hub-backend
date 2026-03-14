@@ -152,7 +152,7 @@ def get_tier_for_platform(platform: str) -> str:
         "shopify", "jumia", "kilimall",
         "stripe", "airtel", "airtelmoney", "pesapal", "equity", "equitybank",
         "zoom", "notion",
-        "powerbi", "quickbooks", "zohobooks"
+        "powerbi", "quickbooks", "xero", "zohobooks"
     ]
     if any(p in platform_lower for p in business_platforms):
         return "Business"
@@ -244,6 +244,7 @@ def format_platform_name(platform: str) -> str:
         "equity_bank": "Equity Bank",
         "power_bi": "Power BI",
         "quick_books": "QuickBooks",
+        "xero": "Xero",
         "zoho_crm": "Zoho CRM",
         "zoho_books": "Zoho Books",
         "kra_portal": "KRA Portal"

@@ -38,6 +38,7 @@ from .blog_router import router as blog_router
 from .employee_router import router as employee_router
 from .quickbooks_router import router as quickbooks_router
 from .airtable_router import router as airtable_router
+from .xero_router import router as xero_router
 from . import gmail_webhook  # Gmail Pub/Sub push notifications webhook
 from . import zoho_webhook  # Zoho real-time events webhook
 
@@ -49,5 +50,5 @@ __all__ = [
     "google_workspace_router", "slack_router", "whatsapp_router", "whatsapp_webhook", "whatsapp_contacts",
     "whatsapp_broadcast", "facebook_router", "instagram_router", "twitter_router",
     "outlook_router", "notion_router", "trello_router", "jira_router",
-    "blog_router", "employee_router", "quickbooks_router", "airtable_router", "gmail_webhook", "hubspot_router", "zoho_webhook"
+    "blog_router", "employee_router", "quickbooks_router", "airtable_router", "xero_router", "gmail_webhook", "hubspot_router", "zoho_webhook"
 ]

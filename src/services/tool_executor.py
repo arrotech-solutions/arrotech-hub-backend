@@ -46,6 +46,7 @@ from .health_service import HealthService
 from .utilities_service import UtilitiesService
 from .workflow_service import WorkflowService
 from .quickbooks_service import QuickBooksService
+from .xero_service import XeroService
 from .airtable_service import AirtableService
 from .clickup_service import ClickUpService
 from .google_workspace import (
@@ -101,6 +102,7 @@ class ToolExecutor:
             "clickup": ClickUpService(),
             "kra": KraService(),
             "quickbooks": QuickBooksService(),
+            "xero": XeroService(),
             "airtable": AirtableService(),
         }
         # Initialize services
@@ -209,6 +211,8 @@ class ToolExecutor:
                 return await self._execute_clickup_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("kra_"):
                 return await self._execute_kra_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("xero_"):
+                return await self._execute_xero_tool(tool_name, arguments, user, db)
             elif tool_name.endswith("_payment_ops"):
                 return await self._execute_fintech_tool(tool_name, arguments, user, db)
             elif tool_name.endswith("_ecommerce_ops"):
@@ -356,6 +360,7 @@ class ToolExecutor:
         if tool_name.startswith("logistics_"): return "logistics_hub"
         if tool_name.startswith("clickup_"): return "clickup"
         if tool_name.startswith("kra_"): return "kra_portal"
+        if tool_name.startswith("xero_"): return "xero"
         
         # Kenyan Specific Mappings
         if tool_name.endswith("_payment_ops"): return tool_name.replace("_payment_ops", "")
@@ -5509,6 +5514,97 @@ Description: {payment.description or 'N/A'}"""
             
         except Exception as e:
             logger.error(f"Error executing KRA tool: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_xero_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute Xero-related tools."""
+        try:
+            result = await db.execute(
+                select(Connection)
+                .filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == "xero",
+                    Connection.status == ConnectionStatus.ACTIVE
+                )
+            )
+            connection = result.scalar_one_or_none()
+
+            if not connection:
+                return {
+                    "success": False,
+                    "error": "No active Xero connection found. Please connect Xero in Settings > Connections.",
+                    "result": None
+                }
+
+            config = connection.config or {}
+            xero_service = self.services["xero"]
+            xero_service._configure_from_connection(config)
+
+            operation = arguments.get("operation")
+            if tool_name == "xero_get_company_info":
+                return await xero_service.handle_operation("get_company_info", config=config)
+            if tool_name == "xero_invoices":
+                if operation == "get_invoices":
+                    return await xero_service.handle_operation(
+                        "get_invoices",
+                        config=config,
+                        start_date=arguments.get("start_date"),
+                        end_date=arguments.get("end_date"),
+                        status=arguments.get("status"),
+                        contact_id=arguments.get("contact_id") or arguments.get("customer_id"),
+                        max_results=arguments.get("max_results", 100),
+                    )
+                if operation == "create_invoice":
+                    return await xero_service.handle_operation(
+                        "create_invoice",
+                        config=config,
+                        customer_id=arguments.get("customer_id"),
+                        contact_id=arguments.get("contact_id"),
+                        line_items=arguments.get("line_items", []),
+                        due_date=arguments.get("due_date"),
+                        reference=arguments.get("reference"),
+                    )
+                return {"success": False, "error": f"Unknown invoices operation: {operation}"}
+            if tool_name == "xero_reports":
+                if operation == "get_profit_loss":
+                    return await xero_service.handle_operation(
+                        "get_profit_loss",
+                        config=config,
+                        start_date=arguments.get("start_date"),
+                        end_date=arguments.get("end_date"),
+                    )
+                if operation == "get_balance_sheet":
+                    return await xero_service.handle_operation(
+                        "get_balance_sheet",
+                        config=config,
+                        date=arguments.get("date"),
+                    )
+                return {"success": False, "error": f"Unknown reports operation: {operation}"}
+            if tool_name == "xero_lists":
+                if operation == "get_accounts":
+                    return await xero_service.handle_operation(
+                        "get_accounts",
+                        config=config,
+                        account_type=arguments.get("account_type"),
+                        max_results=arguments.get("max_results", 100),
+                    )
+                if operation in ("get_customers", "get_contacts"):
+                    return await xero_service.handle_operation(
+                        "get_contacts",
+                        config=config,
+                        max_results=arguments.get("max_results", 100),
+                    )
+                return {"success": False, "error": f"Unknown lists operation: {operation}"}
+
+            return {"success": False, "error": f"Unknown Xero tool: {tool_name}"}
+        except Exception as e:
+            logger.error(f"Error executing Xero tool: {e}")
             return {"success": False, "error": str(e)}
 
     async def _execute_system_tool(
