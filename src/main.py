@@ -129,11 +129,101 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI app
 app = FastAPI(
-    title="Mini-Hub MCP Server",
+    title="Arrotech Hub Server",
     description="Connect AI models to marketing tools with real-time automation",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url=None,   # Disable default docs
+    redoc_url=None,  # Disable default redoc
+    openapi_url=None # Disable default openapi.json
 )
+
+from fastapi.openapi.utils import get_openapi
+from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
+
+# Define tags that are exposed to external developers
+PUBLIC_TAGS = {
+    "mcp", "chat", "workflows", "agents", "connections", "templates"
+}
+
+def custom_openapi():
+    """Generates an OpenAPI schema containing ONLY public routes."""
+    if app.openapi_schema:
+        return app.openapi_schema
+    
+    # Generate the base schema
+    openapi_schema = get_openapi(
+        title="Arrotech Hub Public API",
+        version="1.0.0",
+        description="Public API for integrating external applications with Arrotech Hub's AI agents, workflows, and tools.",
+        routes=app.routes,
+    )
+    
+    # Filter paths to only include routes tagged as public
+    public_paths = {}
+    for path, path_item in openapi_schema.get("paths", {}).items():
+        public_operations = {}
+        for method, operation in path_item.items():
+            tags = operation.get("tags", [])
+            # If any tag on the route is in our PUBLIC_TAGS list, keep it
+            if any(tag in PUBLIC_TAGS for tag in tags):
+                public_operations[method] = operation
+        
+        if public_operations:
+            public_paths[path] = public_operations
+
+    openapi_schema["paths"] = public_paths
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+# --- Custom Documentation Routes ---
+
+@app.get("/openapi.json", include_in_schema=False)
+async def get_public_openapi():
+    """Returns the Public OpenAPI schema"""
+    return custom_openapi()
+
+@app.get("/internal/openapi.json", include_in_schema=False)
+async def get_internal_openapi():
+    """Returns the unfiltered, complete OpenAPI schema for internal teams"""
+    return get_openapi(
+        title="Arrotech Hub Internal API",
+        version="1.0.0",
+        description="Complete API documentation including admin, billing, and internal application endpoints.",
+        routes=app.routes,
+    )
+
+@app.get("/docs", include_in_schema=False)
+async def public_swagger_ui():
+    """Public Swagger UI"""
+    return get_swagger_ui_html(
+        openapi_url="/openapi.json",
+        title="Arrotech Hub API - Swagger UI"
+    )
+
+@app.get("/redoc", include_in_schema=False)
+async def public_redoc():
+    """Public ReDoc"""
+    return get_redoc_html(
+        openapi_url="/openapi.json",
+        title="Arrotech Hub API - ReDoc"
+    )
+
+@app.get("/internal-docs", include_in_schema=False)
+async def internal_swagger_ui():
+    """Internal completely unfiltered Swagger UI"""
+    return get_swagger_ui_html(
+        openapi_url="/internal/openapi.json",
+        title="Internal API Docs - Swagger UI"
+    )
+
+@app.get("/internal-redoc", include_in_schema=False)
+async def internal_redoc():
+    """Internal completely unfiltered ReDoc"""
+    return get_redoc_html(
+        openapi_url="/internal/openapi.json",
+        title="Internal API Docs - ReDoc"
+    )
 
 # Add GZip compression middleware (compress responses > 500 bytes)
 app.add_middleware(GZipMiddleware, minimum_size=500)
