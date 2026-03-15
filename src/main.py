@@ -27,7 +27,7 @@ from .routers import (access_router, agent_router, analytics_router, api_router,
                       mcp_router, mpesa_agent_router, notification_router, payment_router, preferences_router,
                       security_router, settings_router, slack_agent_router, slack_router, subscription_router, templates_router, whatsapp_router, workflow_router, facebook_router, instagram_router, twitter_router, clickup_router, teams_router, zoom_router,
                       outlook_router, notion_router, trello_router, jira_router, whatsapp_webhook, whatsapp_contacts, whatsapp_broadcast, tiktok_router, ai_router, support_router, kra_router, productivity_router, asana_router,
-                       blog_router, employee_router, gmail_webhook, hubspot_router, ws_router, organization_router, quickbooks_router, airtable_router, xero_router, zoho_router, zoho_webhook)
+                       blog_router, employee_router, gmail_webhook, hubspot_router, ws_router, organization_router, quickbooks_router, airtable_router, xero_router, zoho_router, zoho_webhook, developer_router)
 from .services import (BillingService, ContentCreationService,
                        FileManagementService, HubSpotService,
                        RateLimitService, SlackService, SocialMediaService,
@@ -143,7 +143,7 @@ from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 
 # Define tags that are exposed to external developers
 PUBLIC_TAGS = {
-    "mcp", "chat", "workflows", "agents", "connections", "templates"
+    "mcp", "chat", "workflows", "agents", "connections", "templates", "developer"
 }
 
 def custom_openapi():
@@ -166,24 +166,26 @@ Arrotech Hub provides a unified, powerful interface for building autonomous AI a
 
 ## 🔑 Authentication
 
-All requests to the Arrotech Hub API require a **Bearer Token**. You can generate these in your developer dashboard.
+Arrotech Hub supports two primary authentication methods:
 
-```http
-Authorization: Bearer <YOUR_API_KEY>
-```
+1.  **User API Keys (Development):** Use your personal API key for quick testing.
+    ```http
+    Authorization: Bearer <YOUR_API_KEY>
+    ```
+
+2.  **Developer Apps (Production):** For robust integrations, create a **Developer App** in your dashboard to obtain `client_id` and `client_secret`. We support both **2-legged** (server-to-server) and **3-legged** (on behalf of user) OAuth2 flows.
 
 > [!IMPORTANT]
-> Keep your API keys secure. Never expose them in client-side code or public repositories.
+> Keep your Client Secrets secure. Use the **Client Credentials** flow for server-side tasks.
 
-## ⚡ Performance & Rate Limits
+## 🛡️ Scopes
 
-The API is optimized for high-concurrency automation. Default limits are:
-*   **Free Tier:** 100 requests / day
-*   **Pro Tier:** 10,000 requests / day
-*   **Enterprise:** Custom high-throughput limits available.
+API access is restricted by granular scopes. Common scopes include:
+*   `data:read`: Read access to connections and logs.
+*   `chat:write`: Ability to send messages via AI agents.
+*   `workflow:execute`: Trigger and manage workflows.
 
 ## 🛠 Support & Feedback
-
 Join our [Developer Discord](https://discord.gg/arrotech) or open a ticket in the [Support Portal](/docs/support).
     """
 
@@ -409,6 +411,7 @@ app.include_router(xero_router)  # Xero OAuth connection flow
 app.include_router(organization_router.router, prefix="/api/v1/organizations", tags=["organizations"])
 app.include_router(zoho_router.router) # Zoho OAuth connection flow
 app.include_router(zoho_webhook.router) # Zoho real-time events webhook
+app.include_router(developer_router.router, prefix="/developers/apps", tags=["developer"])
 
 
 
