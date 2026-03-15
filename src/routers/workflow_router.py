@@ -2,7 +2,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlalchemy import func, select
@@ -19,8 +19,16 @@ logger = logging.getLogger(__name__)
 
 
 class WorkflowCreate(BaseModel):
-    description: str
-    name: str = None
+    description: str = Field(
+        ..., 
+        description="A natural language description of the workflow you want to build. Our AI will analyze this to generate steps.",
+        example="Every Monday at 9 AM, fetch my last 10 HubSpot deals and post a summary to Slack #sales-updates."
+    )
+    name: Optional[str] = Field(
+        None, 
+        description="An optional name for the workflow. If omitted, a creative name will be generated.",
+        example="Weekly Revenue Sync"
+    )
 
 
 class WorkflowFromConversation(BaseModel):
@@ -46,44 +54,48 @@ class WorkflowFromSteps(BaseModel):
 
 
 class WorkflowUpdate(BaseModel):
-    name: str = None
-    description: str = None
-    status: str = None
-    trigger_type: str = None
-    trigger_config: Dict[str, Any] = None
-    variables: Dict[str, Any] = None
-    steps: List[Dict[str, Any]] = None
-    workflow_metadata: Dict[str, Any] = None
+    name: str = Field(None, description="The updated name for the workflow.")
+    description: str = Field(None, description="The updated purpose or logic description.")
+    status: str = Field(None, description="The new status (e.g., 'active', 'paused', 'draft').")
+    trigger_type: str = Field(None, description="Update the initiation logic (e.g., 'manual', 'schedule').")
+    trigger_config: Dict[str, Any] = Field(None, description="Updated configuration for the trigger.")
+    variables: Dict[str, Any] = Field(None, description="Updated map of global workflow variables.")
+    steps: List[Dict[str, Any]] = Field(None, description="The complete list of updated steps in sequence.")
+    workflow_metadata: Dict[str, Any] = Field(None, description="Additional metadata for categorization or UI rendering.")
 
 
 class WorkflowExecute(BaseModel):
-    input_data: Dict[str, Any] = {}
+    input_data: Dict[str, Any] = Field(
+        default={}, 
+        description="A dictionary of key-value pairs used as input for the workflow's dynamic variables.",
+        example={"target_channel": "#marketing-ops", "limit": 5}
+    )
 
 
 class ConditionTest(BaseModel):
-    condition: Dict[str, Any]
-    context: Dict[str, Any]
+    condition: Dict[str, Any] = Field(..., description="The conditional logic object to evaluate.")
+    context: Dict[str, Any] = Field(..., description="The data context (variables/step results) to evaluate against.")
 
 
 class VariableSubstitution(BaseModel):
-    parameters: Dict[str, Any]
-    context: Dict[str, Any]
+    parameters: Dict[str, Any] = Field(..., description="The template parameters containing {{variables}}.")
+    context: Dict[str, Any] = Field(..., description="The data context providing the values for substitution.")
 
 
 class WorkflowResponse(BaseModel):
-    id: int
-    name: str
-    description: str
-    status: str
-    version: int
-    is_template: bool
-    trigger_type: str
-    trigger_config: Optional[Dict[str, Any]]
-    variables: Optional[Dict[str, Any]]
-    workflow_metadata: Optional[Dict[str, Any]]
-    created_at: str
-    updated_at: Optional[str]
-    steps: List[Dict[str, Any]]
+    id: int = Field(..., description="The unique database identifier for this workflow.")
+    name: str = Field(..., description="The human-readable name of the workflow.")
+    description: str = Field(..., description="The goal or logic this workflow automates.")
+    status: str = Field(..., description="Current status of the workflow blueprint.")
+    version: int = Field(..., description="Incremental version number for tracking changes.")
+    is_template: bool = Field(..., description="Indicates if this is a reusable template.")
+    trigger_type: str = Field(..., description="How this workflow is initiated.")
+    trigger_config: Optional[Dict[str, Any]] = Field(None, description="Contextual data for the trigger.")
+    variables: Optional[Dict[str, Any]] = Field(None, description="Global parameters available to all steps.")
+    workflow_metadata: Optional[Dict[str, Any]] = Field(None, description="Additional internal metadata.")
+    created_at: str = Field(..., description="ISO 8601 timestamp of creation.")
+    updated_at: Optional[str] = Field(None, description="ISO 8601 timestamp of the last update.")
+    steps: List[Dict[str, Any]] = Field(..., description="The sequence of actions to be executed.")
 
 
 class WorkflowExecutionResponse(BaseModel):
@@ -118,7 +130,21 @@ async def create_workflow(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
-    """Create a workflow from natural language description."""
+    """
+    ### Natural Language Workflow Generation
+    
+    This endpoint allows you to build complex automations using simple English instructions. The system uses a specialized **Workflow Builder LLM** to translate your description into a series of logical steps, tool calls, and conditional branches.
+    
+    **How it works:**
+    1.  **Deconstruction:** The AI breaks your request into discrete "Atomic Steps".
+    2.  **Tool Mapping:** Each step is matched against our 50+ integrated tools (HubSpot, Slack, Asana, etc.).
+    3.  **Variable Wiring:** Data flows are automatically established (e.g., Output of Step 1 becomes Input for Step 2).
+    4.  **Drafting:** A draft workflow is created in your account for review.
+    
+    **Pro Tip:** Be as specific as possible about platform names and filters.
+    - *Vague:* "Send data to Slack."
+    - *Better:* "Whenever a new lead is added in HubSpot with a value > $1000, send a Slack message to #big-wins."
+    """
     try:
         # Check active workflows limit for Free Tier
         if user.subscription_tier == SubscriptionTier.FREE:
@@ -485,7 +511,19 @@ async def execute_workflow(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
-    """Execute a workflow with input data."""
+    """
+    ### Trigger Workflow Execution
+    
+    Manually triggers the execution of a specific workflow. This is ideal for testing or for "On-Demand" automations triggered by external scripts.
+    
+    **Execution Features:**
+    - **Variable Injection:** Provide different `input_data` to change the workflow's behavior on each run.
+    - **Isolation:** Each execution runs in a sandboxed environment with its own state.
+    - **Traceability:** Detailed logs of every tool call and outcome are stored and can be retrieved via the `/executions` endpoint.
+    
+    **Error Handling:**
+    If a step fails, the workflow will attempt retries based on its configuration before marking the execution as `failed`.
+    """
     try:
         workflow_service = WorkflowBuilderService()
         execution = await workflow_service.execute_workflow(

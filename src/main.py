@@ -152,10 +152,45 @@ def custom_openapi():
         return app.openapi_schema
     
     # Generate the base schema
+    description = """
+# Welcome to the Arrotech Hub Public API
+
+Arrotech Hub provides a unified, powerful interface for building autonomous AI agents and complex marketing automations. Our API allows you to programmatically control the entire "Mini-Hub" ecosystem, from managing connections to executing multi-step workflows.
+
+## 🚀 Core Capabilities
+
+*   **Autonomous Agents:** Deploy AI that can "think" and act across different platforms.
+*   **Workflow Orchestration:** Chain together disparate tools (Slack, HubSpot, WhatsApp) into a single logical flow.
+*   **Model Agnostic:** Build once and switch between OpenAI, Anthropic, or local Ollama models.
+*   **Tool Bridge (MCP):** Use the Model Context Protocol to bridge local enterprise data to global LLMs.
+
+## 🔑 Authentication
+
+All requests to the Arrotech Hub API require a **Bearer Token**. You can generate these in your developer dashboard.
+
+```http
+Authorization: Bearer <YOUR_API_KEY>
+```
+
+> [!IMPORTANT]
+> Keep your API keys secure. Never expose them in client-side code or public repositories.
+
+## ⚡ Performance & Rate Limits
+
+The API is optimized for high-concurrency automation. Default limits are:
+*   **Free Tier:** 100 requests / day
+*   **Pro Tier:** 10,000 requests / day
+*   **Enterprise:** Custom high-throughput limits available.
+
+## 🛠 Support & Feedback
+
+Join our [Developer Discord](https://discord.gg/arrotech) or open a ticket in the [Support Portal](/docs/support).
+    """
+
     openapi_schema = get_openapi(
         title="Arrotech Hub Public API",
         version="1.0.0",
-        description="Public API for integrating external applications with Arrotech Hub's AI agents, workflows, and tools.",
+        description=description,
         routes=app.routes,
     )
     

@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 from fastapi import (APIRouter, Depends, HTTPException, Request, Response,
                      status)
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
@@ -23,8 +23,16 @@ router = APIRouter()
 
 
 class ToolCallRequest(BaseModel):
-    name: str
-    arguments: Dict[str, Any]
+    name: str = Field(
+        ..., 
+        description="The unique name of the MCP tool to execute (e.g., 'slack_send_message', 'hubspot_contact_create').",
+        example="slack_send_message"
+    )
+    arguments: Dict[str, Any] = Field(
+        ..., 
+        description="A dictionary of arguments required by the tool. Arguments vary depending on the tool's schema.",
+        example={"channel": "#general", "message": "Hello from Arrotech Hub!"}
+    )
 
 
 @router.get("/tools")
@@ -34,7 +42,17 @@ async def list_tools_get(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get available MCP tools for the current user."""
+    """
+    ### List Available MCP Tools
+    
+    Returns a catalog of all tools currently available to the user. This includes built-in tools and those dynamically loaded via **Model Context Protocol (MCP)** servers.
+    
+    **The Power of MCP:**
+    Arrotech Hub uses MCP to bridge the gap between LLMs and external software. This endpoint tells your front-end or your AI agent which "skills" are currently equipped.
+    
+    **Filtering:**
+    - `include_all`: Set to `true` to see even those tools that require additional configuration or authentication (useful for discovery).
+    """
     try:
         # Support both 'all' and 'include_all'
         discovery_mode = include_all or all
@@ -64,7 +82,19 @@ async def call_tool(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Execute a tool call."""
+    """
+    ### Atomic Tool Execution
+    
+    Executes a single tool and returns the result. This is a low-level endpoint primarily used by the **Execution Orchestrator**, but can be called directly for testing or precise control.
+    
+    **Execution Protocol:**
+    1.  **Registry Lookup:** Finds the tool implementation in the `dynamic_tool_registry`.
+    2.  **Auth Validation:** Ensures you have a valid **Connection** (e.g., OAuth token) for the target platform.
+    3.  **Secure Invocation:** Calls the underlying API (e.g., Slack Web API, HubSpot CRM API).
+    
+    **Safety:**
+    All tool calls are subject to rate limiting and audit logging to ensure secure and responsible AI actions.
+    """
     try:
         # Get the tool definition
         tool = dynamic_tool_registry.get_tool(request.name)
