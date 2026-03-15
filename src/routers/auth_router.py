@@ -1,12 +1,6 @@
-"""
-Authentication router for Mini-Hub MCP Server.
-"""
-
-import secrets
-from datetime import datetime, timedelta, timezone
-from typing import Optional
-
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -14,21 +8,20 @@ from pydantic import BaseModel
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+import json
+import secrets
+import httpx
+import pyotp
+from datetime import datetime, timedelta, timezone
+from typing import Optional, List, Any
 
 from ..database import get_db
 from ..models import (
     User, AccessRequest, AccessRequestStatus, SubscriptionTier,
     UserSettings, Connection, UsageLog, Workflow, Conversation,
     CreatorProfile, Invoice, MpesaPayment, WebAuthnCredential,
-    Organization, OrganizationMember,
+    Organization, OrganizationMember, DeveloperApp, AuthorizationCode, AppToken
 )
-from fastapi import APIRouter, Depends, HTTPException, status, Request
-from fastapi.responses import JSONResponse
-from fastapi.encoders import jsonable_encoder
-import json
-import httpx
-import pyotp
-
 from ..config import settings
 from ..services.email_service import email_service
 
@@ -188,16 +181,17 @@ async def get_current_user(
     # IP Whitelist Check
     if user.settings and user.settings.ip_whitelist:
         client_host = request.client.host
-        # Handle cases where behind proxy (X-Forwarded-For) - simplistic check for now
-        # In production, trust specific proxies or use a library
         whitelist = user.settings.ip_whitelist
         if isinstance(whitelist, list) and len(whitelist) > 0:
              if client_host not in whitelist:
-                 # TODO: Check X-Forwarded-For if behind load balancer
                  raise HTTPException(
                      status_code=status.HTTP_403_FORBIDDEN,
                      detail=f"IP address {client_host} is not whitelisted."
                  )
+
+    # Attach app context if present
+    request.state.app_id = payload.get("app_id")
+    request.state.scopes = payload.get("scopes", [])
 
     return user
 
@@ -1080,3 +1074,186 @@ async def validate_reset_token(
         raise HTTPException(status_code=400, detail="Invalid or expired reset token.")
 
     return {"success": True, "message": "Token is valid."}
+
+# --- OAuth2 Developer Flows ---
+
+class OAuthAuthorizeRequest(BaseModel):
+    client_id: str
+    response_type: str = "code"
+    redirect_uri: str
+    scope: str
+    state: Optional[str] = None
+
+class OAuthTokenRequest(BaseModel):
+    grant_type: str
+    client_id: str
+    client_secret: str
+    code: Optional[str] = None
+    redirect_uri: Optional[str] = None
+    refresh_token: Optional[str] = None
+
+@router.get("/authorize")
+async def oauth_authorize(
+    client_id: str,
+    response_type: str,
+    redirect_uri: str,
+    scope: str,
+    state: Optional[str] = None,
+    current_user: User = Depends(get_optional_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Step 1 of 3-legged OAuth: Show consent screen.
+    Returns app info and requested scopes if logged in.
+    """
+    if not current_user:
+        return JSONResponse(
+            status_code=401,
+            content={"error": "login_required", "message": "User must be logged in to authorize apps."}
+        )
+
+    # Verify App
+    result = await db.execute(select(DeveloperApp).where(DeveloperApp.client_id == client_id))
+    app = result.scalar_one_or_none()
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+    
+    # Verify Redirect URI
+    if redirect_uri not in (app.callback_urls or []):
+        raise HTTPException(status_code=400, detail="Invalid redirect_uri")
+
+    return {
+        "app_name": app.name,
+        "app_description": app.description,
+        "developer_name": app.user.name if app.user else "Hidden",
+        "requested_scopes": scope.split(" "),
+        "state": state
+    }
+
+@router.post("/authorize/approve")
+async def oauth_approve(
+    data: OAuthAuthorizeRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Step 2 of 3-legged OAuth: User approves the app.
+    Generates a temporary authorization code.
+    """
+    result = await db.execute(select(DeveloperApp).where(DeveloperApp.client_id == data.client_id))
+    app = result.scalar_one_or_none()
+    if not app or not app.is_active:
+        raise HTTPException(status_code=400, detail="Invalid or inactive application")
+    
+    if data.redirect_uri not in (app.callback_urls or []):
+        raise HTTPException(status_code=400, detail="Invalid redirect_uri")
+
+    # Generate Authorization Code
+    auth_code = secrets.token_urlsafe(32)
+    new_code = AuthorizationCode(
+        user_id=current_user.id,
+        app_id=app.id,
+        code=auth_code,
+        redirect_uri=data.redirect_uri,
+        scopes=data.scope.split(" "),
+        expires_at=datetime.utcnow() + timedelta(minutes=10)
+    )
+    
+    db.add(new_code)
+    await db.commit()
+    
+    return {
+        "code": auth_code,
+        "state": data.state,
+        "redirect_uri": data.redirect_uri
+    }
+
+@router.post("/token")
+async def oauth_token(
+    data: OAuthTokenRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Step 3 of 3-legged OAuth OR 2-legged flow.
+    Exchanges credentials or code for an access token.
+    """
+    # 2-Legged Flow (Client Credentials)
+    if data.grant_type == "client_credentials":
+        result = await db.execute(select(DeveloperApp).where(DeveloperApp.client_id == data.client_id))
+        app = result.scalar_one_or_none()
+        
+        if not app or not verify_password(data.client_secret, app.client_secret_hash) or not app.is_active:
+            raise HTTPException(status_code=401, detail="Invalid client credentials")
+        
+        # Issue App-only JWT
+        token_data = {
+            "sub": f"app_{app.client_id}",
+            "app_id": app.id,
+            "scopes": app.scopes,
+            "type": "app_token"
+        }
+        access_token = create_access_token(token_data, expires_delta=timedelta(hours=1))
+        
+        return {
+            "access_token": access_token,
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "scope": " ".join(app.scopes or [])
+        }
+
+    # 3-Legged Flow (Authorization Code)
+    elif data.grant_type == "authorization_code":
+        if not data.code:
+            raise HTTPException(status_code=400, detail="code is required")
+            
+        result = await db.execute(
+            select(AuthorizationCode)
+            .where(AuthorizationCode.code == data.code)
+            .options(selectinload(AuthorizationCode.app))
+        )
+        code_entry = result.scalar_one_or_none()
+        
+        if not code_entry or code_entry.expires_at < datetime.utcnow():
+            raise HTTPException(status_code=400, detail="Invalid or expired code")
+            
+        app = code_entry.app
+        if app.client_id != data.client_id or not verify_password(data.client_secret, app.client_secret_hash):
+            raise HTTPException(status_code=401, detail="Client authentication failed")
+            
+        if code_entry.redirect_uri != data.redirect_uri:
+            raise HTTPException(status_code=400, detail="redirect_uri mismatch")
+
+        # Issue User-Delegated App token
+        user_result = await db.execute(select(User).where(User.id == code_entry.user_id))
+        user = user_result.scalar_one()
+
+        token_data = {
+            "sub": user.email,
+            "app_id": app.id,
+            "scopes": code_entry.scopes,
+            "type": "delegated_token"
+        }
+        access_token = create_access_token(token_data, expires_delta=timedelta(hours=1))
+        refresh_token = secrets.token_urlsafe(64)
+        
+        # Save refresh token
+        new_app_token = AppToken(
+            user_id=user.id,
+            app_id=app.id,
+            refresh_token=refresh_token,
+            scopes=code_entry.scopes,
+            expires_at=datetime.utcnow() + timedelta(days=30)
+        )
+        db.add(new_app_token)
+        await db.delete(code_entry) # Use code only once
+        await db.commit()
+
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "scope": " ".join(code_entry.scopes or [])
+        }
+
+    raise HTTPException(status_code=400, detail="unsupported_grant_type")

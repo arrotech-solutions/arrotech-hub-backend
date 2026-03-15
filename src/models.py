@@ -1634,3 +1634,59 @@ class AuditLogEntry(Base):
     # Relationships
     organization = relationship("Organization", back_populates="audit_log_entries")
     actor = relationship("User", foreign_keys=[actor_id])
+
+class DeveloperApp(Base):
+    """Developer Application model for API access."""
+    __tablename__ = "developer_apps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    client_id = Column(String, unique=True, index=True, nullable=False)
+    client_secret_hash = Column(String, nullable=False)
+    scopes = Column(JSON, nullable=True)  # List of approved scopes
+    callback_urls = Column(JSON, nullable=True)  # Approved redirect URIs
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    user = relationship("User")
+    tokens = relationship("AppToken", back_populates="app", cascade="all, delete-orphan")
+    auth_codes = relationship("AuthorizationCode", back_populates="app", cascade="all, delete-orphan")
+
+
+class AuthorizationCode(Base):
+    """Temporary codes for 3-legged OAuth flow."""
+    __tablename__ = "authorization_codes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    app_id = Column(Integer, ForeignKey("developer_apps.id"), nullable=False)
+    code = Column(String, unique=True, index=True, nullable=False)
+    redirect_uri = Column(String, nullable=False)
+    scopes = Column(JSON, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    user = relationship("User")
+    app = relationship("DeveloperApp", back_populates="auth_codes")
+
+
+class AppToken(Base):
+    """Refresh tokens and metadata for app authentication."""
+    __tablename__ = "app_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # Nullable for 2-legged flow
+    app_id = Column(Integer, ForeignKey("developer_apps.id"), nullable=False)
+    refresh_token = Column(String, unique=True, index=True, nullable=True)
+    scopes = Column(JSON, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    user = relationship("User")
+    app = relationship("DeveloperApp", back_populates="tokens")
