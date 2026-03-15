@@ -6,7 +6,6 @@ A comprehensive MCP (Model Context Protocol) server that connects AI models to m
 
 ## 🚀 Quick Deploy to Railway
 
-
 1. **Fork this repo** to your GitHub account
 2. **Go to [Railway.app](https://railway.app)** and create a new project
 3. **Deploy from GitHub** - select your forked repo
@@ -44,7 +43,7 @@ STRIPE_SECRET_KEY=sk_live_your-stripe-key
 | **Slack** | ✅ | Team messaging & channels |
 | **HubSpot** | ✅ | CRM & marketing automation |
 | **Google Analytics 4** | ✅ | Web analytics |
-| **WhatsApp** | ✅ | Business messaging |
+| **WhatsApp** | ✅ | Business messaging & marketing |
 | **Asana** | ✅ | Project management |
 | **Power BI** | ✅ | Business intelligence |
 | **Salesforce** | ✅ | Enterprise CRM |
@@ -52,13 +51,26 @@ STRIPE_SECRET_KEY=sk_live_your-stripe-key
 | **Microsoft Teams** | ✅ | Team collaboration |
 | **Stripe** | ✅ | Payments |
 | **M-Pesa** | ✅ | Mobile payments (Kenya) |
+| **Zoho** | ✅ | Comprehensive suite & CRM |
+| **Xero** | ✅ | Cloud accounting software |
+| **QuickBooks** | ✅ | Accounting & financial management |
+| **Airtable** | ✅ | Cloud collaboration service |
+| **ClickUp** | ✅ | Productivity platform |
+| **Notion** | ✅ | Note-taking & organization |
+| **Trello** | ✅ | Visual team collaboration |
+| **Jira** | ✅ | Issue & project tracking |
+| **Facebook** | ✅ | Social media marketing |
+| **Instagram** | ✅ | Social media marketing |
+| **Twitter / X** | ✅ | Social media marketing |
+| **TikTok** | ✅ | Short-form video marketing |
+| **Google Workspace** | ✅ | Productivity tools & Gmail |
 
 ## 🛠️ Local Development
 
 ```bash
 # Clone the repo
-git clone https://github.com/your-username/Mini-Hub.git
-cd Mini-Hub
+git clone https://github.com/Arrotech-Solutions/hub.git
+cd hub/arrotech-hub-backend
 
 # Create virtual environment
 python -m venv venv
@@ -97,6 +109,8 @@ python -m src.main
 | `GET /connections` | List user connections |
 | `POST /connections` | Add new connection |
 
+> **Note**: In production, access the fully interactive API Docs at **`https://prod.api.arrotechsolutions.com/docs`** (Swagger UI) or **`https://prod.api.arrotechsolutions.com/redoc`** (ReDoc).
+
 ## 🏗️ Tech Stack
 
 - **Backend**: FastAPI (Python 3.11+)
@@ -108,13 +122,13 @@ python -m src.main
 ## 📁 Project Structure
 
 ```
-Mini-Hub/
+arrotech-hub-backend/
 ├── src/
 │   ├── main.py           # Application entry point
 │   ├── config.py         # Configuration settings
 │   ├── database.py       # Database connection
 │   ├── models.py         # SQLAlchemy models
-│   ├── routers/          # API route handlers
+│   ├── routers/          # API route handlers for all integrations
 │   └── services/         # Business logic
 ├── alembic/              # Database migrations
 ├── Dockerfile            # Docker build config
@@ -147,5 +161,5 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## 🆘 Support
 
-- **Issues**: [GitHub Issues](https://github.com/your-username/Mini-Hub/issues)
-- **Docs**: http://your-app.railway.app/docs
+- **Issues**: [GitHub Issues](https://github.com/Arrotech-Solutions/hub/issues)
+- **Docs**: https://prod.api.arrotechsolutions.com/docs
