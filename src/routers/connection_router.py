@@ -5,7 +5,7 @@ Connection management router for Mini-Hub.
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -48,9 +48,21 @@ context_service = BilingualService()
 
 
 class ConnectionCreate(BaseModel):
-    platform: str
-    name: str
-    config: Dict[str, Any]
+    platform: str = Field(
+        ..., 
+        description="The target platform ID (e.g., 'slack', 'hubspot', 'whatsapp'). Available platforms can be queried via the MCP registry.",
+        example="slack"
+    )
+    name: str = Field(
+        ..., 
+        description="A friendly name for this connection to help you identify it in the dashboard.",
+        example="Marketing Slack"
+    )
+    config: Dict[str, Any] = Field(
+        ..., 
+        description="Platform-specific configuration credentials (API keys, workspace IDs, etc.). Each platform has a unique schema.",
+        example={"token": "xoxb-...", "channel": "alerts"}
+    )
 
 
 class ConnectionUpdate(BaseModel):
@@ -69,7 +81,19 @@ async def get_connections(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get user's connections."""
+    """
+    ### List Your Integrated Platforms
+    
+    Retrieves all active and inactive connections you've established with external services.
+    
+    **Connection Statuses:**
+    - `active`: Ready for use.
+    - `error`: Failed authentication or disconnected. See `error_message` for details.
+    - `expired`: Authentication token has expired.
+    
+    **Developer Tip:**
+    Use this to populate "Integrations" or "Settings" pages in your UI, showing users which apps they've already connected.
+    """
     try:
         result = await db.execute(
             select(Connection)
@@ -109,7 +133,19 @@ async def create_connection(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Create a new connection."""
+    """
+    ### Link a New Platform
+    
+    Establishes a secure link between Arrotech Hub and an external service. This is the first step in enabling specialized "skills" for your AI agents.
+    
+    **The Connection Process:**
+    1.  **Authorization:** Arrotech attempts to authenticate with the provided credentials.
+    2.  **Capability Mapping:** Once connected, Arrotech discovers all tools available for that platform (e.g., connecting Slack enables `slack_send_message`).
+    3.  **Tier Check:** Some platforms (like Salesforce or Premium HR tools) require a Professional or Enterprise tier.
+    
+    **Security:**
+    All credentials are encrypted at rest and never exposed back in plain text after the initial creation.
+    """
     try:
         # Check tier-based access to this platform
         from ..services.tier_gate import check_connection_access

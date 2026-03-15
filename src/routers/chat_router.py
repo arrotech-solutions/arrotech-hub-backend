@@ -13,7 +13,7 @@ import aiohttp
 from fastapi import (APIRouter, Depends, HTTPException, Request, Response,
                      status)
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -33,29 +33,45 @@ router = APIRouter()
 
 
 class MessageCreate(BaseModel):
-    content: str
-    provider: str = None
+    content: str = Field(
+        ..., 
+        description="The text content of the message. Supports markdown. This is the primary input for the AI agent.",
+        example="Create a summary of my last 5 HubSpot deals."
+    )
+    provider: Optional[str] = Field(
+        None, 
+        description="Optional LLM provider override (e.g., 'openai', 'anthropic', 'ollama'). If not provided, the user's default provider is used.",
+        example="openai"
+    )
 
 
 class ConversationCreate(BaseModel):
-    title: str = None
+    title: Optional[str] = Field(
+        None, 
+        description="An optional title for the conversation. If omitted, the system will generate a title based on the first message.",
+        example="HubSpot Integration Project"
+    )
 
 
 class ConversationUpdate(BaseModel):
-    title: str
+    title: str = Field(
+        ..., 
+        description="The new title for the conversation.",
+        example="Marketing Automation Campaign v2"
+    )
 
 
 class MessageRead(BaseModel):
-    id: int
-    conversation_id: int
-    role: str
-    content: str
-    status: str
-    tokens_used: Optional[int] = None
-    tools_called: Optional[List[Dict[str, Any]]] = None
-    tool_call_id: Optional[str] = None
-    error_message: Optional[str] = None
-    created_at: Optional[str] = None
+    id: int = Field(..., description="Unique identifier for the message.")
+    conversation_id: int = Field(..., description="The ID of the conversation this message belongs to.")
+    role: str = Field(..., description="The role of the message sender (e.g., 'user', 'assistant', 'system', 'tool').")
+    content: str = Field(..., description="The textual content of the message.")
+    status: str = Field(..., description="The current delivery or processing status of the message.")
+    tokens_used: Optional[int] = Field(None, description="The total number of tokens consumed by this message exchange.")
+    tools_called: Optional[List[Dict[str, Any]]] = Field(None, description="Metadata about any tools executed during this message processing.")
+    tool_call_id: Optional[str] = Field(None, description="The unique ID of the tool call, if this message is a tool response.")
+    error_message: Optional[str] = Field(None, description="Detailed error message if the message processing failed.")
+    created_at: Optional[str] = Field(None, description="The ISO 8601 timestamp of when the message was created.")
 
     class Config:
         from_attributes = True
@@ -84,7 +100,19 @@ async def create_conversation(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
-    """Create a new conversation."""
+    """
+    ### Create a New Conversation
+    
+    Initiates a fresh conversation thread for the authenticated user. Conversations act as containers for messages and maintain the state for AI interactions.
+    
+    **Key features of conversations:**
+    - **Persistence**: Messages are stored and can be retrieved later for context.
+    - **Context Awareness**: The AI uses the message history within a conversation to provide relevant responses.
+    - **Platform Bridging**: A single conversation can involve multiple tools and platforms (e.g., fetching a lead from HubSpot and sending a Slack alert).
+    
+    ---
+    **Returns:** A success object containing the newly created conversation's unique ID and metadata.
+    """
     try:
         conversation = Conversation(
             user_id=user.id,
@@ -116,7 +144,15 @@ async def get_conversations(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
-    """Get user's conversations."""
+    """
+    ### List User Conversations
+    
+    Retrieves a paginated list of all conversation threads belonging to the authenticated user. Conversations are returned in descending order of their last update (most recent first).
+    
+    This is useful for building a "Recent Chats" or "History" sidebar in your application.
+    
+    **Note:** This endpoint only returns metadata (IDs, titles). To get the actual messages, use the `GET /conversations/{conversation_id}` endpoint.
+    """
     try:
         result = await db.execute(
             select(Conversation)
@@ -151,7 +187,20 @@ async def get_conversation(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
-    """Get a specific conversation with its messages."""
+    """
+    ### Get Conversation Details
+    
+    Fetches the full metadata and a snapshot of messages for a specific conversation.
+    
+    This endpoint is the standard way to resume a chat session in a UI. It returns the conversation's state, its title, and its message history.
+    
+    **Security:**
+    - Only the conversation owner can access this data.
+    - All timestamps are returned in ISO 8601 UTC format.
+    
+    **Optimization Tip:**
+    For very long conversations, consider using the `/messages` endpoint with pagination (if available) to avoid loading massive JSON payloads at once.
+    """
     result = await db.execute(
         select(Conversation)
         .filter(Conversation.id == conversation_id, Conversation.user_id == user.id)
@@ -1277,7 +1326,25 @@ async def send_message(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
-    """Send a message to a conversation with orchestrated processing."""
+    """
+    ### Send a Message & Direct AI Execution
+    
+    This is the core "command center" endpoint of Arrotech Hub. When you send a message here, the Hub's **Execution Orchestrator** takes over to perform autonomous tasks.
+    
+    **The Orchestration Lifecycle:**
+    1.  **Intent Analysis:** The AI determines if your request requires action (tool calling) or just a textual response.
+    2.  **Semantic Tool Selection:** The system selects relevant tools from over 50+ integrations based on your query.
+    3.  **Autonomous Execution:** The AI calls tools (e.g., Slack, M-Pesa, HubSpot) in a loop until your goal is reached.
+    4.  **Context Management:** Every message is saved, ensuring the AI remembers previous steps in the chain.
+    
+    **Usage Examples:**
+    - *Simple Chat:* "Explain how Arrotech MCP works."
+    - *Automation:* "Find all 'In Progress' tickets in Jira and post a summary to Slack #prod-updates."
+    - *Platform Query:* "Who are my top 5 customers in HubSpot by revenue?"
+    
+    ---
+    **Note on Providers:** You can explicitly request a provider like `gpt-4o` or `claude-3-5-sonnet` using the `provider` field, or leave it null to use your default.
+    """
     print(f"📨 Processing message in conversation {conversation_id}")
     
     # Validate conversation exists and user has access
@@ -1541,7 +1608,17 @@ async def get_messages(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
-    """Get all messages for a specific conversation."""
+    """
+    ### Fetch Message History
+    
+    Retrieves the complete chronological list of messages in a conversation. This includes user prompts, assistant responses, and "tool" messages (the technical results of API calls made by the AI).
+    
+    **Understanding Roles:**
+    - `user`: Your input.
+    - `assistant`: The AI's response to you.
+    - `tool`: Internal technical data from integrations (e.g., raw JSON from HubSpot). Usually hidden from end-users but vital for debugging.
+    - `system`: Architectural instructions provided to the AI.
+    """
     # First check if conversation exists and belongs to user
     result = await db.execute(
         select(Conversation)
