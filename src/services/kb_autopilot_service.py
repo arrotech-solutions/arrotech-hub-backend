@@ -240,29 +240,8 @@ class KBAutopilotService:
         subject = ticket_res.get("subject", "")
         description = ticket_res.get("description", "")
 
-        # 2. Generate an optimized search query using LLM
-        query_prompt = f"""
-        Generate a concise, 3-5 word search query to find relevant Knowledge Base articles for this support ticket.
-        Focus on the core entity, feature, and problem (e.g., 'M-Pesa unreflected wallet deposit').
-        
-        TICKET SUBJECT: {subject}
-        TICKET DESCRIPTION: {description[:500]}
-        
-        Respond with ONLY the search query, no quotes or extra text.
-        """
-        try:
-            query_res = await llm_service.chat_completion(
-                messages=[{"role": "system", "content": query_prompt}],
-                temperature=0.0
-            )
-            search_query = query_res.content.strip().replace('"', '').replace("'", "")
-            logger.info(f"[KB AUTOPILOT] Generated search query: '{search_query}' from subject: '{subject}'")
-        except Exception as e:
-            logger.error(f"[KB AUTOPILOT] Failed to generate search query: {e}")
-            search_query = subject
-
-        # 3. Search KB articles based on the optimized query
-        search_res = await self.zoho.search_articles(search_query)
+        # 2. Search KB articles based on the ticket subject
+        search_res = await self.zoho.search_articles(subject)
         
         if isinstance(search_res, dict) and search_res.get("success") is False:
             # Search API failed — log and try fallback
