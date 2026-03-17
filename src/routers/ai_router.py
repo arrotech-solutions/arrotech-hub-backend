@@ -537,7 +537,9 @@ async def get_my_briefing(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            temperature=0.7
+            temperature=0.7,
+            max_tokens=800,
+            use_background_model=True
         )
         
         # Parse JSON
@@ -623,7 +625,7 @@ async def execute_briefing_action(
             for email in emails:
                 # 2. Generate Reply with LLM
                 prompt = f"Draft a professional, concise reply to this email:\n\nSubject: {email.get('subject')}\nSnippet: {email.get('snippet')}\n\nReply:"
-                reply_res = await llm_service.chat_completion([{"role": "user", "content": prompt}])
+                reply_res = await llm_service.chat_completion([{"role": "user", "content": prompt}], max_tokens=300, use_background_model=True)
                 reply_body = reply_res.content
                 
                 # 3. Create Draft
