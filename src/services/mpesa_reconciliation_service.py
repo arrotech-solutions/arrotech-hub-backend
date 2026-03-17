@@ -59,20 +59,31 @@ class MpesaReconciliationService:
         db: AsyncSession
     ) -> MpesaAgentConfig:
         """Create or update M-Pesa agent configuration."""
+        import secrets
+        
         config = await self.get_config(user_id, db)
 
         if config:
-            # Update existing config
+            # Update existing
             for key, value in config_data.items():
                 if hasattr(config, key):
                     setattr(config, key, value)
             config.updated_at = datetime.utcnow()
+            
+            # Ensure webhook_secret exists if daraja fields are provided
+            if (config_data.get("daraja_shortcode") and not config.webhook_secret):
+                config.webhook_secret = secrets.token_urlsafe(32)
+                
         else:
-            # Create new config
-            config = MpesaAgentConfig(
-                user_id=user_id,
+            # Create new
+            config_kwargs = {
+                "user_id": user_id,
                 **config_data
-            )
+            }
+            if config_data.get("daraja_shortcode"):
+                config_kwargs["webhook_secret"] = secrets.token_urlsafe(32)
+                
+            config = MpesaAgentConfig(**config_kwargs)
             db.add(config)
 
         await db.commit()
@@ -222,7 +233,10 @@ class MpesaReconciliationService:
                      db
                  )
                  payment.status = "verified"
-            
+                 
+                 # --- Sync to Xero if connected ---
+                 await self._sync_payment_to_xero(payment, match_result["invoice"], db)
+                 
             await db.flush()
             return match_result
             
@@ -230,6 +244,74 @@ class MpesaReconciliationService:
         payment.status = "unmatched"
         await db.flush()
         return None
+
+    async def _sync_payment_to_xero(
+        self,
+        payment: MpesaPayment,
+        invoice: Invoice,
+        db: AsyncSession
+    ) -> None:
+        """Helper to sync matched M-Pesa payments to Xero."""
+        try:
+            from .xero_service import xero_service
+            from ..models import Connection, ConnectionPlatform, ConnectionStatus
+            
+            # 1. Check if user has Xero connection
+            stmt = select(Connection).where(
+                Connection.user_id == payment.user_id,
+                Connection.platform == ConnectionPlatform.XERO,
+                Connection.status == ConnectionStatus.ACTIVE
+            )
+            result = await db.execute(stmt)
+            connection = result.scalar_one_or_none()
+            
+            if not connection:
+                logger.debug(f"No active Xero connection for user {payment.user_id}. Skipping Xero payment sync.")
+                return
+                
+            # 2. Get Xero Invoice ID
+            xero_invoice_id = invoice.metadata_.get("xero_invoice_id") if invoice.metadata_ else None
+            if not xero_invoice_id:
+                logger.warning(f"Invoice {invoice.id} lacks 'xero_invoice_id'. Cannot sync payment {payment.transaction_id} to Xero.")
+                return
+                
+            # Configure service with user's token
+            xero_service._configure_from_connection(connection.config)
+            
+            # 3. Find Bank Account dynamically
+            accounts_res = await xero_service.get_accounts(account_type="BANK")
+            if not accounts_res.get("success") or not accounts_res.get("accounts"):
+                logger.error(f"Failed to fetch Xero bank accounts for user {payment.user_id}. Cannot sync payment.")
+                return
+                
+            accounts = accounts_res["accounts"]
+            target_account_id = None
+            
+            # Try to find an M-Pesa account first
+            for acc in accounts:
+                if "mpesa" in str(acc.get("name", "")).lower():
+                    target_account_id = acc.get("id")
+                    break
+                    
+            if not target_account_id:
+                target_account_id = accounts[0].get("id") # Fallback to first bank account
+                
+            # 4. Push payment explicitly
+            payment_res = await xero_service.create_payment(
+                invoice_id=xero_invoice_id,
+                account_id=target_account_id,
+                amount=float(payment.amount),
+                date=payment.transaction_time.strftime("%Y-%m-%d"),
+                reference=f"M-Pesa: {payment.transaction_id}"
+            )
+            
+            if not payment_res.get("success"):
+                logger.error(f"Failed to sync payment {payment.transaction_id} to Xero: {payment_res.get('error')}")
+            else:
+                logger.info(f"Successfully synced M-Pesa payment {payment.transaction_id} to Xero")
+                
+        except Exception as e:
+            logger.error(f"Exception syncing payment {payment.transaction_id} to Xero: {e}", exc_info=True)
 
     async def match_all_pending_payments(
         self,

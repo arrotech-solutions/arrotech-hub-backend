@@ -863,11 +863,22 @@ class MpesaAgentConfig(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    
+    # Daraja API configuration (Tenant isolated)
+    daraja_consumer_key = Column(String, nullable=True)
+    daraja_consumer_secret = Column(String, nullable=True)
+    daraja_passkey = Column(String, nullable=True)
+    daraja_shortcode = Column(String, nullable=True)
+    webhook_secret = Column(String, unique=True, index=True, nullable=True)
+    callback_url_override = Column(String, nullable=True)
+    
+    # Reconciliation settings
     alert_channel_id = Column(String, nullable=True)
     alert_enabled = Column(Boolean, default=True, nullable=False)
     auto_match_enabled = Column(Boolean, default=True, nullable=False)
     match_threshold = Column(Float, default=0.8, nullable=False)
     notification_preferences = Column(JSON, nullable=True)
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

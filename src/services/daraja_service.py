@@ -32,15 +32,21 @@ class DarajaService:
         self._access_token: Optional[str] = None
         self._token_expiry: float = 0
 
-    async def _get_access_token(self) -> str:
+    async def _get_access_token(self, consumer_key: Optional[str] = None, consumer_secret: Optional[str] = None) -> str:
         """Get or refresh OAuth access token."""
-        if self._access_token and time.time() < self._token_expiry:
-            return self._access_token
+        # Use provided credentials or default to settings
+        c_key = consumer_key or self.consumer_key
+        c_secret = consumer_secret or self.consumer_secret
 
-        if not self.consumer_key or not self.consumer_secret:
+        if not c_key or not c_secret:
             raise ValueError("M-Pesa Consumer Key or Secret not configured")
 
-        auth_str = f"{self.consumer_key}:{self.consumer_secret}"
+        # If using default keys, check cache
+        if not consumer_key and not consumer_secret:
+            if self._access_token and time.time() < self._token_expiry:
+                return self._access_token
+
+        auth_str = f"{c_key}:{c_secret}"
         encoded_auth = base64.b64encode(auth_str.encode()).decode()
 
         headers = {
@@ -52,19 +58,64 @@ class DarajaService:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=headers) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        logger.error(f"Failed to generate M-Pesa token: {error_text}")
-                        raise Exception(f"Daraja Auth Error: {response.status}")
-                    
                     data = await response.json()
-                    self._access_token = data["access_token"]
-                    # Token usually expires in 3600s, refresh slightly earlier
-                    self._token_expiry = time.time() + int(data["expires_in"]) - 60
-                    return self._access_token
+                    if response.status != 200:
+                        logger.error(f"Failed to generate M-Pesa token: {data}")
+                        error_msg = data.get("errorMessage", f"Auth Error: {response.status}")
+                        raise Exception(error_msg)
+                    
+                    token = data["access_token"]
+                    
+                    # Store in cache only if using default keys
+                    if not consumer_key and not consumer_secret:
+                        self._access_token = token
+                        self._token_expiry = time.time() + int(data["expires_in"]) - 60
+                        
+                    return token
         except Exception as e:
             logger.error(f"Error getting Daraja access token: {e}")
             raise
+
+    async def register_c2b_urls(
+        self, 
+        short_code: str, 
+        confirmation_url: str, 
+        validation_url: str,
+        consumer_key: Optional[str] = None,
+        consumer_secret: Optional[str] = None,
+        response_type: str = "Completed"
+    ) -> Dict[str, Any]:
+        """
+        Register C2B Confirmation and Validation URLs with Safaricom.
+        """
+        try:
+            token = await self._get_access_token(consumer_key, consumer_secret)
+            
+            # Using v2 as requested by user
+            url = f"{self.base_url}/mpesa/c2b/v2/registerurl"
+            
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "ShortCode": short_code,
+                "ResponseType": response_type,
+                "ConfirmationURL": confirmation_url,
+                "ValidationURL": validation_url
+            }
+
+            logger.info(f"Registering Daraja URLs for shortcode {short_code}...")
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=payload) as response:
+                    data = await response.json()
+                    logger.info(f"Daraja URL Registration response: {data}")
+                    return data
+        except Exception as e:
+            logger.error(f"Error registering Daraja URLs: {e}")
+            return {"ResponseCode": "1", "ResponseDescription": str(e)}
 
     async def query_transaction_status(self, transaction_id: str, originator_conversation_id: Optional[str] = None) -> Dict[str, Any]:
         """
