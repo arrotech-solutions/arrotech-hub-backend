@@ -225,6 +225,28 @@ class KBAutopilotService:
             logger.error(f"[KB AUTOPILOT] Error finding KB category: {e}")
             return None
 
+    async def _generate_search_query(self, subject: str, description: str) -> str:
+        """Use LLM to extract the best KB search keywords from ticket subject + description."""
+        prompt = f"""Extract 3-6 search keywords from this support ticket to find a matching Knowledge Base article.
+Focus on: error codes, product features, specific actions the customer mentions.
+Ignore: greetings, pleasantries, vague phrases like "help me" or "urgent".
+
+Subject: {subject}
+Description: {description[:300]}
+
+Respond with ONLY the search keywords, nothing else."""
+
+        res = await llm_service.chat_completion(
+            messages=[{"role": "system", "content": prompt}],
+            temperature=0.0,
+            max_tokens=30,
+            use_background_model=True
+        )
+        query = res.content.strip()
+        if not query or res.error:
+            return subject  # Fallback to raw subject
+        return query
+
     async def auto_resolve_ticket(self, ticket_id: str) -> Dict[str, Any]:
         """
         Attempts to autonomously resolve a customer ticket by searching the Knowledge Base.
@@ -242,15 +264,25 @@ class KBAutopilotService:
         subject = ticket_res.get("subject", "")
         description = ticket_res.get("description", "")
 
-        # 2. Search KB articles based on the ticket subject
-        search_res = await self.zoho.search_articles(subject)
+        # 2. Generate smart search query from subject + description
+        search_query = await self._generate_search_query(subject, description)
+        logger.info(f"[KB AUTOPILOT] Generated search query: '{search_query}' from subject: '{subject}'")
+
+        # 3. Search KB articles based on the smart query
+        search_res = await self.zoho.search_articles(search_query)
         
         if isinstance(search_res, dict) and search_res.get("success") is False:
             # Search API failed — log and try fallback
-            logger.warning(f"[KB AUTOPILOT] Search API failed: {search_res.get('error')}. Falling back to listing all articles.")
+            logger.warning(f"[KB AUTOPILOT] Search API failed: {search_res.get('error')}. Falling back to raw subject or all articles.")
             search_res = {"articles": []}
             
         articles = search_res.get("articles", [])
+
+        # 4. Fallback: if smart query returned nothing, try raw subject
+        if not articles and search_query != subject:
+            logger.info(f"[KB AUTOPILOT] Smart query returned 0 results. Trying raw subject...")
+            search_res = await self.zoho.search_articles(subject)
+            articles = search_res.get("articles", [])
 
         # Fallback: if search returned nothing, list all articles and let AI pick the best one
         if not articles:
