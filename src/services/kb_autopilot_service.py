@@ -62,7 +62,9 @@ class KBAutopilotService:
         
         llm_res = await llm_service.chat_completion(
             messages=[{"role": "system", "content": prompt}],
-            temperature=0.3
+            temperature=0.3,
+            max_tokens=1500,
+            use_background_model=True
         )
         
         try:
@@ -283,7 +285,9 @@ Respond with ONLY the article ID (the number after ID=). If none are relevant, r
 
             pick_res = await llm_service.chat_completion(
                 messages=[{"role": "system", "content": pick_prompt}],
-                temperature=0.0
+                temperature=0.0,
+                max_tokens=50,
+                use_background_model=True
             )
             picked = pick_res.content.strip()
             if picked != "NONE":
@@ -323,7 +327,9 @@ Respond with ONLY the article ID (the number after ID=). If none are relevant, r
 
         llm_res = await llm_service.chat_completion(
             messages=[{"role": "system", "content": prompt}],
-            temperature=0.1
+            temperature=0.1,
+            max_tokens=500,
+            use_background_model=True
         )
 
         try:
@@ -376,7 +382,9 @@ Respond with ONLY the article ID (the number after ID=). If none are relevant, r
         """
         
         llm_res = await llm_service.chat_completion(
-            messages=[{"role": "system", "content": prompt}]
+            messages=[{"role": "system", "content": prompt}],
+            max_tokens=800,
+            use_background_model=True
         )
         
         try:

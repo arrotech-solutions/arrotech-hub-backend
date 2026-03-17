@@ -41,7 +41,8 @@ class ViralEngine:
             response = await llm_service.chat_completion(
                 messages=messages,
                 temperature=0.8, # High creativity
-                max_tokens=200
+                max_tokens=200,
+                use_background_model=True
             )
             
             if response.error:

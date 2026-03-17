@@ -64,10 +64,11 @@ class OpenAIProvider(LLMProvider):
         messages: List[Dict[str, str]],
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None
+        max_tokens: Optional[int] = None,
+        model: Optional[str] = None
     ) -> LLMResponse:
         try:
-            model = getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
+            model = model or getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
             kwargs = {
                 "model": model,
                 "messages": messages,
@@ -466,9 +467,15 @@ class LLMService:
         provider: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None
+        max_tokens: Optional[int] = None,
+        use_background_model: bool = False
     ) -> LLMResponse:
-        """Generate chat completion using specified or default provider."""
+        """Generate chat completion using specified or default provider.
+        
+        Args:
+            use_background_model: If True, uses the cheaper OPENAI_BACKGROUND_MODEL
+                                  for background/automated tasks to reduce costs.
+        """
         provider_name = provider or self.default_provider
 
         if provider_name not in self.providers:
@@ -483,12 +490,23 @@ class LLMService:
         if max_tokens is None:
             max_tokens = getattr(settings, 'LLM_MAX_TOKENS', None)
 
-        return await self.providers[provider_name].chat_completion(
-            messages=messages,
-            tools=tools,
-            temperature=temperature,
-            max_tokens=max_tokens
-        )
+        # Determine model override for background tasks
+        model_override = None
+        if use_background_model and provider_name == "openai":
+            model_override = getattr(settings, 'OPENAI_BACKGROUND_MODEL', 'gpt-4o-mini')
+            logger.info(f"Using background model: {model_override}")
+
+        # Pass model override to provider if supported (OpenAI)
+        kwargs = {
+            "messages": messages,
+            "tools": tools,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if model_override and hasattr(self.providers[provider_name].chat_completion, '__code__'):
+            kwargs["model"] = model_override
+
+        return await self.providers[provider_name].chat_completion(**kwargs)
 
     def get_available_providers(self) -> List[str]:
         """Get list of available LLM providers."""
