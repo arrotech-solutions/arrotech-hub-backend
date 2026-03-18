@@ -17,10 +17,21 @@ logger = logging.getLogger(__name__)
 class DarajaService:
     """Service to interact with Safaricom Daraja API."""
 
-    def __init__(self):
+    def __init__(self, environment: Optional[str] = None):
+        """
+        Initialize DarajaService.
+        
+        Args:
+            environment: Optional override for Daraja environment ("sandbox" or "live").
+                         If None, uses the global MPESA_ENVIRONMENT setting from config.
+                         
+                         The global singleton `daraja_service` uses platform-level settings
+                         (for subscription payments). Per-tenant instances should pass
+                         the tenant's chosen environment explicitly.
+        """
         self.consumer_key = settings.MPESA_CONSUMER_KEY
         self.consumer_secret = settings.MPESA_CONSUMER_SECRET
-        self.environment = settings.MPESA_ENVIRONMENT.lower()
+        self.environment = (environment or settings.MPESA_ENVIRONMENT).lower()
         self.business_short_code = settings.MPESA_BUSINESS_SHORT_CODE
         self.passkey = settings.MPESA_PASSKEY
         
@@ -117,17 +128,28 @@ class DarajaService:
             logger.error(f"Error registering Daraja URLs: {e}")
             return {"ResponseCode": "1", "ResponseDescription": str(e)}
 
-    async def query_transaction_status(self, transaction_id: str, originator_conversation_id: Optional[str] = None) -> Dict[str, Any]:
+    async def query_transaction_status(
+        self,
+        transaction_id: str,
+        originator_conversation_id: Optional[str] = None,
+        consumer_key: Optional[str] = None,
+        consumer_secret: Optional[str] = None,
+        short_code: Optional[str] = None,
+        passkey: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Query the status of a transaction.
         Note: This usually requires a Callback URL to receive the result asynchronously.
         However, for Fraud Detection, we mainly want to verify if the ID exists in our records
         or if we can fetch it via Transaction Status API.
         """
-        token = await self._get_access_token()
+        token = await self._get_access_token(consumer_key, consumer_secret)
+        
+        bsc = short_code or self.business_short_code
+        pk = passkey or self.passkey
         
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        password_str = f"{self.business_short_code}{self.passkey}{timestamp}"
+        password_str = f"{bsc}{pk}{timestamp}"
         password = base64.b64encode(password_str.encode()).decode()
 
         url = f"{self.base_url}/mpesa/transactionstatus/v1/query"
@@ -143,7 +165,7 @@ class DarajaService:
             "SecurityCredential": "CREDENTIAL", # Should be encrypted
             "CommandID": "TransactionStatusQuery",
             "TransactionID": transaction_id,
-            "PartyA": self.business_short_code,
+            "PartyA": bsc,
             "IdentifierType": "4", # 4 for Shortcode
             "Remarks": "Fraud Verification",
             "Occasion": "Fraud Check",
@@ -161,10 +183,14 @@ class DarajaService:
             logger.error(f"Error querying Daraja transaction status: {e}")
             return {"ResponseCode": "1", "ResponseDescription": str(e)}
 
-    async def test_connection(self) -> Dict[str, Any]:
+    async def test_connection(
+        self,
+        consumer_key: Optional[str] = None,
+        consumer_secret: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Test authentication with Daraja."""
         try:
-            token = await self._get_access_token()
+            token = await self._get_access_token(consumer_key, consumer_secret)
             return {"success": True, "message": "Authentication successful"}
         except Exception as e:
             return {"success": False, "error": str(e)}
