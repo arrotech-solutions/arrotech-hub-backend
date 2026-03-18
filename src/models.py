@@ -871,6 +871,7 @@ class MpesaAgentConfig(Base):
     daraja_shortcode = Column(String, nullable=True)
     webhook_secret = Column(String, unique=True, index=True, nullable=True)
     callback_url_override = Column(String, nullable=True)
+    daraja_environment = Column(String, default="sandbox", server_default="sandbox", nullable=False)  # sandbox or live
     
     # Reconciliation settings
     alert_channel_id = Column(String, nullable=True)

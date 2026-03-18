@@ -21,6 +21,7 @@ from ..models import (
     Invoice,
     InvoiceStatus
 )
+from ..utils.encryption import encrypt_value, decrypt_value
 from .slack_service import SlackService
 from .invoice_service import InvoiceService
 import difflib
@@ -40,17 +41,31 @@ class MpesaReconciliationService:
         self.slack_service = SlackService()
         self.invoice_service = InvoiceService()
 
+    # Fields that must be encrypted at rest
+    _ENCRYPTED_FIELDS = {"daraja_consumer_key", "daraja_consumer_secret", "daraja_passkey"}
+
     async def get_config(
         self,
         user_id: int,
         db: AsyncSession
     ) -> Optional[MpesaAgentConfig]:
-        """Get M-Pesa agent configuration for user."""
+        """Get M-Pesa agent configuration for user (credentials remain encrypted)."""
         stmt = select(MpesaAgentConfig).where(
             MpesaAgentConfig.user_id == user_id
         )
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
+
+    def decrypt_config_credentials(self, config: MpesaAgentConfig) -> Dict[str, Optional[str]]:
+        """
+        Decrypt the sensitive fields from a config for use in API calls.
+        Returns a dict with decrypted values.
+        """
+        return {
+            "daraja_consumer_key": decrypt_value(config.daraja_consumer_key),
+            "daraja_consumer_secret": decrypt_value(config.daraja_consumer_secret),
+            "daraja_passkey": decrypt_value(config.daraja_passkey),
+        }
 
     async def create_or_update_config(
         self,
@@ -58,29 +73,35 @@ class MpesaReconciliationService:
         config_data: Dict[str, Any],
         db: AsyncSession
     ) -> MpesaAgentConfig:
-        """Create or update M-Pesa agent configuration."""
+        """Create or update M-Pesa agent configuration. Encrypts sensitive fields."""
         import secrets
+        
+        # Encrypt sensitive fields before persisting
+        data = dict(config_data)
+        for field in self._ENCRYPTED_FIELDS:
+            if field in data and data[field]:
+                data[field] = encrypt_value(data[field])
         
         config = await self.get_config(user_id, db)
 
         if config:
             # Update existing
-            for key, value in config_data.items():
+            for key, value in data.items():
                 if hasattr(config, key):
                     setattr(config, key, value)
             config.updated_at = datetime.utcnow()
             
             # Ensure webhook_secret exists if daraja fields are provided
-            if (config_data.get("daraja_shortcode") and not config.webhook_secret):
+            if (data.get("daraja_shortcode") and not config.webhook_secret):
                 config.webhook_secret = secrets.token_urlsafe(32)
                 
         else:
             # Create new
             config_kwargs = {
                 "user_id": user_id,
-                **config_data
+                **data
             }
-            if config_data.get("daraja_shortcode"):
+            if data.get("daraja_shortcode"):
                 config_kwargs["webhook_secret"] = secrets.token_urlsafe(32)
                 
             config = MpesaAgentConfig(**config_kwargs)

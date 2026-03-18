@@ -16,8 +16,9 @@ from ..database import get_db
 from ..models import User, MpesaAgentConfig, MpesaPayment
 from ..routers.auth_router import get_current_user
 from ..services.mpesa_reconciliation_service import MpesaReconciliationService
-from ..services.daraja_service import daraja_service
+from ..services.daraja_service import daraja_service, DarajaService
 from ..config import settings
+from ..utils.encryption import mask_value, decrypt_value
 
 router = APIRouter(prefix="/api/agents/daraja", tags=["mpesa-agent"])
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ class MpesaAgentConfigUpdate(BaseModel):
     daraja_consumer_secret: Optional[str] = None
     daraja_passkey: Optional[str] = None
     daraja_shortcode: Optional[str] = None
+    daraja_environment: Optional[str] = None  # "sandbox" or "live"
     callback_url_override: Optional[str] = None
 
 
@@ -46,6 +48,7 @@ class MpesaAgentConfigResponse(BaseModel):
     notification_preferences: Optional[Dict[str, Any]] = None
     daraja_consumer_key: Optional[str] = None
     daraja_shortcode: Optional[str] = None
+    daraja_environment: Optional[str] = None
     webhook_secret: Optional[str] = None
     callback_url_override: Optional[str] = None
 
@@ -101,9 +104,13 @@ async def get_mpesa_agent_config(
                 auto_match_enabled=True,
                 match_threshold=0.8,
                 notification_preferences=None,
+                daraja_environment="sandbox",
                 webhook_secret=None,
                 callback_url_override=None
             )
+        
+        # Mask the consumer key for display (never return raw encrypted value)
+        masked_key = mask_value(decrypt_value(config.daraja_consumer_key))
         
         return MpesaAgentConfigResponse(
             alert_channel_id=config.alert_channel_id,
@@ -111,8 +118,9 @@ async def get_mpesa_agent_config(
             auto_match_enabled=config.auto_match_enabled,
             match_threshold=config.match_threshold,
             notification_preferences=config.notification_preferences,
-            daraja_consumer_key=config.daraja_consumer_key,
+            daraja_consumer_key=masked_key,
             daraja_shortcode=config.daraja_shortcode,
+            daraja_environment=config.daraja_environment or "sandbox",
             webhook_secret=config.webhook_secret,
             callback_url_override=config.callback_url_override
         )
@@ -137,14 +145,18 @@ async def update_mpesa_agent_config(
             db
         )
         
+        # Mask credentials in response
+        masked_key = mask_value(decrypt_value(config.daraja_consumer_key))
+        
         return MpesaAgentConfigResponse(
             alert_channel_id=config.alert_channel_id,
             alert_enabled=config.alert_enabled,
             auto_match_enabled=config.auto_match_enabled,
             match_threshold=config.match_threshold,
             notification_preferences=config.notification_preferences,
-            daraja_consumer_key=config.daraja_consumer_key,
+            daraja_consumer_key=masked_key,
             daraja_shortcode=config.daraja_shortcode,
+            daraja_environment=config.daraja_environment or "sandbox",
             webhook_secret=config.webhook_secret,
             callback_url_override=config.callback_url_override
         )
@@ -162,10 +174,9 @@ async def get_payment_summary(
     """Get payment summary for the specified period."""
     try:
         service = MpesaReconciliationService()
-        summary = await service.get_payment_summary(current_user.id, db, days=days)
-        
         end_date = datetime.utcnow()
         start_date = end_date - timedelta(days=days)
+        summary = await service.get_payment_summary(current_user.id, start_date, end_date, db)
         
         return MpesaPaymentSummaryResponse(
             total_amount=float(summary.get("total_amount", 0)),
@@ -276,13 +287,21 @@ async def register_mpesa_urls(
 
         logger.info(f"Registering Daraja URLs for user {current_user.id}. Confirmation: {webhook_url}")
 
-        # Call Daraja Service to register URLs
-        result = await daraja_service.register_c2b_urls(
+        # Decrypt tenant credentials for Daraja API call
+        recon_service = MpesaReconciliationService()
+        decrypted = recon_service.decrypt_config_credentials(config)
+        
+        # Use per-tenant environment (sandbox/live) instead of global setting
+        tenant_env = config.daraja_environment or "sandbox"
+        tenant_daraja = DarajaService(environment=tenant_env)
+        
+        # Call Daraja Service to register URLs using decrypted tenant credentials
+        result = await tenant_daraja.register_c2b_urls(
             short_code=config.daraja_shortcode,
             confirmation_url=webhook_url,
             validation_url=webhook_url,
-            consumer_key=config.daraja_consumer_key,
-            consumer_secret=config.daraja_consumer_secret
+            consumer_key=decrypted["daraja_consumer_key"],
+            consumer_secret=decrypted["daraja_consumer_secret"]
         )
         
         # Safaricom success is ResponseCode "0" or "00000000"
