@@ -69,12 +69,20 @@ class DarajaService:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=headers) as response:
-                    data = await response.json()
+                    # Safaricom returns 400 Bad Request (text/plain) if credentials are wrong
                     if response.status != 200:
-                        logger.error(f"Failed to generate M-Pesa token: {data}")
-                        error_msg = data.get("errorMessage", f"Auth Error: {response.status}")
+                        error_text = await response.text()
+                        logger.error(f"Failed to generate M-Pesa token | Status: {response.status} | Body: {error_text}")
+                        # Try to parse as JSON if possible, otherwise use the text
+                        try:
+                            data = await response.json(content_type=None)
+                            error_msg = data.get("errorMessage", f"Auth Error {response.status}")
+                        except Exception:
+                            error_msg = f"Auth Error {response.status}: Invalid Consumer Key or Secret"
+                        
                         raise Exception(error_msg)
-                    
+                        
+                    data = await response.json(content_type=None)
                     token = data["access_token"]
                     
                     # Store in cache only if using default keys
