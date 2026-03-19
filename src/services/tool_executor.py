@@ -5547,6 +5547,71 @@ Description: {payment.description or 'N/A'}"""
             xero_service._configure_from_connection(config)
 
             operation = arguments.get("operation")
+
+            # Unified xero_accounting tool (registered via dynamic_tool_registry)
+            if tool_name == "xero_accounting":
+                if operation == "get_company_info":
+                    return await xero_service.handle_operation("get_company_info", config=config)
+                elif operation == "get_invoices":
+                    return await xero_service.handle_operation(
+                        "get_invoices",
+                        config=config,
+                        start_date=arguments.get("start_date"),
+                        end_date=arguments.get("end_date"),
+                        status=arguments.get("status"),
+                        contact_id=arguments.get("contact_id") or arguments.get("customer_id"),
+                        max_results=arguments.get("max_results", 100),
+                    )
+                elif operation == "create_invoice":
+                    return await xero_service.handle_operation(
+                        "create_invoice",
+                        config=config,
+                        customer_id=arguments.get("customer_id"),
+                        contact_id=arguments.get("contact_id"),
+                        line_items=arguments.get("line_items", []),
+                        due_date=arguments.get("due_date"),
+                        reference=arguments.get("reference"),
+                    )
+                elif operation == "get_contacts":
+                    return await xero_service.handle_operation(
+                        "get_contacts",
+                        config=config,
+                        max_results=arguments.get("max_results", 100),
+                    )
+                elif operation == "get_accounts":
+                    return await xero_service.handle_operation(
+                        "get_accounts",
+                        config=config,
+                        account_type=arguments.get("account_type"),
+                        max_results=arguments.get("max_results", 100),
+                    )
+                elif operation == "create_payment":
+                    return await xero_service.handle_operation(
+                        "create_payment",
+                        config=config,
+                        invoice_id=arguments.get("invoice_id"),
+                        account_id=arguments.get("account_id"),
+                        amount=arguments.get("amount"),
+                        date=arguments.get("date"),
+                        reference=arguments.get("reference"),
+                    )
+                elif operation == "get_profit_loss":
+                    return await xero_service.handle_operation(
+                        "get_profit_loss",
+                        config=config,
+                        start_date=arguments.get("start_date"),
+                        end_date=arguments.get("end_date"),
+                    )
+                elif operation == "get_balance_sheet":
+                    return await xero_service.handle_operation(
+                        "get_balance_sheet",
+                        config=config,
+                        date=arguments.get("date"),
+                    )
+                else:
+                    return {"success": False, "error": f"Unknown xero_accounting operation: {operation}"}
+
+            # Legacy individual tool names (kept for backward compatibility)
             if tool_name == "xero_get_company_info":
                 return await xero_service.handle_operation("get_company_info", config=config)
             if tool_name == "xero_invoices":

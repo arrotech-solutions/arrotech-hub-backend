@@ -560,6 +560,8 @@ class DynamicToolRegistry:
                 tools.extend(self._get_google_workspace_tools(connection))
             elif connection.platform == "zoho":
                 tools.extend(self._get_zoho_tools(connection))
+            elif connection.platform == "xero":
+                tools.extend(self._get_xero_tools(connection))
             elif connection.platform in platform_registry.platforms:
                 # Dynamically fetch tools for regional platforms (hr_hub, logistics_hub, etc.)
                 p_tools = platform_registry.get_platform_tools(connection.platform)
@@ -1646,6 +1648,56 @@ class DynamicToolRegistry:
             }
         ]
     
+    def _get_xero_tools(self, connection: Connection) -> List[Dict[str, Any]]:
+        """Get Xero Accounting tools for a connection."""
+        return [
+            {
+                "name": "xero_accounting",
+                "description": "Xero Accounting operations: get company info, invoices, contacts, accounts, payments, and financial reports (Profit & Loss, Balance Sheet).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": [
+                                "get_company_info",
+                                "get_invoices",
+                                "create_invoice",
+                                "get_contacts",
+                                "get_accounts",
+                                "create_payment",
+                                "get_profit_loss",
+                                "get_balance_sheet"
+                            ],
+                            "description": "Xero accounting operation to perform"
+                        },
+                        "start_date": {"type": "string", "description": "Start date filter (YYYY-MM-DD)"},
+                        "end_date": {"type": "string", "description": "End date filter (YYYY-MM-DD)"},
+                        "status": {"type": "string", "description": "Invoice status filter (DRAFT, SUBMITTED, AUTHORISED, PAID)"},
+                        "contact_id": {"type": "string", "description": "Contact/customer ID for filtering"},
+                        "max_results": {"type": "integer", "description": "Maximum results to return", "default": 100},
+                        "line_items": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                            "description": "Line items for invoice creation (each with description, quantity, unit_price, account_code)"
+                        },
+                        "due_date": {"type": "string", "description": "Due date for invoice (YYYY-MM-DD)"},
+                        "reference": {"type": "string", "description": "Reference text for invoice or payment"},
+                        "invoice_id": {"type": "string", "description": "Invoice ID for payment recording"},
+                        "account_id": {"type": "string", "description": "Account ID for payment recording"},
+                        "amount": {"type": "number", "description": "Payment amount"},
+                        "date": {"type": "string", "description": "Payment or report date (YYYY-MM-DD)"},
+                        "account_type": {"type": "string", "description": "Account type filter for get_accounts"}
+                    },
+                    "required": ["operation"]
+                },
+                "connection_id": connection.id,
+                "platform": "xero",
+                "status": "available",
+                "id": "xero_accounting"
+            }
+        ]
+
     async def get_all_tools(self, db: AsyncSession) -> List[Dict[str, Any]]:
         """Get all tools (base tools + all platform tools)."""
         tools = []
@@ -1677,7 +1729,8 @@ class DynamicToolRegistry:
             "trello": self._get_trello_tools,
             "jira": self._get_jira_tools,
             "google_workspace": self._get_google_workspace_tools,
-            "zoho": self._get_zoho_tools
+            "zoho": self._get_zoho_tools,
+            "xero": self._get_xero_tools
         }
 
         # Check if tool name starts with any known platform prefix to optimize
