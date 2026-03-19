@@ -449,42 +449,43 @@ class XeroService:
                     "error": "Xero connection not configured. Please connect Xero first.",
                 }
 
+            result = None
             if operation == "get_company_info":
-                return await self.get_organisation()
-            if operation == "get_invoices":
-                return await self.get_invoices(
+                result = await self.get_organisation()
+            elif operation == "get_invoices":
+                result = await self.get_invoices(
                     start_date=kwargs.get("start_date"),
                     end_date=kwargs.get("end_date"),
                     status=kwargs.get("status"),
                     contact_id=kwargs.get("contact_id"),
                     max_results=kwargs.get("max_results", 100),
                 )
-            if operation == "create_invoice":
+            elif operation == "create_invoice":
                 contact_id = kwargs.get("customer_id") or kwargs.get("contact_id")
                 line_items = kwargs.get("line_items", [])
                 if not contact_id:
                     return {"success": False, "error": "customer_id or contact_id is required"}
                 if not line_items:
                     return {"success": False, "error": "line_items are required"}
-                return await self.create_invoice(
+                result = await self.create_invoice(
                     contact_id=contact_id,
                     line_items=line_items,
                     due_date=kwargs.get("due_date"),
                     reference=kwargs.get("reference"),
                 )
-            if operation == "get_profit_loss":
-                return await self.get_profit_and_loss(
+            elif operation == "get_profit_loss":
+                result = await self.get_profit_and_loss(
                     start_date=kwargs.get("start_date"),
                     end_date=kwargs.get("end_date"),
                 )
-            if operation == "get_balance_sheet":
-                return await self.get_balance_sheet(date=kwargs.get("date"))
-            if operation == "get_accounts":
-                return await self.get_accounts(
+            elif operation == "get_balance_sheet":
+                result = await self.get_balance_sheet(date=kwargs.get("date"))
+            elif operation == "get_accounts":
+                result = await self.get_accounts(
                     account_type=kwargs.get("account_type"),
                     max_results=kwargs.get("max_results", 100),
                 )
-            if operation == "create_payment":
+            elif operation == "create_payment":
                 invoice_id = kwargs.get("invoice_id")
                 account_id = kwargs.get("account_id")
                 amount = kwargs.get("amount")
@@ -493,20 +494,32 @@ class XeroService:
                 if not invoice_id or not account_id or amount is None or not date_str:
                     return {"success": False, "error": "invoice_id, account_id, amount, and date are required"}
                     
-                return await self.create_payment(
+                result = await self.create_payment(
                     invoice_id=str(invoice_id),
                     account_id=str(account_id),
                     amount=float(amount),
                     date=str(date_str),
                     reference=str(kwargs.get("reference")) if kwargs.get("reference") else None
                 )
-            if operation == "get_customers" or operation == "get_contacts":
-                return await self.get_contacts(max_results=kwargs.get("max_results", 100))
+            elif operation == "get_customers" or operation == "get_contacts":
+                result = await self.get_contacts(max_results=kwargs.get("max_results", 100))
+            else:
+                result = {
+                    "success": False,
+                    "error": f"Operation '{operation}' not supported. Available: get_company_info, get_invoices, create_invoice, get_profit_loss, get_balance_sheet, get_accounts, create_payment, get_customers, get_contacts",
+                }
 
-            return {
-                "success": False,
-                "error": f"Operation '{operation}' not supported. Available: get_company_info, get_invoices, create_invoice, get_profit_loss, get_balance_sheet, get_accounts, create_payment, get_customers, get_contacts",
-            }
+            # Return new tokens to caller if a refresh happened
+            if result and isinstance(result, dict) and config:
+                initial_access = config.get("access_token")
+                initial_refresh = config.get("refresh_token")
+                if self.access_token != initial_access or self.refresh_token != initial_refresh:
+                    result["_new_tokens"] = {
+                        "access_token": self.access_token,
+                        "refresh_token": self.refresh_token,
+                    }
+                    
+            return result
         except Exception as e:
             logger.error(f"Xero operation error: {str(e)}", exc_info=True)
             return {"success": False, "error": str(e)}
