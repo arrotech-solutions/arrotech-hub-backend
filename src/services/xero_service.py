@@ -129,6 +129,11 @@ class XeroService:
         self.refresh_token = config.get("refresh_token")
         self.tenant_id = config.get("tenant_id")
 
+        # Ensure app-level credentials are available for token refresh
+        if not self.client_id or not self.client_secret:
+            self.client_id = getattr(settings, "XERO_CLIENT_ID", None)
+            self.client_secret = getattr(settings, "XERO_CLIENT_SECRET", None)
+
     async def _request(
         self,
         method: str,
