@@ -5570,6 +5570,16 @@ Description: {payment.description or 'N/A'}"""
                         due_date=arguments.get("due_date"),
                         reference=arguments.get("reference"),
                     )
+                if operation == "create_payment":
+                    return await xero_service.handle_operation(
+                        "create_payment",
+                        config=config,
+                        invoice_id=arguments.get("invoice_id"),
+                        account_id=arguments.get("account_id"),
+                        amount=arguments.get("amount"),
+                        date=arguments.get("date"),
+                        reference=arguments.get("reference"),
+                    )
                 return {"success": False, "error": f"Unknown invoices operation: {operation}"}
             if tool_name == "xero_reports":
                 if operation == "get_profit_loss":
