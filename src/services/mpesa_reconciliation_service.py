@@ -213,20 +213,31 @@ class MpesaReconciliationService:
         )
 
         db.add(payment)
-        await db.flush()
-
-        # Auto-match if enabled
-        config = await self.get_config(user_id, db)
-        if config and config.auto_match_enabled:
-            await self.attempt_auto_match(payment, db)
-
-        # Send alert if enabled
-        if config and config.alert_enabled:
-            await self.send_payment_alert(payment, config, db)
-
+        
+        # CRITICAL: Commit the payment record FIRST so it's never lost
+        # even if auto-match or alerting fails
         await db.commit()
         await db.refresh(payment)
+        logger.info(f"Payment {transaction_id} saved to database with status 'pending'")
 
+        # Auto-match if enabled (best-effort, won't lose the payment if it fails)
+        config = await self.get_config(user_id, db)
+        if config and config.auto_match_enabled:
+            try:
+                await self.attempt_auto_match(payment, db)
+                await db.commit()
+            except Exception as e:
+                logger.error(f"Auto-match failed for payment {transaction_id}, payment is still saved: {e}", exc_info=True)
+                await db.rollback()
+
+        # Send alert if enabled (best-effort)
+        if config and config.alert_enabled:
+            try:
+                await self.send_payment_alert(payment, config, db)
+            except Exception as e:
+                logger.error(f"Alert failed for payment {transaction_id}: {e}", exc_info=True)
+
+        await db.refresh(payment)
         return payment
 
     async def attempt_auto_match(
