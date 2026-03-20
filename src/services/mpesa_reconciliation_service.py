@@ -169,6 +169,11 @@ class MpesaReconciliationService:
         if not transaction_id:
             raise ValueError("Transaction ID is required")
 
+        # Ignore Daraja dummy test payloads (sent during URL registration)
+        if reference == "ProbCheck" or transaction_id == "ProbCheck" or "probcheck" in str(description).lower():
+            logger.info(f"Ignoring Daraja URL registration dummy payload for user {user_id}")
+            return None
+
         # Parse amount
         try:
             amount = Decimal(str(amount_str))
