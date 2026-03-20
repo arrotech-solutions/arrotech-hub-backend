@@ -2,6 +2,7 @@
 M-Pesa Agent API Router
 Provides endpoints for managing M-Pesa agent configuration and viewing payments
 """
+import asyncio
 import logging
 import json
 from datetime import datetime, timedelta
@@ -359,55 +360,79 @@ async def get_unmatched_payments(
 async def tenant_mpesa_callback(
     webhook_secret: str,
     request: Request,
-    db: AsyncSession = Depends(get_db)
 ):
-    """Handle tenant-specific Daraja callback notifications."""
-    logger.info(f"Daraja callback endpoint hit with method {request.method} and secret {webhook_secret[:5]}...")
-    try:
-        # Support for initial validation pings (GET)
-        if request.method == "GET":
-            return {"ResultCode": 0, "ResultDesc": "Success"}
+    """
+    Handle tenant-specific Daraja callback notifications.
+    
+    CRITICAL: Always return ResultCode 0 to Safaricom immediately.
+    All processing happens in a background task to avoid timeouts
+    that cause Safaricom to reject transactions or replace BillRefNumber
+    with 'ProbCheck'.
+    """
+    logger.info(f"Daraja callback endpoint hit: method={request.method}, secret={webhook_secret[:5]}...")
 
-        # 1. Read the body as early as possible to avoid client disconnects during slow DB lookups
-        try:
-            body = await request.body()
-        except Exception as e:
-            # Catch starlette.requests.ClientDisconnect or other stream errors
-            logger.warning(f"Daraja callback connection interrupted: {e}")
-            return {"ResultCode": 1, "ResultDesc": "Connection Interrupted"}
+    # Support for initial validation pings (GET)
+    if request.method == "GET":
+        return {"ResultCode": 0, "ResultDesc": "Accepted"}
+
+    try:
+        # Read body immediately before anything else
+        body = await request.body()
+        logger.info(f"Daraja callback raw body ({len(body)} bytes) for secret={webhook_secret[:5]}...")
 
         if not body:
-            return {"ResultCode": 0, "ResultDesc": "Success"}
+            logger.warning("Empty body received from Daraja callback")
+            return {"ResultCode": 0, "ResultDesc": "Accepted"}
 
-        # 2. Lookup the tenant via the webhook secret to ensure auth
-        stmt = select(MpesaAgentConfig).where(MpesaAgentConfig.webhook_secret == webhook_secret)
-        result = await db.execute(stmt)
-        config = result.scalar_one_or_none()
-        
-        if not config:
-            logger.warning(f"Unauthorized Daraja webhook hit with secret: {webhook_secret}")
-            return {"ResultCode": 1, "ResultDesc": "Unauthorized"}
-            
-        try:
-            payload = json.loads(body)
-        except json.JSONDecodeError:
-            logger.error(f"Invalid JSON in Daraja callback for user {config.user_id}: {body.decode(errors='ignore')}")
-            return {"ResultCode": 1, "ResultDesc": "Invalid JSON"}
+        # Fire-and-forget: process in background task with its own DB session
+        asyncio.create_task(
+            _handle_mpesa_callback_background(webhook_secret, body)
+        )
 
-        logger.info(f"Tenant Daraja callback received for user {config.user_id}: {payload}")
-        
-        # 3. Process the payment
-        service = MpesaReconciliationService()
-        await service.process_payment_notification(config.user_id, payload, db)
-        
-        return {
-            "ResultCode": 0,
-            "ResultDesc": "Success"
-        }
     except Exception as e:
-        logger.error(f"Error processing Tenant Daraja callback: {e}", exc_info=True)
-        return {
-            "ResultCode": 1,
-            "ResultDesc": "Error processing callback"
-        }
+        logger.error(f"Error reading Daraja callback body: {e}", exc_info=True)
 
+    # ALWAYS return success to Safaricom no matter what
+    return {"ResultCode": 0, "ResultDesc": "Accepted"}
+
+
+async def _handle_mpesa_callback_background(webhook_secret: str, body: bytes):
+    """
+    Background task to process M-Pesa callback payload.
+    Uses its own DB session (NOT the request-scoped one).
+    """
+    from ..database import get_session_maker
+
+    session_maker = get_session_maker()
+    async with session_maker() as db:
+        try:
+            # 1. Parse JSON
+            try:
+                payload = json.loads(body)
+            except json.JSONDecodeError:
+                logger.error(f"Invalid JSON in Daraja callback: {body.decode(errors='ignore')}")
+                return
+
+            logger.info(f"Daraja callback parsed payload: {payload}")
+
+            # 2. Lookup tenant config by webhook secret
+            stmt = select(MpesaAgentConfig).where(
+                MpesaAgentConfig.webhook_secret == webhook_secret
+            )
+            result = await db.execute(stmt)
+            config = result.scalar_one_or_none()
+
+            if not config:
+                logger.warning(f"Unauthorized Daraja webhook hit with secret: {webhook_secret}")
+                return
+
+            logger.info(f"Daraja callback matched to user_id={config.user_id}")
+
+            # 3. Process the payment
+            service = MpesaReconciliationService()
+            await service.process_payment_notification(config.user_id, payload, db)
+
+            logger.info(f"Successfully processed M-Pesa callback for user {config.user_id}")
+
+        except Exception as e:
+            logger.error(f"Error in background M-Pesa callback processing: {e}", exc_info=True)

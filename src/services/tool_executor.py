@@ -5695,13 +5695,33 @@ Description: {payment.description or 'N/A'}"""
                 
                 from sqlalchemy.orm.attributes import flag_modified
                 flag_modified(connection, "config")
-                
                 db.add(connection)
                 await db.commit()
+
+            # Handle permanently expired token (invalid_grant)
+            if isinstance(result, dict) and not result.get("success"):
+                error_msg = str(result.get("error", ""))
+                if "invalid_grant" in error_msg:
+                    connection.status = ConnectionStatus.ERROR
+                    connection.error_message = "Xero token expired. Please disconnect and reconnect Xero."
+                    db.add(connection)
+                    await db.commit()
+                    
+                    result["error"] = connection.error_message
                 
             return result
         except Exception as e:
             logger.error(f"Error executing Xero tool: {e}")
+            # Ensure exceptions that might be invalid_grant are caught
+            if "invalid_grant" in str(e):
+                connection.status = ConnectionStatus.ERROR
+                connection.error_message = "Xero token expired. Please disconnect and reconnect Xero."
+                db.add(connection)
+                # The caller should await db.commit(), but tool_executor might need to be sure
+                # However we can't await in an except handler if it's tricky, but here we can
+                await db.commit()
+                return {"success": False, "error": connection.error_message}
+                
             return {"success": False, "error": str(e)}
 
     async def _execute_system_tool(
