@@ -4927,8 +4927,19 @@ class ToolExecutor:
                 }
 
             elif operation == "match_payments":
-                # Batch match all pending payments
-                match_results = await service.match_all_pending_payments(user.id, db)
+                # Fetch invoices from the connected accounting tool (Xero, QuickBooks, etc.)
+                # and pass directly to the matching engine — no local invoice table needed.
+                external_invoices = None
+                try:
+                    external_invoices = await self._fetch_invoices_from_accounting_tool(user, db)
+                    logger.info(f"Fetched {len(external_invoices)} invoices from accounting tool for matching")
+                except Exception as e:
+                    logger.warning(f"Could not fetch invoices from accounting tool (will fall back to local): {e}")
+                
+                # Batch match all pending/unmatched payments against external invoices
+                match_results = await service.match_all_pending_payments(
+                    user.id, db, external_invoices=external_invoices
+                )
                 
                 summary = f"🔄 Batch Matching Results:\n"
                 summary += f"- Total Processed: {match_results['total_processed']}\n"
@@ -4940,6 +4951,7 @@ class ToolExecutor:
                     "result": summary,
                     "data": match_results
                 }
+
 
             elif operation == "create_invoice":
                  invoice_data = arguments.get("invoice_data", {})
@@ -5123,6 +5135,116 @@ Description: {payment.description or 'N/A'}"""
                 "success": False,
                 "error": str(e)
             }
+    async def _fetch_invoices_from_accounting_tool(
+        self, user: User, db: AsyncSession
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch outstanding invoices from the user's connected accounting tool.
+        Supports Xero, QuickBooks, and Zoho. Returns a list of invoice dicts
+        that can be passed directly to the matching engine.
+        
+        Returns normalized invoice dicts with keys:
+            id, invoice_number, total, amount_due, contact_name, 
+            contact_phone, reference, status, currency
+        """
+        from ..models import Connection, ConnectionStatus
+        
+        # Try each supported accounting platform
+        for platform in ["xero", "quickbooks", "zoho"]:
+            result = await db.execute(
+                select(Connection).filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == platform,
+                    Connection.status == ConnectionStatus.ACTIVE
+                )
+            )
+            connection = result.scalar_one_or_none()
+            if not connection:
+                continue
+            
+            config = dict(connection.config)
+            
+            if platform == "xero":
+                return await self._fetch_xero_invoices(connection, config, db)
+            elif platform == "quickbooks":
+                return await self._fetch_quickbooks_invoices(connection, config, db)
+            elif platform == "zoho":
+                return await self._fetch_zoho_invoices(connection, config, db)
+        
+        logger.info(f"No accounting tool connected for user {user.id}")
+        return []
+
+    async def _fetch_xero_invoices(
+        self, connection, config: dict, db: AsyncSession
+    ) -> List[Dict[str, Any]]:
+        """Fetch outstanding invoices from Xero."""
+        from .xero_service import XeroService
+        
+        xero_service = XeroService()
+        xero_result = await xero_service.handle_operation(
+            "get_invoices",
+            config=config,
+            status="AUTHORISED",
+            max_results=100,
+        )
+        
+        # Persist refreshed tokens if present
+        if isinstance(xero_result, dict) and "_new_tokens" in xero_result:
+            new_tokens = xero_result.pop("_new_tokens")
+            config["access_token"] = new_tokens["access_token"]
+            config["refresh_token"] = new_tokens["refresh_token"]
+            connection.config = dict(config)
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(connection, "config")
+            db.add(connection)
+            await db.commit()
+        
+        if not xero_result or not xero_result.get("success"):
+            logger.warning(f"Failed to fetch Xero invoices: {xero_result}")
+            return []
+        
+        return xero_result.get("invoices", [])
+
+    async def _fetch_quickbooks_invoices(
+        self, connection, config: dict, db: AsyncSession
+    ) -> List[Dict[str, Any]]:
+        """Fetch outstanding invoices from QuickBooks."""
+        from .quickbooks_service import QuickBooksService
+        
+        qb_service = QuickBooksService()
+        qb_result = await qb_service.handle_operation(
+            "get_invoices",
+            config=config,
+            status="OPEN",
+            max_results=100,
+        )
+        
+        if not qb_result or not qb_result.get("success"):
+            logger.warning(f"Failed to fetch QuickBooks invoices: {qb_result}")
+            return []
+        
+        return qb_result.get("invoices", [])
+
+    async def _fetch_zoho_invoices(
+        self, connection, config: dict, db: AsyncSession
+    ) -> List[Dict[str, Any]]:
+        """Fetch outstanding invoices from Zoho."""
+        from .zoho_service import ZohoService
+        
+        zoho_service = ZohoService()
+        zoho_result = await zoho_service.handle_operation(
+            "get_invoices",
+            config=config,
+            status="sent",
+            max_results=100,
+        )
+        
+        if not zoho_result or not zoho_result.get("success"):
+            logger.warning(f"Failed to fetch Zoho invoices: {zoho_result}")
+            return []
+        
+        return zoho_result.get("invoices", [])
+
 
     async def _execute_hr_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
         """Execute HR Hub related tools."""

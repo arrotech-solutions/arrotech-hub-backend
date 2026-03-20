@@ -243,39 +243,72 @@ class MpesaReconciliationService:
     async def attempt_auto_match(
         self,
         payment: MpesaPayment,
-        db: AsyncSession
+        db: AsyncSession,
+        external_invoices: Optional[List[Dict[str, Any]]] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Attempt to automatically match payment to invoice.
         Uses both exact and fuzzy matching.
+        
+        Args:
+            external_invoices: Optional list of invoice dicts from connected 
+                accounting tools (Xero, QuickBooks, etc.). If provided, matches
+                against these instead of querying the local DB.
         """
-        match_result = await self.find_matching_invoice(payment, db)
+        match_result = await self.find_matching_invoice(payment, db, external_invoices)
         
         if match_result and match_result["match_type"] != "none":
             # Update payment with match info
-            payment.matched_invoice_id = match_result["invoice"].id
-            payment.match_confidence = match_result["confidence"]
-            payment.status = "matched"
+            invoice_data = match_result["invoice"]
             
-            # If high confidence/exact, verify it automatically
+            # Store match metadata — works for both local Invoice objects and external dicts
+            if isinstance(invoice_data, dict):
+                # External invoice — store ID and number in payment metadata
+                payment.match_confidence = match_result["confidence"]
+                payment.status = "matched"
+                payment.reference = payment.reference or ""
+                
+                # Store external invoice info for later Xero sync
+                external_id = invoice_data.get("id") or invoice_data.get("invoice_id")
+                external_number = invoice_data.get("invoice_number")
+            else:
+                # Local Invoice ORM object (backward compat)
+                payment.matched_invoice_id = invoice_data.id
+                payment.match_confidence = match_result["confidence"]
+                payment.status = "matched"
+                external_id = None
+                external_number = invoice_data.invoice_number
+            
+            # If high confidence, verify automatically
             config = await self.get_config(payment.user_id, db)
             threshold = config.match_threshold if config else self.HIGH_CONFIDENCE_THRESHOLD
             
             if match_result["confidence"] >= threshold:
-                 # Update Invoice status
-                 await self.invoice_service.update_invoice(
-                     match_result["invoice"].id,
-                     payment.user_id,
-                     {"status": InvoiceStatus.PAID},
-                     db
-                 )
-                 payment.status = "verified"
-                 
-                 # --- Sync to Xero if connected ---
-                 await self._sync_payment_to_xero(payment, match_result["invoice"], db)
-                 
+                payment.status = "verified"
+                
+                if isinstance(invoice_data, dict):
+                    # External invoice — sync payment back to Xero using invoice ID
+                    await self._sync_payment_to_xero_by_id(
+                        payment, external_id, db
+                    )
+                else:
+                    # Local invoice — update status and sync
+                    await self.invoice_service.update_invoice(
+                        invoice_data.id,
+                        payment.user_id,
+                        {"status": InvoiceStatus.PAID},
+                        db
+                    )
+                    await self._sync_payment_to_xero(payment, invoice_data, db)
+            
             await db.flush()
-            return match_result
+            
+            return {
+                "invoice": invoice_data,
+                "invoice_number": external_number if isinstance(invoice_data, dict) else invoice_data.invoice_number,
+                "confidence": match_result["confidence"],
+                "match_type": match_result["match_type"]
+            }
             
         # No match found
         payment.status = "unmatched"
@@ -350,16 +383,83 @@ class MpesaReconciliationService:
         except Exception as e:
             logger.error(f"Exception syncing payment {payment.transaction_id} to Xero: {e}", exc_info=True)
 
+    async def _sync_payment_to_xero_by_id(
+        self,
+        payment: MpesaPayment,
+        xero_invoice_id: Optional[str],
+        db: AsyncSession
+    ) -> None:
+        """Sync matched payment to Xero using the external invoice ID directly."""
+        if not xero_invoice_id:
+            logger.warning(f"No Xero invoice ID for payment {payment.transaction_id}, skipping sync")
+            return
+        
+        try:
+            from .xero_service import xero_service
+            from ..models import Connection, ConnectionPlatform, ConnectionStatus
+            
+            stmt = select(Connection).where(
+                Connection.user_id == payment.user_id,
+                Connection.platform == ConnectionPlatform.XERO,
+                Connection.status == ConnectionStatus.ACTIVE
+            )
+            result = await db.execute(stmt)
+            connection = result.scalar_one_or_none()
+            
+            if not connection:
+                logger.debug(f"No active Xero connection for user {payment.user_id}")
+                return
+            
+            xero_service._configure_from_connection(connection.config)
+            
+            # Find bank account
+            accounts_res = await xero_service.get_accounts(account_type="BANK")
+            if not accounts_res.get("success") or not accounts_res.get("accounts"):
+                logger.error(f"Failed to fetch Xero bank accounts for user {payment.user_id}")
+                return
+            
+            accounts = accounts_res["accounts"]
+            target_account_id = None
+            for acc in accounts:
+                if "mpesa" in str(acc.get("name", "")).lower():
+                    target_account_id = acc.get("id")
+                    break
+            if not target_account_id:
+                target_account_id = accounts[0].get("id")
+            
+            payment_res = await xero_service.create_payment(
+                invoice_id=xero_invoice_id,
+                account_id=target_account_id,
+                amount=float(payment.amount),
+                date=payment.transaction_time.strftime("%Y-%m-%d"),
+                reference=f"M-Pesa: {payment.transaction_id}"
+            )
+            
+            if not payment_res.get("success"):
+                logger.error(f"Failed to sync payment {payment.transaction_id} to Xero: {payment_res.get('error')}")
+            else:
+                logger.info(f"Successfully synced M-Pesa payment {payment.transaction_id} to Xero")
+                
+        except Exception as e:
+            logger.error(f"Exception syncing payment {payment.transaction_id} to Xero by ID: {e}", exc_info=True)
+
     async def match_all_pending_payments(
         self,
         user_id: int,
-        db: AsyncSession
+        db: AsyncSession,
+        external_invoices: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
-        """Match all pending payments for a user."""
+        """Match all pending and unmatched payments for a user.
+        
+        Args:
+            external_invoices: Optional list of invoice dicts from connected
+                accounting tools (Xero, QuickBooks, Zoho). Passed directly to
+                the matching engine — no local invoice table needed.
+        """
         stmt = select(MpesaPayment).where(
             and_(
                 MpesaPayment.user_id == user_id,
-                MpesaPayment.status == "pending"
+                MpesaPayment.status.in_(["pending", "unmatched"])
             )
         )
         result = await db.execute(stmt)
@@ -370,13 +470,13 @@ class MpesaReconciliationService:
         results = []
         
         for payment in payments:
-            match = await self.attempt_auto_match(payment, db)
+            match = await self.attempt_auto_match(payment, db, external_invoices)
             if match:
                 matched_count += 1
                 results.append({
                     "transaction_id": payment.transaction_id,
                     "matched": True,
-                    "invoice_number": match["invoice"].invoice_number,
+                    "invoice_number": match.get("invoice_number", "unknown"),
                     "confidence": match["confidence"]
                 })
             else:
@@ -397,18 +497,53 @@ class MpesaReconciliationService:
     async def find_matching_invoice(
         self,
         payment: MpesaPayment,
-        db: AsyncSession
+        db: AsyncSession,
+        external_invoices: Optional[List[Dict[str, Any]]] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Find best matching invoice for payment.
+        
+        Args:
+            external_invoices: Optional list of invoice dicts from connected
+                accounting tool. Each dict should have at minimum:
+                - invoice_number: str
+                - total or amount_due: number
+                Optionally: id, reference, contact_name, contact_phone, status
         """
-        # Get all pending invoices for user
-        invoices = await self.invoice_service.get_invoices(
-            user_id=payment.user_id, 
-            db=db, 
-            limit=100,
-            status=InvoiceStatus.SENT
-        )
+        # Use external invoices if provided, otherwise fall back to local DB
+        if external_invoices:
+            # Normalize external invoice dicts into a standard format
+            invoices = []
+            for inv in external_invoices:
+                invoices.append({
+                    "invoice_number": (inv.get("invoice_number") or "").lower(),
+                    "reference": (inv.get("reference") or inv.get("invoice_number") or "").lower(),
+                    "amount": float(inv.get("amount_due") or inv.get("total") or 0),
+                    "customer_phone": inv.get("contact_phone") or inv.get("customer_phone") or "",
+                    "id": inv.get("id"),
+                    "_raw": inv  # Keep original dict for return
+                })
+        else:
+            # Fall back to local invoices table (for callback auto-match)
+            local_invoices = await self.invoice_service.get_invoices(
+                user_id=payment.user_id, 
+                db=db, 
+                limit=100,
+                status=InvoiceStatus.SENT
+            )
+            invoices = []
+            for inv in local_invoices:
+                invoices.append({
+                    "invoice_number": (inv.invoice_number or "").lower(),
+                    "reference": (inv.reference or inv.invoice_number or "").lower(),
+                    "amount": float(inv.amount),
+                    "customer_phone": inv.customer_phone or "",
+                    "id": inv.id,
+                    "_raw": inv  # Keep ORM object
+                })
+        
+        if not invoices:
+            return None
         
         best_match = None
         best_score = 0.0
@@ -417,58 +552,51 @@ class MpesaReconciliationService:
         payment_ref = (payment.reference or "").lower()
         payment_phone = (payment.phone_number or "").replace("+", "").replace("254", "0")
         
-        for invoice in invoices:
+        for inv in invoices:
             score = 0.0
             current_match_type = "none"
             
-            # invoice identifiers
-            inv_number = (invoice.invoice_number or "").lower()
-            inv_ref = (invoice.reference or "").lower()
-            if not inv_ref: inv_ref = inv_number # Fallback
+            inv_number = inv["invoice_number"]
+            inv_ref = inv["reference"] or inv_number
+            inv_amount = inv["amount"]
+            inv_phone = str(inv["customer_phone"]).replace("+", "").replace("254", "0")
             
-            # exact amount match is usually required for auto-reconciliation
-            amount_match = float(payment.amount) == float(invoice.amount)
-            
-            if not amount_match:
-                # If amounts differ significantly, skip or penalize?
-                # For now simplify: MUST match amount for high confidence
-                pass
+            amount_match = float(payment.amount) == inv_amount
             
             # 1. Exact Reference Match
             if payment_ref and (payment_ref == inv_number or payment_ref == inv_ref):
                 score = 1.0
                 current_match_type = "exact_reference"
             
-            # 2. Exact Phone Match (if invoice has customer phone)
-            elif invoice.customer_phone and payment_phone in str(invoice.customer_phone):
-                 # Phone match alone is weak, but with amount it's decent
-                 if amount_match:
-                     score = 0.8
-                     current_match_type = "phone_amount"
+            # 2. Phone + Amount Match
+            elif inv_phone and payment_phone and payment_phone in inv_phone:
+                if amount_match:
+                    score = 0.8
+                    current_match_type = "phone_amount"
             
             # 3. Fuzzy Reference Match
             elif payment_ref:
-                # Use difflib for similarity
                 sim_number = difflib.SequenceMatcher(None, payment_ref, inv_number).ratio()
                 sim_ref = difflib.SequenceMatcher(None, payment_ref, inv_ref).ratio()
                 max_sim = max(sim_number, sim_ref)
                 
-                if max_sim > 0.6: # Filter low quality
+                if max_sim > 0.6:
                     score = max_sim
                     current_match_type = "fuzzy_reference"
             
             # Apply Amount Penalty if mismatched
             if not amount_match:
-                 score = score * 0.5 # significantly reduce confidence
+                score = score * 0.5
             
             if score > best_score:
                 best_score = score
-                best_match = invoice
+                best_match = inv
                 match_type = current_match_type
         
         if best_match:
             return {
-                "invoice": best_match,
+                "invoice": best_match["_raw"],  # Return original object/dict
+                "invoice_number": best_match["invoice_number"],
                 "confidence": best_score,
                 "match_type": match_type
             }
