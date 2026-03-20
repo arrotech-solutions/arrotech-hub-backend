@@ -4930,11 +4930,18 @@ class ToolExecutor:
                 # Fetch invoices from the connected accounting tool (Xero, QuickBooks, etc.)
                 # and pass directly to the matching engine — no local invoice table needed.
                 external_invoices = None
+                invoices_source = "none"
                 try:
                     external_invoices = await self._fetch_invoices_from_accounting_tool(user, db)
-                    logger.info(f"Fetched {len(external_invoices)} invoices from accounting tool for matching")
+                    if external_invoices:
+                        invoices_source = f"accounting_tool ({len(external_invoices)} invoices)"
+                        logger.info(f"✅ Fetched {len(external_invoices)} invoices from accounting tool for matching")
+                    else:
+                        invoices_source = "accounting_tool (0 invoices returned)"
+                        logger.warning(f"⚠️ Accounting tool returned 0 invoices — payments will fall back to local matching")
                 except Exception as e:
-                    logger.warning(f"Could not fetch invoices from accounting tool (will fall back to local): {e}")
+                    invoices_source = f"failed ({e})"
+                    logger.warning(f"❌ Could not fetch invoices from accounting tool (will fall back to local): {e}")
                 
                 # Batch match all pending/unmatched payments against external invoices
                 match_results = await service.match_all_pending_payments(
@@ -4942,6 +4949,7 @@ class ToolExecutor:
                 )
                 
                 summary = f"🔄 Batch Matching Results:\n"
+                summary += f"- Invoices Source: {invoices_source}\n"
                 summary += f"- Total Processed: {match_results['total_processed']}\n"
                 summary += f"- Matched: {match_results['matched_count']}\n"
                 summary += f"- Unmatched: {match_results['unmatched_count']}\n"
@@ -5160,12 +5168,16 @@ Description: {payment.description or 'N/A'}"""
             )
             connection = result.scalar_one_or_none()
             if not connection:
+                logger.debug(f"No active {platform} connection for user {user.id}")
                 continue
             
-            config = dict(connection.config)
+            logger.info(f"🔗 Found active {platform} connection for user {user.id}")
+            config = dict(connection.config or {})
             
             if platform == "xero":
-                return await self._fetch_xero_invoices(connection, config, db)
+                invoices = await self._fetch_xero_invoices(connection, config, db)
+                logger.info(f"📄 Xero returned {len(invoices)} invoices")
+                return invoices
             elif platform == "quickbooks":
                 return await self._fetch_quickbooks_invoices(connection, config, db)
             elif platform == "zoho":
