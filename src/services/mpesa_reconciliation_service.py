@@ -543,6 +543,7 @@ class MpesaReconciliationService:
                 })
         
         if not invoices:
+            logger.debug(f"🔍 No invoices available for matching payment {payment.transaction_id}")
             return None
         
         best_match = None
@@ -551,6 +552,14 @@ class MpesaReconciliationService:
         
         payment_ref = (payment.reference or "").lower()
         payment_phone = (payment.phone_number or "").replace("+", "").replace("254", "0")
+        
+        # Log first 3 payments for debugging
+        logger.info(
+            f"🔍 Matching payment: txn={payment.transaction_id}, "
+            f"ref='{payment.reference}' (normalized='{payment_ref}'), "
+            f"amount={payment.amount}, phone={payment.phone_number}, "
+            f"status={payment.status}"
+        )
         
         for inv in invoices:
             score = 0.0
@@ -562,6 +571,12 @@ class MpesaReconciliationService:
             inv_phone = str(inv["customer_phone"]).replace("+", "").replace("254", "0")
             
             amount_match = float(payment.amount) == inv_amount
+            
+            logger.debug(
+                f"  📋 Comparing: payment_ref='{payment_ref}' vs inv_number='{inv_number}', "
+                f"inv_ref='{inv_ref}', payment_amount={payment.amount} vs inv_amount={inv_amount}, "
+                f"amount_match={amount_match}"
+            )
             
             # 1. Exact Reference Match
             if payment_ref and (payment_ref == inv_number or payment_ref == inv_ref):
