@@ -2821,7 +2821,7 @@ class ToolExecutor:
                     }
 
                 result = await whatsapp_service.send_message(
-                    to_number, message
+                    to_number, message, config=connection.config
                 )
                 return {
                     "success": True,
@@ -2845,7 +2845,7 @@ class ToolExecutor:
                     }
 
                 result = await whatsapp_service.send_media_message(
-                    to_number, media_url, media_type, caption
+                    to_number, media_url, media_type, caption, config=connection.config
                 )
                 return {
                     "success": True,
@@ -6141,6 +6141,58 @@ Description: {payment.description or 'N/A'}"""
                 "success": False,
                 "error": f"Internal error executing Zoho tool: {str(e)}"
             }
+
+    async def _execute_xero_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute Xero-related tools."""
+        result = await db.execute(
+            select(Connection).filter(
+                Connection.user_id == user.id,
+                Connection.platform == "xero",
+                Connection.status == ConnectionStatus.ACTIVE
+            )
+        )
+        connection = result.scalars().first()
+
+        if not connection:
+            return {
+                "success": False,
+                "error": "Xero is not connected. Please connect your Xero account first.",
+                "result": None
+            }
+
+        xero_service = self.services["xero"]
+        
+        operation = arguments.get("operation")
+        if not operation:
+            return {
+                "success": False,
+                "error": "Operation is required for Xero tools",
+                "result": None
+            }
+            
+        res = await xero_service.handle_operation(operation, config=connection.config, **arguments)
+        
+        # Check if config was updated (tokens refreshed)
+        if res and isinstance(res, dict) and "_new_tokens" in res:
+            new_tokens = res.pop("_new_tokens")
+            config = connection.config.copy()
+            config.update(new_tokens)
+            connection.config = config
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(connection, "config")
+            await db.commit()
+            
+        return {
+            "success": res.get("success", False) if isinstance(res, dict) else False,
+            "result": "Xero operation completed",
+            "data": res
+        }
 
 # Global tool executor instance
 tool_executor = ToolExecutor()
