@@ -378,7 +378,9 @@ async def select_tools_semantically(
         "jira": ["jira", "issue", "ticket"],
         "trello": ["trello", "board", "card"],
         "notion": ["notion", "page", "database"],
-        "powerbi": ["powerbi", "power bi", "dashboard", "report"]
+        "powerbi": ["powerbi", "power bi", "dashboard", "report"],
+        "xero": ["xero", "accounting", "invoice", "receipt", "contact", "finance"],
+        "zoho": ["zoho", "crm", "desk", "mail", "finance"]
     }
 
     for tool in available_tools:
@@ -401,7 +403,8 @@ async def select_tools_semantically(
             continue
             
         # 3. Description Keyword Match (Legacy fallback)
-        desc_words = set(tool_desc.split())
+        import re
+        desc_words = set(re.sub(r'[^\w\s]', '', tool_desc).split())
         keywords = {w for w in desc_words if len(w) > 4}
         if any(kw in user_msg_lower for kw in keywords):
             relevant.append(tool)
