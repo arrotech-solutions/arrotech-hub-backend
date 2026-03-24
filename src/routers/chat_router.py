@@ -43,6 +43,14 @@ class MessageCreate(BaseModel):
         description="Optional LLM provider override (e.g., 'openai', 'anthropic', 'ollama'). If not provided, the user's default provider is used.",
         example="openai"
     )
+    use_reasoning: Optional[bool] = Field(
+        False,
+        description="If True, the orchestrator will forcibly route the request to a deep-thinking model like o3-mini or deepseek-r1 to perform advanced CoT."
+    )
+    use_search: Optional[bool] = Field(
+        False,
+        description="If True, the orchestrator will inject a web_search tool and require the LLM to research the query before answering."
+    )
 
 
 class ConversationCreate(BaseModel):
@@ -1447,11 +1455,17 @@ async def send_message_stream(
         """Generate SSE events from the orchestrator stream."""
         orchestrator = ExecutionOrchestrator(db, user, conversation_id)
         accumulated_content = ""
+        accumulated_reasoning = ""
         tools_called_final = []
         tokens_used_final = 0
         
         try:
-            async for event in orchestrator.process_message_stream(data.content, data.provider or "ollama"):
+            async for event in orchestrator.process_message_stream(
+                data.content, 
+                data.provider or "ollama",
+                use_reasoning=data.use_reasoning,
+                use_search=data.use_search
+            ):
                 event_type = event.get("type", "")
                 
                 # Accumulate content for final DB save
@@ -1459,6 +1473,8 @@ async def send_message_stream(
                     accumulated_content += event.get("delta", "")
                 elif event_type == "content":
                     accumulated_content = event.get("content", "")
+                elif event_type == "reasoning_delta":
+                    accumulated_reasoning += event.get("delta", "")
                 elif event_type == "done":
                     tools_called_final = event.get("tools_called", [])
                     tokens_used_final = event.get("tokens_used", 0)
@@ -1467,11 +1483,15 @@ async def send_message_stream(
                 yield f"data: {json.dumps(event)}\n\n"
             
             # Save final assistant message to DB
-            if accumulated_content:
+            content_to_save = accumulated_content
+            if accumulated_reasoning:
+                content_to_save = f"<think>\n{accumulated_reasoning}\n</think>\n\n{accumulated_content}"
+
+            if content_to_save:
                 assistant_message = Message(
                     conversation_id=conversation_id,
                     role=MessageRole.ASSISTANT,
-                    content=accumulated_content,
+                    content=content_to_save,
                     status=MessageStatus.COMPLETED,
                     tools_called=tools_called_final if tools_called_final else None,
                     tokens_used=tokens_used_final

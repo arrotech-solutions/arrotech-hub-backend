@@ -193,6 +193,8 @@ class ToolExecutor:
                 return await self._execute_file_management_tool(arguments, user, db, getattr(self, '_tools_called', []))
             elif tool_name == "web_tools":
                 return await self._execute_web_tools_tool(arguments, user, db)
+            elif tool_name == "web_search":
+                return await self._execute_web_search_tool(arguments, user, db)
             elif tool_name == "content_creation":
                 return await self._execute_content_creation_tool(arguments, user, db)
             elif tool_name == "mpesa_payment_reconciliation":
@@ -338,6 +340,61 @@ class ToolExecutor:
         
         print(f"✅ [FEATURE GATE] No write operation detected, allowing: {tool_name}")
         return None  # Access granted
+
+    async def _execute_web_search_tool(
+        self,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute a web search using DuckDuckGo."""
+        query = arguments.get("query")
+        max_results = arguments.get("max_results", 5)
+
+        if not query:
+            return {"success": False, "error": "Search query is required", "result": None}
+
+        try:
+            from duckduckgo_search import DDGS
+            
+            print(f"🔍 Executing Web Search for: '{query}'")
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=max_results))
+            
+            if not results:
+                return {
+                    "success": True,
+                    "result": f"No search results found for '{query}'.",
+                    "data": []
+                }
+                
+            # Format results nicely for the LLM
+            formatted_results = []
+            for r in results:
+                formatted_results.append(f"Title: {r.get('title')}\nURL: {r.get('href')}\nSnippet: {r.get('body')}")
+                
+            summary = f"Found {len(results)} results for '{query}'"
+            
+            return {
+                "success": True,
+                "result": summary + "\n\n" + "\n---\n".join(formatted_results),
+                "data": results,
+                "processed_arguments": arguments
+            }
+            
+        except ImportError:
+            return {
+                "success": False,
+                "error": "The 'duckduckgo-search' library is required for web search. Please manually run 'pip install duckduckgo-search'.",
+                "result": None
+            }
+        except Exception as e:
+            logger.error(f"Web search error: {e}")
+            return {
+                "success": False,
+                "error": f"Failed to perform search: {str(e)}",
+                "result": None
+            }
 
     def _get_platform_from_tool(self, tool_name: str) -> Optional[str]:
         """Map tool name to platform string."""
