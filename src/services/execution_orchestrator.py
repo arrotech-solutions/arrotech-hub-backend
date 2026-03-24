@@ -170,6 +170,91 @@ class ExecutionOrchestrator:
             error_response = f"I apologize, but I encountered an issue processing your request: '{content[:100]}...'. Please try again or rephrase your question."
             return error_response, [], 0
     
+    async def process_message_stream(self, content: str, provider: str) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Process a user message and stream the response as SSE events.
+        Includes support for extracting <think> tags for live reasoning streams.
+        """
+        import asyncio
+        import re
+        
+        yield {"type": "thinking", "content": "Analyzing your request..."}
+        
+        try:
+            # Step 1: Intent Classification
+            intent_classifier = await self.intent_processor.classify_intent(content)
+            
+            # Step 2: Tool routing
+            relevant_tools = []
+            if intent_classifier.requires_tools:
+                yield {"type": "thinking", "content": "Selecting tools..."}
+                relevant_tools = await self.tool_router.get_relevant_tools(content)
+                
+            openai_tools = dynamic_tool_registry.convert_tools_to_openai_format(relevant_tools)
+            
+            from ..routers.chat_router import get_optimized_context
+            context_messages = await get_optimized_context(self.conversation_id, self.db, user_message=content)
+            
+            messages = []
+            for msg in context_messages:
+                if msg.role == MessageRole.USER:
+                    messages.append({"role": "user", "content": msg.content})
+                elif msg.role == MessageRole.ASSISTANT:
+                    messages.append({"role": "assistant", "content": msg.content})
+                elif msg.role == MessageRole.TOOL:
+                    messages.append({"role": "tool", "content": msg.content, "tool_call_id": msg.tool_call_id})
+                    
+            messages.append({"role": "user", "content": content})
+            
+            yield {"type": "thinking", "content": "Generating response..."}
+            
+            # Run the existing synchronous function-calling loop
+            final_content, tools_called, tokens_used = await self._execute_function_calling_loop(provider, messages, openai_tools)
+            
+            # Yield tools execution for the UI to display in real-time
+            for i, tc in enumerate(tools_called):
+                yield {
+                    "type": "tool_start",
+                    "tool": tc.get("name"),
+                    "args": tc.get("arguments", {})
+                }
+                # Simulate a slight delay to trigger UI animations
+                await asyncio.sleep(0.5)
+                yield {
+                    "type": "tool_result",
+                    "tool": tc.get("name"),
+                    "success": "error" not in tc.get("result", {}),
+                    "summary": f"Executed {tc.get('name')}",
+                    "args": tc.get("arguments", {})
+                }
+            
+            # Simulate streaming the final response to decouple reasoning and content
+            # Parse <think> tags if they exist (used by DeepSeek/o1 models)
+            think_match = re.search(r'<think>(.*?)</think>', final_content, re.DOTALL)
+            
+            if think_match:
+                think_content = think_match.group(1).strip()
+                # Remove the think block from final content
+                final_content = final_content.replace(think_match.group(0), "").strip()
+                
+                # Stream the reasoning chunk by chunk
+                chunk_size = 20
+                for i in range(0, len(think_content), chunk_size):
+                    yield {"type": "reasoning_delta", "delta": think_content[i:i+chunk_size]}
+                    await asyncio.sleep(0.01)
+            
+            # Stream the final text chunks
+            chunk_size = 15
+            for i in range(0, len(final_content), chunk_size):
+                yield {"type": "content_delta", "delta": final_content[i:i+chunk_size]}
+                await asyncio.sleep(0.01)
+                
+            yield {"type": "done", "tokens_used": tokens_used}
+            
+        except Exception as e:
+            logger.error(f"Error in stream: {e}")
+            yield {"type": "error", "error": str(e)}
+
     async def _generate_direct_response(self, content: str, provider: str) -> Tuple[str, List[Dict[str, Any]], int]:
         """Generate a direct response without tool usage."""
         # Get conversation context
