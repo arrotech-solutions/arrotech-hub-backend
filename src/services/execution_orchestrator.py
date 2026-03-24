@@ -4,7 +4,7 @@ Execution Orchestrator Service for coordinating intent processing, tool selectio
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1036,3 +1036,482 @@ class ExecutionOrchestrator:
         except Exception as e:
             print(f"❌ Together API error: {e}")
             return None 
+
+    # ==================== STREAMING METHODS ====================
+
+    async def process_message_stream(self, content: str, provider: str) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Process a user message and yield SSE events at each stage.
+        
+        Yields dicts like:
+          {"type": "thinking", "content": "Analyzing your request..."}
+          {"type": "tool_start", "tool": "slack_send_message", "args": {...}}
+          {"type": "tool_result", "tool": "slack_send_message", "success": true, "summary": "..."}
+          {"type": "content_delta", "delta": "Here's"}
+          {"type": "done", "message_id": 42, "tokens_used": 350, "tools_called": [...]}
+          {"type": "error", "error": "..."}
+        """
+        tools_called = []
+        total_tokens = 0
+
+        try:
+            yield {"type": "thinking", "content": "Analyzing your request..."}
+
+            # Step 0: Check AI limits (same as synchronous path)
+            is_byok = False
+            try:
+                from sqlalchemy import select
+                from ..models import UserSettings
+                stmt = select(UserSettings).where(UserSettings.user_id == self.user.id)
+                result = await self.db.execute(stmt)
+                user_settings = result.scalar_one_or_none()
+                if user_settings:
+                    byok_keys = {
+                        "openai": user_settings.openai_api_key,
+                        "anthropic": user_settings.anthropic_api_key,
+                        "gemini": getattr(user_settings, 'gemini_api_key', None),
+                    }
+                    is_byok = bool(byok_keys.get(provider))
+            except Exception:
+                pass
+
+            if not is_byok:
+                daily_count = await self.get_daily_message_count(self.db, self.user.id)
+                if not FeatureGate.can_use_ai_message(self.user, daily_count):
+                    limit = FeatureGate.get_limits(self.user.subscription_tier)['max_ai_messages_daily']
+                    yield {"type": "error", "error": f"Plan limit reached: Your {self.user.subscription_tier} plan allows {limit} AI messages per day. Please upgrade to continue."}
+                    return
+
+            # Step 1: Classify intent
+            yield {"type": "thinking", "content": "Understanding your intent..."}
+            intent_classifier = await self.intent_processor.classify_intent(content)
+            logger.info(f"Intent: {intent_classifier.intent_type} ({intent_classifier.confidence:.0%})")
+
+            # Step 2: Check if tools are needed
+            if not intent_classifier.requires_tools:
+                yield {"type": "thinking", "content": "Generating response..."}
+                async for event in self._stream_direct_response(content, provider):
+                    yield event
+                return
+
+            # Step 3: Get relevant tools
+            yield {"type": "thinking", "content": "Selecting relevant tools..."}
+            relevant_tools = await self.tool_router.get_relevant_tools(content)
+            if not relevant_tools:
+                yield {"type": "thinking", "content": "No specific tools needed, generating response..."}
+                async for event in self._stream_direct_response(content, provider):
+                    yield event
+                return
+
+            tool_names = [t.get('name', '') for t in relevant_tools]
+            yield {"type": "thinking", "content": f"Found {len(relevant_tools)} relevant tools: {', '.join(tool_names[:5])}"}
+
+            # Step 4: Prepare for function calling loop
+            openai_tools = dynamic_tool_registry.convert_tools_to_openai_format(relevant_tools)
+            
+            from ..routers.chat_router import get_optimized_context
+            context_messages = await get_optimized_context(self.conversation_id, self.db, user_message=content)
+            
+            messages = []
+            for msg in context_messages:
+                if msg.role == MessageRole.USER:
+                    messages.append({"role": "user", "content": msg.content})
+                elif msg.role == MessageRole.ASSISTANT:
+                    messages.append({"role": "assistant", "content": msg.content})
+                elif msg.role == MessageRole.TOOL:
+                    messages.append({"role": "tool", "content": msg.content, "tool_call_id": msg.tool_call_id})
+            messages.append({"role": "user", "content": content})
+
+            # Step 5: Function calling loop (up to 5 iterations)
+            max_iterations = 5
+            for iteration in range(max_iterations):
+                logger.info(f"🔄 Stream iteration {iteration + 1}/{max_iterations}")
+
+                try:
+                    # Call LLM with tools (non-streaming for tool selection)
+                    if provider == "ollama":
+                        response = await self._call_ollama_with_functions(messages, openai_tools)
+                    else:
+                        response = await self._call_llm_fallback(provider, messages, openai_tools)
+
+                    if not response:
+                        yield {"type": "error", "error": "No response from AI provider. Please check your configuration."}
+                        return
+
+                    if "usage" in response:
+                        total_tokens += response["usage"].get("total_tokens", 0)
+
+                    assistant_message = response.get('choices', [{}])[0].get('message', {})
+                    llm_content = assistant_message.get('content', '')
+                    tool_calls = assistant_message.get('tool_calls', [])
+
+                    # Parse tool calls from content if needed
+                    if not tool_calls and llm_content.strip().startswith('[') and llm_content.strip().endswith(']'):
+                        try:
+                            parsed = json.loads(llm_content.strip())
+                            if isinstance(parsed, list):
+                                tool_calls = []
+                                for i, tc in enumerate(parsed):
+                                    if isinstance(tc, dict) and 'name' in tc:
+                                        tool_calls.append({
+                                            'id': f'call_{i}',
+                                            'type': 'function',
+                                            'function': {
+                                                'name': tc['name'],
+                                                'arguments': json.dumps(tc.get('arguments', {}))
+                                            }
+                                        })
+                        except json.JSONDecodeError:
+                            pass
+
+                    # Clean assistant message
+                    if 'tool_calls' in assistant_message and not assistant_message['tool_calls']:
+                        del assistant_message['tool_calls']
+                    messages.append(assistant_message)
+
+                    # If no tool calls, stream the final response
+                    if not tool_calls:
+                        yield {"type": "thinking", "content": "Composing final response..."}
+                        # Stream the final LLM response token by token
+                        async for event in self._stream_final_response(provider, messages, openai_tools):
+                            if event.get("type") == "content_delta":
+                                yield event
+                            elif event.get("type") == "content":
+                                yield event
+                            elif event.get("type") == "usage":
+                                total_tokens += event.get("tokens", 0)
+
+                        # Track usage
+                        try:
+                            from ..routers.subscription_router import get_or_create_usage_record
+                            usage_record = await get_or_create_usage_record(self.db, self.user)
+                            usage_record.ai_actions_count += 1
+                            await self.db.commit()
+                        except Exception:
+                            pass
+
+                        yield {"type": "done", "tokens_used": total_tokens, "tools_called": tools_called}
+                        return
+
+                    # Execute tool calls
+                    for tc in tool_calls:
+                        tool_call_id = tc.get('id', '')
+                        function_name = tc.get('function', {}).get('name', '')
+                        arguments_str = tc.get('function', {}).get('arguments', '{}')
+
+                        try:
+                            arguments = json.loads(arguments_str)
+                        except json.JSONDecodeError:
+                            arguments = {}
+
+                        yield {"type": "tool_start", "tool": function_name, "args": arguments}
+
+                        try:
+                            # Validate
+                            is_valid, error_msg = ToolArgumentValidator.validate(function_name, arguments, openai_tools)
+                            if not is_valid:
+                                yield {"type": "tool_result", "tool": function_name, "success": False, "summary": f"Validation error: {error_msg}"}
+                                messages.append({"role": "tool", "content": f"Error: {error_msg}", "tool_call_id": tool_call_id})
+                                tools_called.append({"name": function_name, "arguments": arguments, "result": {"error": error_msg}})
+                                continue
+
+                            # Execute tool
+                            tool_result = await tool_executor.execute_tool(
+                                function_name, arguments, self.user, self.db, tools_called
+                            )
+
+                            tools_called.append({"name": function_name, "arguments": arguments, "result": tool_result})
+
+                            # Build a short summary
+                            summary = ""
+                            if isinstance(tool_result, dict):
+                                if tool_result.get("success"):
+                                    summary = tool_result.get("message", str(tool_result)[:200])
+                                else:
+                                    summary = tool_result.get("error", tool_result.get("message", str(tool_result)[:200]))
+                            else:
+                                summary = str(tool_result)[:200]
+
+                            success = isinstance(tool_result, dict) and tool_result.get("success", True)
+                            yield {"type": "tool_result", "tool": function_name, "success": success, "summary": summary}
+
+                            messages.append({
+                                "role": "tool",
+                                "content": json.dumps(tool_result) if isinstance(tool_result, dict) else str(tool_result),
+                                "tool_call_id": tool_call_id
+                            })
+
+                        except Exception as e:
+                            yield {"type": "tool_result", "tool": function_name, "success": False, "summary": f"Execution error: {str(e)}"}
+                            messages.append({"role": "tool", "content": f"Error: {str(e)}", "tool_call_id": tool_call_id})
+                            tools_called.append({"name": function_name, "arguments": arguments, "result": {"error": str(e)}})
+
+                except Exception as e:
+                    logger.error(f"Error in stream iteration {iteration + 1}: {e}")
+                    yield {"type": "error", "error": f"Processing error: {str(e)}"}
+                    return
+
+            # Exhausted iterations — stream whatever we have
+            yield {"type": "content", "content": "I've completed the available actions. Let me know if you need anything else."}
+            yield {"type": "done", "tokens_used": total_tokens, "tools_called": tools_called}
+
+        except Exception as e:
+            logger.error(f"Error in process_message_stream: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            yield {"type": "error", "error": f"An unexpected error occurred: {str(e)}"}
+
+    async def _stream_direct_response(self, content: str, provider: str) -> AsyncGenerator[Dict[str, Any], None]:
+        """Stream a direct response (no tools) token by token."""
+        from ..routers.chat_router import get_optimized_context
+        
+        context_messages = await get_optimized_context(self.conversation_id, self.db, user_message=content)
+        messages = []
+        for msg in context_messages:
+            if msg.role == MessageRole.USER:
+                messages.append({"role": "user", "content": msg.content})
+            elif msg.role == MessageRole.ASSISTANT:
+                messages.append({"role": "assistant", "content": msg.content})
+            elif msg.role == MessageRole.TOOL:
+                messages.append({"role": "tool", "content": msg.content, "tool_call_id": msg.tool_call_id})
+        messages.append({"role": "user", "content": content})
+
+        streamed_any = False
+        async for event in self._stream_final_response(provider, messages, tools=None):
+            streamed_any = True
+            yield event
+
+        if not streamed_any:
+            # Fallback: try non-streaming
+            if provider == "ollama":
+                response = await self._call_ollama_direct(messages)
+            else:
+                response = await self._call_llm_fallback(provider, messages)
+
+            if response and not (isinstance(response, dict) and response.get('error')):
+                resp_content = response.get('choices', [{}])[0].get('message', {}).get('content', '')
+                if resp_content:
+                    yield {"type": "content", "content": resp_content}
+                else:
+                    yield {"type": "content", "content": "I'm sorry, I couldn't generate a response. Please try again."}
+            else:
+                error_msg = response.get('error_message', 'Unable to connect to AI provider.') if isinstance(response, dict) else 'Unable to connect to AI provider.'
+                yield {"type": "error", "error": error_msg}
+                return
+
+        # Track usage
+        try:
+            from ..routers.subscription_router import get_or_create_usage_record
+            usage_record = await get_or_create_usage_record(self.db, self.user)
+            usage_record.ai_actions_count += 1
+            await self.db.commit()
+        except Exception:
+            pass
+
+        yield {"type": "done", "tokens_used": 0, "tools_called": []}
+
+    async def _stream_final_response(self, provider: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None) -> AsyncGenerator[Dict[str, Any], None]:
+        """Stream the final LLM response token by token from the appropriate provider."""
+        if provider == "openai":
+            async for event in self._stream_openai_response(messages, tools):
+                yield event
+        elif provider == "anthropic":
+            async for event in self._stream_anthropic_response(messages):
+                yield event
+        elif provider == "ollama":
+            async for event in self._stream_ollama_response(messages, tools):
+                yield event
+        else:
+            # For unsupported streaming providers, fall back to non-streaming
+            if provider == "ollama":
+                response = await self._call_ollama_direct(messages)
+            else:
+                response = await self._call_llm_fallback(provider, messages, tools)
+            if response and not (isinstance(response, dict) and response.get('error')):
+                content = response.get('choices', [{}])[0].get('message', {}).get('content', '')
+                if content:
+                    yield {"type": "content", "content": content}
+
+    async def _stream_openai_response(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None) -> AsyncGenerator[Dict[str, Any], None]:
+        """Stream from OpenAI API token by token."""
+        from ..config import settings
+        from sqlalchemy import select
+        from ..models import UserSettings
+
+        api_key = settings.OPENAI_API_KEY
+        try:
+            stmt = select(UserSettings).where(UserSettings.user_id == self.user.id)
+            result = await self.db.execute(stmt)
+            user_settings = result.scalar_one_or_none()
+            if user_settings and user_settings.openai_api_key:
+                api_key = user_settings.openai_api_key
+        except Exception:
+            pass
+
+        if not api_key:
+            return
+
+        try:
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(api_key=api_key)
+            model = getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
+
+            kwargs = {
+                "model": model,
+                "messages": messages,
+                "temperature": settings.LLM_TEMPERATURE or 0.7,
+                "stream": True,
+            }
+            if settings.LLM_MAX_TOKENS:
+                kwargs["max_tokens"] = settings.LLM_MAX_TOKENS
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+
+            async for chunk in await client.chat.completions.create(**kwargs):
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if delta and delta.content:
+                    yield {"type": "content_delta", "delta": delta.content}
+
+        except Exception as e:
+            logger.error(f"OpenAI streaming error: {e}")
+
+    async def _stream_anthropic_response(self, messages: List[Dict[str, Any]]) -> AsyncGenerator[Dict[str, Any], None]:
+        """Stream from Anthropic API token by token."""
+        from ..config import settings
+        from sqlalchemy import select
+        from ..models import UserSettings
+        import aiohttp
+
+        api_key = settings.ANTHROPIC_API_KEY
+        try:
+            stmt = select(UserSettings).where(UserSettings.user_id == self.user.id)
+            result = await self.db.execute(stmt)
+            user_settings = result.scalar_one_or_none()
+            if user_settings and user_settings.anthropic_api_key:
+                api_key = user_settings.anthropic_api_key
+        except Exception:
+            pass
+
+        if not api_key:
+            return
+
+        try:
+            anthropic_messages = []
+            system_content = ""
+            for msg in messages:
+                if msg.get("role") == "system":
+                    system_content = msg.get("content", "")
+                elif msg.get("role") in ["user", "assistant"]:
+                    anthropic_messages.append({"role": msg["role"], "content": msg.get("content", "")})
+
+            payload = {
+                "model": "claude-sonnet-4-20250514",
+                "messages": anthropic_messages,
+                "max_tokens": settings.LLM_MAX_TOKENS or 1024,
+                "temperature": settings.LLM_TEMPERATURE or 0.7,
+                "stream": True,
+            }
+            if system_content:
+                payload["system"] = system_content
+
+            headers = {
+                "x-api-key": api_key,
+                "Content-Type": "application/json",
+                "anthropic-version": "2023-06-01"
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://api.anthropic.com/v1/messages",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=120)
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Anthropic streaming error: {error_text}")
+                        return
+
+                    buffer = ""
+                    async for raw_bytes in response.content:
+                        buffer += raw_bytes.decode("utf-8", errors="replace")
+                        while "\n" in buffer:
+                            line, buffer = buffer.split("\n", 1)
+                            line = line.strip()
+                            if not line or not line.startswith("data: "):
+                                continue
+                            data_str = line[6:]
+                            if data_str == "[DONE]":
+                                return
+                            try:
+                                data = json.loads(data_str)
+                                event_type = data.get("type", "")
+                                if event_type == "content_block_delta":
+                                    delta_text = data.get("delta", {}).get("text", "")
+                                    if delta_text:
+                                        yield {"type": "content_delta", "delta": delta_text}
+                            except json.JSONDecodeError:
+                                continue
+
+        except Exception as e:
+            logger.error(f"Anthropic streaming error: {e}")
+
+    async def _stream_ollama_response(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None) -> AsyncGenerator[Dict[str, Any], None]:
+        """Stream from Ollama API token by token."""
+        import os
+        import aiohttp
+        from ..config import settings
+
+        ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        ollama_url = f"{ollama_base_url}/v1/chat/completions"
+
+        models_to_try = [settings.OLLAMA_MODEL, "qwen3", "mistral:latest", "llama3.1:8b"]
+
+        for model in models_to_try:
+            payload = {
+                "model": model,
+                "messages": messages,
+                "stream": True,
+            }
+            if tools:
+                payload["tools"] = tools
+                payload["tool_choice"] = "auto"
+
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        ollama_url,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=120)
+                    ) as response:
+                        if response.status != 200:
+                            continue
+
+                        buffer = ""
+                        async for raw_bytes in response.content:
+                            buffer += raw_bytes.decode("utf-8", errors="replace")
+                            while "\n" in buffer:
+                                line, buffer = buffer.split("\n", 1)
+                                line = line.strip()
+                                if not line or not line.startswith("data: "):
+                                    continue
+                                data_str = line[6:]
+                                if data_str == "[DONE]":
+                                    return
+                                try:
+                                    data = json.loads(data_str)
+                                    choices = data.get("choices", [])
+                                    if choices:
+                                        delta = choices[0].get("delta", {})
+                                        content = delta.get("content", "")
+                                        if content:
+                                            yield {"type": "content_delta", "delta": content}
+                                except json.JSONDecodeError:
+                                    continue
+                        return  # Success with this model
+            except Exception as e:
+                logger.error(f"Ollama streaming error with model {model}: {e}")
+                continue
+
+        logger.error("All Ollama models failed for streaming")
