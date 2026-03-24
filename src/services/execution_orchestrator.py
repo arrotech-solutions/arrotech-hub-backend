@@ -378,7 +378,7 @@ class ExecutionOrchestrator:
         for tool in openai_tools:
             print(f"  - {tool['function']['name']}: {tool['function']['description']}")
         
-    async def _call_openai_with_functions(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    async def _call_openai_with_functions(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None, model_override: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Call OpenAI API with function calling support."""
         from ..config import settings
         from sqlalchemy import select
@@ -554,21 +554,8 @@ class ExecutionOrchestrator:
                 
                 # If no tool calls, we're done
                 if not tool_calls:
-                    print(f"✅ No tool calls - generating final user-facing response")
-                    # Make a final LLM call with the updated messages (including tool result)
-                    if provider == "ollama":
-                        final_response = await self._call_ollama_with_functions(messages, tools, model_override=model_override)
-                    else:
-                        final_response = await self._call_llm_fallback(provider, messages, tools, model_override=model_override)
-                    
-                    if final_response:
-                        if "usage" in final_response:
-                            total_output_tokens += final_response["usage"].get("completion_tokens", 0)
-                        final_message = final_response.get('choices', [{}])[0].get('message', {})
-                        final_content = final_message.get('content', '')
-                        return final_content, tools_called, total_output_tokens
-                    else:
-                        return content, tools_called, total_output_tokens
+                    print(f"✅ No tool calls - final response generated")
+                    return content, tools_called, total_output_tokens
                 
                 # Execute tool calls
                 for tool_call in tool_calls:
@@ -1153,7 +1140,13 @@ class ExecutionOrchestrator:
 
     # ==================== STREAMING METHODS ====================
 
-    async def process_message_stream(self, content: str, provider: str) -> AsyncGenerator[Dict[str, Any], None]:
+    async def process_message_stream(
+        self, 
+        content: str, 
+        provider: str,
+        use_reasoning: bool = False,
+        use_search: bool = False
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Process a user message and yield SSE events at each stage.
         
@@ -1202,18 +1195,30 @@ class ExecutionOrchestrator:
             logger.info(f"Intent: {intent_classifier.intent_type} ({intent_classifier.confidence:.0%})")
 
             # Step 2: Check if tools are needed
-            if not intent_classifier.requires_tools:
+            model_override = None
+            if use_reasoning:
+                yield {"type": "thinking", "content": "Routing to reasoning model..."}
+                model_override = "o3-mini" if provider == "openai" else ("claude-3-7-sonnet" if provider == "anthropic" else "deepseek-r1")
+
+            if not intent_classifier.requires_tools and not use_search:
                 yield {"type": "thinking", "content": "Generating response..."}
-                async for event in self._stream_direct_response(content, provider):
+                async for event in self._stream_direct_response(content, provider, model_override=model_override):
                     yield event
                 return
 
             # Step 3: Get relevant tools
             yield {"type": "thinking", "content": "Selecting relevant tools..."}
             relevant_tools = await self.tool_router.get_relevant_tools(content)
+            
+            if use_search:
+                yield {"type": "thinking", "content": "Injecting web search capabilities..."}
+                search_tool = dynamic_tool_registry.base_tools.get("web_search")
+                if search_tool and search_tool not in relevant_tools:
+                    relevant_tools.append(search_tool)
+                    
             if not relevant_tools:
                 yield {"type": "thinking", "content": "No specific tools needed, generating response..."}
-                async for event in self._stream_direct_response(content, provider):
+                async for event in self._stream_direct_response(content, provider, model_override=model_override):
                     yield event
                 return
 
@@ -1244,9 +1249,9 @@ class ExecutionOrchestrator:
                 try:
                     # Call LLM with tools (non-streaming for tool selection)
                     if provider == "ollama":
-                        response = await self._call_ollama_with_functions(messages, openai_tools)
+                        response = await self._call_ollama_with_functions(messages, openai_tools, model_override=model_override)
                     else:
-                        response = await self._call_llm_fallback(provider, messages, openai_tools)
+                        response = await self._call_llm_fallback(provider, messages, openai_tools, model_override=model_override)
 
                     if not response:
                         yield {"type": "error", "error": "No response from AI provider. Please check your configuration."}
@@ -1287,7 +1292,7 @@ class ExecutionOrchestrator:
                     if not tool_calls:
                         yield {"type": "thinking", "content": "Composing final response..."}
                         # Stream the final LLM response token by token
-                        async for event in self._stream_final_response(provider, messages, openai_tools):
+                        async for event in self._stream_final_response(provider, messages, openai_tools, model_override=model_override):
                             if event.get("type") == "content_delta":
                                 yield event
                             elif event.get("type") == "content":
@@ -1375,7 +1380,7 @@ class ExecutionOrchestrator:
             logger.error(f"Traceback: {traceback.format_exc()}")
             yield {"type": "error", "error": f"An unexpected error occurred: {str(e)}"}
 
-    async def _stream_direct_response(self, content: str, provider: str) -> AsyncGenerator[Dict[str, Any], None]:
+    async def _stream_direct_response(self, content: str, provider: str, model_override: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream a direct response (no tools) token by token."""
         from ..routers.chat_router import get_optimized_context
         
@@ -1391,7 +1396,7 @@ class ExecutionOrchestrator:
         messages.append({"role": "user", "content": content})
 
         streamed_any = False
-        async for event in self._stream_final_response(provider, messages, tools=None):
+        async for event in self._stream_final_response(provider, messages, tools=None, model_override=model_override):
             streamed_any = True
             yield event
 
@@ -1424,10 +1429,10 @@ class ExecutionOrchestrator:
 
         yield {"type": "done", "tokens_used": 0, "tools_called": []}
 
-    async def _stream_final_response(self, provider: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def _stream_final_response(self, provider: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None, model_override: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream the final LLM response token by token from the appropriate provider."""
         if provider == "openai":
-            async for event in self._stream_openai_response(messages, tools):
+            async for event in self._stream_openai_response(messages, tools, model_override=model_override):
                 yield event
         elif provider == "anthropic":
             async for event in self._stream_anthropic_response(messages):
@@ -1446,7 +1451,7 @@ class ExecutionOrchestrator:
                 if content:
                     yield {"type": "content", "content": content}
 
-    async def _stream_openai_response(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def _stream_openai_response(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None, model_override: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream from OpenAI API token by token."""
         from ..config import settings
         from sqlalchemy import select
@@ -1468,7 +1473,7 @@ class ExecutionOrchestrator:
         try:
             from openai import AsyncOpenAI
             client = AsyncOpenAI(api_key=api_key)
-            model = getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
+            model = model_override or getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
 
             kwargs = {
                 "model": model,
