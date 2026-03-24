@@ -205,14 +205,15 @@ class ExecutionOrchestrator:
             openai_tools = dynamic_tool_registry.convert_tools_to_openai_format(relevant_tools)
             
             # Model Routing for Reasoning
+            model_override = None
             if use_reasoning:
                 yield {"type": "thinking", "content": "Routing to reasoning model..."}
                 if provider == "openai":
-                    provider = "o3-mini"
+                    model_override = "o3-mini"
                 elif provider == "anthropic":
-                    provider = "claude-3-7-sonnet"
+                    model_override = "claude-3-7-sonnet"
                 else:
-                    provider = "deepseek-r1" # Default local reasoning model
+                    model_override = "deepseek-r1" # Default local reasoning model
             
             from ..routers.chat_router import get_optimized_context
             context_messages = await get_optimized_context(self.conversation_id, self.db, user_message=content)
@@ -237,7 +238,7 @@ class ExecutionOrchestrator:
             yield {"type": "thinking", "content": "Generating response..."}
             
             # Run the existing synchronous function-calling loop
-            final_content, tools_called, tokens_used = await self._execute_function_calling_loop(provider, messages, openai_tools)
+            final_content, tools_called, tokens_used = await self._execute_function_calling_loop(provider, messages, openai_tools, model_override=model_override)
             
             # Yield tools execution for the UI to display in real-time
             for i, tc in enumerate(tools_called):
@@ -406,7 +407,7 @@ class ExecutionOrchestrator:
             client = AsyncOpenAI(api_key=api_key)
             
             # Build request parameters
-            model = getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
+            model = model_override or getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
             kwargs = {
                 "model": model,
                 "messages": messages,
@@ -489,7 +490,7 @@ class ExecutionOrchestrator:
         num_tokens += 2  # every reply is primed with <im_start>assistant
         return num_tokens
     
-    async def _execute_function_calling_loop(self, provider: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], max_iterations: int = 5) -> Tuple[str, List[Dict[str, Any]], int]:
+    async def _execute_function_calling_loop(self, provider: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], max_iterations: int = 5, model_override: Optional[str] = None) -> Tuple[str, List[Dict[str, Any]], int]:
         """Execute function calling loop with validation and error handling."""
         tools_called = []
         total_output_tokens = 0
@@ -500,9 +501,9 @@ class ExecutionOrchestrator:
             try:
                 # Call LLM with tools
                 if provider == "ollama":
-                    response = await self._call_ollama_with_functions(messages, tools)
+                    response = await self._call_ollama_with_functions(messages, tools, model_override=model_override)
                 else:
-                    response = await self._call_llm_fallback(provider, messages, tools)
+                    response = await self._call_llm_fallback(provider, messages, tools, model_override=model_override)
                 
                 if not response:
                     print(f"❌ No response from LLM in iteration {iteration + 1}")
@@ -556,9 +557,9 @@ class ExecutionOrchestrator:
                     print(f"✅ No tool calls - generating final user-facing response")
                     # Make a final LLM call with the updated messages (including tool result)
                     if provider == "ollama":
-                        final_response = await self._call_ollama_with_functions(messages, tools)
+                        final_response = await self._call_ollama_with_functions(messages, tools, model_override=model_override)
                     else:
-                        final_response = await self._call_llm_fallback(provider, messages, tools)
+                        final_response = await self._call_llm_fallback(provider, messages, tools, model_override=model_override)
                     
                     if final_response:
                         if "usage" in final_response:
@@ -712,7 +713,7 @@ class ExecutionOrchestrator:
         print(f"❌ All models failed for direct response")
         return None
     
-    async def _call_ollama_with_functions(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    async def _call_ollama_with_functions(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], model_override: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Call Ollama with function calling support."""
         import os
 
@@ -722,7 +723,7 @@ class ExecutionOrchestrator:
         ollama_url = f"{ollama_base_url}/v1/chat/completions"
         
         # Try different models in order of preference
-        models_to_try = ["llama3.2:3b", "mistral:latest", "llama3.1:8b"]
+        models_to_try = [model_override] if model_override else ["llama3.2:3b", "mistral:latest", "llama3.1:8b"]
         
         for model in models_to_try:
             payload = {
@@ -761,14 +762,14 @@ class ExecutionOrchestrator:
         print(f"❌ All models failed for function calling")
         return None
     
-    async def _call_llm_fallback(self, provider: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    async def _call_llm_fallback(self, provider: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None, model_override: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Call LLM for providers like OpenAI, Anthropic, etc."""
         from ..config import settings
         
         if provider == "openai":
-            return await self._call_openai_with_functions(messages, tools)
+            return await self._call_openai_with_functions(messages, tools, model_override=model_override)
         elif provider == "anthropic":
-            return await self._call_anthropic(messages, tools)
+            return await self._call_anthropic(messages, tools, model_override=model_override)
         elif provider == "gemini":
             return await self._call_gemini(messages, tools)
         elif provider == "huggingface":
@@ -780,7 +781,7 @@ class ExecutionOrchestrator:
         print(f"⚠️ Unknown provider: {provider}")
         return None
     
-    async def _call_openai_with_functions(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    async def _call_openai_with_functions(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None, model_override: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Call OpenAI API with function calling support."""
         from ..config import settings
         from sqlalchemy import select
@@ -810,7 +811,7 @@ class ExecutionOrchestrator:
             client = AsyncOpenAI(api_key=api_key)
             
             # Build request parameters
-            model = getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
+            model = model_override or getattr(settings, 'OPENAI_MODEL', 'gpt-4o')
             kwargs = {
                 "model": model,
                 "messages": messages,
@@ -867,7 +868,7 @@ class ExecutionOrchestrator:
             print(f"❌ Traceback: {traceback.format_exc()}")
             return None
     
-    async def _call_anthropic(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    async def _call_anthropic(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] = None, model_override: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Call Anthropic Claude API."""
         from ..config import settings
         from sqlalchemy import select
