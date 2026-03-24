@@ -1407,6 +1407,112 @@ async def send_message(
         return MessageRead.from_orm(error_message)
 
 
+@router.post("/conversations/{conversation_id}/messages/stream")
+async def send_message_stream(
+    conversation_id: int,
+    data: MessageCreate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """
+    ### Stream AI Response via Server-Sent Events (SSE)
+    
+    This endpoint streams the AI's response in real-time, providing visibility into:
+    - **Thinking steps**: What the AI is analyzing
+    - **Tool executions**: Which tools are being called and their results
+    - **Content tokens**: The response text, streamed token by token
+    
+    **SSE Event Types:**
+    - `thinking` — AI reasoning step (content field)
+    - `tool_start` — Tool execution beginning (tool, args fields)
+    - `tool_result` — Tool execution complete (tool, success, summary fields)
+    - `content_delta` — Single token of response text (delta field)
+    - `content` — Full response text when streaming isn't supported (content field)
+    - `done` — Stream complete (message_id, tokens_used, tools_called fields)
+    - `error` — Error occurred (error field)
+    """
+    # Validate conversation
+    conversation = await get_conversation_or_404(conversation_id, user.id, db)
+    
+    # Save user message immediately
+    user_message = Message(
+        conversation_id=conversation_id,
+        role=MessageRole.USER,
+        content=data.content,
+        status=MessageStatus.COMPLETED
+    )
+    db.add(user_message)
+    await db.commit()
+    await db.refresh(user_message)
+
+    async def event_generator():
+        """Generate SSE events from the orchestrator stream."""
+        orchestrator = ExecutionOrchestrator(db, user, conversation_id)
+        accumulated_content = ""
+        tools_called_final = []
+        tokens_used_final = 0
+        
+        try:
+            async for event in orchestrator.process_message_stream(data.content, data.provider or "ollama"):
+                event_type = event.get("type", "")
+                
+                # Accumulate content for final DB save
+                if event_type == "content_delta":
+                    accumulated_content += event.get("delta", "")
+                elif event_type == "content":
+                    accumulated_content = event.get("content", "")
+                elif event_type == "done":
+                    tools_called_final = event.get("tools_called", [])
+                    tokens_used_final = event.get("tokens_used", 0)
+                
+                # Yield SSE-formatted event
+                yield f"data: {json.dumps(event)}\n\n"
+            
+            # Save final assistant message to DB
+            if accumulated_content:
+                assistant_message = Message(
+                    conversation_id=conversation_id,
+                    role=MessageRole.ASSISTANT,
+                    content=accumulated_content,
+                    status=MessageStatus.COMPLETED,
+                    tools_called=tools_called_final if tools_called_final else None,
+                    tokens_used=tokens_used_final
+                )
+                db.add(assistant_message)
+                await db.commit()
+                await db.refresh(assistant_message)
+                
+                # Send the message_id back to the client in a final event
+                yield f"data: {json.dumps({'type': 'message_saved', 'message_id': assistant_message.id})}\n\n"
+        
+        except Exception as e:
+            print(f"❌ SSE stream error: {e}")
+            import traceback
+            print(f"❌ Traceback: {traceback.format_exc()}")
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+            
+            # Save error message to DB
+            error_msg = Message(
+                conversation_id=conversation_id,
+                role=MessageRole.ASSISTANT,
+                content="I apologize, but I encountered an issue processing your request. Please try again.",
+                status=MessageStatus.COMPLETED,
+                error_message=str(e)
+            )
+            db.add(error_msg)
+            await db.commit()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
 @router.put("/conversations/{conversation_id}")
 async def update_conversation(
     conversation_id: int,
