@@ -192,6 +192,20 @@ class DynamicToolRegistry:
                 "category": "web_tools",
                 "always_available": True
             },
+            "web_search": {
+                "name": "web_search",
+                "description": "Perform live web searches using DuckDuckGo to answer user queries with up-to-date and real-time internet information. Useful for current events, news, specific facts, or deep research.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "The search query to look up on the internet"},
+                        "max_results": {"type": "integer", "description": "Maximum number of search results to return", "default": 5}
+                    },
+                    "required": ["query"]
+                },
+                "category": "web_tools",
+                "always_available": True
+            },
             # Content Creation Tools - Always available
             "content_creation": {
                 "name": "content_creation",
@@ -594,6 +608,7 @@ class DynamicToolRegistry:
                 "campaign_performance_tracking",
                 "file_management",
                 "web_tools",
+                "web_search",
                 "content_creation",
                 "email_template"
             }

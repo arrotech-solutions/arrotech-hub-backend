@@ -170,7 +170,13 @@ class ExecutionOrchestrator:
             error_response = f"I apologize, but I encountered an issue processing your request: '{content[:100]}...'. Please try again or rephrase your question."
             return error_response, [], 0
     
-    async def process_message_stream(self, content: str, provider: str) -> AsyncGenerator[Dict[str, Any], None]:
+    async def process_message_stream(
+        self, 
+        content: str, 
+        provider: str,
+        use_reasoning: bool = False,
+        use_search: bool = False
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Process a user message and stream the response as SSE events.
         Includes support for extracting <think> tags for live reasoning streams.
@@ -190,7 +196,23 @@ class ExecutionOrchestrator:
                 yield {"type": "thinking", "content": "Selecting tools..."}
                 relevant_tools = await self.tool_router.get_relevant_tools(content)
                 
+            if use_search:
+                yield {"type": "thinking", "content": "Injecting web search capabilities..."}
+                search_tool = dynamic_tool_registry.base_tools.get("web_search")
+                if search_tool and search_tool not in relevant_tools:
+                    relevant_tools.append(search_tool)
+                
             openai_tools = dynamic_tool_registry.convert_tools_to_openai_format(relevant_tools)
+            
+            # Model Routing for Reasoning
+            if use_reasoning:
+                yield {"type": "thinking", "content": "Routing to reasoning model..."}
+                if provider == "openai":
+                    provider = "o3-mini"
+                elif provider == "anthropic":
+                    provider = "claude-3-7-sonnet"
+                else:
+                    provider = "deepseek-r1" # Default local reasoning model
             
             from ..routers.chat_router import get_optimized_context
             context_messages = await get_optimized_context(self.conversation_id, self.db, user_message=content)
@@ -203,6 +225,12 @@ class ExecutionOrchestrator:
                     messages.append({"role": "assistant", "content": msg.content})
                 elif msg.role == MessageRole.TOOL:
                     messages.append({"role": "tool", "content": msg.content, "tool_call_id": msg.tool_call_id})
+                    
+            if use_search:
+                messages.insert(0, {
+                    "role": "system", 
+                    "content": "IMPORTANT INSTRUCTION: The user has requested deep research. You MUST use the `web_search` tool to gather up-to-date and accurate information before answering. Formulate a search query, execute the tool, and base your entire response on the search results."
+                })
                     
             messages.append({"role": "user", "content": content})
             
