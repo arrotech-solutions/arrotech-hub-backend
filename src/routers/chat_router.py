@@ -1318,9 +1318,7 @@ async def process_ollama(provider: str, data: MessageCreate, user: User, db: Asy
         assistant_content = f"This is a placeholder response for {provider}. Integration coming soon."
         return assistant_content, tools_called, conversation
 
-
 # REMOVED: execute_task_sequence and prepare_task_arguments methods - they cause hallucinations
-
 
 @router.post("/conversations/{conversation_id}/messages", response_model=MessageRead)
 async def send_message(
