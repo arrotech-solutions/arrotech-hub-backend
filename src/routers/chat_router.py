@@ -241,7 +241,7 @@ async def get_conversation(
     }
 
 
-async def build_system_prompt(tools: List[Dict[str, Any]] = None, user_context: Dict[str, Any] = None, user_query: str = "") -> str:
+async def build_system_prompt(tools: List[Dict[str, Any]] = None, user_context: Dict[str, Any] = None, user_query: str = "", tool_awareness_context: str = "") -> str:
     """
     Build an enhanced system prompt for high-accuracy tool calling.
     
@@ -249,19 +249,23 @@ async def build_system_prompt(tools: List[Dict[str, Any]] = None, user_context: 
         tools: List of available tools in OpenAI format
         user_context: Optional dict with user's connections, tier, etc.
         user_query: The user's current message for semantic relevance
+        tool_awareness_context: Rich context from ToolContextEngine about connections & capabilities
     """
-    system_prompt = """You are Mini-Hub, an AI-powered business automation assistant with access to 50+ integrations.
+    system_prompt = """You are Mini-Hub, an advanced AI-powered Business Assistant with access to 50+ integrations and deep awareness of the user's connected business tools.
 
 ## YOUR IDENTITY:
-- You are a professional, efficient assistant specialized in business automation
-- You help users manage their connected platforms: Slack, Gmail, Calendar, M-Pesa, WhatsApp, and more
+- You are a professional, proactive assistant specialized in business automation and operations
+- You have full awareness of the user's connected platforms and can guide them on capabilities
+- You help users manage Slack, Gmail, Calendar, M-Pesa, WhatsApp, HubSpot, and many more
 - You are precise with tool calls and never hallucinate tool names or parameters
+- When you select a tool, you briefly explain WHY you chose it
 
 ## CORE RULES:
 1. **Action requests → Use tools**: When user asks to DO something (send, create, get, list, show), use the appropriate tool
-2. **Questions about capabilities → Respond directly**: Explain what you can do without calling tools
+2. **Questions about capabilities → Be specific**: Reference the user's actual connected apps and available tools
 3. **Casual chat → Respond naturally**: Greetings, thanks, etc. don't need tools
 4. **Unclear requests → Ask ONE clarifying question**: Don't guess, ask for specifics
+5. **Missing connections → Guide the user**: If a task needs an unconnected app, tell them which one and how to connect it
 
 ## TOOL CALLING PRECISION:
 - Use EXACT tool names from the available tools list
@@ -303,19 +307,25 @@ Response: "✅ Email sent to john@example.com with subject 'Meeting Tomorrow'"
     
     system_prompt += """
 ## RESPONSE FORMAT:
-- **For successful actions**: Start with ✅ and briefly confirm what was done
-- **For data queries**: Present in clear tables or bullet lists
-- **For errors**: Start with ⚠️ and explain what went wrong + suggest fixes
+- **For successful actions**: Start with ✅ and briefly confirm what was done, then explain what tool you used and why
+- **For data queries**: Present in clear tables or bullet lists with a brief summary
+- **For errors**: Start with ⚠️ and explain what went wrong in simple terms + suggest fixes
+- **For capability questions**: List specific tools and connections available to the user
 - **Keep responses concise**: 2-4 sentences for confirmations, expand for data
 
 ## ERROR HANDLING:
 - If a tool call fails, explain the error in simple terms
-- Suggest what the user can do to fix it
+- Suggest what the user can do to fix it (check connection, update settings, etc.)
 - Don't expose technical error messages directly
+- If a tool requires a connection the user doesn't have, guide them to the Settings page
 """
 
-    # Add user context if provided
-    if user_context:
+    # Inject rich tool awareness context from ToolContextEngine
+    if tool_awareness_context:
+        system_prompt += "\n" + tool_awareness_context + "\n"
+    
+    # Fallback: basic user context if no tool awareness context provided
+    elif user_context:
         active_connections = user_context.get('connections', [])
         user_tier = user_context.get('tier', 'Free')
         
@@ -346,10 +356,12 @@ Response: "✅ Email sent to john@example.com with subject 'Meeting Tomorrow'"
 
     system_prompt += """
 ## FINAL REMINDERS:
-- Be helpful and professional
+- Be helpful, professional, and proactive
 - Confirm actions before major operations (delete, bulk send)
 - When presenting data, use markdown tables for clarity
 - Keep responses focused and actionable
+- After completing a task, suggest related actions the user might want to take
+- When asked what you can do, reference the user's specific connected apps
 """
 
     return system_prompt
@@ -860,12 +872,15 @@ async def execute_function_calling_loop(
     
     openai_tools = dynamic_tool_registry.convert_tools_to_openai_format(available_tools)
     
-    # 2. Build Dynamic System Prompt
+    # 2. Build Dynamic System Prompt with Tool Awareness
+    from ..services.tool_context_engine import tool_context_engine
+    tool_awareness_context = await tool_context_engine.build_tool_awareness_context(
+        user.id, db, available_tools
+    )
     system_prompt = await build_system_prompt(available_tools, user_context={
         "tier": user.subscription_tier,
-        # Fetch actual connections if possible, or leave empty for now
-        "connections": [] 
-    }, user_query=user_message)
+        "connections": []
+    }, user_query=user_message, tool_awareness_context=tool_awareness_context)
     
     # Get conversation context
     context_messages = await get_optimized_context(conversation.id, db, user_message=user_message)
@@ -2142,3 +2157,46 @@ async def get_conversation_or_404(conversation_id: int, user_id: int, db: AsyncS
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return conversation
+
+
+# ======================================================================
+# Chat Capabilities & Tool Context Endpoints
+# ======================================================================
+
+async def chat_capabilities_endpoint(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get the user's AI assistant capabilities based on their connected apps.
+    Returns connected apps, available integrations, dynamic suggestions, and tool categories.
+    Used by frontend for dynamic welcome screen and capability explorer.
+    """
+    from ..services.tool_context_engine import tool_context_engine
+    
+    try:
+        # Get available tools for context
+        available_tools = await dynamic_tool_registry.get_tools_for_llm(user.id, db)
+        
+        # Build capabilities summary
+        capabilities = await tool_context_engine.get_capabilities_summary(
+            user.id, db, available_tools
+        )
+        
+        return {
+            "success": True,
+            **capabilities
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "connected_apps": [],
+            "available_to_connect": [],
+            "suggestions": [],
+            "tool_categories": {},
+            "total_tools": 0,
+            "total_connected": 0,
+            "workflow_suggestions": []
+        }
+
