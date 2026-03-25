@@ -170,183 +170,6 @@ class ExecutionOrchestrator:
             error_response = f"I apologize, but I encountered an issue processing your request: '{content[:100]}...'. Please try again or rephrase your question."
             return error_response, [], 0
     
-    async def process_message_stream(
-        self, 
-        content: str, 
-        provider: str,
-        use_reasoning: bool = False,
-        use_search: bool = False
-    ) -> AsyncGenerator[Dict[str, Any], None]:
-        """
-        Process a user message and stream the response as SSE events.
-        Includes support for extracting <think> tags for live reasoning streams.
-        """
-        import asyncio
-        import re
-        
-        yield {"type": "thinking", "content": "Analyzing your request..."}
-        
-        try:
-            # Step 1: Intent Classification
-            intent_classifier = await self.intent_processor.classify_intent(content)
-            
-            # Step 2: Tool routing
-            relevant_tools = []
-            if intent_classifier.requires_tools:
-                yield {"type": "thinking", "content": "Selecting tools..."}
-                relevant_tools = await self.tool_router.get_relevant_tools(content)
-                
-            if use_search:
-                yield {"type": "thinking", "content": "Injecting web search capabilities..."}
-                search_tool = dynamic_tool_registry.base_tools.get("web_search")
-                if search_tool and search_tool not in relevant_tools:
-                    relevant_tools.append(search_tool)
-                
-            openai_tools = dynamic_tool_registry.convert_tools_to_openai_format(relevant_tools)
-            
-            # Model Routing for Reasoning
-            model_override = None
-            if use_reasoning:
-                yield {"type": "thinking", "content": "Routing to reasoning model..."}
-                if provider == "openai":
-                    model_override = "o3-mini"
-                elif provider == "anthropic":
-                    model_override = "claude-3-7-sonnet"
-                else:
-                    model_override = "deepseek-r1" # Default local reasoning model
-            
-            from ..routers.chat_router import get_optimized_context, build_system_prompt
-            from .tool_context_engine import tool_context_engine
-            from .dynamic_tool_registry import dynamic_tool_registry
-            
-            context_messages = await get_optimized_context(self.conversation_id, self.db, user_message=content)
-            
-            # Fetch all available tools for ToolContextEngine to generate accurate counts and capabilities
-            all_available_tools_list = list(dynamic_tool_registry.base_tools.values())
-            
-            # Build enriched system prompt with tool awareness using ALL tools for context
-            tool_awareness_context = await tool_context_engine.build_tool_awareness_context(
-                self.user.id, self.db, all_available_tools_list
-            )
-            
-            # Construct system prompt
-            system_prompt = await build_system_prompt(
-                relevant_tools, # We only pass relevant tools for execution to save tokens
-                user_context={"tier": self.user.subscription_tier, "connections": []},
-                user_query=content,
-                tool_awareness_context=tool_awareness_context
-            )
-            
-            messages = [{"role": "system", "content": system_prompt}]
-            for msg in context_messages:
-                if msg.role == MessageRole.USER:
-                    messages.append({"role": "user", "content": msg.content})
-                elif msg.role == MessageRole.ASSISTANT:
-                    messages.append({"role": "assistant", "content": msg.content})
-                elif msg.role == MessageRole.TOOL:
-                    messages.append({"role": "tool", "content": msg.content, "tool_call_id": msg.tool_call_id})
-                    
-            if use_search:
-                messages.insert(1, {
-                    "role": "system", 
-                    "content": "IMPORTANT INSTRUCTION: The user has requested deep research. You MUST use the `web_search` tool to gather up-to-date and accurate information before answering. Formulate a search query, execute the tool, and base your entire response on the search results."
-                })
-                    
-            messages.append({"role": "user", "content": content})
-            
-            yield {"type": "thinking", "content": "Generating response..."}
-            
-            # Run the existing synchronous function-calling loop
-            final_content, tools_called, tokens_used = await self._execute_function_calling_loop(provider, messages, openai_tools, model_override=model_override)
-            
-            # Yield tools execution for the UI to display in real-time
-            # Import ToolContextEngine for enriched tool metadata
-            from .tool_context_engine import tool_context_engine
-            user_connections = await tool_context_engine.get_user_connections(self.user.id, self.db)
-            
-            for i, tc in enumerate(tools_called):
-                tool_name = tc.get("name", "")
-                tool_args = tc.get("arguments", {})
-                tool_result = tc.get("result", {})
-                
-                # Build tool context explanation
-                tool_context = tool_context_engine.build_tool_selection_explanation(
-                    tool_name, content, user_connections
-                )
-                
-                # Attach context back to the tool call so it gets saved to the database
-                tc["context"] = tool_context
-                
-                # Emit tool_context event BEFORE tool_start (explains WHY this tool was selected)
-                yield {
-                    "type": "tool_context",
-                    "tool": tool_name,
-                    "platform": tool_context.get("platform", "Built-in"),
-                    "platform_icon": tool_context.get("platform_icon", "⚡"),
-                    "platform_color": tool_context.get("platform_color", "gray"),
-                    "category": tool_context.get("category", "general"),
-                    "connection_status": tool_context.get("connection_status", "built-in"),
-                    "reason": tool_context.get("reason", f"Using {tool_name}")
-                }
-                
-                yield {
-                    "type": "tool_start",
-                    "tool": tool_name,
-                    "args": tool_args
-                }
-                
-                # Emit search sources for web_search tool
-                if tool_name == "web_search" and isinstance(tool_result, dict) and tool_result.get("sources"):
-                    yield {"type": "search_sources", "sources": tool_result["sources"]}
-                
-                # Simulate a slight delay to trigger UI animations
-                await asyncio.sleep(0.5)
-                
-                # Build enriched tool_result with insights
-                is_success = "error" not in (tool_result if isinstance(tool_result, dict) else {})
-                
-                # Generate simple summary for non-technical users
-                simple_summary = self._generate_tool_summary(tool_name, tool_args, tool_result, is_success)
-                
-                yield {
-                    "type": "tool_result",
-                    "tool": tool_name,
-                    "success": is_success,
-                    "summary": simple_summary,
-                    "args": tool_args,
-                    "platform": tool_context.get("platform", "Built-in"),
-                    "platform_icon": tool_context.get("platform_icon", "⚡"),
-                    "platform_color": tool_context.get("platform_color", "gray"),
-                    "category": tool_context.get("category", "general"),
-                }
-            
-            # Simulate streaming the final response to decouple reasoning and content
-            # Parse <think> tags if they exist (used by DeepSeek/o1 models)
-            think_match = re.search(r'<think>(.*?)</think>', final_content, re.DOTALL)
-            
-            if think_match:
-                think_content = think_match.group(1).strip()
-                # Remove the think block from final content
-                final_content = final_content.replace(think_match.group(0), "").strip()
-                
-                # Stream the reasoning chunk by chunk
-                chunk_size = 20
-                for i in range(0, len(think_content), chunk_size):
-                    yield {"type": "reasoning_delta", "delta": think_content[i:i+chunk_size]}
-                    await asyncio.sleep(0.01)
-            
-            # Stream the final text chunks
-            chunk_size = 15
-            for i in range(0, len(final_content), chunk_size):
-                yield {"type": "content_delta", "delta": final_content[i:i+chunk_size]}
-                await asyncio.sleep(0.01)
-                
-            yield {"type": "done", "tokens_used": tokens_used, "tools_called": tools_called}
-            
-        except Exception as e:
-            logger.error(f"Error in stream: {e}")
-            yield {"type": "error", "error": str(e)}
-
     async def _generate_direct_response(self, content: str, provider: str) -> Tuple[str, List[Dict[str, Any]], int]:
         """Generate a direct response without tool usage."""
         # Get conversation context
@@ -1374,10 +1197,33 @@ class ExecutionOrchestrator:
             # Step 4: Prepare for function calling loop
             openai_tools = dynamic_tool_registry.convert_tools_to_openai_format(relevant_tools)
             
-            from ..routers.chat_router import get_optimized_context
+            from ..routers.chat_router import get_optimized_context, build_system_prompt
+            from .tool_context_engine import tool_context_engine
+            
             context_messages = await get_optimized_context(self.conversation_id, self.db, user_message=content)
             
-            messages = []
+            # Enriched UI tool insights context
+            user_connections = await tool_context_engine.get_user_connections(self.user.id, self.db)
+            all_available_tools_list = list(dynamic_tool_registry.base_tools.values())
+            tool_awareness_context = await tool_context_engine.build_tool_awareness_context(
+                self.user.id, self.db, all_available_tools_list
+            )
+            
+            system_prompt = await build_system_prompt(
+                relevant_tools,
+                user_context={"tier": self.user.subscription_tier, "connections": []},
+                user_query=content,
+                tool_awareness_context=tool_awareness_context
+            )
+            
+            messages = [{"role": "system", "content": system_prompt}]
+            
+            if use_search:
+                messages.append({
+                    "role": "system", 
+                    "content": "IMPORTANT INSTRUCTION: The user has requested deep research. You MUST use the `web_search` tool to gather up-to-date and accurate information before answering. Formulate a search query, execute the tool, and base your entire response on the search results."
+                })
+                
             for msg in context_messages:
                 if msg.role == MessageRole.USER:
                     messages.append({"role": "user", "content": msg.content})
@@ -1469,6 +1315,23 @@ class ExecutionOrchestrator:
                         except json.JSONDecodeError:
                             arguments = {}
 
+                        # Rich tool_context injection
+                        from .tool_context_engine import tool_context_engine
+                        tool_context = tool_context_engine.build_tool_selection_explanation(
+                            function_name, content, user_connections
+                        )
+
+                        yield {
+                            "type": "tool_context",
+                            "tool": function_name,
+                            "platform": tool_context.get("platform", "Built-in"),
+                            "platform_icon": tool_context.get("platform_icon", "⚡"),
+                            "platform_color": tool_context.get("platform_color", "gray"),
+                            "category": tool_context.get("category", "general"),
+                            "connection_status": tool_context.get("connection_status", "built-in"),
+                            "reason": tool_context.get("reason", f"Using {function_name}")
+                        }
+
                         yield {"type": "tool_start", "tool": function_name, "args": arguments}
 
                         try:
@@ -1485,7 +1348,8 @@ class ExecutionOrchestrator:
                                 function_name, arguments, self.user, self.db, tools_called
                             )
 
-                            tools_called.append({"name": function_name, "arguments": arguments, "result": tool_result})
+                            # Add to tools_called after execute_tool but before returning loop
+                            # (handled after emitting tool_result to ensure context injection)
 
                             # Emit search sources for web_search tool
                             if function_name == "web_search" and isinstance(tool_result, dict) and tool_result.get("sources"):
@@ -1502,7 +1366,20 @@ class ExecutionOrchestrator:
                                 summary = str(tool_result)[:200]
 
                             success = isinstance(tool_result, dict) and tool_result.get("success", True)
-                            yield {"type": "tool_result", "tool": function_name, "success": success, "summary": summary}
+                            
+                            yield {
+                                "type": "tool_result", 
+                                "tool": function_name, 
+                                "success": success, 
+                                "summary": summary,
+                                "args": arguments,
+                                "platform": tool_context.get("platform", "Built-in"),
+                                "platform_icon": tool_context.get("platform_icon", "⚡"),
+                                "platform_color": tool_context.get("platform_color", "gray"),
+                                "category": tool_context.get("category", "general")
+                            }
+
+                            tools_called.append({"name": function_name, "arguments": arguments, "result": tool_result, "context": tool_context})
 
                             messages.append({
                                 "role": "tool",
@@ -1513,7 +1390,7 @@ class ExecutionOrchestrator:
                         except Exception as e:
                             yield {"type": "tool_result", "tool": function_name, "success": False, "summary": f"Execution error: {str(e)}"}
                             messages.append({"role": "tool", "content": f"Error: {str(e)}", "tool_call_id": tool_call_id})
-                            tools_called.append({"name": function_name, "arguments": arguments, "result": {"error": str(e)}})
+                            tools_called.append({"name": function_name, "arguments": arguments, "result": {"error": str(e)}, "context": tool_context})
 
                 except Exception as e:
                     logger.error(f"Error in stream iteration {iteration + 1}: {e}")
@@ -1532,10 +1409,26 @@ class ExecutionOrchestrator:
 
     async def _stream_direct_response(self, content: str, provider: str, model_override: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream a direct response (no tools) token by token."""
-        from ..routers.chat_router import get_optimized_context
+        from ..routers.chat_router import get_optimized_context, build_system_prompt
+        from .tool_context_engine import tool_context_engine
+        from .dynamic_tool_registry import dynamic_tool_registry
         
         context_messages = await get_optimized_context(self.conversation_id, self.db, user_message=content)
-        messages = []
+        
+        # Enriched UI tool insights context
+        all_available_tools_list = list(dynamic_tool_registry.base_tools.values())
+        tool_awareness_context = await tool_context_engine.build_tool_awareness_context(
+            self.user.id, self.db, all_available_tools_list
+        )
+        
+        system_prompt = await build_system_prompt(
+            [], # No specific tools for pure direct response
+            user_context={"tier": self.user.subscription_tier, "connections": []},
+            user_query=content,
+            tool_awareness_context=tool_awareness_context
+        )
+        
+        messages = [{"role": "system", "content": system_prompt}]
         for msg in context_messages:
             if msg.role == MessageRole.USER:
                 messages.append({"role": "user", "content": msg.content})
