@@ -355,13 +355,14 @@ Response: "✅ Email sent to john@example.com with subject 'Meeting Tomorrow'"
             system_prompt += "\n"
 
     system_prompt += """
-## FINAL REMINDERS:
+## FINAL REMINDERS (STRICT COMPLIANCE REQUIRED):
+- NEVER provide generic AI capabilities like "translation", "math help", "writing essays", or general "answering questions"
+- When asked "What can you do?" or asked about your capabilities, you MUST strictly summarize ONLY the specific integrations and workflows listed in the "YOUR CONNECTED APPS STATUS" and "WHAT YOU CAN DO RIGHT NOW" sections above
 - Be helpful, professional, and proactive
-- Confirm actions before major operations (delete, bulk send)
+- Confirm actions before major operations
 - When presenting data, use markdown tables for clarity
 - Keep responses focused and actionable
 - After completing a task, suggest related actions the user might want to take
-- When asked what you can do, reference the user's specific connected apps
 """
 
     return system_prompt
@@ -1400,7 +1401,7 @@ async def send_message(
     
     try:
         # Process message with full orchestration
-        final_content, tools_called, tokens_used = await orchestrator.process_message(data.content, data.provider)
+        final_content, tools_called, tokens_used = await orchestrator.process_message(data.content, data.provider or settings.DEFAULT_LLM_PROVIDER)
         
         # Create final assistant message
         assistant_message = Message(
@@ -1487,7 +1488,7 @@ async def send_message_stream(
         try:
             async for event in orchestrator.process_message_stream(
                 data.content, 
-                data.provider or "ollama",
+                data.provider or settings.DEFAULT_LLM_PROVIDER,
                 use_reasoning=data.use_reasoning,
                 use_search=data.use_search
             ):
