@@ -1283,8 +1283,8 @@ class ExecutionOrchestrator:
                     # If no tool calls, stream the final response
                     if not tool_calls:
                         yield {"type": "thinking", "content": "Composing final response..."}
-                        # Stream the final LLM response token by token
-                        async for event in self._stream_final_response(provider, messages, openai_tools, model_override=model_override):
+                        # Stream the final LLM response token by token without tools to prevent streaming tool calls
+                        async for event in self._stream_final_response(provider, messages, tools=None, model_override=model_override):
                             if event.get("type") == "content_delta":
                                 yield event
                             elif event.get("type") == "content":
