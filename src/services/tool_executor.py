@@ -360,8 +360,18 @@ class ToolExecutor:
             from duckduckgo_search import DDGS
             
             print(f"🔍 Executing Web Search for: '{query}'")
-            with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=max_results))
+            
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            
+            results = []
+            try:
+                with DDGS(headers=headers, timeout=20) as ddgs:
+                    results = list(ddgs.text(query, max_results=max_results))
+            except Exception as e:
+                logger.error(f"DuckDuckGo Search error: {e}")
+                print(f"❌ Web Search Exception: {str(e)}")
             
             if not results:
                 return {
