@@ -215,10 +215,23 @@ class ExecutionOrchestrator:
                 else:
                     model_override = "deepseek-r1" # Default local reasoning model
             
-            from ..routers.chat_router import get_optimized_context
+            from ..routers.chat_router import get_optimized_context, build_system_prompt
+            from .tool_context_engine import tool_context_engine
+            
             context_messages = await get_optimized_context(self.conversation_id, self.db, user_message=content)
             
-            messages = []
+            # Build enriched system prompt with tool awareness
+            tool_awareness_context = await tool_context_engine.build_tool_awareness_context(
+                self.user.id, self.db, relevant_tools
+            )
+            system_prompt = await build_system_prompt(
+                relevant_tools,
+                user_context={"tier": self.user.subscription_tier, "connections": []},
+                user_query=content,
+                tool_awareness_context=tool_awareness_context
+            )
+            
+            messages = [{"role": "system", "content": system_prompt}]
             for msg in context_messages:
                 if msg.role == MessageRole.USER:
                     messages.append({"role": "user", "content": msg.content})
@@ -228,7 +241,7 @@ class ExecutionOrchestrator:
                     messages.append({"role": "tool", "content": msg.content, "tool_call_id": msg.tool_call_id})
                     
             if use_search:
-                messages.insert(0, {
+                messages.insert(1, {
                     "role": "system", 
                     "content": "IMPORTANT INSTRUCTION: The user has requested deep research. You MUST use the `web_search` tool to gather up-to-date and accurate information before answering. Formulate a search query, execute the tool, and base your entire response on the search results."
                 })
