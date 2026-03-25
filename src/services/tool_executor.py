@@ -348,6 +348,8 @@ class ToolExecutor:
         db: AsyncSession
     ) -> Dict[str, Any]:
         """Execute a web search using DuckDuckGo."""
+        from urllib.parse import urlparse
+        
         query = arguments.get("query")
         max_results = arguments.get("max_results", 5)
 
@@ -365,19 +367,32 @@ class ToolExecutor:
                 return {
                     "success": True,
                     "result": f"No search results found for '{query}'.",
+                    "sources": [],
                     "data": []
                 }
                 
-            # Format results nicely for the LLM
+            # Build structured sources for frontend cards
+            sources = []
             formatted_results = []
             for r in results:
-                formatted_results.append(f"Title: {r.get('title')}\nURL: {r.get('href')}\nSnippet: {r.get('body')}")
+                url = r.get('href', '')
+                domain = urlparse(url).netloc.replace('www.', '') if url else ''
+                
+                sources.append({
+                    "title": r.get('title', ''),
+                    "url": url,
+                    "snippet": r.get('body', ''),
+                    "domain": domain,
+                    "favicon": f"https://www.google.com/s2/favicons?domain={domain}&sz=32" if domain else None
+                })
+                formatted_results.append(f"Title: {r.get('title')}\nURL: {url}\nSnippet: {r.get('body')}")
                 
             summary = f"Found {len(results)} results for '{query}'"
             
             return {
                 "success": True,
                 "result": summary + "\n\n" + "\n---\n".join(formatted_results),
+                "sources": sources,
                 "data": results,
                 "processed_arguments": arguments
             }
@@ -385,7 +400,7 @@ class ToolExecutor:
         except ImportError:
             return {
                 "success": False,
-                "error": "The 'duckduckgo-search' library is required for web search. Please manually run 'pip install duckduckgo-search'.",
+                "error": "The 'duckduckgo-search' library is required for web search. Install it with: pip install duckduckgo-search",
                 "result": None
             }
         except Exception as e:

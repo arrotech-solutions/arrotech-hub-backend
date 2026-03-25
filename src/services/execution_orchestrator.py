@@ -247,6 +247,9 @@ class ExecutionOrchestrator:
                     "tool": tc.get("name"),
                     "args": tc.get("arguments", {})
                 }
+                # Emit search sources for web_search tool
+                if tc.get("name") == "web_search" and isinstance(tc.get("result"), dict) and tc["result"].get("sources"):
+                    yield {"type": "search_sources", "sources": tc["result"]["sources"]}
                 # Simulate a slight delay to trigger UI animations
                 await asyncio.sleep(0.5)
                 yield {
@@ -1340,6 +1343,10 @@ class ExecutionOrchestrator:
                             )
 
                             tools_called.append({"name": function_name, "arguments": arguments, "result": tool_result})
+
+                            # Emit search sources for web_search tool
+                            if function_name == "web_search" and isinstance(tool_result, dict) and tool_result.get("sources"):
+                                yield {"type": "search_sources", "sources": tool_result["sources"]}
 
                             # Build a short summary
                             summary = ""
