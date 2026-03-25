@@ -274,6 +274,9 @@ class ExecutionOrchestrator:
                     tool_name, content, user_connections
                 )
                 
+                # Attach context back to the tool call so it gets saved to the database
+                tc["context"] = tool_context
+                
                 # Emit tool_context event BEFORE tool_start (explains WHY this tool was selected)
                 yield {
                     "type": "tool_context",
@@ -338,7 +341,7 @@ class ExecutionOrchestrator:
                 yield {"type": "content_delta", "delta": final_content[i:i+chunk_size]}
                 await asyncio.sleep(0.01)
                 
-            yield {"type": "done", "tokens_used": tokens_used}
+            yield {"type": "done", "tokens_used": tokens_used, "tools_called": tools_called}
             
         except Exception as e:
             logger.error(f"Error in stream: {e}")
