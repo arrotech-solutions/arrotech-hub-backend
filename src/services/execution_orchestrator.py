@@ -182,20 +182,7 @@ class ExecutionOrchestrator:
             if msg.role == MessageRole.USER:
                 messages.append({"role": "user", "content": msg.content})
             elif msg.role == MessageRole.ASSISTANT:
-                ast_msg = {"role": "assistant", "content": msg.content}
-                if msg.tools_called:
-                    tool_calls = []
-                    for idx, tc in enumerate(msg.tools_called):
-                        tool_calls.append({
-                            "id": tc.get("id", tc.get("tool_call_id", f"call_{idx}")),
-                            "type": "function",
-                            "function": {
-                                "name": tc.get("name"),
-                                "arguments": json.dumps(tc.get("arguments", {}))
-                            }
-                        })
-                    ast_msg["tool_calls"] = tool_calls
-                messages.append(ast_msg)
+                messages.append({"role": "assistant", "content": msg.content})
             elif msg.role == MessageRole.TOOL:
                 messages.append({"role": "tool", "content": msg.content, "tool_call_id": msg.tool_call_id})
         
@@ -1241,20 +1228,7 @@ class ExecutionOrchestrator:
                 if msg.role == MessageRole.USER:
                     messages.append({"role": "user", "content": msg.content})
                 elif msg.role == MessageRole.ASSISTANT:
-                    ast_msg = {"role": "assistant", "content": msg.content}
-                    if msg.tools_called:
-                        tool_calls = []
-                        for idx, tc in enumerate(msg.tools_called):
-                            tool_calls.append({
-                                "id": tc.get("id", tc.get("tool_call_id", f"call_{idx}")),
-                                "type": "function",
-                                "function": {
-                                    "name": tc.get("name"),
-                                    "arguments": json.dumps(tc.get("arguments", {}))
-                                }
-                            })
-                        ast_msg["tool_calls"] = tool_calls
-                    messages.append(ast_msg)
+                    messages.append({"role": "assistant", "content": msg.content})
                 elif msg.role == MessageRole.TOOL:
                     messages.append({"role": "tool", "content": msg.content, "tool_call_id": msg.tool_call_id})
             messages.append({"role": "user", "content": content})
@@ -1366,7 +1340,7 @@ class ExecutionOrchestrator:
                             if not is_valid:
                                 yield {"type": "tool_result", "tool": function_name, "success": False, "summary": f"Validation error: {error_msg}"}
                                 messages.append({"role": "tool", "content": f"Error: {error_msg}", "tool_call_id": tool_call_id})
-                                tools_called.append({"id": tool_call_id, "name": function_name, "arguments": arguments, "result": {"error": error_msg}})
+                                tools_called.append({"name": function_name, "arguments": arguments, "result": {"error": error_msg}})
                                 continue
 
                             # Execute tool
@@ -1405,7 +1379,7 @@ class ExecutionOrchestrator:
                                 "category": tool_context.get("category", "general")
                             }
 
-                            tools_called.append({"id": tool_call_id, "name": function_name, "arguments": arguments, "result": tool_result, "context": tool_context})
+                            tools_called.append({"name": function_name, "arguments": arguments, "result": tool_result, "context": tool_context})
 
                             messages.append({
                                 "role": "tool",
@@ -1416,7 +1390,7 @@ class ExecutionOrchestrator:
                         except Exception as e:
                             yield {"type": "tool_result", "tool": function_name, "success": False, "summary": f"Execution error: {str(e)}"}
                             messages.append({"role": "tool", "content": f"Error: {str(e)}", "tool_call_id": tool_call_id})
-                            tools_called.append({"id": tool_call_id, "name": function_name, "arguments": arguments, "result": {"error": str(e)}, "context": tool_context})
+                            tools_called.append({"name": function_name, "arguments": arguments, "result": {"error": str(e)}, "context": tool_context})
 
                 except Exception as e:
                     logger.error(f"Error in stream iteration {iteration + 1}: {e}")
@@ -1459,20 +1433,7 @@ class ExecutionOrchestrator:
             if msg.role == MessageRole.USER:
                 messages.append({"role": "user", "content": msg.content})
             elif msg.role == MessageRole.ASSISTANT:
-                ast_msg = {"role": "assistant", "content": msg.content}
-                if msg.tools_called:
-                    tool_calls = []
-                    for idx, tc in enumerate(msg.tools_called):
-                        tool_calls.append({
-                            "id": tc.get("id", tc.get("tool_call_id", f"call_{idx}")),
-                            "type": "function",
-                            "function": {
-                                "name": tc.get("name"),
-                                "arguments": json.dumps(tc.get("arguments", {}))
-                            }
-                        })
-                    ast_msg["tool_calls"] = tool_calls
-                messages.append(ast_msg)
+                messages.append({"role": "assistant", "content": msg.content})
             elif msg.role == MessageRole.TOOL:
                 messages.append({"role": "tool", "content": msg.content, "tool_call_id": msg.tool_call_id})
         messages.append({"role": "user", "content": content})
@@ -1724,4 +1685,4 @@ class ExecutionOrchestrator:
                 logger.error(f"Ollama streaming error with model {model}: {e}")
                 continue
 
-        logger.error("All Ollama models failed for streaming")
+        logger.error("All Ollama models failed for streaming")
