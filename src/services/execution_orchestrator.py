@@ -414,11 +414,18 @@ class ExecutionOrchestrator:
             kwargs = {
                 "model": model,
                 "messages": messages,
-                "temperature": settings.LLM_TEMPERATURE or 0.7,
             }
             
+            is_o_series = model.startswith(('o1', 'o3'))
+            
+            if not is_o_series:
+                kwargs["temperature"] = settings.LLM_TEMPERATURE or 0.7
+            
             if settings.LLM_MAX_TOKENS:
-                kwargs["max_tokens"] = settings.LLM_MAX_TOKENS
+                if is_o_series:
+                    kwargs["max_completion_tokens"] = settings.LLM_MAX_TOKENS
+                else:
+                    kwargs["max_tokens"] = settings.LLM_MAX_TOKENS
             
             if tools:
                 kwargs["tools"] = tools
@@ -805,11 +812,18 @@ class ExecutionOrchestrator:
             kwargs = {
                 "model": model,
                 "messages": messages,
-                "temperature": settings.LLM_TEMPERATURE or 0.7,
             }
             
+            is_o_series = model.startswith(('o1', 'o3'))
+            
+            if not is_o_series:
+                kwargs["temperature"] = settings.LLM_TEMPERATURE or 0.7
+            
             if settings.LLM_MAX_TOKENS:
-                kwargs["max_tokens"] = settings.LLM_MAX_TOKENS
+                if is_o_series:
+                    kwargs["max_completion_tokens"] = settings.LLM_MAX_TOKENS
+                else:
+                    kwargs["max_tokens"] = settings.LLM_MAX_TOKENS
             
             if tools:
                 kwargs["tools"] = tools
@@ -1485,11 +1499,20 @@ class ExecutionOrchestrator:
             kwargs = {
                 "model": model,
                 "messages": messages,
-                "temperature": settings.LLM_TEMPERATURE or 0.7,
                 "stream": True,
             }
+            
+            is_o_series = model.startswith(('o1', 'o3'))
+            
+            if not is_o_series:
+                kwargs["temperature"] = settings.LLM_TEMPERATURE or 0.7
+                
             if settings.LLM_MAX_TOKENS:
-                kwargs["max_tokens"] = settings.LLM_MAX_TOKENS
+                if is_o_series:
+                    kwargs["max_completion_tokens"] = settings.LLM_MAX_TOKENS
+                else:
+                    kwargs["max_tokens"] = settings.LLM_MAX_TOKENS
+                    
             if tools:
                 kwargs["tools"] = tools
                 kwargs["tool_choice"] = "auto"

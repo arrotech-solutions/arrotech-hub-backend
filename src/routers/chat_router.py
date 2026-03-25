@@ -1184,11 +1184,21 @@ async def call_llm_fallback(provider: str, model: str, messages: List[Dict[str, 
             client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
             
             request_params = {
-                "model": getattr(settings, 'OPENAI_MODEL', 'gpt-4o'),
+                "model": model,
                 "messages": messages,
-                "temperature": getattr(settings, 'LLM_TEMPERATURE', 0.7),
-                "max_tokens": getattr(settings, 'LLM_MAX_TOKENS', 1024),
             }
+            
+            is_o_series = model.startswith(('o1', 'o3'))
+            
+            if not is_o_series:
+                request_params["temperature"] = getattr(settings, 'LLM_TEMPERATURE', 0.7)
+                
+            max_tokens_val = getattr(settings, 'LLM_MAX_TOKENS', 1024)
+            if max_tokens_val:
+                if is_o_series:
+                    request_params["max_completion_tokens"] = max_tokens_val
+                else:
+                    request_params["max_tokens"] = max_tokens_val
             if tools:
                 request_params["tools"] = tools
                 request_params["tool_choice"] = "auto"

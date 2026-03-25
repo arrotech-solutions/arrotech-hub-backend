@@ -72,11 +72,18 @@ class OpenAIProvider(LLMProvider):
             kwargs = {
                 "model": model,
                 "messages": messages,
-                "temperature": temperature,
             }
+            
+            is_o_series = model.startswith(('o1', 'o3'))
+            
+            if not is_o_series:
+                kwargs["temperature"] = temperature
 
             if max_tokens:
-                kwargs["max_tokens"] = max_tokens
+                if is_o_series:
+                    kwargs["max_completion_tokens"] = max_tokens
+                else:
+                    kwargs["max_tokens"] = max_tokens
 
             if tools:
                 kwargs["tools"] = tools
