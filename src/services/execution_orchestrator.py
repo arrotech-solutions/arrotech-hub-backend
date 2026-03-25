@@ -850,12 +850,14 @@ class ExecutionOrchestrator:
             payload = {
                 "model": model,
                 "messages": messages,
-                "tools": tools,
-                "tool_choice": "auto",
                 "temperature": 0.1,  # Lower temperature for more precise tool selection
                 "max_tokens": 1000,
                 "stream": False
             }
+            
+            if tools:
+                payload["tools"] = tools
+                payload["tool_choice"] = "auto"
             
             print(f"📤 Trying model '{model}' with {len(tools)} tools:")
             for tool in tools:
