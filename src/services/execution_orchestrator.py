@@ -241,23 +241,61 @@ class ExecutionOrchestrator:
             final_content, tools_called, tokens_used = await self._execute_function_calling_loop(provider, messages, openai_tools, model_override=model_override)
             
             # Yield tools execution for the UI to display in real-time
+            # Import ToolContextEngine for enriched tool metadata
+            from .tool_context_engine import tool_context_engine
+            user_connections = await tool_context_engine.get_user_connections(self.user.id, self.db)
+            
             for i, tc in enumerate(tools_called):
+                tool_name = tc.get("name", "")
+                tool_args = tc.get("arguments", {})
+                tool_result = tc.get("result", {})
+                
+                # Build tool context explanation
+                tool_context = tool_context_engine.build_tool_selection_explanation(
+                    tool_name, content, user_connections
+                )
+                
+                # Emit tool_context event BEFORE tool_start (explains WHY this tool was selected)
+                yield {
+                    "type": "tool_context",
+                    "tool": tool_name,
+                    "platform": tool_context.get("platform", "Built-in"),
+                    "platform_icon": tool_context.get("platform_icon", "⚡"),
+                    "platform_color": tool_context.get("platform_color", "gray"),
+                    "category": tool_context.get("category", "general"),
+                    "connection_status": tool_context.get("connection_status", "built-in"),
+                    "reason": tool_context.get("reason", f"Using {tool_name}")
+                }
+                
                 yield {
                     "type": "tool_start",
-                    "tool": tc.get("name"),
-                    "args": tc.get("arguments", {})
+                    "tool": tool_name,
+                    "args": tool_args
                 }
+                
                 # Emit search sources for web_search tool
-                if tc.get("name") == "web_search" and isinstance(tc.get("result"), dict) and tc["result"].get("sources"):
-                    yield {"type": "search_sources", "sources": tc["result"]["sources"]}
+                if tool_name == "web_search" and isinstance(tool_result, dict) and tool_result.get("sources"):
+                    yield {"type": "search_sources", "sources": tool_result["sources"]}
+                
                 # Simulate a slight delay to trigger UI animations
                 await asyncio.sleep(0.5)
+                
+                # Build enriched tool_result with insights
+                is_success = "error" not in (tool_result if isinstance(tool_result, dict) else {})
+                
+                # Generate simple summary for non-technical users
+                simple_summary = self._generate_tool_summary(tool_name, tool_args, tool_result, is_success)
+                
                 yield {
                     "type": "tool_result",
-                    "tool": tc.get("name"),
-                    "success": "error" not in tc.get("result", {}),
-                    "summary": f"Executed {tc.get('name')}",
-                    "args": tc.get("arguments", {})
+                    "tool": tool_name,
+                    "success": is_success,
+                    "summary": simple_summary,
+                    "args": tool_args,
+                    "platform": tool_context.get("platform", "Built-in"),
+                    "platform_icon": tool_context.get("platform_icon", "⚡"),
+                    "platform_color": tool_context.get("platform_color", "gray"),
+                    "category": tool_context.get("category", "general"),
                 }
             
             # Simulate streaming the final response to decouple reasoning and content
@@ -499,6 +537,73 @@ class ExecutionOrchestrator:
                     num_tokens += -1  # role is always required and always 1 token
         num_tokens += 2  # every reply is primed with <im_start>assistant
         return num_tokens
+    
+    def _generate_tool_summary(self, tool_name: str, args: Dict[str, Any], result: Any, is_success: bool) -> str:
+        """Generate a simple, human-readable summary of a tool execution result."""
+        display_name = tool_name.replace("_", " ").title()
+        
+        if not is_success:
+            error_msg = ""
+            if isinstance(result, dict):
+                error_msg = result.get("error", result.get("message", ""))
+            return f"⚠️ {display_name} encountered an issue: {error_msg[:100]}" if error_msg else f"⚠️ {display_name} encountered an issue"
+        
+        # Build context-specific summaries
+        name_lower = tool_name.lower()
+        
+        if "slack" in name_lower:
+            action = args.get("action", "performed action")
+            channel = args.get("channel", "")
+            if "send" in action:
+                return f"✅ Message sent to {channel} on Slack"
+            elif "list" in action or "channels" in action:
+                count = len(result.get("data", {}).get("channels", [])) if isinstance(result, dict) else 0
+                return f"✅ Found {count} Slack channels"
+            return f"✅ Slack: {action.replace('_', ' ').title()}"
+        
+        if "hubspot" in name_lower:
+            operation = args.get("operation", args.get("action", ""))
+            if "contact" in name_lower or "contact" in operation:
+                return f"✅ HubSpot contacts operation completed"
+            if "deal" in name_lower or "deal" in operation:
+                return f"✅ HubSpot deals operation completed"
+            return f"✅ HubSpot: {operation.replace('_', ' ').title() if operation else 'Operation completed'}"
+        
+        if "web_search" in name_lower:
+            query = args.get("query", args.get("search_query", ""))
+            source_count = len(result.get("sources", [])) if isinstance(result, dict) else 0
+            return f"🔍 Searched the web for \"{query[:50]}\" — found {source_count} sources"
+        
+        if "file" in name_lower or "pdf" in name_lower or "csv" in name_lower:
+            filename = ""
+            if isinstance(result, dict):
+                filename = result.get("data", {}).get("filename", result.get("filename", ""))
+            return f"📄 File generated: {filename}" if filename else f"📄 File operation completed"
+        
+        if "email" in name_lower or "gmail" in name_lower:
+            to = args.get("to", args.get("recipient", ""))
+            return f"✉️ Email sent to {to}" if to else "✉️ Email operation completed"
+        
+        if "calendar" in name_lower:
+            return f"📅 Calendar event {args.get('action', 'operation')} completed"
+        
+        if "whatsapp" in name_lower:
+            return f"📱 WhatsApp message operation completed"
+        
+        if "mpesa" in name_lower:
+            return f"💰 M-Pesa payment operation completed"
+        
+        if "workflow" in name_lower:
+            return f"🔄 Workflow operation completed"
+        
+        if "content" in name_lower or "image" in name_lower:
+            return f"✍️ Content creation completed"
+        
+        if "analytics" in name_lower or "report" in name_lower:
+            return f"📊 Analytics report generated"
+        
+        # Generic fallback
+        return f"✅ {display_name} completed successfully"
     
     async def _execute_function_calling_loop(self, provider: str, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]], max_iterations: int = 5, model_override: Optional[str] = None) -> Tuple[str, List[Dict[str, Any]], int]:
         """Execute function calling loop with validation and error handling."""
