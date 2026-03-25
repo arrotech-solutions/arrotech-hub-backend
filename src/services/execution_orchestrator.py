@@ -217,15 +217,21 @@ class ExecutionOrchestrator:
             
             from ..routers.chat_router import get_optimized_context, build_system_prompt
             from .tool_context_engine import tool_context_engine
+            from .dynamic_tool_registry import dynamic_tool_registry
             
             context_messages = await get_optimized_context(self.conversation_id, self.db, user_message=content)
             
-            # Build enriched system prompt with tool awareness
+            # Fetch all available tools for ToolContextEngine to generate accurate counts and capabilities
+            all_available_tools_list = list(dynamic_tool_registry.base_tools.values())
+            
+            # Build enriched system prompt with tool awareness using ALL tools for context
             tool_awareness_context = await tool_context_engine.build_tool_awareness_context(
-                self.user.id, self.db, relevant_tools
+                self.user.id, self.db, all_available_tools_list
             )
+            
+            # Construct system prompt
             system_prompt = await build_system_prompt(
-                relevant_tools,
+                relevant_tools, # We only pass relevant tools for execution to save tokens
                 user_context={"tier": self.user.subscription_tier, "connections": []},
                 user_query=content,
                 tool_awareness_context=tool_awareness_context
