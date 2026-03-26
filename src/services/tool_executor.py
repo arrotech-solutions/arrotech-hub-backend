@@ -5577,9 +5577,51 @@ Description: {payment.description or 'N/A'}"""
             
             elif tool_name == "clickup_task_management":
                 if operation == "create_task":
+                    list_id = arguments.get("list_id")
+                    if not list_id:
+                        # Auto-resolve: get first space → first list
+                        team_id = None
+                        teams = connection.config.get("teams", [])
+                        if teams:
+                            team_id = teams[0].get("id")
+                        if team_id:
+                            spaces_res = await clickup_service.get_spaces(access_token, team_id)
+                            spaces = spaces_res.get("spaces", []) if spaces_res.get("success") else []
+                            if not spaces:
+                                spaces = spaces_res.get("data", {}).get("spaces", []) if isinstance(spaces_res.get("data"), dict) else []
+                            for space in spaces:
+                                space_id = space.get("id")
+                                if space_id:
+                                    # Try folderless lists first
+                                    lists_res = await clickup_service.get_folderless_lists(access_token, space_id)
+                                    lists = lists_res.get("lists", []) if lists_res.get("success") else []
+                                    if not lists:
+                                        lists = lists_res.get("data", {}).get("lists", []) if isinstance(lists_res.get("data"), dict) else []
+                                    if lists:
+                                        list_id = lists[0].get("id")
+                                        break
+                                    # Try folders
+                                    folders_res = await clickup_service.get_folders(access_token, space_id)
+                                    folders = folders_res.get("folders", []) if folders_res.get("success") else []
+                                    if not folders:
+                                        folders = folders_res.get("data", {}).get("folders", []) if isinstance(folders_res.get("data"), dict) else []
+                                    for folder in folders:
+                                        folder_id = folder.get("id")
+                                        if folder_id:
+                                            flists_res = await clickup_service.get_lists(access_token, folder_id)
+                                            flists = flists_res.get("lists", []) if flists_res.get("success") else []
+                                            if not flists:
+                                                flists = flists_res.get("data", {}).get("lists", []) if isinstance(flists_res.get("data"), dict) else []
+                                            if flists:
+                                                list_id = flists[0].get("id")
+                                                break
+                                    if list_id:
+                                        break
+                        if not list_id:
+                            return {"success": False, "error": "Could not determine a ClickUp list. Please provide a list_id or ensure your workspace has at least one list."}
                     return await clickup_service.create_task(
                         access_token,
-                        arguments.get("list_id"),
+                        list_id,
                         arguments.get("name"),
                         arguments.get("description"),
                         arguments.get("assignees"),
@@ -6301,57 +6343,6 @@ Description: {payment.description or 'N/A'}"""
                 "error": f"Internal error executing Zoho tool: {str(e)}"
             }
 
-    async def _execute_xero_tool(
-        self,
-        tool_name: str,
-        arguments: Dict[str, Any],
-        user: User,
-        db: AsyncSession
-    ) -> Dict[str, Any]:
-        """Execute Xero-related tools."""
-        result = await db.execute(
-            select(Connection).filter(
-                Connection.user_id == user.id,
-                Connection.platform == "xero",
-                Connection.status == ConnectionStatus.ACTIVE
-            )
-        )
-        connection = result.scalars().first()
-
-        if not connection:
-            return {
-                "success": False,
-                "error": "Xero is not connected. Please connect your Xero account first.",
-                "result": None
-            }
-
-        xero_service = self.services["xero"]
-        
-        operation = arguments.get("operation")
-        if not operation:
-            return {
-                "success": False,
-                "error": "Operation is required for Xero tools",
-                "result": None
-            }
-            
-        res = await xero_service.handle_operation(operation, config=connection.config, **arguments)
-        
-        # Check if config was updated (tokens refreshed)
-        if res and isinstance(res, dict) and "_new_tokens" in res:
-            new_tokens = res.pop("_new_tokens")
-            config = connection.config.copy()
-            config.update(new_tokens)
-            connection.config = config
-            from sqlalchemy.orm.attributes import flag_modified
-            flag_modified(connection, "config")
-            await db.commit()
-            
-        return {
-            "success": res.get("success", False) if isinstance(res, dict) else False,
-            "result": "Xero operation completed",
-            "data": res
-        }
 
 # Global tool executor instance
 tool_executor = ToolExecutor()
