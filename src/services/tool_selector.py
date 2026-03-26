@@ -41,6 +41,20 @@ class PrecisionToolRouter:
         """
         print(f"🎯 ToolRouter: Processing input: '{user_input}'")
         
+        # Load active connections from DB (once per request)
+        if self._connection_cache is None:
+            try:
+                result = await self.db.execute(
+                    select(Connection)
+                    .filter(Connection.user_id == self.user.id, Connection.status == ConnectionStatus.ACTIVE)
+                )
+                connections = result.scalars().all()
+                self._connection_cache = {c.platform for c in connections}
+                print(f"🔗 Loaded {len(self._connection_cache)} active connections: {self._connection_cache}")
+            except Exception as e:
+                logger.warning(f"Failed to load connections: {e}")
+                self._connection_cache = set()
+        
         # Load tools with cache
         all_tools = await self._get_all_tools()
         print(f"📦 Loaded {len(all_tools)} tools for user {self.user.id}")
@@ -335,10 +349,6 @@ class PrecisionToolRouter:
             r'create.*ab.*test': 'ab_testing_platform',
             r'run.*ab.*test': 'ab_testing_platform',
             
-            # LinkedIn
-            r'(post|share).*linkedin': 'social_media_management',
-            r'linkedin.*analytics': 'social_media_analytics',
-            
             # Workflow Management (Consolidated)
             r'workflow.*builder': 'workflow_management',
             r'create.*workflow': 'workflow_management',
@@ -487,10 +497,82 @@ class PrecisionToolRouter:
             r'clickup.*task': 'clickup_task_management',
             r'create.*task.*clickup': 'clickup_task_management',
             r'list.*task.*clickup': 'clickup_task_management',
+            r'show.*task.*clickup': 'clickup_task_management',
             r'my.*task': 'clickup_task_management',
             r'clickup.*space': 'clickup_resource_management',
             r'clickup.*folder': 'clickup_resource_management',
             r'clickup.*list': 'clickup_resource_management',
+
+            # Xero Accounting Tools
+            r'xero.*invoice': 'xero_accounting',
+            r'(get|list|show).*xero.*invoice': 'xero_accounting',
+            r'xero.*contact': 'xero_accounting',
+            r'(get|list|show).*xero.*contact': 'xero_accounting',
+            r'xero.*account': 'xero_accounting',
+            r'(get|list|show).*xero.*account': 'xero_accounting',
+            r'xero.*payment': 'xero_accounting',
+            r'xero.*profit.*loss': 'xero_accounting',
+            r'xero.*balance.*sheet': 'xero_accounting',
+            r'xero.*company': 'xero_accounting',
+            r'create.*xero.*invoice': 'xero_accounting',
+            r'xero.*report': 'xero_accounting',
+
+            # QuickBooks Accounting Tools
+            r'quickbooks.*invoice': 'quickbooks_accounting',
+            r'(get|list|show).*quickbooks.*invoice': 'quickbooks_accounting',
+            r'quickbooks.*customer': 'quickbooks_accounting',
+            r'(get|list|show).*quickbooks.*customer': 'quickbooks_accounting',
+            r'quickbooks.*expense': 'quickbooks_accounting',
+            r'quickbooks.*vendor': 'quickbooks_accounting',
+            r'quickbooks.*payment': 'quickbooks_accounting',
+            r'quickbooks.*report': 'quickbooks_accounting',
+            r'quickbooks.*profit.*loss': 'quickbooks_accounting',
+            r'quickbooks.*balance.*sheet': 'quickbooks_accounting',
+            r'create.*quickbooks.*invoice': 'quickbooks_accounting',
+
+            # Notion Tools
+            r'notion.*page': 'notion_workspace',
+            r'(create|get|list|show|search).*notion': 'notion_workspace',
+            r'notion.*database': 'notion_workspace',
+            r'notion.*workspace': 'notion_workspace',
+            r'add.*notion.*page': 'notion_workspace',
+            r'search.*notion': 'notion_workspace',
+
+            # Zoho Tools
+            r'zoho.*crm': 'zoho_crm_operations',
+            r'zoho.*contact': 'zoho_crm_operations',
+            r'zoho.*deal': 'zoho_crm_operations',
+            r'zoho.*lead': 'zoho_crm_operations',
+            r'zoho.*invoice': 'zoho_finance_operations',
+            r'zoho.*expense': 'zoho_finance_operations',
+            r'zoho.*payment': 'zoho_finance_operations',
+            r'zoho.*ticket': 'zoho_desk_operations',
+            r'zoho.*support': 'zoho_desk_operations',
+            r'zoho.*email': 'zoho_mail_operations',
+            r'zoho.*mail': 'zoho_mail_operations',
+
+            # Outlook Tools
+            r'outlook.*email': 'outlook_email_management',
+            r'(send|read|list).*outlook': 'outlook_email_management',
+            r'outlook.*calendar': 'outlook_calendar_management',
+            r'outlook.*event': 'outlook_calendar_management',
+            r'outlook.*contact': 'outlook_contact_management',
+
+            # Trello Tools
+            r'trello.*board': 'trello_board_management',
+            r'trello.*card': 'trello_board_management',
+            r'(create|list|get|show).*trello': 'trello_board_management',
+
+            # Jira Tools
+            r'jira.*issue': 'jira_project_management',
+            r'jira.*project': 'jira_project_management',
+            r'jira.*ticket': 'jira_project_management',
+            r'(create|list|get|show).*jira': 'jira_project_management',
+
+            # Airtable Tools  
+            r'airtable.*record': 'airtable_operations',
+            r'airtable.*base': 'airtable_operations',
+            r'(create|list|get|show).*airtable': 'airtable_operations',
 
             # Workflow Management
             r'manage.*workflow': 'workflow_management',
@@ -699,10 +781,10 @@ class PrecisionToolRouter:
             ]
     
     def _get_active_connections(self) -> set:
-        """Get cached active connections"""
+        """Get cached active connections from the database."""
+        # Connection cache is populated asynchronously in get_relevant_tools
         if self._connection_cache is None:
-            # In real implementation, load from DB
-            self._connection_cache = {'slack', 'hubspot', 'whatsapp'}
+            self._connection_cache = set()
         return self._connection_cache
     
     def _load_domain_knowledge(self) -> Dict[str, Any]:
@@ -1358,6 +1440,141 @@ class PrecisionToolRouter:
                     ["clickup", "list"]
                 ],
                 "keywords": ["clickup", "space", "folder", "list", "hierarchy"]
+            },
+            # Xero Accounting
+            "xero_accounting": {
+                "patterns": [
+                    ["xero", "invoice"],
+                    ["get", "xero", "invoice"],
+                    ["list", "xero", "invoice"],
+                    ["show", "xero", "invoice"],
+                    ["xero", "contact"],
+                    ["xero", "account"],
+                    ["xero", "payment"],
+                    ["xero", "profit", "loss"],
+                    ["xero", "balance", "sheet"],
+                    ["xero", "company"],
+                    ["create", "xero", "invoice"],
+                    ["xero", "report"]
+                ],
+                "keywords": ["xero", "invoice", "accounting", "contact", "payment", "profit", "loss", "balance", "sheet", "company", "report", "financial"]
+            },
+            # QuickBooks Accounting
+            "quickbooks_accounting": {
+                "patterns": [
+                    ["quickbooks", "invoice"],
+                    ["get", "quickbooks", "invoice"],
+                    ["list", "quickbooks", "invoice"],
+                    ["quickbooks", "customer"],
+                    ["quickbooks", "expense"],
+                    ["quickbooks", "vendor"],
+                    ["quickbooks", "payment"],
+                    ["quickbooks", "report"],
+                    ["quickbooks", "profit", "loss"],
+                    ["quickbooks", "balance", "sheet"],
+                    ["create", "quickbooks", "invoice"]
+                ],
+                "keywords": ["quickbooks", "invoice", "customer", "expense", "vendor", "payment", "report", "accounting", "financial"]
+            },
+            # Notion
+            "notion_workspace": {
+                "patterns": [
+                    ["notion", "page"],
+                    ["create", "notion", "page"],
+                    ["search", "notion"],
+                    ["notion", "database"],
+                    ["notion", "workspace"],
+                    ["list", "notion", "page"],
+                    ["get", "notion", "page"]
+                ],
+                "keywords": ["notion", "page", "database", "workspace", "search", "create", "block", "note"]
+            },
+            # Zoho CRM/Finance/Desk/Mail
+            "zoho_crm_operations": {
+                "patterns": [
+                    ["zoho", "crm"],
+                    ["zoho", "contact"],
+                    ["zoho", "deal"],
+                    ["zoho", "lead"]
+                ],
+                "keywords": ["zoho", "crm", "contact", "deal", "lead"]
+            },
+            "zoho_finance_operations": {
+                "patterns": [
+                    ["zoho", "invoice"],
+                    ["zoho", "expense"],
+                    ["zoho", "payment"],
+                    ["zoho", "finance"]
+                ],
+                "keywords": ["zoho", "invoice", "expense", "payment", "finance", "book"]
+            },
+            "zoho_desk_operations": {
+                "patterns": [
+                    ["zoho", "ticket"],
+                    ["zoho", "support"],
+                    ["zoho", "desk"]
+                ],
+                "keywords": ["zoho", "ticket", "support", "desk", "help"]
+            },
+            "zoho_mail_operations": {
+                "patterns": [
+                    ["zoho", "mail"],
+                    ["zoho", "email"],
+                    ["send", "zoho", "email"]
+                ],
+                "keywords": ["zoho", "mail", "email", "send", "message"]
+            },
+            # Outlook
+            "outlook_email_management": {
+                "patterns": [
+                    ["outlook", "email"],
+                    ["send", "outlook"],
+                    ["read", "outlook"],
+                    ["list", "outlook"],
+                    ["outlook", "message"]
+                ],
+                "keywords": ["outlook", "email", "send", "read", "message", "inbox"]
+            },
+            "outlook_calendar_management": {
+                "patterns": [
+                    ["outlook", "calendar"],
+                    ["outlook", "event"],
+                    ["outlook", "meeting"],
+                    ["schedule", "outlook"]
+                ],
+                "keywords": ["outlook", "calendar", "event", "meeting", "schedule"]
+            },
+            # Notion
+            "notion_database_management": {
+                "patterns": [
+                    ["notion", "database"],
+                    ["query", "notion", "database"],
+                    ["add", "notion", "row"]
+                ],
+                "keywords": ["notion", "database", "query", "row", "table"]
+            },
+            # Trello
+            "trello_board_management": {
+                "patterns": [
+                    ["trello", "board"],
+                    ["trello", "card"],
+                    ["create", "trello", "card"],
+                    ["list", "trello", "board"],
+                    ["trello", "list"]
+                ],
+                "keywords": ["trello", "board", "card", "list", "create", "move"]
+            },
+            # Jira
+            "jira_project_management": {
+                "patterns": [
+                    ["jira", "issue"],
+                    ["jira", "project"],
+                    ["jira", "ticket"],
+                    ["create", "jira", "issue"],
+                    ["list", "jira", "issue"],
+                    ["jira", "sprint"]
+                ],
+                "keywords": ["jira", "issue", "project", "ticket", "sprint", "create", "assign", "bug"]
             }
         }
     

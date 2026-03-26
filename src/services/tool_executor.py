@@ -215,6 +215,8 @@ class ToolExecutor:
                 return await self._execute_kra_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("xero_"):
                 return await self._execute_xero_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("quickbooks_"):
+                return await self._execute_quickbooks_tool(tool_name, arguments, user, db)
             elif tool_name.endswith("_payment_ops"):
                 return await self._execute_fintech_tool(tool_name, arguments, user, db)
             elif tool_name.endswith("_ecommerce_ops"):
@@ -438,11 +440,11 @@ class ToolExecutor:
         if tool_name.startswith("mpesa_"): return "mpesa"
         if tool_name.startswith("hr_"): return "hr_hub"
         if tool_name.startswith("lead_intelligence_"): return "lead_intelligence"
-        if tool_name.startswith("lead_intelligence_"): return "lead_intelligence"
         if tool_name.startswith("logistics_"): return "logistics_hub"
         if tool_name.startswith("clickup_"): return "clickup"
         if tool_name.startswith("kra_"): return "kra_portal"
         if tool_name.startswith("xero_"): return "xero"
+        if tool_name.startswith("quickbooks_"): return "quickbooks"
         
         # Kenyan Specific Mappings
         if tool_name.endswith("_payment_ops"): return tool_name.replace("_payment_ops", "")
@@ -5609,9 +5611,26 @@ Description: {payment.description or 'N/A'}"""
                         arguments.get("priority")
                     )
                 elif operation == "get_tasks":
+                    list_id = arguments.get("list_id")
+                    if not list_id:
+                        # No list_id provided — fallback to team-level tasks
+                        team_id = arguments.get("team_id")
+                        if not team_id:
+                            teams = connection.config.get("teams", [])
+                            if teams:
+                                team_id = teams[0].get("id")
+                        if team_id:
+                            return await clickup_service.get_team_tasks(
+                                access_token,
+                                team_id,
+                                arguments.get("assignee_id"),
+                                arguments.get("include_closed", False)
+                            )
+                        else:
+                            return {"success": False, "error": "No list_id or team_id available. Please specify a list_id or connect ClickUp with team access."}
                     return await clickup_service.get_tasks(
                         access_token,
-                        arguments.get("list_id"),
+                        list_id,
                         arguments.get("include_closed", False)
                     )
                 elif operation == "get_team_tasks":
@@ -5938,6 +5957,64 @@ Description: {payment.description or 'N/A'}"""
                 await db.commit()
                 return {"success": False, "error": connection.error_message}
                 
+            return {"success": False, "error": str(e)}
+
+    async def _execute_quickbooks_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute QuickBooks-related tools."""
+        try:
+            result = await db.execute(
+                select(Connection)
+                .filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == "quickbooks",
+                    Connection.status == ConnectionStatus.ACTIVE
+                )
+            )
+            connection = result.scalar_one_or_none()
+
+            if not connection:
+                return {
+                    "success": False,
+                    "error": "No active QuickBooks connection found. Please connect QuickBooks in Settings > Connections.",
+                    "result": None
+                }
+
+            config = connection.config or {}
+            from .quickbooks_service import QuickBooksService
+            qb_service = QuickBooksService()
+            await qb_service.initialize()
+            qb_service._configure_from_connection(config)
+
+            operation = arguments.get("operation")
+
+            if tool_name == "quickbooks_accounting":
+                result = await qb_service.handle_operation(
+                    operation,
+                    config=config,
+                    start_date=arguments.get("start_date"),
+                    end_date=arguments.get("end_date"),
+                    customer_id=arguments.get("customer_id"),
+                    max_results=arguments.get("max_results", 100),
+                    line_items=arguments.get("line_items"),
+                    due_date=arguments.get("due_date"),
+                    amount=arguments.get("amount"),
+                    invoice_id=arguments.get("invoice_id"),
+                    account_type=arguments.get("account_type"),
+                    date=arguments.get("date"),
+                )
+            else:
+                return {"success": False, "error": f"Unknown QuickBooks tool: {tool_name}"}
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error executing QuickBooks tool: {e}")
             return {"success": False, "error": str(e)}
 
     async def _execute_system_tool(

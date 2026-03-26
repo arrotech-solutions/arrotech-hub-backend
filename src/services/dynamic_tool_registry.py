@@ -576,6 +576,10 @@ class DynamicToolRegistry:
                 tools.extend(self._get_zoho_tools(connection))
             elif connection.platform == "xero":
                 tools.extend(self._get_xero_tools(connection))
+            elif connection.platform == "clickup":
+                tools.extend(self._get_clickup_tools(connection))
+            elif connection.platform == "quickbooks":
+                tools.extend(self._get_quickbooks_tools(connection))
             elif connection.platform in platform_registry.platforms:
                 # Dynamically fetch tools for regional platforms (hr_hub, logistics_hub, etc.)
                 p_tools = platform_registry.get_platform_tools(connection.platform)
@@ -1713,6 +1717,109 @@ class DynamicToolRegistry:
             }
         ]
 
+    def _get_clickup_tools(self, connection: Connection) -> List[Dict[str, Any]]:
+        """Get ClickUp tools for a connection."""
+        return [
+            {
+                "name": "clickup_task_management",
+                "description": "ClickUp task management: get tasks, create tasks, update tasks, delete tasks, add comments, and manage task statuses.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["get_tasks", "create_task", "update_task", "delete_task", "add_comment", "get_task"],
+                            "description": "ClickUp task operation to perform"
+                        },
+                        "list_id": {"type": "string", "description": "ClickUp List ID to get/create tasks in"},
+                        "task_id": {"type": "string", "description": "Task ID for update/delete/get operations"},
+                        "name": {"type": "string", "description": "Task name"},
+                        "description": {"type": "string", "description": "Task description"},
+                        "status": {"type": "string", "description": "Task status"},
+                        "priority": {"type": "integer", "description": "Task priority (1=Urgent, 2=High, 3=Normal, 4=Low)"},
+                        "assignees": {"type": "array", "items": {"type": "integer"}, "description": "List of assignee user IDs"},
+                        "due_date": {"type": "string", "description": "Due date (Unix timestamp in ms or ISO string)"},
+                        "comment_text": {"type": "string", "description": "Comment text to add"},
+                        "include_closed": {"type": "boolean", "description": "Include closed tasks", "default": False}
+                    },
+                    "required": ["operation"]
+                },
+                "connection_id": connection.id,
+                "platform": "clickup",
+                "status": "available",
+                "id": "clickup_task_management"
+            },
+            {
+                "name": "clickup_resource_management",
+                "description": "ClickUp resource management: get spaces, folders, lists, and workspace hierarchy.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["get_spaces", "get_folders", "get_lists", "get_workspace"],
+                            "description": "ClickUp resource operation to perform"
+                        },
+                        "space_id": {"type": "string", "description": "Space ID"},
+                        "folder_id": {"type": "string", "description": "Folder ID"}
+                    },
+                    "required": ["operation"]
+                },
+                "connection_id": connection.id,
+                "platform": "clickup",
+                "status": "available",
+                "id": "clickup_resource_management"
+            }
+        ]
+
+    def _get_quickbooks_tools(self, connection: Connection) -> List[Dict[str, Any]]:
+        """Get QuickBooks Accounting tools for a connection."""
+        return [
+            {
+                "name": "quickbooks_accounting",
+                "description": "QuickBooks Accounting operations: get invoices, create invoices, get customers, create customers, get expenses, get vendors, get payments, and financial reports.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": [
+                                "get_company_info",
+                                "get_invoices",
+                                "create_invoice",
+                                "get_customers",
+                                "create_customer",
+                                "get_expenses",
+                                "get_vendors",
+                                "get_payments",
+                                "get_profit_loss",
+                                "get_balance_sheet"
+                            ],
+                            "description": "QuickBooks accounting operation to perform"
+                        },
+                        "start_date": {"type": "string", "description": "Start date filter (YYYY-MM-DD)"},
+                        "end_date": {"type": "string", "description": "End date filter (YYYY-MM-DD)"},
+                        "customer_id": {"type": "string", "description": "Customer ID for filtering"},
+                        "max_results": {"type": "integer", "description": "Maximum results to return", "default": 100},
+                        "line_items": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                            "description": "Line items for invoice creation"
+                        },
+                        "due_date": {"type": "string", "description": "Due date for invoice (YYYY-MM-DD)"},
+                        "customer_data": {"type": "object", "description": "Customer data for creation"},
+                        "invoice_id": {"type": "string", "description": "Invoice ID"},
+                        "amount": {"type": "number", "description": "Payment amount"}
+                    },
+                    "required": ["operation"]
+                },
+                "connection_id": connection.id,
+                "platform": "quickbooks",
+                "status": "available",
+                "id": "quickbooks_accounting"
+            }
+        ]
+
     async def get_all_tools(self, db: AsyncSession) -> List[Dict[str, Any]]:
         """Get all tools (base tools + all platform tools)."""
         tools = []
@@ -1745,7 +1852,9 @@ class DynamicToolRegistry:
             "jira": self._get_jira_tools,
             "google_workspace": self._get_google_workspace_tools,
             "zoho": self._get_zoho_tools,
-            "xero": self._get_xero_tools
+            "xero": self._get_xero_tools,
+            "clickup": self._get_clickup_tools,
+            "quickbooks": self._get_quickbooks_tools
         }
 
         # Check if tool name starts with any known platform prefix to optimize
