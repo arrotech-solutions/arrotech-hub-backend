@@ -23,9 +23,11 @@ router = APIRouter(
 
 logger = logging.getLogger(__name__)
 
+import json
+
 # Constants
 FACEBOOK_GRAPH_URL = "https://graph.facebook.com/v22.0"
-WHATSAPP_SCOPES = "whatsapp_business_management,whatsapp_business_messaging"
+WHATSAPP_SCOPES = "whatsapp_business_management,whatsapp_business_messaging,business_management"
 
 from ..routers.auth_router import get_current_user
 
@@ -52,7 +54,9 @@ async def get_auth_url(user: User = Depends(get_current_user)):
         "redirect_uri": redirect_uri,
         "scope": WHATSAPP_SCOPES,
         "response_type": "code",
-        "state": state
+        "state": state,
+        "display": "page",
+        "extras": json.dumps({"feature": "whatsapp_embedded_signup"})
     }
     
     auth_url = f"https://www.facebook.com/v22.0/dialog/oauth?{urllib.parse.urlencode(params)}"
