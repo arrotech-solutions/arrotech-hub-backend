@@ -43,7 +43,6 @@ from .accounting_service import AccountingService
 from .email_template_service import email_template_service
 from .agritech_service import AgritechService
 from .health_service import HealthService
-from .real_estate_tools import RealEstateTools
 from .utilities_service import UtilitiesService
 from .workflow_service import WorkflowService
 from .quickbooks_service import QuickBooksService
@@ -105,7 +104,6 @@ class ToolExecutor:
             "quickbooks": QuickBooksService(),
             "xero": XeroService(),
             "airtable": AirtableService(),
-            "real_estate": RealEstateTools(),
         }
         # Initialize services
         self._initialized = False
@@ -195,8 +193,6 @@ class ToolExecutor:
                 return await self._execute_file_management_tool(arguments, user, db, getattr(self, '_tools_called', []))
             elif tool_name == "web_tools":
                 return await self._execute_web_tools_tool(arguments, user, db)
-            elif tool_name == "web_search":
-                return await self._execute_web_search_tool(arguments, user, db)
             elif tool_name == "content_creation":
                 return await self._execute_content_creation_tool(arguments, user, db)
             elif tool_name == "mpesa_payment_reconciliation":
@@ -217,8 +213,6 @@ class ToolExecutor:
                 return await self._execute_kra_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("xero_"):
                 return await self._execute_xero_tool(tool_name, arguments, user, db)
-            elif tool_name.startswith("quickbooks_"):
-                return await self._execute_quickbooks_tool(tool_name, arguments, user, db)
             elif tool_name.endswith("_payment_ops"):
                 return await self._execute_fintech_tool(tool_name, arguments, user, db)
             elif tool_name.endswith("_ecommerce_ops"):
@@ -233,8 +227,6 @@ class ToolExecutor:
                 return await self._execute_utility_tool(tool_name, arguments, user, db)
             elif tool_name == "workflow_management":
                 return await self._execute_system_tool(tool_name, arguments, user, db)
-            elif tool_name == "real_estate_tools":
-                return await self._execute_real_estate_tool(arguments, user, db)
             else:
                 return {
                     "success": False,
@@ -347,86 +339,6 @@ class ToolExecutor:
         print(f"✅ [FEATURE GATE] No write operation detected, allowing: {tool_name}")
         return None  # Access granted
 
-    async def _execute_web_search_tool(
-        self,
-        arguments: Dict[str, Any],
-        user: User,
-        db: AsyncSession
-    ) -> Dict[str, Any]:
-        """Execute a web search using DuckDuckGo."""
-        from urllib.parse import urlparse
-        
-        query = arguments.get("query")
-        max_results = arguments.get("max_results", 5)
-
-        if not query:
-            return {"success": False, "error": "Search query is required", "result": None}
-
-        try:
-            from duckduckgo_search import DDGS
-            
-            print(f"🔍 Executing Web Search for: '{query}'")
-            
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            }
-            
-            results = []
-            try:
-                with DDGS(headers=headers, timeout=20) as ddgs:
-                    results = list(ddgs.text(query, max_results=max_results))
-            except Exception as e:
-                logger.error(f"DuckDuckGo Search error: {e}")
-                print(f"❌ Web Search Exception: {str(e)}")
-            
-            if not results:
-                return {
-                    "success": True,
-                    "result": f"No search results found for '{query}'.",
-                    "sources": [],
-                    "data": []
-                }
-                
-            # Build structured sources for frontend cards
-            sources = []
-            formatted_results = []
-            for r in results:
-                url = r.get('href', '')
-                domain = urlparse(url).netloc.replace('www.', '') if url else ''
-                
-                sources.append({
-                    "title": r.get('title', ''),
-                    "url": url,
-                    "snippet": r.get('body', ''),
-                    "domain": domain,
-                    "favicon": f"https://www.google.com/s2/favicons?domain={domain}&sz=32" if domain else None
-                })
-                formatted_results.append(f"Title: {r.get('title')}\nURL: {url}\nSnippet: {r.get('body')}")
-                
-            summary = f"Found {len(results)} results for '{query}'"
-            
-            return {
-                "success": True,
-                "result": summary + "\n\n" + "\n---\n".join(formatted_results),
-                "sources": sources,
-                "data": results,
-                "processed_arguments": arguments
-            }
-            
-        except ImportError:
-            return {
-                "success": False,
-                "error": "The 'duckduckgo-search' library is required for web search. Install it with: pip install duckduckgo-search",
-                "result": None
-            }
-        except Exception as e:
-            logger.error(f"Web search error: {e}")
-            return {
-                "success": False,
-                "error": f"Failed to perform search: {str(e)}",
-                "result": None
-            }
-
     def _get_platform_from_tool(self, tool_name: str) -> Optional[str]:
         """Map tool name to platform string."""
         if tool_name.startswith("slack_"): return "slack"
@@ -444,11 +356,11 @@ class ToolExecutor:
         if tool_name.startswith("mpesa_"): return "mpesa"
         if tool_name.startswith("hr_"): return "hr_hub"
         if tool_name.startswith("lead_intelligence_"): return "lead_intelligence"
+        if tool_name.startswith("lead_intelligence_"): return "lead_intelligence"
         if tool_name.startswith("logistics_"): return "logistics_hub"
         if tool_name.startswith("clickup_"): return "clickup"
         if tool_name.startswith("kra_"): return "kra_portal"
         if tool_name.startswith("xero_"): return "xero"
-        if tool_name.startswith("quickbooks_"): return "quickbooks"
         
         # Kenyan Specific Mappings
         if tool_name.endswith("_payment_ops"): return tool_name.replace("_payment_ops", "")
@@ -2909,7 +2821,7 @@ class ToolExecutor:
                     }
 
                 result = await whatsapp_service.send_message(
-                    to_number, message, config=connection.config
+                    to_number, message
                 )
                 return {
                     "success": True,
@@ -2933,7 +2845,7 @@ class ToolExecutor:
                     }
 
                 result = await whatsapp_service.send_media_message(
-                    to_number, media_url, media_type, caption, config=connection.config
+                    to_number, media_url, media_type, caption
                 )
                 return {
                     "success": True,
@@ -5015,29 +4927,10 @@ class ToolExecutor:
                 }
 
             elif operation == "match_payments":
-                # Fetch invoices from the connected accounting tool (Xero, QuickBooks, etc.)
-                # and pass directly to the matching engine — no local invoice table needed.
-                external_invoices = None
-                invoices_source = "none"
-                try:
-                    external_invoices = await self._fetch_invoices_from_accounting_tool(user, db)
-                    if external_invoices:
-                        invoices_source = f"accounting_tool ({len(external_invoices)} invoices)"
-                        logger.info(f"✅ Fetched {len(external_invoices)} invoices from accounting tool for matching")
-                    else:
-                        invoices_source = "accounting_tool (0 invoices returned)"
-                        logger.warning(f"⚠️ Accounting tool returned 0 invoices — payments will fall back to local matching")
-                except Exception as e:
-                    invoices_source = f"failed ({e})"
-                    logger.warning(f"❌ Could not fetch invoices from accounting tool (will fall back to local): {e}")
-                
-                # Batch match all pending/unmatched payments against external invoices
-                match_results = await service.match_all_pending_payments(
-                    user.id, db, external_invoices=external_invoices
-                )
+                # Batch match all pending payments
+                match_results = await service.match_all_pending_payments(user.id, db)
                 
                 summary = f"🔄 Batch Matching Results:\n"
-                summary += f"- Invoices Source: {invoices_source}\n"
                 summary += f"- Total Processed: {match_results['total_processed']}\n"
                 summary += f"- Matched: {match_results['matched_count']}\n"
                 summary += f"- Unmatched: {match_results['unmatched_count']}\n"
@@ -5047,7 +4940,6 @@ class ToolExecutor:
                     "result": summary,
                     "data": match_results
                 }
-
 
             elif operation == "create_invoice":
                  invoice_data = arguments.get("invoice_data", {})
@@ -5231,120 +5123,6 @@ Description: {payment.description or 'N/A'}"""
                 "success": False,
                 "error": str(e)
             }
-    async def _fetch_invoices_from_accounting_tool(
-        self, user: User, db: AsyncSession
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch outstanding invoices from the user's connected accounting tool.
-        Supports Xero, QuickBooks, and Zoho. Returns a list of invoice dicts
-        that can be passed directly to the matching engine.
-        
-        Returns normalized invoice dicts with keys:
-            id, invoice_number, total, amount_due, contact_name, 
-            contact_phone, reference, status, currency
-        """
-        from ..models import Connection, ConnectionStatus
-        
-        # Try each supported accounting platform
-        for platform in ["xero", "quickbooks", "zoho"]:
-            result = await db.execute(
-                select(Connection).filter(
-                    Connection.user_id == user.id,
-                    Connection.platform == platform,
-                    Connection.status == ConnectionStatus.ACTIVE
-                )
-            )
-            connection = result.scalar_one_or_none()
-            if not connection:
-                logger.debug(f"No active {platform} connection for user {user.id}")
-                continue
-            
-            logger.info(f"🔗 Found active {platform} connection for user {user.id}")
-            config = dict(connection.config or {})
-            
-            if platform == "xero":
-                invoices = await self._fetch_xero_invoices(connection, config, db)
-                logger.info(f"📄 Xero returned {len(invoices)} invoices")
-                return invoices
-            elif platform == "quickbooks":
-                return await self._fetch_quickbooks_invoices(connection, config, db)
-            elif platform == "zoho":
-                return await self._fetch_zoho_invoices(connection, config, db)
-        
-        logger.info(f"No accounting tool connected for user {user.id}")
-        return []
-
-    async def _fetch_xero_invoices(
-        self, connection, config: dict, db: AsyncSession
-    ) -> List[Dict[str, Any]]:
-        """Fetch outstanding invoices from Xero."""
-        from .xero_service import XeroService
-        
-        xero_service = XeroService()
-        xero_result = await xero_service.handle_operation(
-            "get_invoices",
-            config=config,
-            status="AUTHORISED",
-            max_results=100,
-        )
-        
-        # Persist refreshed tokens if present
-        if isinstance(xero_result, dict) and "_new_tokens" in xero_result:
-            new_tokens = xero_result.pop("_new_tokens")
-            config["access_token"] = new_tokens["access_token"]
-            config["refresh_token"] = new_tokens["refresh_token"]
-            connection.config = dict(config)
-            from sqlalchemy.orm.attributes import flag_modified
-            flag_modified(connection, "config")
-            db.add(connection)
-            await db.commit()
-        
-        if not xero_result or not xero_result.get("success"):
-            logger.warning(f"Failed to fetch Xero invoices: {xero_result}")
-            return []
-        
-        return xero_result.get("invoices", [])
-
-    async def _fetch_quickbooks_invoices(
-        self, connection, config: dict, db: AsyncSession
-    ) -> List[Dict[str, Any]]:
-        """Fetch outstanding invoices from QuickBooks."""
-        from .quickbooks_service import QuickBooksService
-        
-        qb_service = QuickBooksService()
-        qb_result = await qb_service.handle_operation(
-            "get_invoices",
-            config=config,
-            status="OPEN",
-            max_results=100,
-        )
-        
-        if not qb_result or not qb_result.get("success"):
-            logger.warning(f"Failed to fetch QuickBooks invoices: {qb_result}")
-            return []
-        
-        return qb_result.get("invoices", [])
-
-    async def _fetch_zoho_invoices(
-        self, connection, config: dict, db: AsyncSession
-    ) -> List[Dict[str, Any]]:
-        """Fetch outstanding invoices from Zoho."""
-        from .zoho_service import ZohoService
-        
-        zoho_service = ZohoService()
-        zoho_result = await zoho_service.handle_operation(
-            "get_invoices",
-            config=config,
-            status="sent",
-            max_results=100,
-        )
-        
-        if not zoho_result or not zoho_result.get("success"):
-            logger.warning(f"Failed to fetch Zoho invoices: {zoho_result}")
-            return []
-        
-        return zoho_result.get("invoices", [])
-
 
     async def _execute_hr_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
         """Execute HR Hub related tools."""
@@ -5581,51 +5359,9 @@ Description: {payment.description or 'N/A'}"""
             
             elif tool_name == "clickup_task_management":
                 if operation == "create_task":
-                    list_id = arguments.get("list_id")
-                    if not list_id:
-                        # Auto-resolve: get first space → first list
-                        team_id = None
-                        teams = connection.config.get("teams", [])
-                        if teams:
-                            team_id = teams[0].get("id")
-                        if team_id:
-                            spaces_res = await clickup_service.get_spaces(access_token, team_id)
-                            spaces = spaces_res.get("spaces", []) if spaces_res.get("success") else []
-                            if not spaces:
-                                spaces = spaces_res.get("data", {}).get("spaces", []) if isinstance(spaces_res.get("data"), dict) else []
-                            for space in spaces:
-                                space_id = space.get("id")
-                                if space_id:
-                                    # Try folderless lists first
-                                    lists_res = await clickup_service.get_folderless_lists(access_token, space_id)
-                                    lists = lists_res.get("lists", []) if lists_res.get("success") else []
-                                    if not lists:
-                                        lists = lists_res.get("data", {}).get("lists", []) if isinstance(lists_res.get("data"), dict) else []
-                                    if lists:
-                                        list_id = lists[0].get("id")
-                                        break
-                                    # Try folders
-                                    folders_res = await clickup_service.get_folders(access_token, space_id)
-                                    folders = folders_res.get("folders", []) if folders_res.get("success") else []
-                                    if not folders:
-                                        folders = folders_res.get("data", {}).get("folders", []) if isinstance(folders_res.get("data"), dict) else []
-                                    for folder in folders:
-                                        folder_id = folder.get("id")
-                                        if folder_id:
-                                            flists_res = await clickup_service.get_lists(access_token, folder_id)
-                                            flists = flists_res.get("lists", []) if flists_res.get("success") else []
-                                            if not flists:
-                                                flists = flists_res.get("data", {}).get("lists", []) if isinstance(flists_res.get("data"), dict) else []
-                                            if flists:
-                                                list_id = flists[0].get("id")
-                                                break
-                                    if list_id:
-                                        break
-                        if not list_id:
-                            return {"success": False, "error": "Could not determine a ClickUp list. Please provide a list_id or ensure your workspace has at least one list."}
                     return await clickup_service.create_task(
                         access_token,
-                        list_id,
+                        arguments.get("list_id"),
                         arguments.get("name"),
                         arguments.get("description"),
                         arguments.get("assignees"),
@@ -5657,26 +5393,9 @@ Description: {payment.description or 'N/A'}"""
                         arguments.get("priority")
                     )
                 elif operation == "get_tasks":
-                    list_id = arguments.get("list_id")
-                    if not list_id:
-                        # No list_id provided — fallback to team-level tasks
-                        team_id = arguments.get("team_id")
-                        if not team_id:
-                            teams = connection.config.get("teams", [])
-                            if teams:
-                                team_id = teams[0].get("id")
-                        if team_id:
-                            return await clickup_service.get_team_tasks(
-                                access_token,
-                                team_id,
-                                arguments.get("assignee_id"),
-                                arguments.get("include_closed", False)
-                            )
-                        else:
-                            return {"success": False, "error": "No list_id or team_id available. Please specify a list_id or connect ClickUp with team access."}
                     return await clickup_service.get_tasks(
                         access_token,
-                        list_id,
+                        arguments.get("list_id"),
                         arguments.get("include_closed", False)
                     )
                 elif operation == "get_team_tasks":
@@ -5824,243 +5543,68 @@ Description: {payment.description or 'N/A'}"""
                 }
 
             config = connection.config or {}
-            # Instantiate locally to avoid singleton variable contamination across concurrent requests
-            from .xero_service import XeroService
-            xero_service = XeroService()
-            await xero_service.initialize()
+            xero_service = self.services["xero"]
             xero_service._configure_from_connection(config)
 
             operation = arguments.get("operation")
+            if tool_name == "xero_get_company_info":
+                return await xero_service.handle_operation("get_company_info", config=config)
+            if tool_name == "xero_invoices":
+                if operation == "get_invoices":
+                    return await xero_service.handle_operation(
+                        "get_invoices",
+                        config=config,
+                        start_date=arguments.get("start_date"),
+                        end_date=arguments.get("end_date"),
+                        status=arguments.get("status"),
+                        contact_id=arguments.get("contact_id") or arguments.get("customer_id"),
+                        max_results=arguments.get("max_results", 100),
+                    )
+                if operation == "create_invoice":
+                    return await xero_service.handle_operation(
+                        "create_invoice",
+                        config=config,
+                        customer_id=arguments.get("customer_id"),
+                        contact_id=arguments.get("contact_id"),
+                        line_items=arguments.get("line_items", []),
+                        due_date=arguments.get("due_date"),
+                        reference=arguments.get("reference"),
+                    )
+                return {"success": False, "error": f"Unknown invoices operation: {operation}"}
+            if tool_name == "xero_reports":
+                if operation == "get_profit_loss":
+                    return await xero_service.handle_operation(
+                        "get_profit_loss",
+                        config=config,
+                        start_date=arguments.get("start_date"),
+                        end_date=arguments.get("end_date"),
+                    )
+                if operation == "get_balance_sheet":
+                    return await xero_service.handle_operation(
+                        "get_balance_sheet",
+                        config=config,
+                        date=arguments.get("date"),
+                    )
+                return {"success": False, "error": f"Unknown reports operation: {operation}"}
+            if tool_name == "xero_lists":
+                if operation == "get_accounts":
+                    return await xero_service.handle_operation(
+                        "get_accounts",
+                        config=config,
+                        account_type=arguments.get("account_type"),
+                        max_results=arguments.get("max_results", 100),
+                    )
+                if operation in ("get_customers", "get_contacts"):
+                    return await xero_service.handle_operation(
+                        "get_contacts",
+                        config=config,
+                        max_results=arguments.get("max_results", 100),
+                    )
+                return {"success": False, "error": f"Unknown lists operation: {operation}"}
 
-            async def run_operation():
-                # Unified xero_accounting tool (registered via dynamic_tool_registry)
-                if tool_name == "xero_accounting":
-                    if operation == "get_company_info":
-                        return await xero_service.handle_operation("get_company_info", config=config)
-                    elif operation == "get_invoices":
-                        return await xero_service.handle_operation(
-                            "get_invoices",
-                            config=config,
-                            start_date=arguments.get("start_date"),
-                            end_date=arguments.get("end_date"),
-                            status=arguments.get("status"),
-                            contact_id=arguments.get("contact_id") or arguments.get("customer_id"),
-                            max_results=arguments.get("max_results", 100),
-                        )
-                    elif operation == "create_invoice":
-                        return await xero_service.handle_operation(
-                            "create_invoice",
-                            config=config,
-                            customer_id=arguments.get("customer_id"),
-                            contact_id=arguments.get("contact_id"),
-                            line_items=arguments.get("line_items", []),
-                            due_date=arguments.get("due_date"),
-                            reference=arguments.get("reference"),
-                        )
-                    elif operation == "get_contacts":
-                        return await xero_service.handle_operation(
-                            "get_contacts",
-                            config=config,
-                            max_results=arguments.get("max_results", 100),
-                        )
-                    elif operation == "get_accounts":
-                        return await xero_service.handle_operation(
-                            "get_accounts",
-                            config=config,
-                            account_type=arguments.get("account_type"),
-                            max_results=arguments.get("max_results", 100),
-                        )
-                    elif operation == "create_payment":
-                        return await xero_service.handle_operation(
-                            "create_payment",
-                            config=config,
-                            invoice_id=arguments.get("invoice_id"),
-                            account_id=arguments.get("account_id"),
-                            amount=arguments.get("amount"),
-                            date=arguments.get("date"),
-                            reference=arguments.get("reference"),
-                        )
-                    elif operation == "get_profit_loss":
-                        return await xero_service.handle_operation(
-                            "get_profit_loss",
-                            config=config,
-                            start_date=arguments.get("start_date"),
-                            end_date=arguments.get("end_date"),
-                        )
-                    elif operation == "get_balance_sheet":
-                        return await xero_service.handle_operation(
-                            "get_balance_sheet",
-                            config=config,
-                            date=arguments.get("date"),
-                        )
-                    else:
-                        return {"success": False, "error": f"Unknown xero_accounting operation: {operation}"}
-
-                # Legacy individual tool names (kept for backward compatibility)
-                if tool_name == "xero_get_company_info":
-                    return await xero_service.handle_operation("get_company_info", config=config)
-                if tool_name == "xero_invoices":
-                    if operation == "get_invoices":
-                        return await xero_service.handle_operation(
-                            "get_invoices",
-                            config=config,
-                            start_date=arguments.get("start_date"),
-                            end_date=arguments.get("end_date"),
-                            status=arguments.get("status"),
-                            contact_id=arguments.get("contact_id") or arguments.get("customer_id"),
-                            max_results=arguments.get("max_results", 100),
-                        )
-                    if operation == "create_invoice":
-                        return await xero_service.handle_operation(
-                            "create_invoice",
-                            config=config,
-                            customer_id=arguments.get("customer_id"),
-                            contact_id=arguments.get("contact_id"),
-                            line_items=arguments.get("line_items", []),
-                            due_date=arguments.get("due_date"),
-                            reference=arguments.get("reference"),
-                        )
-                    if operation == "create_payment":
-                        return await xero_service.handle_operation(
-                            "create_payment",
-                            config=config,
-                            invoice_id=arguments.get("invoice_id"),
-                            account_id=arguments.get("account_id"),
-                            amount=arguments.get("amount"),
-                            date=arguments.get("date"),
-                            reference=arguments.get("reference"),
-                        )
-                    return {"success": False, "error": f"Unknown invoices operation: {operation}"}
-                if tool_name == "xero_reports":
-                    if operation == "get_profit_loss":
-                        return await xero_service.handle_operation(
-                            "get_profit_loss",
-                            config=config,
-                            start_date=arguments.get("start_date"),
-                            end_date=arguments.get("end_date"),
-                        )
-                    if operation == "get_balance_sheet":
-                        return await xero_service.handle_operation(
-                            "get_balance_sheet",
-                            config=config,
-                            date=arguments.get("date"),
-                        )
-                    return {"success": False, "error": f"Unknown reports operation: {operation}"}
-                if tool_name == "xero_lists":
-                    if operation == "get_accounts":
-                        return await xero_service.handle_operation(
-                            "get_accounts",
-                            config=config,
-                            account_type=arguments.get("account_type"),
-                            max_results=arguments.get("max_results", 100),
-                        )
-                    if operation in ("get_customers", "get_contacts"):
-                        return await xero_service.handle_operation(
-                            "get_contacts",
-                            config=config,
-                            max_results=arguments.get("max_results", 100),
-                        )
-                    return {"success": False, "error": f"Unknown lists operation: {operation}"}
-
-                return {"success": False, "error": f"Unknown Xero tool: {tool_name}"}
-
-            result = await run_operation()
-            
-            # Persist refreshed tokens if they exist
-            if isinstance(result, dict) and "_new_tokens" in result:
-                new_tokens = result.pop("_new_tokens")
-                config["access_token"] = new_tokens["access_token"]
-                config["refresh_token"] = new_tokens["refresh_token"]
-                
-                connection.config = dict(config)
-                
-                from sqlalchemy.orm.attributes import flag_modified
-                flag_modified(connection, "config")
-                db.add(connection)
-                await db.commit()
-
-            # Handle permanently expired token (invalid_grant)
-            if isinstance(result, dict) and not result.get("success"):
-                error_msg = str(result.get("error", ""))
-                if "invalid_grant" in error_msg:
-                    connection.status = ConnectionStatus.ERROR
-                    connection.error_message = "Xero token expired. Please disconnect and reconnect Xero."
-                    db.add(connection)
-                    await db.commit()
-                    
-                    result["error"] = connection.error_message
-                
-            return result
+            return {"success": False, "error": f"Unknown Xero tool: {tool_name}"}
         except Exception as e:
             logger.error(f"Error executing Xero tool: {e}")
-            # Ensure exceptions that might be invalid_grant are caught
-            if "invalid_grant" in str(e):
-                connection.status = ConnectionStatus.ERROR
-                connection.error_message = "Xero token expired. Please disconnect and reconnect Xero."
-                db.add(connection)
-                # The caller should await db.commit(), but tool_executor might need to be sure
-                # However we can't await in an except handler if it's tricky, but here we can
-                await db.commit()
-                return {"success": False, "error": connection.error_message}
-                
-            return {"success": False, "error": str(e)}
-
-    async def _execute_quickbooks_tool(
-        self,
-        tool_name: str,
-        arguments: Dict[str, Any],
-        user: User,
-        db: AsyncSession
-    ) -> Dict[str, Any]:
-        """Execute QuickBooks-related tools."""
-        try:
-            result = await db.execute(
-                select(Connection)
-                .filter(
-                    Connection.user_id == user.id,
-                    Connection.platform == "quickbooks",
-                    Connection.status == ConnectionStatus.ACTIVE
-                )
-            )
-            connection = result.scalar_one_or_none()
-
-            if not connection:
-                return {
-                    "success": False,
-                    "error": "No active QuickBooks connection found. Please connect QuickBooks in Settings > Connections.",
-                    "result": None
-                }
-
-            config = connection.config or {}
-            from .quickbooks_service import QuickBooksService
-            qb_service = QuickBooksService()
-            await qb_service.initialize()
-            qb_service._configure_from_connection(config)
-
-            operation = arguments.get("operation")
-
-            if tool_name == "quickbooks_accounting":
-                result = await qb_service.handle_operation(
-                    operation,
-                    config=config,
-                    start_date=arguments.get("start_date"),
-                    end_date=arguments.get("end_date"),
-                    customer_id=arguments.get("customer_id"),
-                    max_results=arguments.get("max_results", 100),
-                    line_items=arguments.get("line_items"),
-                    due_date=arguments.get("due_date"),
-                    amount=arguments.get("amount"),
-                    invoice_id=arguments.get("invoice_id"),
-                    account_type=arguments.get("account_type"),
-                    date=arguments.get("date"),
-                )
-            else:
-                return {"success": False, "error": f"Unknown QuickBooks tool: {tool_name}"}
-
-            return result
-
-        except Exception as e:
-            logger.error(f"Error executing QuickBooks tool: {e}")
             return {"success": False, "error": str(e)}
 
     async def _execute_system_tool(
@@ -6346,56 +5890,6 @@ Description: {payment.description or 'N/A'}"""
                 "success": False,
                 "error": f"Internal error executing Zoho tool: {str(e)}"
             }
-
-
-    # ──────────────────────────────────────────────────────────────────────
-    # Real Estate Tools (Stateless Processing)
-    # ──────────────────────────────────────────────────────────────────────
-
-    async def _execute_real_estate_tool(
-        self,
-        arguments: Dict[str, Any],
-        user: User,
-        db: AsyncSession
-    ) -> Dict[str, Any]:
-        """Execute real estate processing tools (stateless, no DB writes)."""
-        operation = arguments.get("operation")
-        if not operation:
-            return {
-                "success": False,
-                "error": "Operation is required. Available: classify_inquiry, format_rent_reminder, format_payment_receipt, format_listing, classify_maintenance, format_maintenance_response, format_viewing_slots, format_viewing_confirmation, generate_rent_statement, generate_landlord_report, format_tenant_welcome, format_lease_reminder, parse_mpesa_confirmation, format_broadcast_listing, format_escalation_notice",
-                "result": None
-            }
-
-        try:
-            real_estate_service = self.services.get("real_estate")
-            if not real_estate_service:
-                from .real_estate_tools import RealEstateTools
-                real_estate_service = RealEstateTools()
-
-            print(f"🏠 [REAL ESTATE] Executing operation: {operation}")
-
-            # Pass all arguments to the service
-            result = await real_estate_service.handle_operation(
-                operation=operation,
-                **{k: v for k, v in arguments.items() if k != "operation"}
-            )
-
-            return {
-                "success": result.get("success", False),
-                "result": result.get("message", "") or str(result),
-                "data": result,
-                "processed_arguments": arguments
-            }
-
-        except Exception as e:
-            logger.error(f"Error executing real estate tool ({operation}): {e}")
-            return {
-                "success": False,
-                "error": f"Real estate tool error: {str(e)}",
-                "result": None
-            }
-
 
 # Global tool executor instance
 tool_executor = ToolExecutor()

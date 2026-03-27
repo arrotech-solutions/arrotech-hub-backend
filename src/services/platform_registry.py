@@ -1001,13 +1001,13 @@ class PlatformRegistry:
                 operations=["get_company_info"]
             ),
             PlatformCapability(
-                name="Invoices & Payments",
-                description="Manage invoices (list, create) and record payments against invoices",
+                name="Invoices",
+                description="Manage invoices: list and create",
                 tool_name="xero_invoices",
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "operation": {"type": "string", "enum": ["get_invoices", "create_invoice", "create_payment"]},
+                        "operation": {"type": "string", "enum": ["get_invoices", "create_invoice"]},
                         "start_date": {"type": "string"},
                         "end_date": {"type": "string"},
                         "status": {"type": "string"},
@@ -1015,15 +1015,11 @@ class PlatformRegistry:
                         "customer_id": {"type": "string"},
                         "line_items": {"type": "array", "items": {"type": "object"}},
                         "due_date": {"type": "string"},
-                        "reference": {"type": "string"},
-                        "invoice_id": {"type": "string", "description": "Xero Invoice ID (for create_payment)"},
-                        "account_id": {"type": "string", "description": "Xero Bank Account ID (for create_payment)"},
-                        "amount": {"type": "number", "description": "Payment amount (for create_payment)"},
-                        "date": {"type": "string", "description": "Payment date YYYY-MM-DD (for create_payment)"}
+                        "reference": {"type": "string"}
                     },
                     "required": ["operation"]
                 },
-                operations=["get_invoices", "create_invoice", "create_payment"]
+                operations=["get_invoices", "create_invoice"]
             ),
             PlatformCapability(
                 name="Financial Reports",

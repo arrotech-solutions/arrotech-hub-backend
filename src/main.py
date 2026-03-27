@@ -27,7 +27,7 @@ from .routers import (access_router, agent_router, analytics_router, api_router,
                       mcp_router, mpesa_agent_router, notification_router, payment_router, preferences_router,
                       security_router, settings_router, slack_agent_router, slack_router, subscription_router, templates_router, whatsapp_router, workflow_router, facebook_router, instagram_router, twitter_router, clickup_router, teams_router, zoom_router,
                       outlook_router, notion_router, trello_router, jira_router, whatsapp_webhook, whatsapp_contacts, whatsapp_broadcast, tiktok_router, ai_router, support_router, kra_router, productivity_router, asana_router,
-                       blog_router, employee_router, gmail_webhook, hubspot_router, ws_router, organization_router, quickbooks_router, airtable_router, xero_router, zoho_router, zoho_webhook, developer_router)
+                       blog_router, employee_router, gmail_webhook, hubspot_router, ws_router, organization_router, quickbooks_router, airtable_router, xero_router, zoho_router, zoho_webhook)
 from .services import (BillingService, ContentCreationService,
                        FileManagementService, HubSpotService,
                        RateLimitService, SlackService, SocialMediaService,
@@ -129,138 +129,11 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI app
 app = FastAPI(
-    title="Arrotech Hub Server",
+    title="Mini-Hub MCP Server",
     description="Connect AI models to marketing tools with real-time automation",
     version="1.0.0",
-    lifespan=lifespan,
-    docs_url=None,   # Disable default docs
-    redoc_url=None,  # Disable default redoc
-    openapi_url=None # Disable default openapi.json
+    lifespan=lifespan
 )
-
-from fastapi.openapi.utils import get_openapi
-from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
-
-# Define tags that are exposed to external developers
-PUBLIC_TAGS = {
-    "mcp", "chat", "workflows", "agents", "connections", "templates", "developer"
-}
-
-def custom_openapi():
-    """Generates an OpenAPI schema containing ONLY public routes."""
-    if app.openapi_schema:
-        return app.openapi_schema
-    
-    # Generate the base schema
-    description = """
-# Welcome to the Arrotech Hub Public API
-
-Arrotech Hub provides a unified, powerful interface for building autonomous AI agents and complex marketing automations. Our API allows you to programmatically control the entire "Mini-Hub" ecosystem, from managing connections to executing multi-step workflows.
-
-## 🚀 Core Capabilities
-
-*   **Autonomous Agents:** Deploy AI that can "think" and act across different platforms.
-*   **Workflow Orchestration:** Chain together disparate tools (Slack, HubSpot, WhatsApp) into a single logical flow.
-*   **Model Agnostic:** Build once and switch between OpenAI, Anthropic, or local Ollama models.
-*   **Tool Bridge (MCP):** Use the Model Context Protocol to bridge local enterprise data to global LLMs.
-
-## 🔑 Authentication
-
-Arrotech Hub supports two primary authentication methods:
-
-1.  **User API Keys (Development):** Use your personal API key for quick testing.
-    ```http
-    Authorization: Bearer <YOUR_API_KEY>
-    ```
-
-2.  **Developer Apps (Production):** For robust integrations, create a **Developer App** in your dashboard to obtain `client_id` and `client_secret`. We support both **2-legged** (server-to-server) and **3-legged** (on behalf of user) OAuth2 flows.
-
-> [!IMPORTANT]
-> Keep your Client Secrets secure. Use the **Client Credentials** flow for server-side tasks.
-
-## 🛡️ Scopes
-
-API access is restricted by granular scopes. Common scopes include:
-*   `data:read`: Read access to connections and logs.
-*   `chat:write`: Ability to send messages via AI agents.
-*   `workflow:execute`: Trigger and manage workflows.
-
-## 🛠 Support & Feedback
-Join our [Developer Discord](https://discord.gg/arrotech) or open a ticket in the [Support Portal](/docs/support).
-    """
-
-    openapi_schema = get_openapi(
-        title="Arrotech Hub Public API",
-        version="1.0.0",
-        description=description,
-        routes=app.routes,
-    )
-    
-    # Filter paths to only include routes tagged as public
-    public_paths = {}
-    for path, path_item in openapi_schema.get("paths", {}).items():
-        public_operations = {}
-        for method, operation in path_item.items():
-            tags = operation.get("tags", [])
-            # If any tag on the route is in our PUBLIC_TAGS list, keep it
-            if any(tag in PUBLIC_TAGS for tag in tags):
-                public_operations[method] = operation
-        
-        if public_operations:
-            public_paths[path] = public_operations
-
-    openapi_schema["paths"] = public_paths
-    app.openapi_schema = openapi_schema
-    return app.openapi_schema
-
-# --- Custom Documentation Routes ---
-
-@app.get("/openapi.json", include_in_schema=False)
-async def get_public_openapi():
-    """Returns the Public OpenAPI schema"""
-    return custom_openapi()
-
-@app.get("/internal/openapi.json", include_in_schema=False)
-async def get_internal_openapi():
-    """Returns the unfiltered, complete OpenAPI schema for internal teams"""
-    return get_openapi(
-        title="Arrotech Hub Internal API",
-        version="1.0.0",
-        description="Complete API documentation including admin, billing, and internal application endpoints.",
-        routes=app.routes,
-    )
-
-@app.get("/docs", include_in_schema=False)
-async def public_swagger_ui():
-    """Public Swagger UI"""
-    return get_swagger_ui_html(
-        openapi_url="/openapi.json",
-        title="Arrotech Hub API - Swagger UI"
-    )
-
-@app.get("/redoc", include_in_schema=False)
-async def public_redoc():
-    """Public ReDoc"""
-    return get_redoc_html(
-        openapi_url="/openapi.json",
-        title="Arrotech Hub API - ReDoc"
-    )
-
-@app.get("/internal-docs", include_in_schema=False)
-async def internal_swagger_ui():
-    """Internal completely unfiltered Swagger UI"""
-    return get_swagger_ui_html(
-        openapi_url="/internal/openapi.json",
-        title="Internal API Docs - Swagger UI"
-    )
-
-@app.get("/internal-redoc", include_in_schema=False)
-async def internal_redoc():
-    """Internal completely unfiltered ReDoc"""
-    return get_redoc_html(
-        openapi_url="/internal/openapi.json",
-        title="Internal API Docs - ReDoc"
-    )
 
 # Add GZip compression middleware (compress responses > 500 bytes)
 app.add_middleware(GZipMiddleware, minimum_size=500)
@@ -411,7 +284,6 @@ app.include_router(xero_router)  # Xero OAuth connection flow
 app.include_router(organization_router.router, prefix="/api/v1/organizations", tags=["organizations"])
 app.include_router(zoho_router.router) # Zoho OAuth connection flow
 app.include_router(zoho_webhook.router) # Zoho real-time events webhook
-app.include_router(developer_router.router, prefix="/developers/apps", tags=["developer"])
 
 
 

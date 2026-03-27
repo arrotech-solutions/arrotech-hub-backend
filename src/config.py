@@ -155,11 +155,7 @@ class BaseConfig(BaseSettings):
     LLM_MAX_TOKENS: Optional[int] = None
 
     # OpenAI Settings
-    OPENAI_MODEL: str = "gpt-4o-mini"  # gpt-4o, gpt-4-turbo, gpt-3.5-turbo
-    OPENAI_BACKGROUND_MODEL: str = "gpt-4o-mini"  # Cheaper model for background/automated tasks
-
-    # Token Budget
-    DAILY_TOKEN_BUDGET_USD: float = 1.00  # Daily token budget per user (USD)
+    OPENAI_MODEL: str = "gpt-4o"  # gpt-4o, gpt-4-turbo, gpt-3.5-turbo
 
     # Ollama Settings (Local LLM)
     OLLAMA_BASE_URL: str = "http://localhost:11434"
