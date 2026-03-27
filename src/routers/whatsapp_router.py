@@ -55,8 +55,7 @@ async def get_auth_url(user: User = Depends(get_current_user)):
         "scope": WHATSAPP_SCOPES,
         "response_type": "code",
         "state": state,
-        "display": "page",
-        "extras": json.dumps({"feature": "whatsapp_embedded_signup"})
+        "display": "page"
     }
     
     auth_url = f"https://www.facebook.com/v22.0/dialog/oauth?{urllib.parse.urlencode(params)}"
