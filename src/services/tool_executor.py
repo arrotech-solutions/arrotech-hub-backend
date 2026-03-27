@@ -43,6 +43,7 @@ from .accounting_service import AccountingService
 from .email_template_service import email_template_service
 from .agritech_service import AgritechService
 from .health_service import HealthService
+from .real_estate_tools import RealEstateTools
 from .utilities_service import UtilitiesService
 from .workflow_service import WorkflowService
 from .quickbooks_service import QuickBooksService
@@ -104,6 +105,7 @@ class ToolExecutor:
             "quickbooks": QuickBooksService(),
             "xero": XeroService(),
             "airtable": AirtableService(),
+            "real_estate": RealEstateTools(),
         }
         # Initialize services
         self._initialized = False
@@ -231,6 +233,8 @@ class ToolExecutor:
                 return await self._execute_utility_tool(tool_name, arguments, user, db)
             elif tool_name == "workflow_management":
                 return await self._execute_system_tool(tool_name, arguments, user, db)
+            elif tool_name == "real_estate_tools":
+                return await self._execute_real_estate_tool(arguments, user, db)
             else:
                 return {
                     "success": False,
@@ -6341,6 +6345,55 @@ Description: {payment.description or 'N/A'}"""
             return {
                 "success": False,
                 "error": f"Internal error executing Zoho tool: {str(e)}"
+            }
+
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Real Estate Tools (Stateless Processing)
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def _execute_real_estate_tool(
+        self,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute real estate processing tools (stateless, no DB writes)."""
+        operation = arguments.get("operation")
+        if not operation:
+            return {
+                "success": False,
+                "error": "Operation is required. Available: classify_inquiry, format_rent_reminder, format_payment_receipt, format_listing, classify_maintenance, format_maintenance_response, format_viewing_slots, format_viewing_confirmation, generate_rent_statement, generate_landlord_report, format_tenant_welcome, format_lease_reminder, parse_mpesa_confirmation, format_broadcast_listing, format_escalation_notice",
+                "result": None
+            }
+
+        try:
+            real_estate_service = self.services.get("real_estate")
+            if not real_estate_service:
+                from .real_estate_tools import RealEstateTools
+                real_estate_service = RealEstateTools()
+
+            print(f"🏠 [REAL ESTATE] Executing operation: {operation}")
+
+            # Pass all arguments to the service
+            result = await real_estate_service.handle_operation(
+                operation=operation,
+                **{k: v for k, v in arguments.items() if k != "operation"}
+            )
+
+            return {
+                "success": result.get("success", False),
+                "result": result.get("message", "") or str(result),
+                "data": result,
+                "processed_arguments": arguments
+            }
+
+        except Exception as e:
+            logger.error(f"Error executing real estate tool ({operation}): {e}")
+            return {
+                "success": False,
+                "error": f"Real estate tool error: {str(e)}",
+                "result": None
             }
 
 

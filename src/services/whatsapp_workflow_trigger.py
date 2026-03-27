@@ -1,9 +1,11 @@
 """
 WhatsApp Workflow Trigger Service.
 Fires workflows based on WhatsApp events (new message, new contact, keyword match).
+Includes real estate specific triggers for property inquiries, maintenance, and payments.
 """
 
 import logging
+import re
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
@@ -20,6 +22,34 @@ from ..services.workflow_builder_service import WorkflowBuilderService
 logger = logging.getLogger(__name__)
 
 
+# Real estate keyword groups for trigger matching
+RE_KEYWORDS = {
+    "property_inquiry": [
+        "rent", "kodi", "buy", "nunua", "apartment", "flat", "house", "nyumba",
+        "bedsitter", "bedsitta", "plot", "shamba", "land", "2br", "3br", "1br",
+        "bedroom", "studio", "office", "shop", "duka", "godown", "commercial",
+        "for sale", "for rent", "available", "vacancy", "vacant"
+    ],
+    "viewing_request": [
+        "view", "visit", "see the", "tazama", "viewing", "angalia", "come see",
+        "can i see", "schedule", "book viewing", "show me"
+    ],
+    "maintenance_request": [
+        "broken", "leak", "repair", "fix", "maintenance", "plumbing", "pipe",
+        "electrical", "water", "maji", "stima", "haribika", "vunja", "blocked",
+        "not working", "damaged", "crack", "flood", "toilet", "sink"
+    ],
+    "payment_confirmation": [
+        "confirmed", "paid", "mpesa", "m-pesa", "transaction", "receipt",
+        "nimelipa", "payment sent", "sent payment"
+    ],
+    "lease_inquiry": [
+        "lease", "contract", "renew", "renewal", "extend", "move out",
+        "vacate", "notice", "leaving"
+    ],
+}
+
+
 class WhatsAppWorkflowTrigger:
     """Service to trigger workflows based on WhatsApp events."""
     
@@ -27,7 +57,28 @@ class WhatsAppWorkflowTrigger:
         "whatsapp_message_received",
         "whatsapp_new_contact",
         "whatsapp_keyword_detected",
+        # Real estate specific triggers
+        "whatsapp_property_inquiry",
+        "whatsapp_viewing_request",
+        "whatsapp_maintenance_request",
+        "whatsapp_payment_confirmation",
+        "whatsapp_lease_inquiry",
     ]
+    
+    @classmethod
+    def _detect_real_estate_intent(cls, message_content: str) -> Optional[str]:
+        """Detect real estate intent from message content."""
+        if not message_content:
+            return None
+        
+        content_lower = message_content.lower()
+        
+        for intent, keywords in RE_KEYWORDS.items():
+            for keyword in keywords:
+                if keyword in content_lower:
+                    return intent
+        
+        return None
     
     @classmethod
     async def on_message_received(
@@ -39,9 +90,14 @@ class WhatsAppWorkflowTrigger:
         """
         Called when a new WhatsApp message is received.
         Checks for matching workflows and triggers them.
+        Includes real estate intent detection.
         """
         async with AsyncSessionLocal() as db:
             try:
+                # Detect real estate intent from message
+                re_intent = cls._detect_real_estate_intent(message.content)
+                re_event_type = f"whatsapp_{re_intent}" if re_intent else None
+                
                 # Find workflows with WhatsApp triggers
                 result = await db.execute(
                     select(Workflow).where(
@@ -77,6 +133,10 @@ class WhatsAppWorkflowTrigger:
                                 should_trigger = True
                                 break
                     
+                    # Real estate specific triggers
+                    elif re_event_type and event_type == re_event_type:
+                        should_trigger = True
+                    
                     if should_trigger:
                         # Build input variables for workflow
                         input_vars = {
@@ -89,15 +149,22 @@ class WhatsAppWorkflowTrigger:
                             "timestamp": datetime.utcnow().isoformat()
                         }
                         
+                        # Add real estate context if detected
+                        if re_intent:
+                            input_vars["real_estate_intent"] = re_intent
+                            input_vars["real_estate_event"] = re_event_type
+                        
                         # Execute workflow
-                        logger.info(f"[WA_TRIGGER] Firing workflow '{workflow.name}' for contact {contact.phone_number}")
+                        logger.info(f"[WA_TRIGGER] Firing workflow '{workflow.name}' for contact {contact.phone_number}" +
+                                   (f" (RE intent: {re_intent})" if re_intent else ""))
                         
                         try:
                             builder = WorkflowBuilderService()
                             await builder.execute_workflow(
-                                db=db,
                                 workflow_id=workflow.id,
-                                input_variables=input_vars
+                                user_id=user_id,
+                                db=db,
+                                input_data=input_vars
                             )
                         except Exception as e:
                             logger.error(f"[WA_TRIGGER] Failed to execute workflow {workflow.id}: {e}")
@@ -134,7 +201,33 @@ async def register_whatsapp_workflow_actions():
                 "contact_id": {"type": "integer", "description": "Contact ID"},
                 "tag": {"type": "string", "description": "Tag to add"}
             }
-        }
+        },
+        # Real estate specific actions
+        "whatsapp_send_rent_reminder": {
+            "description": "Send a formatted rent reminder via WhatsApp",
+            "parameters": {
+                "contact_id": {"type": "integer", "description": "Tenant contact ID"},
+                "amount": {"type": "number", "description": "Rent amount in KES"},
+                "due_date": {"type": "string", "description": "Payment due date"},
+                "reminder_level": {"type": "string", "enum": ["first", "second", "final"]}
+            }
+        },
+        "whatsapp_send_maintenance_ack": {
+            "description": "Send a maintenance request acknowledgement via WhatsApp",
+            "parameters": {
+                "contact_id": {"type": "integer", "description": "Tenant contact ID"},
+                "category": {"type": "string", "description": "Maintenance category"},
+                "priority": {"type": "string", "description": "Priority level"}
+            }
+        },
+        "whatsapp_send_viewing_slots": {
+            "description": "Send available property viewing slots via WhatsApp",
+            "parameters": {
+                "contact_id": {"type": "integer", "description": "Prospect contact ID"},
+                "property_description": {"type": "string"},
+                "slots": {"type": "array", "items": {"type": "string"}}
+            }
+        },
     }
     
     return workflow_actions
@@ -208,6 +301,113 @@ async def execute_whatsapp_action(
                     await db.commit()
                 
                 return {"success": True, "tags": contact.tags}
+            
+            elif action_name == "whatsapp_send_rent_reminder":
+                # Use real estate tools to format, then send via WhatsApp
+                from .real_estate_tools import RealEstateTools
+                re_tools = RealEstateTools()
+                
+                formatted = await re_tools.format_rent_reminder(
+                    tenant_name=parameters.get("tenant_name", "Tenant"),
+                    amount=parameters.get("amount", 0),
+                    due_date=parameters.get("due_date", ""),
+                    reminder_level=parameters.get("reminder_level", "first"),
+                    paybill=parameters.get("paybill", ""),
+                    account_number=parameters.get("account_number", ""),
+                )
+                
+                if not formatted.get("success"):
+                    return formatted
+                
+                contact_id = parameters.get("contact_id")
+                result_contact = await db.execute(
+                    select(WhatsAppContact).where(
+                        and_(WhatsAppContact.id == contact_id, WhatsAppContact.user_id == user_id)
+                    )
+                )
+                contact = result_contact.scalar_one_or_none()
+                
+                if not contact:
+                    return {"success": False, "error": "Contact not found"}
+                
+                wa_service = WhatsAppService()
+                send_result = await wa_service.send_message(
+                    to_number=contact.phone_number,
+                    message=formatted["message"],
+                    message_type="text",
+                    config={"access_token": settings.WHATSAPP_TOKEN, "phone_number_id": settings.WHATSAPP_PHONE_NUMBER_ID}
+                )
+                
+                return {"success": True, "message_id": send_result.get("message_id"), "formatted_message": formatted["message"]}
+            
+            elif action_name == "whatsapp_send_maintenance_ack":
+                from .real_estate_tools import RealEstateTools
+                re_tools = RealEstateTools()
+                
+                formatted = await re_tools.format_maintenance_response(
+                    tenant_name=parameters.get("tenant_name", "Tenant"),
+                    category=parameters.get("category", "general"),
+                    priority=parameters.get("priority", "normal"),
+                )
+                
+                if not formatted.get("success"):
+                    return formatted
+                
+                contact_id = parameters.get("contact_id")
+                result_contact = await db.execute(
+                    select(WhatsAppContact).where(
+                        and_(WhatsAppContact.id == contact_id, WhatsAppContact.user_id == user_id)
+                    )
+                )
+                contact = result_contact.scalar_one_or_none()
+                
+                if not contact:
+                    return {"success": False, "error": "Contact not found"}
+                
+                wa_service = WhatsAppService()
+                send_result = await wa_service.send_message(
+                    to_number=contact.phone_number,
+                    message=formatted["message"],
+                    message_type="text",
+                    config={"access_token": settings.WHATSAPP_TOKEN, "phone_number_id": settings.WHATSAPP_PHONE_NUMBER_ID}
+                )
+                
+                return {"success": True, "message_id": send_result.get("message_id"), "ticket_id": formatted.get("ticket_id")}
+            
+            elif action_name == "whatsapp_send_viewing_slots":
+                from .real_estate_tools import RealEstateTools
+                re_tools = RealEstateTools()
+                
+                formatted = await re_tools.format_viewing_slots(
+                    property_description=parameters.get("property_description", "the property"),
+                    slots=parameters.get("slots"),
+                    location=parameters.get("location", ""),
+                    agent_name=parameters.get("agent_name", ""),
+                )
+                
+                if not formatted.get("success"):
+                    return formatted
+                
+                contact_id = parameters.get("contact_id")
+                result_contact = await db.execute(
+                    select(WhatsAppContact).where(
+                        and_(WhatsAppContact.id == contact_id, WhatsAppContact.user_id == user_id)
+                    )
+                )
+                contact = result_contact.scalar_one_or_none()
+                
+                if not contact:
+                    return {"success": False, "error": "Contact not found"}
+                
+                wa_service = WhatsAppService()
+                send_result = await wa_service.send_message(
+                    to_number=contact.phone_number,
+                    message=formatted["message"],
+                    message_type="text",
+                    config={"access_token": settings.WHATSAPP_TOKEN, "phone_number_id": settings.WHATSAPP_PHONE_NUMBER_ID}
+                )
+                
+                return {"success": True, "message_id": send_result.get("message_id"), "slots": formatted.get("available_slots")}
                 
             else:
                 return {"success": False, "error": f"Unknown action: {action_name}"}
@@ -215,3 +415,4 @@ async def execute_whatsapp_action(
         except Exception as e:
             logger.error(f"[WA_ACTION] Error executing {action_name}: {e}")
             return {"success": False, "error": str(e)}
+

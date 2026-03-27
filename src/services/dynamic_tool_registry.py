@@ -525,6 +525,92 @@ class DynamicToolRegistry:
                 },
                 "category": "email",
                 "always_available": True
+            },
+            # Real Estate Tools - Always available
+            "real_estate_tools": {
+                "name": "real_estate_tools",
+                "description": "Real estate workflow tools for property management, rent collection, tenant communication, maintenance tracking, and listing management via WhatsApp. Operations: classify_inquiry, format_rent_reminder, format_payment_receipt, format_listing, classify_maintenance, format_maintenance_response, format_viewing_slots, format_viewing_confirmation, generate_rent_statement, generate_landlord_report, format_tenant_welcome, format_lease_reminder, parse_mpesa_confirmation, format_broadcast_listing, format_escalation_notice.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": [
+                                "classify_inquiry",
+                                "format_rent_reminder",
+                                "format_payment_receipt",
+                                "format_listing",
+                                "classify_maintenance",
+                                "format_maintenance_response",
+                                "format_viewing_slots",
+                                "format_viewing_confirmation",
+                                "generate_rent_statement",
+                                "generate_landlord_report",
+                                "format_tenant_welcome",
+                                "format_lease_reminder",
+                                "parse_mpesa_confirmation",
+                                "format_broadcast_listing",
+                                "format_escalation_notice"
+                            ],
+                            "description": "The real estate operation to perform"
+                        },
+                        "message": {"type": "string", "description": "Message text for classify_inquiry, classify_maintenance, or parse_mpesa_confirmation"},
+                        "tenant_name": {"type": "string", "description": "Tenant name for formatted messages"},
+                        "amount": {"type": "number", "description": "Amount in KES (rent, payment, etc.)"},
+                        "unit": {"type": "string", "description": "Property unit identifier"},
+                        "due_date": {"type": "string", "description": "Payment due date"},
+                        "paybill": {"type": "string", "description": "M-Pesa Paybill number"},
+                        "account_number": {"type": "string", "description": "M-Pesa account number"},
+                        "reminder_level": {"type": "string", "enum": ["first", "second", "final"], "description": "Rent reminder escalation level"},
+                        "property_type": {"type": "string", "description": "Type of property (apartment, house, plot, commercial)"},
+                        "bedrooms": {"type": "integer", "description": "Number of bedrooms"},
+                        "price": {"type": "number", "description": "Property price"},
+                        "location": {"type": "string", "description": "Property location"},
+                        "amenities": {"type": "array", "items": {"type": "string"}, "description": "Property amenities"},
+                        "listing_type": {"type": "string", "enum": ["rent", "sale"], "description": "Listing type"},
+                        "contact_phone": {"type": "string", "description": "Contact phone number"},
+                        "contact_name": {"type": "string", "description": "Contact person name"},
+                        "landlord_name": {"type": "string", "description": "Landlord or agency name"},
+                        "property_name": {"type": "string", "description": "Property or building name"},
+                        "payment_method": {"type": "string", "description": "Payment method (default: M-Pesa)"},
+                        "transaction_id": {"type": "string", "description": "M-Pesa transaction ID"},
+                        "period": {"type": "string", "description": "Billing period (e.g., March 2026)"},
+                        "monthly_rent": {"type": "number", "description": "Monthly rent amount"},
+                        "payments": {"type": "array", "items": {"type": "object"}, "description": "List of payment records"},
+                        "total_units": {"type": "integer", "description": "Total units in property"},
+                        "occupied_units": {"type": "integer", "description": "Occupied units count"},
+                        "total_rent_expected": {"type": "number", "description": "Total expected rent"},
+                        "total_rent_collected": {"type": "number", "description": "Total collected rent"},
+                        "maintenance_count": {"type": "integer", "description": "Maintenance request count"},
+                        "maintenance_cost": {"type": "number", "description": "Total maintenance cost"},
+                        "listings": {"type": "array", "items": {"type": "object"}, "description": "List of property listings for broadcast"},
+                        "slots": {"type": "array", "items": {"type": "string"}, "description": "Available viewing time slots"},
+                        "rules": {"type": "array", "items": {"type": "string"}, "description": "House rules for tenant welcome"},
+                        "expiry_date": {"type": "string", "description": "Lease expiry date"},
+                        "days_until_expiry": {"type": "integer", "description": "Days until lease expires"},
+                        "issue_type": {"type": "string", "enum": ["rent", "maintenance", "lease"], "description": "Escalation issue type"}
+                    },
+                    "required": ["operation"]
+                },
+                "category": "real_estate",
+                "always_available": True,
+                "few_shot_examples": [
+                    {
+                        "user": "I need a 2 bedroom apartment in Thika for about 15k",
+                        "tool_call": 'real_estate_tools(operation="classify_inquiry", message="I need a 2 bedroom apartment in Thika for about 15k")',
+                        "response": "Classified as rental_inquiry for apartment (2BR, budget KES 15,000, Thika)"
+                    },
+                    {
+                        "user": "Send a rent reminder to John for 25000 due on 5th",
+                        "tool_call": 'real_estate_tools(operation="format_rent_reminder", tenant_name="John", amount=25000, due_date="5th March", reminder_level="first")',
+                        "response": "Generated friendly first rent reminder for KES 25,000"
+                    },
+                    {
+                        "user": "Create a listing for a 3BR house in Ngoingwa for 35k per month",
+                        "tool_call": 'real_estate_tools(operation="format_listing", property_type="house", bedrooms=3, price=35000, location="Ngoingwa", listing_type="rent")',
+                        "response": "Formatted WhatsApp listing: 3BR House in Ngoingwa — KES 35,000/month"
+                    }
+                ]
             }
         }
     
@@ -614,7 +700,8 @@ class DynamicToolRegistry:
                 "web_tools",
                 "web_search",
                 "content_creation",
-                "email_template"
+                "email_template",
+                "real_estate_tools"
             }
             
             if include_all:
