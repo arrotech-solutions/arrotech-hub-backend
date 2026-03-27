@@ -61,17 +61,22 @@ async def get_auth_url(user: User = Depends(get_current_user)):
     auth_url = f"https://www.facebook.com/v22.0/dialog/oauth?{urllib.parse.urlencode(params)}"
     return {"url": auth_url}
 
-@router.post("/oauth/callback")
+@router.get("/callback")
 async def oauth_callback(
-    payload: WhatsAppOauthRequest, 
-    user: User = Depends(get_current_user),
+    code: str,
+    state: str,
     db: AsyncSession = Depends(get_db)
 ):
-    """Exchange authorization code and set up WhatsApp Business API connection."""
-    code = payload.code
+    """Exchange authorization code and set up WhatsApp Business API connection via redirect."""
+    
+    # State string contains the user id passed during the get_auth_url phase
+    try:
+        user_id = int(state)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid state parameter")
     
     try:
-        redirect_uri = f"{settings.API_BASE_URL}/api/whatsapp/callback" # Must match redirect_uri used to get code if using standard flow, or omit/pass required for JS SDK
+        redirect_uri = f"{settings.API_BASE_URL.rstrip('/')}/api/whatsapp/callback" # Must match redirect_uri used to get code if using standard flow, or omit/pass required for JS SDK
         
         async with httpx.AsyncClient() as client:
             # 1. Exchange code for access token using Meta OAuth endpoint
@@ -160,7 +165,7 @@ async def oauth_callback(
             # 4. Finalize Connection
             result = await db.execute(
                 select(Connection).filter(
-                    Connection.user_id == user.id,
+                    Connection.user_id == user_id,
                     Connection.platform == "whatsapp"
                 )
             )
@@ -181,7 +186,7 @@ async def oauth_callback(
                 connection.config = {**connection.config, **config_data}
             else:
                 connection = Connection(
-                    user_id=user.id,
+                    user_id=user_id,
                     platform="whatsapp",
                     name="WhatsApp Business API",
                     status=ConnectionStatus.ACTIVE,
@@ -191,10 +196,10 @@ async def oauth_callback(
             
             await db.commit()
             
-            return {"success": True, "message": "WhatsApp connected successfully ready for automation."}
+            return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?success=whatsapp_connected")
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error in WhatsApp callback: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error during connection.")
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?error=internal_error")
