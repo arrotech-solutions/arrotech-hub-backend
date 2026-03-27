@@ -1169,6 +1169,416 @@ WORKFLOW_TEMPLATES = [
             "exec_channel": {"type": "string", "default": "#leadership", "description": "Slack channel for executive reports"},
             "exec_email": {"type": "string", "required": False, "description": "Executive email for report delivery (optional)"}
         }
+    },
+    # ────────────────────────────────────────────────────────────────────────
+    # Real Estate Workflow Templates (Thika Property Management)
+    # ────────────────────────────────────────────────────────────────────────
+    {
+        "id": "re-auto-inquiry-response",
+        "name": "Auto Property Inquiry Response",
+        "description": "Automatically classify incoming WhatsApp property inquiries (rent, buy, viewing) and send an instant personalized response with matching listings. Works in English and Swahili.",
+        "category": "Real Estate",
+        "icon": "🏠",
+        "difficulty": "beginner",
+        "estimated_time": "5 mins",
+        "tags": ["whatsapp", "real-estate", "leads", "auto-reply", "thika", "property"],
+        "required_connections": ["whatsapp"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "real_estate_tools",
+                "tool_parameters": {
+                    "operation": "classify_inquiry",
+                    "message": "{{input.whatsapp_message_content}}"
+                },
+                "description": "Classify the incoming message — detect intent (rent/buy/viewing), property type, bedrooms, budget, and location"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "whatsapp_messaging",
+                "tool_parameters": {
+                    "action": "send_message",
+                    "to_number": "{{input.whatsapp_contact_phone}}",
+                    "message": "Hello {{input.whatsapp_contact_name}}! 👋\n\nThank you for your inquiry. We've noted your interest:\n🏷️ Looking for: {{step_1.property_type}}\n💰 Budget: {{step_1.budget}}\n📍 Area: {{step_1.location}}\n\nOur agent will get back to you shortly with matching properties. In the meantime, reply 'VIEW' to schedule a property viewing.\n\n_{{input.agency_name}}_"
+                },
+                "description": "Send instant personalized acknowledgment via WhatsApp"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "whatsapp_messaging",
+                "tool_parameters": {
+                    "action": "send_message",
+                    "to_number": "{{input.agent_phone}}",
+                    "message": "📩 New Lead Alert!\n\n👤 {{input.whatsapp_contact_name}} ({{input.whatsapp_contact_phone}})\n🏷️ Intent: {{step_1.primary_intent}}\n🏠 Type: {{step_1.property_type}}\n💰 Budget: {{step_1.budget}}\n📍 Location: {{step_1.location}}\n⚡ Urgency: {{step_1.urgency}}\n\nOriginal message: {{input.whatsapp_message_content}}"
+                },
+                "description": "Forward lead details to the property agent for follow-up",
+                "condition": {"if": "input.agent_phone"}
+            }
+        ],
+        "variables": {
+            "whatsapp_message_content": {"type": "string", "required": True, "description": "Incoming WhatsApp message from the prospect"},
+            "whatsapp_contact_phone": {"type": "string", "required": True, "description": "Prospect's phone number"},
+            "whatsapp_contact_name": {"type": "string", "default": "Customer", "description": "Prospect's name"},
+            "agent_phone": {"type": "string", "required": False, "description": "Agent phone to forward leads to"},
+            "agency_name": {"type": "string", "default": "Property Management", "description": "Your agency name for sign-off"}
+        }
+    },
+    {
+        "id": "re-rent-collection-pipeline",
+        "name": "Rent Collection Pipeline",
+        "description": "Automated 3-stage rent collection via WhatsApp: friendly reminder before due date, overdue follow-up, and final notice with escalation to landlord. Includes M-Pesa payment details.",
+        "category": "Real Estate",
+        "icon": "💰",
+        "difficulty": "beginner",
+        "estimated_time": "5 mins",
+        "tags": ["rent", "collection", "whatsapp", "mpesa", "reminder", "real-estate"],
+        "required_connections": ["whatsapp"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "real_estate_tools",
+                "tool_parameters": {
+                    "operation": "format_rent_reminder",
+                    "tenant_name": "{{input.tenant_name}}",
+                    "amount": "{{input.rent_amount}}",
+                    "due_date": "{{input.due_date}}",
+                    "unit": "{{input.unit}}",
+                    "paybill": "{{input.paybill}}",
+                    "account_number": "{{input.account_number}}",
+                    "reminder_level": "{{input.reminder_level}}",
+                    "landlord_name": "{{input.landlord_name}}",
+                    "property_name": "{{input.property_name}}"
+                },
+                "description": "Generate the appropriate rent reminder message (first, second, or final notice)"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "whatsapp_messaging",
+                "tool_parameters": {
+                    "action": "send_message",
+                    "to_number": "{{input.tenant_phone}}",
+                    "message": "{{step_1.message}}"
+                },
+                "description": "Send the rent reminder to the tenant via WhatsApp"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "real_estate_tools",
+                "tool_parameters": {
+                    "operation": "format_escalation_notice",
+                    "tenant_name": "{{input.tenant_name}}",
+                    "issue_type": "rent",
+                    "unit": "{{input.unit}}",
+                    "phone": "{{input.tenant_phone}}",
+                    "details": "Rent of KES {{input.rent_amount}} for {{input.unit}} is overdue. Reminder level: {{input.reminder_level}}"
+                },
+                "description": "Generate landlord escalation notice (only for final notices)",
+                "condition": {"if": "input.reminder_level == 'final'"}
+            },
+            {
+                "step_number": 4,
+                "tool_name": "whatsapp_messaging",
+                "tool_parameters": {
+                    "action": "send_message",
+                    "to_number": "{{input.landlord_phone}}",
+                    "message": "{{step_3.message}}"
+                },
+                "description": "Escalate to landlord via WhatsApp (final notice only)",
+                "condition": {"if": "input.reminder_level == 'final' and input.landlord_phone"}
+            }
+        ],
+        "variables": {
+            "tenant_name": {"type": "string", "required": True, "description": "Tenant's full name"},
+            "tenant_phone": {"type": "string", "required": True, "description": "Tenant's WhatsApp number (e.g., 254712345678)"},
+            "rent_amount": {"type": "number", "required": True, "description": "Monthly rent in KES"},
+            "due_date": {"type": "string", "default": "5th of the month", "description": "Rent due date"},
+            "unit": {"type": "string", "required": False, "description": "Unit/house number (e.g., A12)"},
+            "paybill": {"type": "string", "required": False, "description": "M-Pesa Paybill number"},
+            "account_number": {"type": "string", "required": False, "description": "M-Pesa account number"},
+            "reminder_level": {"type": "string", "enum": ["first", "second", "final"], "default": "first"},
+            "landlord_name": {"type": "string", "default": "Management"},
+            "landlord_phone": {"type": "string", "required": False, "description": "Landlord phone for escalation"},
+            "property_name": {"type": "string", "required": False, "description": "Property/building name"}
+        }
+    },
+    {
+        "id": "re-maintenance-handler",
+        "name": "Maintenance Request Handler",
+        "description": "Auto-classify incoming WhatsApp maintenance requests by category and priority, send instant acknowledgment to tenant, and alert the maintenance team or landlord for urgent issues.",
+        "category": "Real Estate",
+        "icon": "🔧",
+        "difficulty": "beginner",
+        "estimated_time": "5 mins",
+        "tags": ["maintenance", "whatsapp", "real-estate", "auto-reply", "property"],
+        "required_connections": ["whatsapp"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "real_estate_tools",
+                "tool_parameters": {
+                    "operation": "classify_maintenance",
+                    "message": "{{input.whatsapp_message_content}}"
+                },
+                "description": "Classify the maintenance request — detect category (plumbing, electrical, etc.) and priority level"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "real_estate_tools",
+                "tool_parameters": {
+                    "operation": "format_maintenance_response",
+                    "tenant_name": "{{input.whatsapp_contact_name}}",
+                    "category": "{{step_1.category}}",
+                    "priority": "{{step_1.priority}}"
+                },
+                "description": "Generate acknowledgment message with ticket ID and estimated response time"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "whatsapp_messaging",
+                "tool_parameters": {
+                    "action": "send_message",
+                    "to_number": "{{input.whatsapp_contact_phone}}",
+                    "message": "{{step_2.message}}"
+                },
+                "description": "Send maintenance acknowledgment to tenant"
+            },
+            {
+                "step_number": 4,
+                "tool_name": "whatsapp_messaging",
+                "tool_parameters": {
+                    "action": "send_message",
+                    "to_number": "{{input.maintenance_team_phone}}",
+                    "message": "🔧 *NEW MAINTENANCE REQUEST*\n\n🆔 Ticket: {{step_2.ticket_id}}\n👤 Tenant: {{input.whatsapp_contact_name}} ({{input.whatsapp_contact_phone}})\n🏷️ Category: {{step_1.category}}\n📊 Priority: {{step_1.priority}}\n⏱️ Response: {{step_1.suggested_response_time}}\n\n📝 Issue: {{input.whatsapp_message_content}}"
+                },
+                "description": "Alert maintenance team or caretaker (for high/emergency priority)",
+                "condition": {"if": "input.maintenance_team_phone"}
+            }
+        ],
+        "variables": {
+            "whatsapp_message_content": {"type": "string", "required": True, "description": "Tenant's maintenance request message"},
+            "whatsapp_contact_phone": {"type": "string", "required": True, "description": "Tenant's phone number"},
+            "whatsapp_contact_name": {"type": "string", "default": "Tenant"},
+            "maintenance_team_phone": {"type": "string", "required": False, "description": "Caretaker or maintenance team WhatsApp number"}
+        }
+    },
+    {
+        "id": "re-viewing-scheduler",
+        "name": "Property Viewing Scheduler",
+        "description": "When a prospect requests a viewing, automatically send available time slots and confirm their booking with location details via WhatsApp.",
+        "category": "Real Estate",
+        "icon": "📅",
+        "difficulty": "beginner",
+        "estimated_time": "5 mins",
+        "tags": ["viewing", "scheduling", "whatsapp", "real-estate", "leads"],
+        "required_connections": ["whatsapp"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "real_estate_tools",
+                "tool_parameters": {
+                    "operation": "format_viewing_slots",
+                    "property_description": "{{input.property_description}}",
+                    "location": "{{input.location}}",
+                    "agent_name": "{{input.agent_name}}",
+                    "slots": "{{input.available_slots}}"
+                },
+                "description": "Generate formatted viewing slots message"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "whatsapp_messaging",
+                "tool_parameters": {
+                    "action": "send_message",
+                    "to_number": "{{input.prospect_phone}}",
+                    "message": "{{step_1.message}}"
+                },
+                "description": "Send available viewing slots to the prospect"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "whatsapp_messaging",
+                "tool_parameters": {
+                    "action": "send_message",
+                    "to_number": "{{input.agent_phone}}",
+                    "message": "📅 *Viewing Request*\n\n👤 {{input.prospect_name}} ({{input.prospect_phone}})\n🏠 Property: {{input.property_description}}\n📍 Location: {{input.location}}\n\nSlots sent. Please confirm when they reply."
+                },
+                "description": "Notify the agent about the viewing request",
+                "condition": {"if": "input.agent_phone"}
+            }
+        ],
+        "variables": {
+            "prospect_phone": {"type": "string", "required": True, "description": "Prospect's WhatsApp number"},
+            "prospect_name": {"type": "string", "default": "Client"},
+            "property_description": {"type": "string", "required": True, "description": "Property description (e.g., '2BR Apartment in Ngoingwa')"},
+            "location": {"type": "string", "default": "Thika"},
+            "agent_name": {"type": "string", "required": False, "description": "Viewing agent name"},
+            "agent_phone": {"type": "string", "required": False, "description": "Agent phone for notification"},
+            "available_slots": {"type": "array", "items": {"type": "string"}, "description": "Available viewing slots (auto-generated if empty)"}
+        }
+    },
+    {
+        "id": "re-tenant-onboarding",
+        "name": "Tenant Onboarding Welcome",
+        "description": "Send a comprehensive welcome package to new tenants via WhatsApp — including rent details, M-Pesa payment info, house rules, and caretaker contact.",
+        "category": "Real Estate",
+        "icon": "🎉",
+        "difficulty": "beginner",
+        "estimated_time": "3 mins",
+        "tags": ["onboarding", "tenant", "whatsapp", "welcome", "real-estate"],
+        "required_connections": ["whatsapp"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "real_estate_tools",
+                "tool_parameters": {
+                    "operation": "format_tenant_welcome",
+                    "tenant_name": "{{input.tenant_name}}",
+                    "unit": "{{input.unit}}",
+                    "property_name": "{{input.property_name}}",
+                    "landlord_name": "{{input.landlord_name}}",
+                    "rent_amount": "{{input.rent_amount}}",
+                    "due_date": "{{input.due_date}}",
+                    "paybill": "{{input.paybill}}",
+                    "account_number": "{{input.account_number}}",
+                    "caretaker_phone": "{{input.caretaker_phone}}",
+                    "rules": "{{input.house_rules}}"
+                },
+                "description": "Generate a comprehensive welcome message with all move-in details"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "whatsapp_messaging",
+                "tool_parameters": {
+                    "action": "send_message",
+                    "to_number": "{{input.tenant_phone}}",
+                    "message": "{{step_1.message}}"
+                },
+                "description": "Send welcome package to new tenant"
+            }
+        ],
+        "variables": {
+            "tenant_name": {"type": "string", "required": True, "description": "New tenant's name"},
+            "tenant_phone": {"type": "string", "required": True, "description": "Tenant's WhatsApp number"},
+            "unit": {"type": "string", "required": True, "description": "Unit/house number"},
+            "property_name": {"type": "string", "required": False, "description": "Building/property name"},
+            "landlord_name": {"type": "string", "default": "Management"},
+            "rent_amount": {"type": "number", "required": True, "description": "Monthly rent in KES"},
+            "due_date": {"type": "string", "default": "5th of every month"},
+            "paybill": {"type": "string", "required": False, "description": "M-Pesa Paybill"},
+            "account_number": {"type": "string", "required": False, "description": "M-Pesa account number"},
+            "caretaker_phone": {"type": "string", "required": False, "description": "Caretaker's phone"},
+            "house_rules": {"type": "array", "items": {"type": "string"}, "description": "House rules list"}
+        }
+    },
+    {
+        "id": "re-landlord-monthly-report",
+        "name": "Landlord Monthly Report",
+        "description": "Generate and send a comprehensive monthly property report to the landlord via WhatsApp — including occupancy, rent collection rates, maintenance costs, and net income.",
+        "category": "Real Estate",
+        "icon": "📊",
+        "difficulty": "intermediate",
+        "estimated_time": "5 mins",
+        "tags": ["report", "landlord", "whatsapp", "analytics", "real-estate"],
+        "required_connections": ["whatsapp"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "real_estate_tools",
+                "tool_parameters": {
+                    "operation": "generate_landlord_report",
+                    "landlord_name": "{{input.landlord_name}}",
+                    "property_name": "{{input.property_name}}",
+                    "total_units": "{{input.total_units}}",
+                    "occupied_units": "{{input.occupied_units}}",
+                    "total_rent_expected": "{{input.total_rent_expected}}",
+                    "total_rent_collected": "{{input.total_rent_collected}}",
+                    "maintenance_count": "{{input.maintenance_count}}",
+                    "maintenance_cost": "{{input.maintenance_cost}}",
+                    "unpaid_tenants": "{{input.unpaid_tenants}}"
+                },
+                "description": "Generate comprehensive property performance report"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "whatsapp_messaging",
+                "tool_parameters": {
+                    "action": "send_message",
+                    "to_number": "{{input.landlord_phone}}",
+                    "message": "{{step_1.message}}"
+                },
+                "description": "Send monthly report to landlord via WhatsApp"
+            }
+        ],
+        "variables": {
+            "landlord_name": {"type": "string", "required": True, "description": "Landlord's name"},
+            "landlord_phone": {"type": "string", "required": True, "description": "Landlord's WhatsApp number"},
+            "property_name": {"type": "string", "required": True, "description": "Property name"},
+            "total_units": {"type": "integer", "required": True, "description": "Total units in property"},
+            "occupied_units": {"type": "integer", "required": True, "description": "Currently occupied units"},
+            "total_rent_expected": {"type": "number", "required": True, "description": "Total expected rent in KES"},
+            "total_rent_collected": {"type": "number", "required": True, "description": "Total collected rent in KES"},
+            "maintenance_count": {"type": "integer", "default": 0, "description": "Maintenance requests this month"},
+            "maintenance_cost": {"type": "number", "default": 0, "description": "Total maintenance spend in KES"},
+            "unpaid_tenants": {"type": "array", "items": {"type": "string"}, "description": "List of tenants with unpaid rent"}
+        }
+    },
+    {
+        "id": "re-lease-renewal-tracker",
+        "name": "Lease Renewal Tracker",
+        "description": "Automatically notify tenants about upcoming lease expiry and collect renewal confirmations via WhatsApp. Includes rent adjustment notices and landlord notification.",
+        "category": "Real Estate",
+        "icon": "📋",
+        "difficulty": "beginner",
+        "estimated_time": "5 mins",
+        "tags": ["lease", "renewal", "whatsapp", "real-estate", "contract"],
+        "required_connections": ["whatsapp"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "real_estate_tools",
+                "tool_parameters": {
+                    "operation": "format_lease_reminder",
+                    "tenant_name": "{{input.tenant_name}}",
+                    "expiry_date": "{{input.expiry_date}}",
+                    "unit": "{{input.unit}}",
+                    "current_rent": "{{input.current_rent}}",
+                    "new_rent": "{{input.new_rent}}",
+                    "days_until_expiry": "{{input.days_until_expiry}}"
+                },
+                "description": "Generate lease renewal notice with rent adjustment details"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "whatsapp_messaging",
+                "tool_parameters": {
+                    "action": "send_message",
+                    "to_number": "{{input.tenant_phone}}",
+                    "message": "{{step_1.message}}"
+                },
+                "description": "Send lease renewal notice to tenant"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "whatsapp_messaging",
+                "tool_parameters": {
+                    "action": "send_message",
+                    "to_number": "{{input.landlord_phone}}",
+                    "message": "📋 *Lease Renewal Sent*\n\n👤 {{input.tenant_name}} — Unit {{input.unit}}\n📅 Expires: {{input.expiry_date}} ({{input.days_until_expiry}} days)\n💰 Current: KES {{input.current_rent}} → New: KES {{input.new_rent}}\n\nWaiting for tenant confirmation."
+                },
+                "description": "Notify landlord that renewal notice was sent",
+                "condition": {"if": "input.landlord_phone"}
+            }
+        ],
+        "variables": {
+            "tenant_name": {"type": "string", "required": True, "description": "Tenant's name"},
+            "tenant_phone": {"type": "string", "required": True, "description": "Tenant's WhatsApp number"},
+            "expiry_date": {"type": "string", "required": True, "description": "Lease expiry date (e.g., 30 April 2026)"},
+            "unit": {"type": "string", "required": False, "description": "Unit number"},
+            "current_rent": {"type": "number", "required": True, "description": "Current rent in KES"},
+            "new_rent": {"type": "number", "required": False, "description": "New rent after renewal (if changing)"},
+            "days_until_expiry": {"type": "integer", "default": 30, "description": "Days until lease expires"},
+            "landlord_phone": {"type": "string", "required": False, "description": "Landlord phone for notification"}
+        }
     }
 ]
 
@@ -1184,6 +1594,7 @@ CATEGORIES = [
     {"id": "hr", "name": "Human Resources", "icon": "👥", "color": "#6366F1"},
     {"id": "operations", "name": "Operations", "icon": "⚙️", "color": "#64748B"},
     {"id": "fintech", "name": "Fintech", "icon": "💳", "color": "#06B6D4"},
+    {"id": "real-estate", "name": "Real Estate", "icon": "🏠", "color": "#D97706"},
 ]
 
 
