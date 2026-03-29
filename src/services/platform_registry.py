@@ -629,6 +629,7 @@ class PlatformRegistry:
                 },
                 "required": ["phone_number_id", "access_token"]
             },
+            test_function="test_whatsapp_connection"
         )
 
         # Airtable Platform
