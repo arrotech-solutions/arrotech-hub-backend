@@ -288,6 +288,31 @@ class TestPlatformRegistry:
             platforms = registry.get_platforms()
             assert platforms is not None
 
+    @pytest.mark.asyncio
+    async def test_linkedin_platform_uses_dedicated_tools(self):
+        """LinkedIn platform should expose dedicated linkedin_* tools."""
+        from src.services.platform_registry import PlatformRegistry
+        registry = PlatformRegistry()
+
+        linkedin_tools = registry.get_platform_tools("linkedin")
+        tool_names = {tool["name"] for tool in linkedin_tools}
+
+        assert "linkedin_network_management" in tool_names
+        assert "linkedin_content_management" in tool_names
+        assert "linkedin_analytics" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_linkedin_platform_does_not_use_generic_social_media_tools(self):
+        """LinkedIn tools should not be mapped to generic social media tools."""
+        from src.services.platform_registry import PlatformRegistry
+        registry = PlatformRegistry()
+
+        linkedin_tools = registry.get_platform_tools("linkedin")
+        tool_names = {tool["name"] for tool in linkedin_tools}
+
+        assert "social_media_management" not in tool_names
+        assert "social_media_analytics" not in tool_names
+
 
 class TestWorkflowSharingService:
     """Tests for WorkflowSharingService."""

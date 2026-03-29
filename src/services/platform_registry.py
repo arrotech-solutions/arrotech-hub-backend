@@ -62,6 +62,35 @@ class PlatformRegistry:
                     "required": ["operation"]
                 },
                 operations=["search_people", "get_profile", "search_companies", "get_company", "get_connections"]
+            ),
+            PlatformCapability(
+                name="Content Management",
+                description="Create and manage LinkedIn posts",
+                tool_name="linkedin_content_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_post"]},
+                        "text": {"type": "string"},
+                        "visibility": {"type": "string", "enum": ["PUBLIC", "CONNECTIONS"], "default": "PUBLIC"}
+                    },
+                    "required": ["operation", "text"]
+                },
+                operations=["create_post"]
+            ),
+            PlatformCapability(
+                name="Analytics",
+                description="Get LinkedIn analytics metrics",
+                tool_name="linkedin_analytics",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_analytics"]},
+                        "metric_type": {"type": "string", "default": "visitors"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_analytics"]
             )
         ]
         
@@ -1485,65 +1514,6 @@ class PlatformRegistry:
                 "required": ["tenant_id"]
             },
             test_function="test_xero_connection"
-        )
-
-        # LinkedIn Platform
-        linkedin_capabilities = [
-            PlatformCapability(
-                name="Content Management",
-                description="Create, schedule, and manage LinkedIn posts and content",
-                tool_name="social_media_management",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "operation": {"type": "string", "enum": ["schedule_post", "analyze_performance", "engage_audience", "create_campaign"]},
-                        "content": {"type": "object"},
-                        "schedule": {"type": "object"},
-                        "campaign_data": {"type": "object"},
-                        "date_range": {"type": "string"}
-                    },
-                    "required": ["operation"]
-                },
-                operations=["schedule_post", "analyze_performance", "engage_audience", "create_campaign"]
-            ),
-            PlatformCapability(
-                name="Analytics",
-                description="Get LinkedIn analytics and professional metrics",
-                tool_name="social_media_analytics",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "date_range": {"type": "string", "default": "7d"},
-                        "platform": {"type": "string", "default": "linkedin"}
-                    }
-                },
-                operations=["get_analytics"]
-            )
-        ]
-
-        self.platforms["linkedin"] = Platform(
-            id="linkedin",
-            name="LinkedIn",
-            description="LinkedIn API for professional content and networking",
-            icon="linkedin",
-            features=[
-                "Post scheduling",
-                "Professional content",
-                "Analytics",
-                "Networking"
-            ],
-            capabilities=linkedin_capabilities,
-            config_schema={
-                "type": "object",
-                "properties": {
-                    "access_token": {"type": "string", "description": "LinkedIn Access Token"},
-                    "client_id": {"type": "string", "description": "LinkedIn Client ID"},
-                    "client_secret": {"type": "string", "description": "LinkedIn Client Secret"},
-                    "organization_id": {"type": "string", "description": "LinkedIn Organization ID"}
-                },
-                "required": ["access_token", "client_id", "client_secret"]
-            },
-            test_function="test_linkedin_connection"
         )
 
         # Instagram Platform
