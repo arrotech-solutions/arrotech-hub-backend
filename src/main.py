@@ -260,7 +260,7 @@ app.include_router(whatsapp_broadcast.router)  # WhatsApp broadcast campaigns
 app.include_router(facebook_router)
 app.include_router(instagram_router)
 app.include_router(twitter_router)
-app.include_router(linkedin_router)
+app.include_router(linkedin_router.router)
 app.include_router(clickup_router.router)
 app.include_router(teams_router.router)
 app.include_router(zoom_router.router)
@@ -285,7 +285,7 @@ app.include_router(xero_router)  # Xero OAuth connection flow
 app.include_router(organization_router.router, prefix="/api/v1/organizations", tags=["organizations"])
 app.include_router(zoho_router.router) # Zoho OAuth connection flow
 app.include_router(zoho_webhook.router) # Zoho real-time events webhook
-app.include_router(linkedin_router) # LinkedIn OAuth connection flow
+# We already included linkedin_router above
 
 
 
