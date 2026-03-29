@@ -174,6 +174,10 @@ class ToolExecutor:
                 return await self._execute_hubspot_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("salesforce_"):
                 return await self._execute_salesforce_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("linkedin_"):
+                return await self._execute_linkedin_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("airtable_"):
+                return await self._execute_airtable_tool(tool_name, arguments, user, db)
 
             elif tool_name.startswith("marketing_"):
                 return await self._execute_marketing_tool(tool_name, arguments, user, db)
@@ -347,8 +351,8 @@ class ToolExecutor:
         if tool_name.startswith("zoho_"): return "zoho"
         if tool_name.startswith("hubspot_"): return "hubspot"
         if tool_name.startswith("salesforce_"): return "salesforce"
-
-        if tool_name.startswith("whatsapp_"): return "whatsapp"
+        if tool_name.startswith("linkedin_"): return "linkedin"
+        if tool_name.startswith("airtable_"): return "airtable"
         if tool_name.startswith("social_media_"): return "social_media"
         if tool_name.startswith("asana_"): return "asana"
         if tool_name.startswith("google_workspace_"): return "google_workspace"
@@ -2351,12 +2355,101 @@ class ToolExecutor:
                     "result": result.get("message", "Contact retrieved successfully"),
                     "data": result
                 }
+            elif operation == "associate":
+                contact_id = arguments.get("contact_id")
+                target_type = arguments.get("target_type")
+                target_id = arguments.get("target_id")
+                result = await hubspot_service.associate_contact(contact_id, target_type, target_id)
+                return {
+                    "success": result.get("success", False),
+                    "result": result.get("message", "Contact associated successfully"),
+                    "data": result
+                }
             else:
                 return {
                     "success": False,
                     "error": f"Unknown HubSpot operation: {operation}",
                     "result": None
                 }
+
+        elif tool_name == "hubspot_company_operations":
+            operation = arguments.get("operation")
+            if operation == "read":
+                company_id = arguments.get("company_id")
+                result = await hubspot_service.get_company(company_id)
+                return {
+                    "success": result.get("success", False),
+                    "result": result.get("message", "Company retrieved successfully"),
+                    "data": result
+                }
+            return {"success": False, "error": f"Unknown operation: {operation}"}
+
+        elif tool_name == "hubspot_engagement_operations":
+            operation = arguments.get("operation")
+            if operation == "create":
+                result = await hubspot_service.create_engagement(arguments)
+                return {
+                    "success": result.get("success", False),
+                    "result": result.get("message", "Engagement created successfully"),
+                    "data": result
+                }
+            return {"success": False, "error": f"Unknown operation: {operation}"}
+
+        elif tool_name == "hubspot_sequence_operations":
+            operation = arguments.get("operation")
+            if operation == "enroll":
+                result = await hubspot_service.enroll_sequence(arguments.get("sequence_id"), arguments.get("contact_id"), arguments.get("user_id"))
+                return {
+                    "success": result.get("success", False),
+                    "result": result.get("message", "Sequence enrolled successfully"),
+                    "data": result
+                }
+            elif operation == "read_enrollment":
+                result = await hubspot_service.get_sequence_enrollment(arguments.get("contact_id"))
+                return {
+                    "success": result.get("success", False),
+                    "result": result.get("message", "Enrollment retrieved successfully"),
+                    "data": result
+                }
+            return {"success": False, "error": f"Unknown operation: {operation}"}
+
+        elif tool_name == "hubspot_email_templates":
+            operation = arguments.get("operation")
+            if operation == "create":
+                result = await hubspot_service.create_email_template(arguments.get("name"), arguments.get("subject"), arguments.get("html_content"))
+                return {
+                    "success": result.get("success", False),
+                    "result": result.get("message", "Email template created successfully"),
+                    "data": result
+                }
+            return {"success": False, "error": f"Unknown operation: {operation}"}
+
+        elif tool_name == "hubspot_deal_management":
+            operation = arguments.get("operation")
+            if operation == "create":
+                result = await hubspot_service.create_deal(**arguments.get("deal_data", {}))
+                return {"success": result.get("success", False), "result": "Deal created", "data": result}
+            elif operation == "read":
+                result = await hubspot_service.get_deals(limit=arguments.get("limit", 20))
+                return {"success": result.get("success", False), "result": "Deals retrieved", "data": result}
+            elif operation == "update":
+                result = await hubspot_service.update_deal(arguments.get("deal_id"), arguments.get("properties", {}))
+                return {"success": result.get("success", False), "result": "Deal updated", "data": result}
+            elif operation == "analyze":
+                result = await hubspot_service.analyze_deals(filters=arguments.get("filters", {}))
+                return {"success": result.get("success", False), "result": "Deals analyzed", "data": result}
+            return {"success": False, "error": f"Unknown operation: {operation}"}
+
+        elif tool_name == "hubspot_analytics":
+            result = await hubspot_service.get_analytics(
+                start_date=arguments.get("start_date"), 
+                end_date=arguments.get("end_date")
+            )
+            return {
+                "success": result.get("success", False),
+                "result": "Analytics retrieved successfully",
+                "data": result
+            }
 
         return {
             "success": False,
@@ -2474,6 +2567,41 @@ class ToolExecutor:
                 "result": result.get("message", "Sync operation completed"),
                 "data": result
             }
+        elif tool_name == "salesforce_general_operations":
+            operation = arguments.get("operation")
+            object_name = arguments.get("object_name")
+            if operation == "create":
+                result = await salesforce_service.create_record(object_name, arguments.get("record_data", {}))
+                return {
+                    "success": result.get("success", False),
+                    "result": result.get("message", "Record created successfully"),
+                    "data": result
+                }
+            elif operation == "update":
+                result = await salesforce_service.update_record(object_name, arguments.get("record_id"), arguments.get("record_data", {}))
+                return {
+                    "success": result.get("success", False),
+                    "result": result.get("message", "Record updated successfully"),
+                    "data": result
+                }
+            elif operation == "read":
+                result = await salesforce_service.get_record(object_name, arguments.get("record_id"))
+                return {
+                    "success": result.get("success", False),
+                    "result": result.get("message", "Record retrieved successfully"),
+                    "data": result
+                }
+            return {"success": False, "error": f"Unknown operation: {operation}"}
+        elif tool_name == "salesforce_query":
+            operation = arguments.get("operation")
+            if operation == "execute_soql":
+                result = await salesforce_service.execute_soql_query(arguments.get("query_string"))
+                return {
+                    "success": result.get("success", False),
+                    "result": f"Query returned {len(result.get('records', []))} records",
+                    "data": result
+                }
+            return {"success": False, "error": f"Unknown operation: {operation}"}
         else:
             return {
                 "success": False,
@@ -5890,6 +6018,96 @@ Description: {payment.description or 'N/A'}"""
                 "success": False,
                 "error": f"Internal error executing Zoho tool: {str(e)}"
             }
+
+    async def _execute_linkedin_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute LinkedIn-related tools."""
+        result = await db.execute(
+            select(Connection)
+            .filter(Connection.user_id == user.id, Connection.platform == "linkedin", Connection.status == ConnectionStatus.ACTIVE)
+        )
+        connection = result.scalar_one_or_none()
+
+        if not connection:
+            return {"success": False, "error": "No active LinkedIn connection found", "result": None}
+
+        from .linkedin_service import LinkedinService
+        linkedin_service = LinkedinService()
+        linkedin_service.access_token = connection.config.get("access_token")
+
+        if tool_name == "linkedin_network_management":
+            operation = arguments.get("operation")
+            if operation == "search_people":
+                return await linkedin_service.search_people(arguments.get("keywords", ""), arguments.get("limit", 10))
+            elif operation == "get_profile":
+                return await linkedin_service.get_profile(arguments.get("profile_id", "me"))
+            elif operation == "search_companies":
+                return await linkedin_service.search_companies(arguments.get("keywords", ""), arguments.get("limit", 10))
+            elif operation == "get_company":
+                return await linkedin_service.get_company(arguments.get("company_id", ""))
+            elif operation == "get_connections":
+                return await linkedin_service.get_connections(arguments.get("limit", 50))
+            else:
+                return {"success": False, "error": f"Unknown LinkedIn operation: {operation}", "result": None}
+        elif tool_name == "linkedin_content_management":
+            operation = arguments.get("operation", "create_post")
+            if operation == "create_post":
+                return await linkedin_service.create_post(
+                    arguments.get("text", ""),
+                    arguments.get("visibility", "PUBLIC")
+                )
+            else:
+                return {"success": False, "error": f"Unknown LinkedIn content operation: {operation}", "result": None}
+        elif tool_name == "linkedin_analytics":
+            operation = arguments.get("operation", "get_analytics")
+            if operation == "get_analytics":
+                return await linkedin_service.get_analytics(arguments.get("metric_type", "visitors"))
+            else:
+                return {"success": False, "error": f"Unknown LinkedIn analytics operation: {operation}", "result": None}
+        else:
+            return {"success": False, "error": f"Unknown LinkedIn tool: {tool_name}", "result": None}
+
+    async def _execute_airtable_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute Airtable-related tools."""
+        result = await db.execute(
+            select(Connection)
+            .filter(Connection.user_id == user.id, Connection.platform == "airtable", Connection.status == ConnectionStatus.ACTIVE)
+        )
+        connection = result.scalar_one_or_none()
+
+        if not connection:
+            return {"success": False, "error": "No active Airtable connection found", "result": None}
+
+        from .airtable_service import AirtableService
+        airtable_service = AirtableService(access_token=connection.config.get("access_token"))
+        
+        operation = arguments.get("operation")
+        base_id = arguments.get("base_id")
+        table_name = arguments.get("table_name")
+
+        if tool_name == "airtable_base_management":
+            if operation == "list_bases":
+                return await airtable_service.list_bases()
+            elif operation == "get_base_schema":
+                return await airtable_service.get_base_schema(base_id)
+            else:
+                return {"success": False, "error": f"Unknown Airtable base operation: {operation}"}
+        
+        elif tool_name == "airtable_record_management":
+            if operation == "list_records":
+                return await airtable_service.list_records(base_id, table_name, max_records=arguments.get("max_records", 100))
+            elif operation == "create_records":
+                return await airtable_service.create_records(base_id, table_name, arguments.get("records_data", []))
+            elif operation == "update_records":
+                return await airtable_service.update_records(base_id, table_name, arguments.get("records_data", []))
+            elif operation == "delete_records":
+                return await airtable_service.delete_records(base_id, table_name, arguments.get("record_ids", []))
+            elif operation == "create_view":
+                return await airtable_service.create_view(base_id, table_name, arguments.get("view_name"), arguments.get("view_type", "grid"))
+            else:
+                return {"success": False, "error": f"Unknown Airtable record operation: {operation}"}
+        
+        return {"success": False, "error": f"Unknown Airtable tool: {tool_name}", "result": None}
+
 
 # Global tool executor instance
 tool_executor = ToolExecutor()

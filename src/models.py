@@ -45,6 +45,10 @@ class ConnectionPlatform(str, Enum):
     GA4 = "ga4"
     SLACK = "slack"
     POWERBI = "powerbi"
+    LINKEDIN = "linkedin"
+    AIRTABLE = "airtable"
+    SALESFORCE = "salesforce"
+    GOOGLE_WORKSPACE = "google_workspace"
 
 
 class MessageRole(str, Enum):

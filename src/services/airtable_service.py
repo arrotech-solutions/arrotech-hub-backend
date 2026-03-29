@@ -170,3 +170,24 @@ class AirtableService:
         payload = {"records": records}
         headers = {"Content-Type": "application/json"}
         return await self._request("PATCH", f"/{base_id}/{table_id_or_name}", json=payload, headers=headers)
+
+    async def delete_records(self, base_id: str, table_id_or_name: str, record_ids: List[str]) -> Dict[str, Any]:
+        """Delete records from a specific table (max 10 per request)."""
+        if not record_ids:
+            return {"deleted": [], "success": True}
+            
+        # Airtable accepts max 10 records per delete request via query params
+        params = []
+        for record_id in record_ids[:10]:
+            params.append(("records[]", record_id))
+            
+        return await self._request("DELETE", f"/{base_id}/{table_id_or_name}", params=params)
+
+    async def create_view(self, base_id: str, table_id_or_name: str, view_name: str, view_type: str = "grid") -> Dict[str, Any]:
+        """Create a new view in the specified table. Requires schema:write permission."""
+        payload = {
+            "name": view_name,
+            "type": view_type
+        }
+        headers = {"Content-Type": "application/json"}
+        return await self._request("POST", f"/meta/bases/{base_id}/tables/{table_id_or_name}/views", json=payload, headers=headers)

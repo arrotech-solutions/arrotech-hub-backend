@@ -275,7 +275,10 @@ async def embedded_oauth_callback(
             
             phones_resp = await client.get(
                 f"{FACEBOOK_GRAPH_URL}/{waba_id}/phone_numbers",
-                params={"access_token": access_token}
+                params={
+                    "access_token": access_token,
+                    "fields": "id,display_phone_number,quality_rating,name_status,status"
+                }
             )
             phones_data = phones_resp.json()
             
@@ -362,7 +365,10 @@ async def get_whatsapp_phone_numbers(
         async with httpx.AsyncClient() as client:
             resp = await client.get(
                 f"{FACEBOOK_GRAPH_URL}/{waba_id}/phone_numbers",
-                params={"access_token": access_token}
+                params={
+                    "access_token": access_token,
+                    "fields": "id,display_phone_number,quality_rating,name_status,status"
+                }
             )
             data = resp.json()
             if resp.status_code == 200:

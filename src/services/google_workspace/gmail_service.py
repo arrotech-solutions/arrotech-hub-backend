@@ -308,6 +308,79 @@ class GmailService:
                 'success': False,
                 'error': str(e)
             }
+
+    async def list_drafts(self, max_results: int = 50) -> Dict[str, Any]:
+        """List Gmail drafts."""
+        try:
+            service = self.base_client.get_service(self.service_name, self.version)
+            results = service.users().drafts().list(userId='me', maxResults=max_results).execute()
+            
+            drafts = results.get('drafts', [])
+            return {
+                'success': True,
+                'drafts': drafts,
+                'total': len(drafts)
+            }
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    async def get_draft(self, draft_id: str) -> Dict[str, Any]:
+        """Get details of a specific draft."""
+        try:
+            service = self.base_client.get_service(self.service_name, self.version)
+            draft = service.users().drafts().get(userId='me', id=draft_id, format='full').execute()
+            
+            message = draft.get('message', {})
+            headers = message.get('payload', {}).get('headers', [])
+            
+            return {
+                'success': True,
+                'draft': {
+                    'id': draft['id'],
+                    'message_id': message.get('id'),
+                    'thread_id': message.get('threadId'),
+                    'headers': {h['name']: h['value'] for h in headers},
+                    'snippet': message.get('snippet')
+                }
+            }
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    async def update_draft(
+        self,
+        draft_id: str,
+        to: str,
+        subject: str,
+        body: str,
+        cc: Optional[str] = None,
+        html: bool = False
+    ) -> Dict[str, Any]:
+        """Update an existing draft."""
+        try:
+            service = self.base_client.get_service(self.service_name, self.version)
+            
+            # Create message
+            message = MIMEText(body, 'html' if html else 'plain')
+            message['to'] = to
+            message['subject'] = subject
+            if cc:
+                message['cc'] = cc
+            
+            raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
+            
+            draft = service.users().drafts().update(
+                userId='me',
+                id=draft_id,
+                body={'message': {'raw': raw_message}}
+            ).execute()
+            
+            return {
+                'success': True,
+                'draft_id': draft.get('id'),
+                'message_id': draft.get('message', {}).get('id')
+            }
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
     
     async def delete_email(
         self,
