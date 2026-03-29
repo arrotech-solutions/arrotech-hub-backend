@@ -60,6 +60,11 @@ class BaseConfig(BaseSettings):
     TWITTER_CLIENT_ID: Optional[str] = None
     TWITTER_CLIENT_SECRET: Optional[str] = None
 
+    # LinkedIn Configuration
+    LINKEDIN_CLIENT_ID: Optional[str] = None
+    LINKEDIN_CLIENT_SECRET: Optional[str] = None
+    LINKEDIN_REDIRECT_URI: Optional[str] = None
+
     # TikTok Configuration
     TIKTOK_CLIENT_KEY: Optional[str] = None
     TIKTOK_CLIENT_SECRET: Optional[str] = None

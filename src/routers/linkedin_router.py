@@ -30,6 +30,7 @@ LINKEDIN_SCOPES = "openid profile email w_member_social"
 
 LINKEDIN_CLIENT_ID = os.getenv("LINKEDIN_CLIENT_ID")
 LINKEDIN_CLIENT_SECRET = os.getenv("LINKEDIN_CLIENT_SECRET")
+LINKEDIN_REDIRECT_URI = os.getenv("LINKEDIN_REDIRECT_URI", f"{settings.API_BASE_URL.rstrip('/')}/api/linkedin/callback")
 
 @router.get("/auth-url")
 async def get_auth_url(user: User = Depends(get_current_user)):
@@ -44,7 +45,7 @@ async def get_auth_url(user: User = Depends(get_current_user)):
             detail="LinkedIn Client ID or Secret not configured"
         )
 
-    redirect_uri = f"{settings.API_BASE_URL.rstrip('/')}/api/linkedin/callback"
+    redirect_uri = LINKEDIN_REDIRECT_URI
     
     # State includes user_id to link connection back to user
     state = str(user.id)
@@ -77,7 +78,7 @@ async def oauth_callback(
 
     try:
         user_id = int(state)
-        redirect_uri = f"{settings.API_BASE_URL.rstrip('/')}/api/linkedin/callback"
+        redirect_uri = LINKEDIN_REDIRECT_URI
         
         # 1. Exchange code for access token
         async with httpx.AsyncClient() as client:
