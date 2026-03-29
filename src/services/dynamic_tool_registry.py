@@ -733,12 +733,13 @@ class DynamicToolRegistry:
             },
             {
                 "name": "slack_send_message",
-                "description": "Send a message to a Slack channel",
+                "description": "Send a message to a Slack channel, or reply to a thread if thread_ts is provided",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "channel": {"type": "string", "description": "Channel name or ID"},
-                        "message": {"type": "string", "description": "Message to send"}
+                        "message": {"type": "string", "description": "Message to send"},
+                        "thread_ts": {"type": "string", "description": "Timestamp of the parent message to reply to"}
                     },
                     "required": ["channel", "message"]
                 },
@@ -746,6 +747,23 @@ class DynamicToolRegistry:
                 "platform": "slack",
                 "status": "available",
                 "id": "slack_send_message"
+            },
+            {
+                "name": "slack_update_message",
+                "description": "Update an existing Slack message",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "channel": {"type": "string", "description": "Channel ID"},
+                        "ts": {"type": "string", "description": "Timestamp of the message to update"},
+                        "message": {"type": "string", "description": "New message content"}
+                    },
+                    "required": ["channel", "ts", "message"]
+                },
+                "connection_id": connection.id,
+                "platform": "slack",
+                "status": "available",
+                "id": "slack_update_message"
             },
             {
                 "name": "slack_get_channel_members",
@@ -787,16 +805,19 @@ class DynamicToolRegistry:
         return [
             {
                 "name": "hubspot_contact_operations",
-                "description": "Comprehensive HubSpot contact management - read, create, update, search, and segment contacts",
+                "description": "Comprehensive HubSpot contact management - read, create, update, search, segment, and associate contacts",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "operation": {"type": "string", "enum": ["read", "create", "update", "search", "segment"]},
+                        "operation": {"type": "string", "enum": ["read", "create", "update", "search", "segment", "associate"]},
                         "contact_data": {"type": "object", "description": "Contact fields: email (required), firstname, lastname, company, phone"},
                         "filters": {"type": "object", "description": "Filters for search/segment operations"},
                         "limit": {"type": "integer", "default": 50},
-                        "contact_id": {"type": "string", "description": "Contact ID for update operations"},
-                        "properties": {"type": "array", "items": {"type": "string"}, "description": "Contact properties to include"}
+                        "contact_id": {"type": "string", "description": "Contact ID for update/associate operations"},
+                        "properties": {"type": "array", "items": {"type": "string"}, "description": "Contact properties to include"},
+                        "to_object_type": {"type": "string", "description": "Target object type for association"},
+                        "to_object_id": {"type": "string", "description": "Target object ID for association"},
+                        "association_type": {"type": "string", "description": "Association type definition"}
                     },
                     "required": ["operation"]
                 },
@@ -804,6 +825,74 @@ class DynamicToolRegistry:
                 "platform": "hubspot",
                 "status": "available",
                 "id": "hubspot_contact_operations"
+            },
+            {
+                "name": "hubspot_company_operations",
+                "description": "Manage HubSpot companies",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get"]},
+                        "company_id": {"type": "string", "description": "Company ID"}
+                    },
+                    "required": ["operation", "company_id"]
+                },
+                "connection_id": connection.id,
+                "platform": "hubspot",
+                "status": "available",
+                "id": "hubspot_company_operations"
+            },
+            {
+                "name": "hubspot_engagement_operations",
+                "description": "Create HubSpot engagements (notes, tasks, calls, emails, meetings)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create"]},
+                        "engagement_data": {"type": "object", "description": "Engagement details (type, owner, etc.)"},
+                        "associations": {"type": "object", "description": "Entity associations (contacts, deals, etc.)"}
+                    },
+                    "required": ["operation", "engagement_data"]
+                },
+                "connection_id": connection.id,
+                "platform": "hubspot",
+                "status": "available",
+                "id": "hubspot_engagement_operations"
+            },
+            {
+                "name": "hubspot_sequence_operations",
+                "description": "Enroll contacts in HubSpot sequences",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["enroll", "get_enrollment"]},
+                        "contact_id": {"type": "string"},
+                        "sequence_id": {"type": "string"},
+                        "sender_email": {"type": "string"},
+                        "enrollment_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                "connection_id": connection.id,
+                "platform": "hubspot",
+                "status": "available",
+                "id": "hubspot_sequence_operations"
+            },
+            {
+                "name": "hubspot_email_templates",
+                "description": "Create HubSpot email templates",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create"]},
+                        "template_data": {"type": "object", "description": "Template data: name, subject, html"}
+                    },
+                    "required": ["operation", "template_data"]
+                },
+                "connection_id": connection.id,
+                "platform": "hubspot",
+                "status": "available",
+                "id": "hubspot_email_templates"
             },
             {
                 "name": "hubspot_deal_management",
@@ -846,6 +935,40 @@ class DynamicToolRegistry:
     def _get_salesforce_tools(self, connection: Connection) -> List[Dict[str, Any]]:
         """Get Salesforce tools for a connection."""
         return [
+            {
+                "name": "salesforce_general_operations",
+                "description": "General Salesforce CRM operations - Create, Update, Get, or Convert records dynamically.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create", "update", "get", "convert_lead"]},
+                        "object_name": {"type": "string", "description": "Salesforce object name (e.g., Lead, Opportunity, Account, Task, Activity)"},
+                        "record_id": {"type": "string", "description": "ID of the record to update/get/convert"},
+                        "record_data": {"type": "object", "description": "Data to create or update"},
+                        "fields": {"type": "array", "items": {"type": "string"}, "description": "Fields to retrieve on 'get'"}
+                    },
+                    "required": ["operation"]
+                },
+                "connection_id": connection.id,
+                "platform": "salesforce",
+                "status": "available",
+                "id": "salesforce_general_operations"
+            },
+            {
+                "name": "salesforce_query",
+                "description": "Execute a custom SOQL query in Salesforce CRM",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "The exact SOQL query string"}
+                    },
+                    "required": ["query"]
+                },
+                "connection_id": connection.id,
+                "platform": "salesforce",
+                "status": "available",
+                "id": "salesforce_query"
+            },
             {
                 "name": "salesforce_create_contact",
                 "description": "Create a new contact in Salesforce CRM",
@@ -1494,16 +1617,16 @@ class DynamicToolRegistry:
         return [
             {
                 "name": "google_workspace_gmail",
-                "description": "Gmail operations: send emails, read inbox, search emails, manage labels, create drafts, watch inbox for push notifications, and mark emails as read. Supports operations: send_email, read_emails, search_emails, create_label, apply_label, create_draft, delete_email, get_email_details, watch_inbox, stop_watch, mark_as_read.",
+                "description": "Gmail operations: send emails, read inbox, search emails, manage labels, create drafts, list drafts, get draft, update draft, watch inbox for push notifications, and mark emails as read. Supports operations: send_email, read_emails, search_emails, create_label, apply_label, create_draft, list_drafts, get_draft, update_draft, delete_email, get_email_details, watch_inbox, stop_watch, mark_as_read.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "operation": {
                             "type": "string",
-                            "enum": ["send_email", "read_emails", "search_emails", "create_label", "apply_label", "create_draft", "delete_email", "get_email_details", "watch_inbox", "stop_watch", "mark_as_read"],
+                            "enum": ["send_email", "read_emails", "search_emails", "create_label", "apply_label", "create_draft", "list_drafts", "get_draft", "update_draft", "delete_email", "get_email_details", "watch_inbox", "stop_watch", "mark_as_read"],
                             "description": "Gmail operation to perform"
                         },
-                        "to": {"type": "string", "description": "Recipient email (for send_email, create_draft)"},
+                        "to": {"type": "string", "description": "Recipient email (for send_email, create_draft, update_draft)"},
                         "subject": {"type": "string", "description": "Email subject"},
                         "body": {"type": "string", "description": "Email body (plain text or HTML)"},
                         "cc": {"type": "string", "description": "CC recipients (comma-separated)"},
@@ -1581,13 +1704,13 @@ class DynamicToolRegistry:
             },
             {
                 "name": "google_workspace_sheets",
-                "description": "Google Sheets operations: create spreadsheets, read/write ranges, append rows, clear ranges, batch update, and get spreadsheet info.",
+                "description": "Google Sheets operations: create spreadsheets, read/write ranges, append rows, clear ranges, batch update, get spreadsheet info, update spreadsheet properties.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "operation": {
                             "type": "string",
-                            "enum": ["create_spreadsheet", "read_range", "write_range", "append_rows", "clear_range", "batch_update", "get_info"],
+                            "enum": ["create_spreadsheet", "read_range", "write_range", "append_rows", "clear_range", "batch_update", "get_info", "update_spreadsheet_properties"],
                             "description": "Sheets operation to perform"
                         },
                         "spreadsheet_id": {"type": "string"},

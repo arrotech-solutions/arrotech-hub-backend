@@ -616,3 +616,60 @@ class HubSpotService:
                 "success": False,
                 "error": f"Error analyzing deals: {str(e)}"
             }
+
+    async def get_company(self, company_id: str) -> Dict[str, Any]:
+        """Get details for a specific company."""
+        url = f"{self.base_url}/crm/v3/objects/companies/{company_id}"
+        response = requests.get(url, headers=self.headers)
+        if response.status_code in [200, 201]:
+            return {"success": True, "company": response.json()}
+        return {"success": False, "error": response.text}
+
+    async def create_engagement(self, engagement_data: Dict[str, Any], associations: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Create a generic engagement (note, task, call, email, meeting)."""
+        url = f"{self.base_url}/engagements/v1/engagements"
+        payload = {
+            "engagement": engagement_data,
+            "associations": associations or {}
+        }
+        response = requests.post(url, headers=self.headers, json=payload)
+        if response.status_code in [200, 201]:
+            return {"success": True, "engagement": response.json()}
+        return {"success": False, "error": response.text}
+
+    async def associate_contact(self, contact_id: str, to_object_type: str, to_object_id: str, association_type: str) -> Dict[str, Any]:
+        """Associate a contact with another object."""
+        url = f"{self.base_url}/crm/v3/objects/contacts/{contact_id}/associations/{to_object_type}/{to_object_id}/{association_type}"
+        response = requests.put(url, headers=self.headers)
+        if response.status_code in [200, 201, 204]:
+            return {"success": True, "association": response.json() if response.status_code != 204 else {}}
+        return {"success": False, "error": response.text}
+
+    async def create_email_template(self, template_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create an email template."""
+        url = f"{self.base_url}/email/public/v1/templates"
+        response = requests.post(url, headers=self.headers, json=template_data)
+        if response.status_code in [200, 201]:
+            return {"success": True, "template": response.json()}
+        return {"success": False, "error": response.text}
+
+    async def enroll_sequence(self, contact_id: str, sequence_id: str, sender_email: str) -> Dict[str, Any]:
+        """Enroll a contact in a sequence."""
+        url = f"{self.base_url}/automation/v2/sequences/enrollments"
+        payload = {
+            "contactId": contact_id,
+            "sequenceId": sequence_id,
+            "senderEmail": sender_email
+        }
+        response = requests.post(url, headers=self.headers, json=payload)
+        if response.status_code in [200, 201]:
+            return {"success": True, "enrollment": response.json()}
+        return {"success": False, "error": response.text}
+
+    async def get_sequence_enrollment(self, enrollment_id: str) -> Dict[str, Any]:
+        """Get details of a sequence enrollment."""
+        url = f"{self.base_url}/automation/v2/sequences/enrollments/{enrollment_id}"
+        response = requests.get(url, headers=self.headers)
+        if response.status_code in [200, 201]:
+            return {"success": True, "enrollment": response.json()}
+        return {"success": False, "error": response.text}

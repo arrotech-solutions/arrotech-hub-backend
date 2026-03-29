@@ -147,6 +147,37 @@ class SlackService:
                 "error": str(e)
             }
 
+    async def update_message(self, channel: str, ts: str, message: str, blocks: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """Update an existing Slack message."""
+        if not self.client:
+            raise Exception("Slack client not initialized")
+
+        try:
+            message_data = {
+                "channel": channel,
+                "ts": ts,
+                "text": message
+            }
+
+            if blocks:
+                message_data["blocks"] = blocks
+
+            response = self.client.chat_update(**message_data)
+
+            return {
+                "success": response["ok"],
+                "message_ts": response.get("ts"),
+                "channel": channel,
+                "error": response.get("error") if not response.get("ok") else None
+            }
+
+        except Exception as e:
+            logger.error(f"Error updating Slack message: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
     async def send_report(self, channel: str, report_type: str,
                           date_range: Optional[str] = None,
                           message: Optional[str] = None) -> Dict[str, Any]:

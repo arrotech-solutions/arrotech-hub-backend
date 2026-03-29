@@ -44,6 +44,49 @@ class PlatformRegistry:
     def _initialize_default_platforms(self):
         """Initialize default platforms with their capabilities."""
         
+        # LinkedIn Platform
+        linkedin_capabilities = [
+            PlatformCapability(
+                name="Network Management",
+                description="Search people, get profiles, search companies, get companies, and get connections on LinkedIn",
+                tool_name="linkedin_network_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["search_people", "get_profile", "search_companies", "get_company", "get_connections"]},
+                        "keywords": {"type": "string"},
+                        "profile_id": {"type": "string"},
+                        "company_id": {"type": "string"},
+                        "limit": {"type": "integer", "default": 10}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["search_people", "get_profile", "search_companies", "get_company", "get_connections"]
+            )
+        ]
+        
+        self.platforms["linkedin"] = Platform(
+            id="linkedin",
+            name="LinkedIn",
+            description="Professional networking and lead generation platform",
+            icon="linkedin",
+            features=[
+                "People searching",
+                "Profile fetching",
+                "Company intelligence",
+                "Connection management"
+            ],
+            capabilities=linkedin_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "access_token": {"type": "string", "description": "LinkedIn OAuth Access Token"}
+                },
+                "required": ["access_token"]
+            },
+            test_function="test_linkedin_connection"
+        )
+        
         # HubSpot Platform
         hubspot_capabilities = [
             PlatformCapability(
@@ -92,9 +135,69 @@ class PlatformRegistry:
                     }
                 },
                 operations=["get_analytics"]
+            ),
+            PlatformCapability(
+                name="Company Operations",
+                description="Manage companies in HubSpot",
+                tool_name="hubspot_company_operations",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["read"]},
+                        "company_id": {"type": "string"}
+                    },
+                    "required": ["operation", "company_id"]
+                },
+                operations=["read"]
+            ),
+            PlatformCapability(
+                name="Engagement Operations",
+                description="Create engagements like notes, calls, emails, or meetings on HubSpot records",
+                tool_name="hubspot_engagement_operations",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create"]},
+                        "engagement_data": {"type": "object"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["create"]
+            ),
+            PlatformCapability(
+                name="Sequence Operations",
+                description="Enroll contacts in HubSpot sequences",
+                tool_name="hubspot_sequence_operations",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["enroll", "read_enrollment"]},
+                        "sequence_id": {"type": "string"},
+                        "contact_id": {"type": "string"},
+                        "user_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["enroll", "read_enrollment"]
+            ),
+            PlatformCapability(
+                name="Email Templates",
+                description="Manage email templates in HubSpot",
+                tool_name="hubspot_email_templates",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create"]},
+                        "name": {"type": "string"},
+                        "subject": {"type": "string"},
+                        "html_content": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["create"]
             )
         ]
-        
+
         self.platforms["hubspot"] = Platform(
             id="hubspot",
             name="HubSpot",
@@ -526,8 +629,316 @@ class PlatformRegistry:
                 },
                 "required": ["phone_number_id", "access_token"]
             },
-            test_function="test_whatsapp_connection"
         )
+
+        # Airtable Platform
+        airtable_capabilities = [
+            PlatformCapability(
+                name="Base Management",
+                description="List Bases and get base schema for Airtable",
+                tool_name="airtable_base_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["list_bases", "get_base_schema"]},
+                        "base_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["list_bases", "get_base_schema"]
+            ),
+            PlatformCapability(
+                name="Record Management",
+                description="CRUD operations and view creation for Airtable records",
+                tool_name="airtable_record_management",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["list_records", "create_records", "update_records", "delete_records", "create_view"]},
+                        "base_id": {"type": "string"},
+                        "table_name": {"type": "string"},
+                        "max_records": {"type": "integer", "default": 100},
+                        "records_data": {"type": "array", "items": {"type": "object"}},
+                        "record_ids": {"type": "array", "items": {"type": "string"}},
+                        "view_name": {"type": "string"},
+                        "view_type": {"type": "string", "default": "grid"}
+                    },
+                    "required": ["operation", "base_id", "table_name"]
+                },
+                operations=["list_records", "create_records", "update_records", "delete_records", "create_view"]
+            )
+        ]
+        
+        self.platforms["airtable"] = Platform(
+            id="airtable",
+            name="Airtable",
+            description="Spreadsheet-database hybrid for data management",
+            icon="airtable",
+            features=[
+                "Database management",
+                "Record synchronization",
+                "View creation",
+                "API accessibility"
+            ],
+            capabilities=airtable_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "access_token": {"type": "string", "description": "Airtable OAuth Access Token"}
+                },
+                "required": ["access_token"]
+            },
+            test_function="test_airtable_connection"
+        )
+
+        # Salesforce Platform
+        salesforce_capabilities = [
+            PlatformCapability(
+                name="Contact Management",
+                description="Manage Salesforce contacts (create, search, CRUD)",
+                tool_name="salesforce_create_contact", # Using Create Contact as base capability
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "FirstName": {"type": "string"},
+                        "LastName": {"type": "string"},
+                        "Email": {"type": "string"},
+                        "Phone": {"type": "string"},
+                        "Company": {"type": "string"}
+                    },
+                    "required": ["LastName"]
+                },
+                operations=["create"]
+            ),
+            PlatformCapability(
+                name="Search Discovery",
+                description="Search contacts and other data on Salesforce",
+                tool_name="salesforce_search_contacts",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer", "default": 50}
+                    },
+                    "required": ["query"]
+                },
+                operations=["search"]
+            ),
+            PlatformCapability(
+                name="Lead Management",
+                description="Create and track leads on Salesforce",
+                tool_name="salesforce_create_lead",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "FirstName": {"type": "string"},
+                        "LastName": {"type": "string"},
+                        "Company": {"type": "string"},
+                        "Status": {"type": "string"}
+                    },
+                    "required": ["LastName", "Company"]
+                },
+                operations=["create"]
+            ),
+            PlatformCapability(
+                name="Reporting",
+                description="Get pipeline and analytical reports from Salesforce",
+                tool_name="salesforce_get_pipeline_report",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "date_range": {"type": "string", "default": "30"}
+                    }
+                },
+                operations=["get_report"]
+            ),
+            PlatformCapability(
+                name="General Operations",
+                description="Create, update, and get any SObject record dynamically on Salesforce",
+                tool_name="salesforce_general_operations",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create", "update", "get"]},
+                        "object_name": {"type": "string"},
+                        "record_id": {"type": "string"},
+                        "record_data": {"type": "object"},
+                        "fields": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["operation", "object_name"]
+                },
+                operations=["create", "update", "get"]
+            )
+        ]
+        
+        self.platforms["salesforce"] = Platform(
+            id="salesforce",
+            name="Salesforce",
+            description="World-class CRM platform for sales, service, and marketing",
+            icon="salesforce",
+            features=[
+                "CRM management",
+                "Advanced lead tracking",
+                "Pipeline reporting",
+                "Dynamic record management"
+            ],
+            capabilities=salesforce_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "client_id": {"type": "string"},
+                    "client_secret": {"type": "string"},
+                    "username": {"type": "string"},
+                    "password": {"type": "string"},
+                    "security_token": {"type": "string"},
+                    "instance_url": {"type": "string"}
+                },
+                "required": ["client_id", "client_secret", "username", "password"]
+            },
+            test_function="test_salesforce_connection"
+        )
+
+        # Google Workspace Platform
+        google_workspace_capabilities = [
+            PlatformCapability(
+                name="Gmail Operations",
+                description="Manage Gmail emails, labels, and threads",
+                tool_name="google_workspace_gmail",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["send_email", "read_emails", "search_emails", "create_label", "apply_label", "create_draft", "delete_email", "get_email_details", "watch_inbox", "stop_watch", "mark_as_read"]},
+                        "to": {"type": "string"},
+                        "subject": {"type": "string"},
+                        "body": {"type": "string"},
+                        "cc": {"type": "string"},
+                        "bcc": {"type": "string"},
+                        "attachments": {"type": "array", "items": {"type": "string"}},
+                        "html": {"type": "boolean", "default": False},
+                        "max_results": {"type": "integer", "default": 10},
+                        "label_ids": {"type": "array", "items": {"type": "string"}},
+                        "query": {"type": "string"},
+                        "label_name": {"type": "string"},
+                        "message_ids": {"type": "array", "items": {"type": "string"}},
+                        "message_id": {"type": "string"},
+                        "permanent": {"type": "boolean", "default": False},
+                        "topic_name": {"type": "string"},
+                        "label_filter_action": {"type": "string", "enum": ["include", "exclude"]}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["send_email", "read_emails", "search_emails", "create_label", "apply_label", "create_draft", "delete_email", "get_email_details", "watch_inbox", "stop_watch", "mark_as_read"]
+            ),
+            PlatformCapability(
+                name="Calendar Operations",
+                description="Manage Google Calendar events and availability",
+                tool_name="google_workspace_calendar",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_event", "list_events", "update_event", "delete_event", "check_availability", "create_meeting"]},
+                        "summary": {"type": "string"},
+                        "start_time": {"type": "string"},
+                        "end_time": {"type": "string"},
+                        "description": {"type": "string"},
+                        "location": {"type": "string"},
+                        "attendees": {"type": "array", "items": {"type": "string"}},
+                        "timezone": {"type": "string", "default": "Africa/Nairobi"},
+                        "time_min": {"type": "string"},
+                        "time_max": {"type": "string"},
+                        "max_results": {"type": "integer", "default": 10},
+                        "event_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["create_event", "list_events", "update_event", "delete_event", "check_availability", "create_meeting"]
+            ),
+            PlatformCapability(
+                name="Drive Operations",
+                description="Manage Google Drive files, folders, and sharing",
+                tool_name="google_workspace_drive",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["upload_file", "download_file", "list_files", "create_folder", "delete_file", "share_file", "search_files", "get_metadata", "move_file"]},
+                        "filename": {"type": "string"},
+                        "content": {"type": "string"},
+                        "mime_type": {"type": "string", "default": "application/octet-stream"},
+                        "folder_id": {"type": "string"},
+                        "file_id": {"type": "string"},
+                        "query": {"type": "string"},
+                        "max_results": {"type": "integer", "default": 100},
+                        "email": {"type": "string"},
+                        "role": {"type": "string", "enum": ["reader", "writer", "owner", "organizer"]}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["upload_file", "download_file", "list_files", "create_folder", "delete_file", "share_file", "search_files", "get_metadata", "move_file"]
+            ),
+            PlatformCapability(
+                name="Sheets Operations",
+                description="Manage Google Sheets spreadsheets and data",
+                tool_name="google_workspace_sheets",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_spreadsheet", "read_range", "write_range", "append_rows", "clear_range", "batch_update", "get_info"]},
+                        "title": {"type": "string"},
+                        "sheets": {"type": "array", "items": {"type": "string"}},
+                        "spreadsheet_id": {"type": "string"},
+                        "range_name": {"type": "string"},
+                        "values": {"type": "array", "items": {"type": "array"}},
+                        "value_input_option": {"type": "string", "default": "USER_ENTERED"},
+                        "requests": {"type": "array", "items": {"type": "object"}}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["create_spreadsheet", "read_range", "write_range", "append_rows", "clear_range", "batch_update", "get_info"]
+            ),
+            PlatformCapability(
+                name="Docs Operations",
+                description="Manage Google Docs documents",
+                tool_name="google_workspace_docs",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_document"]},
+                        "title": {"type": "string"}
+                    },
+                    "required": ["operation", "title"]
+                },
+                operations=["create_document"]
+            )
+        ]
+        
+        self.platforms["google_workspace"] = Platform(
+            id="google_workspace",
+            name="Google Workspace",
+            description="All-in-one productivity suite from Google",
+            icon="google",
+            features=[
+                "Email management",
+                "Calendar scheduling",
+                "File storage & sharing",
+                "Spreadsheet management",
+                "Document creation"
+            ],
+            capabilities=google_workspace_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "client_id": {"type": "string"},
+                    "client_secret": {"type": "string"},
+                    "refresh_token": {"type": "string"},
+                    "access_token": {"type": "string"},
+                    "scopes": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": ["client_id", "client_secret", "refresh_token"]
+            },
+            test_function="test_google_workspace_connection"
+        )
+
+
 
         # Facebook Platform
         facebook_capabilities = [
@@ -3084,20 +3495,38 @@ class PlatformRegistry:
             ),
             PlatformCapability(
                 name="Records",
-                description="Get, create, and update records in Airtable",
+                description="Get, create, update, and delete records in Airtable",
                 tool_name="airtable_records",
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "operation": {"type": "string", "enum": ["get_records", "create_records", "update_records"]},
+                        "operation": {"type": "string", "enum": ["get_records", "create_records", "update_records", "delete_records"]},
                         "base_id": {"type": "string"},
                         "table_id_or_name": {"type": "string"},
                         "max_records": {"type": "integer"},
-                        "records": {"type": "array", "items": {"type": "object"}}
+                        "records": {"type": "array", "items": {"type": "object"}},
+                        "record_ids": {"type": "array", "items": {"type": "string"}}
                     },
                     "required": ["operation", "base_id", "table_id_or_name"]
                 },
-                operations=["get_records", "create_records", "update_records"]
+                operations=["get_records", "create_records", "update_records", "delete_records"]
+            ),
+            PlatformCapability(
+                name="Views",
+                description="Create custom views in Airtable tables",
+                tool_name="airtable_views",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["create_view"]},
+                        "base_id": {"type": "string"},
+                        "table_id_or_name": {"type": "string"},
+                        "view_name": {"type": "string"},
+                        "view_type": {"type": "string", "default": "grid"}
+                    },
+                    "required": ["operation", "base_id", "table_id_or_name", "view_name"]
+                },
+                operations=["create_view"]
             )
         ]
         

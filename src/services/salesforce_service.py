@@ -568,4 +568,54 @@ class SalesforceService:
             }
         except Exception as e:
             logger.error(f"Error executing SOQL query: {e}")
-            return {"success": False, "error": str(e)} 
+            return {"success": False, "error": str(e)}
+
+    async def create_record(self, object_name: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create any Salesforce record dynamically."""
+        try:
+            endpoint = f"/sobjects/{object_name}/"
+            result = await self._make_request("POST", endpoint, data=data)
+            
+            return {
+                "success": True,
+                "record_id": result.get("id"),
+                "status": "created",
+                "object_name": object_name
+            }
+        except Exception as e:
+            logger.error(f"Error creating {object_name} record: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def update_record(self, object_name: str, record_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Update any Salesforce record dynamically."""
+        try:
+            endpoint = f"/sobjects/{object_name}/{record_id}"
+            await self._make_request("PATCH", endpoint, data=data)
+            
+            return {
+                "success": True,
+                "record_id": record_id,
+                "status": "updated",
+                "object_name": object_name
+            }
+        except Exception as e:
+            logger.error(f"Error updating {object_name} record {record_id}: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def get_record(self, object_name: str, record_id: str, fields: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Get any Salesforce record dynamically."""
+        try:
+            endpoint = f"/sobjects/{object_name}/{record_id}"
+            if fields:
+                endpoint += f"?fields={','.join(fields)}"
+                
+            result = await self._make_request("GET", endpoint)
+            
+            return {
+                "success": True,
+                "record": result,
+                "object_name": object_name
+            }
+        except Exception as e:
+            logger.error(f"Error getting {object_name} record {record_id}: {e}")
+            return {"success": False, "error": str(e)}

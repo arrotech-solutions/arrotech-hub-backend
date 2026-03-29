@@ -385,3 +385,37 @@ class SheetsService:
                 'success': False,
                 'error': str(e)
             }
+
+    async def update_spreadsheet_properties(
+        self,
+        spreadsheet_id: str,
+        title: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Update spreadsheet properties (e.g., title)
+        
+        Args:
+            spreadsheet_id: ID of the spreadsheet
+            title: New title for the spreadsheet
+        """
+        try:
+            requests = []
+            if title is not None:
+                requests.append({
+                    'updateSpreadsheetProperties': {
+                        'properties': {
+                            'title': title
+                        },
+                        'fields': 'title'
+                    }
+                })
+            
+            if not requests:
+                return {'success': True, 'message': 'No changes requested'}
+                
+            return await self.batch_update(spreadsheet_id, requests)
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
