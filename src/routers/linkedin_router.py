@@ -77,7 +77,8 @@ async def oauth_callback(
         )
 
     try:
-        user_id = int(state)
+        import uuid
+        user_id = uuid.UUID(state)
         redirect_uri = LINKEDIN_REDIRECT_URI
         
         # 1. Exchange code for access token

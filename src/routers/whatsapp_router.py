@@ -71,7 +71,8 @@ async def oauth_callback(
     
     # State string contains the user id passed during the get_auth_url phase
     try:
-        user_id = int(state)
+        import uuid
+        user_id = uuid.UUID(state)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid state parameter")
     

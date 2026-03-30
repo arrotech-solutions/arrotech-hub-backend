@@ -41,7 +41,8 @@ async def clickup_callback(code: str, state: str = None, db: AsyncSession = Depe
             raise HTTPException(status_code=400, detail="Invalid state parameter")
         
         try:
-            user_id = int(state.replace("user_", ""))
+            import uuid
+            user_id = uuid.UUID(state.replace("user_", ""))
             print(f"DEBUG: Extracted user_id: {user_id}")
         except ValueError:
             print("DEBUG: User ID parsing failed")

@@ -71,7 +71,8 @@ async def oauth_callback(
         )
 
     try:
-        user_id = int(state)
+        import uuid
+        user_id = uuid.UUID(state)
         redirect_uri = f"{settings.API_BASE_URL}/api/instagram/callback"
         
         # 1. Exchange code for short-lived token

@@ -102,7 +102,8 @@ async def oauth_callback(
         if not state.startswith("user_"):
             raise HTTPException(status_code=400, detail="Invalid state parameter")
         
-        user_id = int(state.replace("user_", ""))
+        import uuid
+        user_id = uuid.UUID(state.replace("user_", ""))
         
         # Exchange authorization code for tokens
         import requests
