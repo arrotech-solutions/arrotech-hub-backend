@@ -10,6 +10,7 @@ import re
 import secrets
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+import uuid
 
 from sqlalchemy import and_, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,7 +49,7 @@ SENSITIVE_REGEX = re.compile('|'.join(SENSITIVE_PATTERNS), re.IGNORECASE)
 class WorkflowSharingService:
     """Service for sharing workflows in the marketplace."""
 
-    def generate_share_code(self, workflow_id: int) -> str:
+    def generate_share_code(self, workflow_id: uuid.UUID) -> str:
         """Generate a unique share code for a workflow."""
         random_part = secrets.token_urlsafe(8)
         hash_part = hashlib.sha256(f"{workflow_id}{random_part}".encode()).hexdigest()[:8]
@@ -159,8 +160,8 @@ class WorkflowSharingService:
 
     async def export_workflow(
         self,
-        workflow_id: int,
-        user_id: int,
+        workflow_id: uuid.UUID,
+        user_id: uuid.UUID,
         db: AsyncSession,
         include_metadata: bool = True,
     ) -> Dict[str, Any]:
@@ -249,10 +250,10 @@ class WorkflowSharingService:
 
     async def import_workflow(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         workflow_data: Dict[str, Any],
         db: AsyncSession,
-        source_workflow_id: Optional[int] = None,
+        source_workflow_id: Optional[uuid.UUID] = None,
     ) -> Workflow:
         """
         Import a workflow from exported JSON data.
@@ -342,8 +343,8 @@ class WorkflowSharingService:
 
     async def update_visibility(
         self,
-        workflow_id: int,
-        user_id: int,
+        workflow_id: uuid.UUID,
+        user_id: uuid.UUID,
         visibility: str,
         db: AsyncSession,
         **kwargs
@@ -473,8 +474,8 @@ class WorkflowSharingService:
 
     async def add_review(
         self,
-        workflow_id: int,
-        user_id: int,
+        workflow_id: uuid.UUID,
+        user_id: uuid.UUID,
         rating: int,
         db: AsyncSession,
         title: Optional[str] = None,
@@ -551,7 +552,7 @@ class WorkflowSharingService:
 
     async def get_workflow_reviews(
         self,
-        workflow_id: int,
+        workflow_id: uuid.UUID,
         db: AsyncSession,
         limit: int = 20,
         offset: int = 0,

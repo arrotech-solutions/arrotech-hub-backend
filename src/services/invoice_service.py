@@ -3,6 +3,7 @@ Invoice Service for handling invoice operations.
 """
 import logging
 from typing import Any, Dict, List, Optional
+import uuid
 from datetime import datetime
 from decimal import Decimal
 
@@ -19,7 +20,7 @@ class InvoiceService:
 
     async def create_invoice(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         invoice_data: Dict[str, Any],
         db: AsyncSession
     ) -> Invoice:
@@ -57,8 +58,8 @@ class InvoiceService:
 
     async def get_invoice(
         self,
-        invoice_id: int,
-        user_id: int,
+        invoice_id: uuid.UUID,
+        user_id: uuid.UUID,
         db: AsyncSession
     ) -> Optional[Invoice]:
         """Get invoice by ID."""
@@ -74,7 +75,7 @@ class InvoiceService:
     async def get_invoice_by_number(
         self,
         invoice_number: str,
-        user_id: int,
+        user_id: uuid.UUID,
         db: AsyncSession
     ) -> Optional[Invoice]:
         """Get invoice by invoice number."""
@@ -89,7 +90,7 @@ class InvoiceService:
     
     async def get_invoices(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         db: AsyncSession,
         skip: int = 0,
         limit: int = 100,
@@ -108,8 +109,8 @@ class InvoiceService:
 
     async def update_invoice(
         self,
-        invoice_id: int,
-        user_id: int,
+        invoice_id: uuid.UUID,
+        user_id: uuid.UUID,
         updates: Dict[str, Any],
         db: AsyncSession
     ) -> Optional[Invoice]:
@@ -129,8 +130,8 @@ class InvoiceService:
 
     async def delete_invoice(
         self,
-        invoice_id: int,
-        user_id: int,
+        invoice_id: uuid.UUID,
+        user_id: uuid.UUID,
         db: AsyncSession
     ) -> bool:
         """Delete invoice."""

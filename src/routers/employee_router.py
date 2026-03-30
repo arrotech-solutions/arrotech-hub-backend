@@ -4,6 +4,7 @@ Handles employee promotion, permission management, and subscriber listing.
 """
 
 from typing import Optional, List
+import uuid
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from pydantic import BaseModel
 from sqlalchemy import select, func as sa_func
@@ -30,7 +31,7 @@ class UpdatePermissionsRequest(BaseModel):
 
 
 class EmployeeOut(BaseModel):
-    id: int
+    id: uuid.UUID
     email: str
     name: str
     role: str
@@ -42,7 +43,7 @@ class EmployeeOut(BaseModel):
 
 
 class SubscriberOut(BaseModel):
-    id: int
+    id: uuid.UUID
     email: str
     name: str
     subscription_tier: str
@@ -193,7 +194,7 @@ async def promote_to_employee(
 
 @router.put("/employees/{user_id}/permissions")
 async def update_employee_permissions(
-    user_id: int,
+    user_id: uuid.UUID,
     data: UpdatePermissionsRequest,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
@@ -237,7 +238,7 @@ async def update_employee_permissions(
 
 @router.delete("/employees/{user_id}/demote")
 async def demote_employee(
-    user_id: int,
+    user_id: uuid.UUID,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):

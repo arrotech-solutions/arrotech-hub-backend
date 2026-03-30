@@ -2,6 +2,7 @@
 Agent Router for managing autonomous agents.
 """
 from typing import Any, Dict, List, Optional
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -16,7 +17,7 @@ router = APIRouter(prefix="/agents", tags=["agents"])
 
 
 class AgentCreate(BaseModel):
-    workflow_id: int = Field(
+    workflow_id: uuid.UUID = Field(
         ..., 
         description="The unique ID of the workflow that this agent will automate. The workflow must exist and be accessible by the user.",
         example=42
@@ -39,7 +40,7 @@ class AgentSchedule(BaseModel):
 
 class AgentResponse(BaseModel):
     agent_id: str = Field(..., description="The unique UUID of the autonomous agent.")
-    workflow_id: int = Field(..., description="The ID of the underlying workflow.")
+    workflow_id: uuid.UUID = Field(..., description="The ID of the underlying workflow.")
     workflow_name: str = Field(..., description="The human-readable name of the workflow.")
     status: str = Field(..., description="Current operational status (e.g., 'active', 'paused', 'failed').")
     trigger_type: str = Field(..., description="How the agent is triggered (e.g., 'scheduled', 'event_driven').")
@@ -52,7 +53,7 @@ class AgentResponse(BaseModel):
 
 class AgentStatusResponse(BaseModel):
     agent_id: str
-    workflow_id: int
+    workflow_id: uuid.UUID
     workflow_name: str
     status: str
     trigger_type: str

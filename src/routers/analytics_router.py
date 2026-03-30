@@ -6,6 +6,7 @@ API endpoints for workflow analytics and metrics.
 
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -22,13 +23,13 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 # Request/Response Models
 class TrackEventRequest(BaseModel):
     """Request to track an analytics event."""
-    workflow_id: int
+    workflow_id: uuid.UUID
     event_type: str = Field(..., pattern="^(impression|detail_view|import_click|import_success|review_click|share_click|search_appear|search_click)$")
 
 
 class AnalyticsSummary(BaseModel):
     """Summary of workflow analytics."""
-    workflow_id: int
+    workflow_id: uuid.UUID
     workflow_name: str
     total_impressions: int
     total_detail_views: int
@@ -105,7 +106,7 @@ async def track_event(
 
 @router.get("/workflow/{workflow_id}", response_model=ApiResponse)
 async def get_workflow_analytics(
-    workflow_id: int,
+    workflow_id: uuid.UUID,
     days: int = Query(30, ge=1, le=365),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),

@@ -20,6 +20,7 @@ import logging
 import time
 from datetime import datetime
 from typing import Optional
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from sqlalchemy import select
@@ -431,7 +432,7 @@ def _extract_sender_email(from_header: str) -> str:
 
 
 async def _log_contacts_to_hubspot(
-    user_id: int, processed_emails: list
+    user_id: uuid.UUID, processed_emails: list
 ):
     """
     Log each sender as a contact in HubSpot CRM. Best-effort: if no HubSpot
@@ -497,7 +498,7 @@ async def _log_contacts_to_hubspot(
 
 
 async def _record_workflow_execution(
-    db: AsyncSession, user_id: int, processed_emails: list
+    db: AsyncSession, user_id: uuid.UUID, processed_emails: list
 ):
     """
     Record a workflow execution so it shows up in the Executions tab.

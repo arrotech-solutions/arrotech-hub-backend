@@ -1,3 +1,4 @@
+import uuid
 """
 Zoho Webhook Handler for receiving real-time events.
 This enables autonomous triggers for workflows (e.g., KB Autopilot).
@@ -21,13 +22,13 @@ router = APIRouter(
 logger = logging.getLogger(__name__)
 
 @router.get("/desk/{user_id}")
-async def validate_desk_webhook(user_id: int):
+async def validate_desk_webhook(user_id: uuid.UUID):
     """Zoho sends a GET request to validate the webhook URL before saving."""
     return {"status": "ok", "message": "Arrotech KB Autopilot webhook is active."}
 
 @router.post("/desk/{user_id}")
 async def receive_desk_webhook(
-    user_id: int,
+    user_id: uuid.UUID,
     request: Request,
     db: AsyncSession = Depends(get_db)
 ):
@@ -57,7 +58,7 @@ async def receive_desk_webhook(
         # Return 200 to acknowledge receipt and prevent Zoho from spamming retries
         return {"status": "error", "message": str(e)}
 
-async def _trigger_zoho_workflows(user_id: int, payload: dict, db: AsyncSession):
+async def _trigger_zoho_workflows(user_id: uuid.UUID, payload: dict, db: AsyncSession):
     """
     Find and execute workflows triggered by this webhook.
     """

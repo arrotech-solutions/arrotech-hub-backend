@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 from typing import Any, Dict, Optional
+import uuid
 
 import aiohttp
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
@@ -341,7 +342,7 @@ async def slack_mpesa_command(
 
 
 async def process_mpesa_command_async(
-    user_id: int,
+    user_id: uuid.UUID,
     text: str,
     channel: str,
     slack_user_id: str,
@@ -388,7 +389,7 @@ async def process_mpesa_command_async(
 
 
 async def process_message_async(
-    user_id: int,
+    user_id: uuid.UUID,
     channel: str,
     message: str,
     slack_user_id: str

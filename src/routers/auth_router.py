@@ -14,6 +14,7 @@ import httpx
 import pyotp
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Any
+import uuid
 
 from ..database import get_db
 from ..models import (
@@ -126,7 +127,7 @@ def _build_auth_response(
     }
 
 
-async def _get_user_orgs(db: AsyncSession, user_id: int) -> list:
+async def _get_user_orgs(db: AsyncSession, user_id: uuid.UUID) -> list:
     """Fetch lightweight org list for auth response."""
     result = await db.execute(
         select(Organization, OrganizationMember.role)
@@ -723,7 +724,7 @@ async def login_2fa_email_verify(
 
 
 class SwitchOrgRequest(BaseModel):
-    org_id: Optional[int] = None  # None = switch to personal context
+    org_id: Optional[uuid.UUID] = None  # None = switch to personal context
 
 
 @router.post("/switch-org")
@@ -754,7 +755,7 @@ async def switch_org(
     # Issue new token with org context
     token_data = {"sub": current_user.email}
     if org_id is not None:
-        token_data["org_id"] = org_id
+        token_data["org_id"] = str(org_id)
 
     access_token = create_access_token(
         data=token_data,

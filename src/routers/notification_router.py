@@ -6,6 +6,7 @@ API endpoints for in-app notifications.
 
 from datetime import datetime
 from typing import Any, List, Optional
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -23,13 +24,13 @@ router = APIRouter(prefix="/notifications", tags=["notifications"])
 # Response Models
 class NotificationResponse(BaseModel):
     """Response for a single notification."""
-    id: int
+    id: uuid.UUID
     notification_type: str
     title: str
     message: str
     is_read: bool
     action_url: Optional[str]
-    workflow_id: Optional[int]
+    workflow_id: Optional[uuid.UUID]
     workflow_name: Optional[str]
     actor_name: Optional[str]
     metadata: Optional[dict]
@@ -119,7 +120,7 @@ async def get_unread_count(
 
 @router.put("/{notification_id}/read", response_model=ApiResponse)
 async def mark_as_read(
-    notification_id: int,
+    notification_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -182,7 +183,7 @@ async def mark_all_as_read(
 
 @router.delete("/{notification_id}", response_model=ApiResponse)
 async def delete_notification(
-    notification_id: int,
+    notification_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -218,12 +219,12 @@ async def delete_notification(
 # Helper function to create notifications (to be used by other services)
 async def create_notification(
     db: AsyncSession,
-    user_id: int,
+    user_id: uuid.UUID,
     notification_type: str,
     title: str,
     message: str,
-    workflow_id: Optional[int] = None,
-    actor_id: Optional[int] = None,
+    workflow_id: Optional[uuid.UUID] = None,
+    actor_id: Optional[uuid.UUID] = None,
     action_url: Optional[str] = None,
     metadata: Optional[dict] = None,
 ):

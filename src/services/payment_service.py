@@ -6,6 +6,7 @@ import base64
 import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
+import uuid
 
 import requests
 import stripe
@@ -247,7 +248,7 @@ class PaymentService:
         self,
         phone_number: str,
         amount: int,
-        user_id: int,
+        user_id: uuid.UUID,
         db: AsyncSession
     ) -> Dict[str, Any]:
         """Process M-Pesa subscription payment and extend validity."""
@@ -340,7 +341,7 @@ class PaymentService:
         amount: int,
         currency: str,
         user_email: str,
-        user_id: int,
+        user_id: uuid.UUID,
         success_url: str,
         cancel_url: str
     ) -> Dict[str, Any]:
@@ -475,7 +476,7 @@ class PaymentService:
         self,
         reference: str,
         db: Optional[AsyncSession] = None,
-        user_id: Optional[int] = None
+        user_id: Optional[uuid.UUID] = None
     ) -> Dict[str, Any]:
         """
         Verify Paystack payment and update user subscription.

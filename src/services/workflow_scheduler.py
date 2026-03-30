@@ -5,6 +5,7 @@ import asyncio
 import logging
 from datetime import datetime
 from typing import Dict, List, Set
+import uuid
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -131,7 +132,7 @@ class WorkflowSchedulerService:
             except Exception as e:
                 logger.error(f"Error executing workflow sync: {e}")
 
-    async def execute_scheduled_workflow(self, workflow_id: int, user_id: int):
+    async def execute_scheduled_workflow(self, workflow_id: uuid.UUID, user_id: uuid.UUID):
         """
         Wrapper to execute a workflow from the scheduler.
         """

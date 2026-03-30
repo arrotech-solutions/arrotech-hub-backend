@@ -2,6 +2,7 @@ import httpx
 import logging
 import json
 from typing import Dict, Any, Optional
+import uuid
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -57,7 +58,7 @@ class TikTokService:
         data = response.json()
         return data.get("data", {}).get("user", {})
 
-    async def sync_profile(self, user_id: int, auth_data: Dict[str, Any]) -> TikTokProfile:
+    async def sync_profile(self, user_id: uuid.UUID, auth_data: Dict[str, Any]) -> TikTokProfile:
         """Create or update TikTok profile in database."""
         access_token = auth_data.get("access_token")
         refresh_token = auth_data.get("refresh_token")

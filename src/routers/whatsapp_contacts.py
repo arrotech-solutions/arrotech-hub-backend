@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, or_
 from sqlalchemy.orm import selectinload
 from typing import Optional, List
+import uuid
 from pydantic import BaseModel
 from datetime import datetime
 
@@ -87,7 +88,7 @@ class ContactUpdate(BaseModel):
     is_blocked: Optional[bool] = None
 
 class ContactResponse(BaseModel):
-    id: int
+    id: uuid.UUID
     phone_number: str
     name: Optional[str]
     profile_name: Optional[str]
@@ -107,7 +108,7 @@ class MessageCreate(BaseModel):
     message_type: str = "text"
 
 class MessageResponse(BaseModel):
-    id: int
+    id: uuid.UUID
     direction: str
     message_type: str
     content: Optional[str]
@@ -132,7 +133,7 @@ class AutoReplyCreate(BaseModel):
     priority: int = 0
 
 class AutoReplyResponse(BaseModel):
-    id: int
+    id: uuid.UUID
     name: str
     description: Optional[str]
     trigger_type: str
@@ -219,7 +220,7 @@ async def list_contacts(
 
 @router.get("/contacts/{contact_id}")
 async def get_contact(
-    contact_id: int,
+    contact_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -287,7 +288,7 @@ async def create_contact(
 
 @router.put("/contacts/{contact_id}")
 async def update_contact(
-    contact_id: int,
+    contact_id: uuid.UUID,
     data: ContactUpdate,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
@@ -327,7 +328,7 @@ async def update_contact(
 
 @router.delete("/contacts/{contact_id}")
 async def delete_contact(
-    contact_id: int,
+    contact_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -357,9 +358,9 @@ async def delete_contact(
 
 @router.get("/contacts/{contact_id}/messages")
 async def get_messages(
-    contact_id: int,
+    contact_id: uuid.UUID,
     limit: int = Query(50, le=100),
-    before_id: Optional[int] = Query(None, description="Load messages before this ID"),
+    before_id: Optional[uuid.UUID] = Query(None, description="Load messages before this ID"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -403,7 +404,7 @@ async def get_messages(
 
 @router.post("/contacts/{contact_id}/messages")
 async def send_message(
-    contact_id: int,
+    contact_id: uuid.UUID,
     data: MessageCreate,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
@@ -538,7 +539,7 @@ async def create_auto_reply(
 
 @router.put("/auto-replies/{rule_id}")
 async def update_auto_reply(
-    rule_id: int,
+    rule_id: uuid.UUID,
     data: AutoReplyCreate,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
@@ -578,7 +579,7 @@ async def update_auto_reply(
 
 @router.delete("/auto-replies/{rule_id}")
 async def delete_auto_reply(
-    rule_id: int,
+    rule_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -604,7 +605,7 @@ async def delete_auto_reply(
 
 @router.patch("/auto-replies/{rule_id}/toggle")
 async def toggle_auto_reply(
-    rule_id: int,
+    rule_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):

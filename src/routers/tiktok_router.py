@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from datetime import datetime
 from typing import Optional, List
+import uuid
 
 from ..database import get_db
 from ..models import Connection, ConnectionStatus, User, TikTokProfile, TikTokVideo, PremiumLink
@@ -421,7 +422,7 @@ async def create_premium_link(
 
 @router.post("/premium-links/{link_id}/unlock")
 async def unlock_premium_link(
-    link_id: int,
+    link_id: uuid.UUID,
     phone_number: str, # For M-Pesa STK Push
     db: AsyncSession = Depends(get_db)
 ):
@@ -462,7 +463,7 @@ class PurchaseRequest(BaseModel):
 
 @router.post("/premium-links/{link_id}/purchase")
 async def initiate_link_purchase(
-    link_id: int,
+    link_id: uuid.UUID,
     request: PurchaseRequest,
     db: AsyncSession = Depends(get_db)
 ):
@@ -544,7 +545,7 @@ class VerifyAndUnlockRequest(BaseModel):
 
 @router.post("/premium-links/{link_id}/verify-and-unlock")
 async def verify_and_unlock_content(
-    link_id: int,
+    link_id: uuid.UUID,
     request: VerifyAndUnlockRequest,
     db: AsyncSession = Depends(get_db)
 ):
@@ -956,7 +957,7 @@ async def get_media_kit(
 
 @router.get("/public/link/{link_id}")
 async def get_public_link_info(
-    link_id: int,
+    link_id: uuid.UUID,
     db: AsyncSession = Depends(get_db)
 ):
     """Get public info for a premium link (for the unlock page)."""
@@ -1073,7 +1074,7 @@ async def initiate_tip(
 
 @router.post("/public/tip/{tip_id}/verify")
 async def verify_tip(
-    tip_id: int,
+    tip_id: uuid.UUID,
     reference: str,
     db: AsyncSession = Depends(get_db)
 ):
@@ -1180,7 +1181,7 @@ async def get_my_tips(
 
 @router.post("/public/link/{link_id}/track")
 async def track_link_event(
-    link_id: int,
+    link_id: uuid.UUID,
     request: Request,
     event_type: str = "view",  # view, click
     source: Optional[str] = None,
@@ -1230,7 +1231,7 @@ async def track_link_event(
 
 @router.get("/links/{link_id}/analytics")
 async def get_link_analytics(
-    link_id: int,
+    link_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -1314,12 +1315,12 @@ async def get_link_analytics(
 
 async def _save_fan_contact(
     db: AsyncSession,
-    profile_id: int,
+    profile_id: uuid.UUID,
     email: str,
     name: Optional[str],
     phone: Optional[str],
     source_type: str,
-    source_link_id: Optional[int],
+    source_link_id: Optional[uuid.UUID],
     amount_spent: float
 ):
     """Helper to save or update a fan contact."""

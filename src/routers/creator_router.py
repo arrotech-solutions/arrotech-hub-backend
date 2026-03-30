@@ -5,6 +5,7 @@ API endpoints for creator profiles in the marketplace.
 """
 
 from typing import Any, Dict, List, Optional
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -38,8 +39,8 @@ class CreatorProfileCreate(BaseModel):
 
 class CreatorProfileResponse(BaseModel):
     """Response for creator profile."""
-    id: int
-    user_id: int
+    id: uuid.UUID
+    user_id: uuid.UUID
     display_name: str
     bio: Optional[str]
     avatar_url: Optional[str]
@@ -60,7 +61,7 @@ class CreatorProfileResponse(BaseModel):
 
 class CreatorWorkflowResponse(BaseModel):
     """Response for a creator's workflow."""
-    id: int
+    id: uuid.UUID
     name: str
     description: Optional[str]
     category: Optional[str]
@@ -176,7 +177,7 @@ async def create_or_update_profile(
 
 @router.get("/{creator_id}", response_model=ApiResponse)
 async def get_creator_profile(
-    creator_id: int,
+    creator_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ):
     """Get a creator's public profile."""
@@ -219,7 +220,7 @@ async def get_creator_profile(
 
 @router.get("/{creator_id}/workflows", response_model=ApiResponse)
 async def get_creator_workflows(
-    creator_id: int,
+    creator_id: uuid.UUID,
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -344,7 +345,7 @@ async def refresh_my_stats(
     )
 
 
-async def update_creator_stats(profile: CreatorProfile, user_id: int, db: AsyncSession):
+async def update_creator_stats(profile: CreatorProfile, user_id: uuid.UUID, db: AsyncSession):
     """Update cached statistics for a creator profile."""
     # Count public workflows
     result = await db.execute(
@@ -388,7 +389,7 @@ async def update_creator_stats(profile: CreatorProfile, user_id: int, db: AsyncS
 
 @router.post("/{creator_id}/follow", response_model=ApiResponse)
 async def follow_creator(
-    creator_id: int,
+    creator_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -451,7 +452,7 @@ async def follow_creator(
 
 @router.delete("/{creator_id}/follow", response_model=ApiResponse)
 async def unfollow_creator(
-    creator_id: int,
+    creator_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -488,7 +489,7 @@ async def unfollow_creator(
 
 @router.get("/{creator_id}/is-following", response_model=ApiResponse)
 async def check_following(
-    creator_id: int,
+    creator_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):

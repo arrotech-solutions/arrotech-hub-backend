@@ -7,6 +7,7 @@ import logging
 import json
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -59,7 +60,7 @@ class MpesaAgentConfigResponse(BaseModel):
 
 class MpesaPaymentResponse(BaseModel):
     """Response model for M-Pesa payment."""
-    id: int
+    id: uuid.UUID
     transaction_id: str
     amount: float
     phone_number: str
@@ -67,7 +68,7 @@ class MpesaPaymentResponse(BaseModel):
     description: Optional[str]
     transaction_time: datetime
     status: str
-    matched_invoice_id: Optional[int]
+    matched_invoice_id: Optional[uuid.UUID]
     match_confidence: Optional[float]
     channel: Optional[str]
     created_at: datetime

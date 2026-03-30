@@ -5,6 +5,7 @@ Execution Orchestrator Service for coordinating intent processing, tool selectio
 import json
 import logging
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 class ExecutionOrchestrator:
     """Orchestrates the end-to-end execution of user requests with precision."""
     
-    def __init__(self, db: AsyncSession, user: User, conversation_id: int):
+    def __init__(self, db: AsyncSession, user: User, conversation_id: uuid.UUID):
         self.db = db
         self.user = user
         self.conversation_id = conversation_id
@@ -35,7 +36,7 @@ class ExecutionOrchestrator:
         self.intent_processor = IntentProcessor(user, db)
 
     @staticmethod
-    async def get_daily_message_count(db: AsyncSession, user_id: int) -> int:
+    async def get_daily_message_count(db: AsyncSession, user_id: uuid.UUID) -> int:
         """Get the number of AI messages sent by the user today."""
         from datetime import datetime, time
         from sqlalchemy import func, select

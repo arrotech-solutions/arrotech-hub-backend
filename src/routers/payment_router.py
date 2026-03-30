@@ -5,6 +5,7 @@ Payment router for Mini-Hub with M-Pesa and Stripe integration.
 import json
 import logging
 from typing import Any, Dict
+import uuid
 
 import stripe
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -538,7 +539,7 @@ async def mpesa_callback(request: Request):
 # ================== Workflow Purchase Endpoints ==================
 
 class WorkflowPurchaseRequest(BaseModel):
-    workflow_id: int
+    workflow_id: uuid.UUID
     payment_method: str = "stripe"  # stripe, mpesa
     phone_number: str = None  # Required for M-Pesa
 

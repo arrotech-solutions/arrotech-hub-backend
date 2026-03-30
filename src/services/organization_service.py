@@ -8,6 +8,7 @@ import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+import uuid
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,7 +49,7 @@ class OrganizationService:
         db: AsyncSession,
         name: str,
         slug: str,
-        owner_id: int,
+        owner_id: uuid.UUID,
         *,
         description: str = None,
         website: str = None,
@@ -98,7 +99,7 @@ class OrganizationService:
         await db.refresh(org)
         return org
 
-    async def get_organization(self, db: AsyncSession, org_id: int) -> Optional[Organization]:
+    async def get_organization(self, db: AsyncSession, org_id: uuid.UUID) -> Optional[Organization]:
         """Get organization by ID."""
         result = await db.execute(
             select(Organization).where(Organization.id == org_id, Organization.is_active == True)
@@ -115,8 +116,8 @@ class OrganizationService:
     async def update_organization(
         self,
         db: AsyncSession,
-        org_id: int,
-        actor_id: int,
+        org_id: uuid.UUID,
+        actor_id: uuid.UUID,
         updates: Dict[str, Any],
         ip_address: str = None,
     ) -> Optional[Organization]:
@@ -142,7 +143,7 @@ class OrganizationService:
         return org
 
     async def delete_organization(
-        self, db: AsyncSession, org_id: int, actor_id: int, ip_address: str = None
+        self, db: AsyncSession, org_id: uuid.UUID, actor_id: uuid.UUID, ip_address: str = None
     ) -> bool:
         """Soft-delete an organization."""
         org = await self.get_organization(db, org_id)
@@ -155,7 +156,7 @@ class OrganizationService:
         await db.commit()
         return True
 
-    async def list_user_organizations(self, db: AsyncSession, user_id: int) -> List[Dict[str, Any]]:
+    async def list_user_organizations(self, db: AsyncSession, user_id: uuid.UUID) -> List[Dict[str, Any]]:
         """List all organizations a user belongs to, with their role."""
         result = await db.execute(
             select(Organization, OrganizationMember.role)
@@ -183,7 +184,7 @@ class OrganizationService:
 
     # ── Membership ──────────────────────────────────────────────────────
 
-    async def get_members(self, db: AsyncSession, org_id: int) -> List[Dict[str, Any]]:
+    async def get_members(self, db: AsyncSession, org_id: uuid.UUID) -> List[Dict[str, Any]]:
         """List all active members of an organization."""
         result = await db.execute(
             select(OrganizationMember, User)
@@ -209,7 +210,7 @@ class OrganizationService:
             for member, user in rows
         ]
 
-    async def get_member(self, db: AsyncSession, org_id: int, user_id: int) -> Optional[OrganizationMember]:
+    async def get_member(self, db: AsyncSession, org_id: uuid.UUID, user_id: uuid.UUID) -> Optional[OrganizationMember]:
         """Get a specific membership record."""
         result = await db.execute(
             select(OrganizationMember).where(
@@ -221,8 +222,8 @@ class OrganizationService:
         return result.scalar_one_or_none()
 
     async def add_member(
-        self, db: AsyncSession, org_id: int, user_id: int, role: str,
-        actor_id: int, ip_address: str = None, title: str = None,
+        self, db: AsyncSession, org_id: uuid.UUID, user_id: uuid.UUID, role: str,
+        actor_id: uuid.UUID, ip_address: str = None, title: str = None,
     ) -> OrganizationMember:
         """Add a user as a member of an organization."""
         # Check if already a member
@@ -249,9 +250,9 @@ class OrganizationService:
         return member
 
     async def update_member(
-        self, db: AsyncSession, org_id: int, target_user_id: int,
-        new_role: str = None, department_id: int = None,
-        actor_id: int = None, ip_address: str = None,
+        self, db: AsyncSession, org_id: uuid.UUID, target_user_id: uuid.UUID,
+        new_role: str = None, department_id: uuid.UUID = None,
+        actor_id: uuid.UUID = None, ip_address: str = None,
     ) -> Optional[OrganizationMember]:
         """Update a member's role and/or department."""
         member = await self.get_member(db, org_id, target_user_id)
@@ -301,8 +302,8 @@ class OrganizationService:
 
     # Keep backward-compatible alias
     async def update_member_role(
-        self, db: AsyncSession, org_id: int, target_user_id: int,
-        new_role: str, actor_id: int, ip_address: str = None,
+        self, db: AsyncSession, org_id: uuid.UUID, target_user_id: uuid.UUID,
+        new_role: str, actor_id: uuid.UUID, ip_address: str = None,
     ) -> Optional[OrganizationMember]:
         """Update a member's role (backward-compatible wrapper)."""
         return await self.update_member(
@@ -311,8 +312,8 @@ class OrganizationService:
         )
 
     async def remove_member(
-        self, db: AsyncSession, org_id: int, target_user_id: int,
-        actor_id: int, ip_address: str = None,
+        self, db: AsyncSession, org_id: uuid.UUID, target_user_id: uuid.UUID,
+        actor_id: uuid.UUID, ip_address: str = None,
     ) -> bool:
         """Remove a member from an organization (soft-delete)."""
         member = await self.get_member(db, org_id, target_user_id)
@@ -342,7 +343,7 @@ class OrganizationService:
     # ── Invitations ─────────────────────────────────────────────────────
 
     async def create_invitation(
-        self, db: AsyncSession, org_id: int, email: str, role: str,
+        self, db: AsyncSession, org_id: uuid.UUID, email: str, role: str,
         invited_by: int, ip_address: str = None,
     ) -> OrganizationInvitation:
         """Create an invitation to join an organization."""
@@ -383,7 +384,7 @@ class OrganizationService:
         await db.refresh(invitation)
         return invitation
 
-    async def list_invitations(self, db: AsyncSession, org_id: int) -> List[Dict[str, Any]]:
+    async def list_invitations(self, db: AsyncSession, org_id: uuid.UUID) -> List[Dict[str, Any]]:
         """List all pending invitations for an organization."""
         result = await db.execute(
             select(OrganizationInvitation, User.name.label("inviter_name"))
@@ -409,7 +410,7 @@ class OrganizationService:
         ]
 
     async def accept_invitation(
-        self, db: AsyncSession, token: str, user_id: int, ip_address: str = None
+        self, db: AsyncSession, token: str, user_id: uuid.UUID, ip_address: str = None
     ) -> OrganizationMember:
         """Accept an invitation using the token."""
         result = await db.execute(
@@ -451,8 +452,8 @@ class OrganizationService:
         return member
 
     async def revoke_invitation(
-        self, db: AsyncSession, org_id: int, invitation_id: int,
-        actor_id: int, ip_address: str = None,
+        self, db: AsyncSession, org_id: uuid.UUID, invitation_id: uuid.UUID,
+        actor_id: uuid.UUID, ip_address: str = None,
     ) -> bool:
         """Revoke a pending invitation."""
         result = await db.execute(
@@ -475,8 +476,8 @@ class OrganizationService:
     # ── Departments ─────────────────────────────────────────────────────
 
     async def create_department(
-        self, db: AsyncSession, org_id: int, name: str,
-        actor_id: int, description: str = None, head_id: int = None,
+        self, db: AsyncSession, org_id: uuid.UUID, name: str,
+        actor_id: uuid.UUID, description: str = None, head_id: uuid.UUID = None,
         ip_address: str = None,
     ) -> Department:
         """Create a department within an organization."""
@@ -493,7 +494,7 @@ class OrganizationService:
         await db.refresh(dept)
         return dept
 
-    async def list_departments(self, db: AsyncSession, org_id: int) -> List[Dict[str, Any]]:
+    async def list_departments(self, db: AsyncSession, org_id: uuid.UUID) -> List[Dict[str, Any]]:
         """List all departments in an organization."""
         result = await db.execute(
             select(Department)
@@ -513,8 +514,8 @@ class OrganizationService:
         ]
 
     async def update_department(
-        self, db: AsyncSession, org_id: int, dept_id: int,
-        updates: Dict[str, Any], actor_id: int, ip_address: str = None,
+        self, db: AsyncSession, org_id: uuid.UUID, dept_id: uuid.UUID,
+        updates: Dict[str, Any], actor_id: uuid.UUID, ip_address: str = None,
     ) -> Optional[Department]:
         """Update a department."""
         result = await db.execute(
@@ -536,8 +537,8 @@ class OrganizationService:
         return dept
 
     async def delete_department(
-        self, db: AsyncSession, org_id: int, dept_id: int,
-        actor_id: int, ip_address: str = None,
+        self, db: AsyncSession, org_id: uuid.UUID, dept_id: uuid.UUID,
+        actor_id: uuid.UUID, ip_address: str = None,
     ) -> bool:
         """Delete a department."""
         result = await db.execute(
@@ -563,7 +564,7 @@ class OrganizationService:
     # ── Audit Log ───────────────────────────────────────────────────────
 
     async def get_audit_log(
-        self, db: AsyncSession, org_id: int,
+        self, db: AsyncSession, org_id: uuid.UUID,
         action_filter: str = None,
         actor_id_filter: int = None,
         limit: int = 50,
@@ -611,7 +612,7 @@ class OrganizationService:
     # ── Permission Helpers ──────────────────────────────────────────────
 
     async def check_permission(
-        self, db: AsyncSession, org_id: int, user_id: int, required_role: str
+        self, db: AsyncSession, org_id: uuid.UUID, user_id: uuid.UUID, required_role: str
     ) -> bool:
         """Check if a user has at least the required role in an organization."""
         member = await self.get_member(db, org_id, user_id)
@@ -629,7 +630,7 @@ class OrganizationService:
     # ── Internal ────────────────────────────────────────────────────────
 
     async def _log(
-        self, db: AsyncSession, org_id: int, actor_id: int,
+        self, db: AsyncSession, org_id: uuid.UUID, actor_id: uuid.UUID,
         action: str, entity_type: str = None, entity_id: str = None,
         details: Dict[str, Any] = None, ip_address: str = None,
     ):

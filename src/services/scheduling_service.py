@@ -5,6 +5,7 @@
 import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
+import uuid
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ class SchedulingService:
     
     async def find_optimal_slots(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         duration_minutes: int,
         date_range_days: int = 7,
         preferences: Optional[Dict[str, Any]] = None,
@@ -182,7 +183,7 @@ class SchedulingService:
     
     async def protect_focus_time(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         hours_per_week: int = 10,
         calendar_events: Optional[List[Dict]] = None
     ) -> List[Dict[str, Any]]:
@@ -262,7 +263,7 @@ class SchedulingService:
     
     async def add_buffer_time(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         buffer_minutes: int = 15,
         calendar_events: Optional[List[Dict]] = None
     ) -> List[Dict[str, Any]]:
@@ -327,7 +328,7 @@ class SchedulingService:
     
     async def detect_conflicts(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         proposed_start: datetime,
         proposed_end: datetime,
         calendar_events: Optional[List[Dict]] = None

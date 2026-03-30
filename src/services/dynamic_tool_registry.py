@@ -4,6 +4,7 @@ Dynamic Tool Registry Service for generating tools based on user connections.
 
 import logging
 from typing import Any, Dict, List, Optional
+import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -614,7 +615,7 @@ class DynamicToolRegistry:
             }
         }
     
-    async def get_user_tools(self, user_id: int, db: AsyncSession, include_all: bool = False) -> List[Dict[str, Any]]:
+    async def get_user_tools(self, user_id: uuid.UUID, db: AsyncSession, include_all: bool = False) -> List[Dict[str, Any]]:
         """Get tools available for a specific user based on their connections."""
         tools = []
         
@@ -2126,7 +2127,7 @@ class DynamicToolRegistry:
         
         return None
     
-    async def get_tools_for_llm(self, user_id: int = None, db: AsyncSession = None) -> List[Dict[str, Any]]:
+    async def get_tools_for_llm(self, user_id: uuid.UUID = None, db: AsyncSession = None) -> List[Dict[str, Any]]:
         """Get tools in format suitable for LLM function calling."""
         if user_id and db:
             # Get user-specific tools, including unconnected ones (so AI can see what's possible)
@@ -2150,7 +2151,7 @@ class DynamicToolRegistry:
             openai_tools.append(openai_tool)
         return openai_tools
     
-    async def get_available_tools(self, user_id: int = None, db: AsyncSession = None) -> List[Dict[str, Any]]:
+    async def get_available_tools(self, user_id: uuid.UUID = None, db: AsyncSession = None) -> List[Dict[str, Any]]:
         """Get all available tools for workflow creation."""
         # For workflow creation, return all possible tools (base + platform tools)
         # This gives the LLM the full context of what's possible
@@ -2186,7 +2187,7 @@ class DynamicToolRegistry:
         tools.extend(formatted_platform_tools)
         return tools
 
-    async def get_tool_descriptions(self, user_id: int = None, db: AsyncSession = None) -> str:
+    async def get_tool_descriptions(self, user_id: uuid.UUID = None, db: AsyncSession = None) -> str:
         """Get a human-readable description of all available tools."""
         tools = await self.get_tools_for_llm(user_id, db)
         descriptions = []

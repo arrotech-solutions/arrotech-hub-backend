@@ -10,6 +10,7 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from typing import Optional
+import uuid
 
 from ..database import get_db
 from ..models import (
@@ -286,7 +287,7 @@ async def process_status_updates(value: dict, db: AsyncSession):
 
 async def get_or_create_contact(
     db: AsyncSession,
-    user_id: int,
+    user_id: uuid.UUID,
     phone_number: str,
     profile_name: str = None
 ) -> WhatsAppContact:

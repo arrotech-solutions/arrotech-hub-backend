@@ -5,6 +5,7 @@ API endpoints for workflow sharing, marketplace, and community features.
 """
 
 from typing import Any, Dict, List, Optional
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -33,7 +34,7 @@ class UpdateVisibilityRequest(BaseModel):
 class ImportWorkflowRequest(BaseModel):
     """Request to import a workflow."""
     workflow_data: Dict[str, Any] = Field(..., description="Exported workflow JSON data")
-    source_workflow_id: Optional[int] = Field(None, description="Original workflow ID if from marketplace")
+    source_workflow_id: Optional[uuid.UUID] = Field(None, description="Original workflow ID if from marketplace")
 
 
 class AddReviewRequest(BaseModel):
@@ -45,7 +46,7 @@ class AddReviewRequest(BaseModel):
 
 class WorkflowSummary(BaseModel):
     """Summary of a workflow for marketplace listing."""
-    id: int
+    id: uuid.UUID
     name: str
     description: Optional[str]
     author_name: Optional[str]
@@ -65,8 +66,8 @@ class WorkflowSummary(BaseModel):
 
 class ReviewResponse(BaseModel):
     """Review response model."""
-    id: int
-    user_id: int
+    id: uuid.UUID
+    user_id: uuid.UUID
     rating: int
     title: Optional[str]
     comment: Optional[str]
@@ -200,7 +201,7 @@ async def get_workflow_by_share_code(
 
 @router.post("/workflow/{workflow_id}/export", response_model=MarketplaceResponse)
 async def export_workflow(
-    workflow_id: int,
+    workflow_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -258,7 +259,7 @@ async def import_workflow(
 
 @router.put("/workflow/{workflow_id}/visibility", response_model=MarketplaceResponse)
 async def update_workflow_visibility(
-    workflow_id: int,
+    workflow_id: uuid.UUID,
     request: UpdateVisibilityRequest,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -312,7 +313,7 @@ async def update_workflow_visibility(
 
 @router.get("/workflow/{workflow_id}/reviews", response_model=MarketplaceResponse)
 async def get_workflow_reviews(
-    workflow_id: int,
+    workflow_id: uuid.UUID,
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -347,7 +348,7 @@ async def get_workflow_reviews(
 
 @router.post("/workflow/{workflow_id}/review", response_model=MarketplaceResponse)
 async def add_workflow_review(
-    workflow_id: int,
+    workflow_id: uuid.UUID,
     request: AddReviewRequest,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -476,8 +477,8 @@ class CreateVersionRequest(BaseModel):
 
 class VersionResponse(BaseModel):
     """Response for a workflow version."""
-    id: int
-    workflow_id: int
+    id: uuid.UUID
+    workflow_id: uuid.UUID
     version_number: int
     name: str
     description: Optional[str]
@@ -488,7 +489,7 @@ class VersionResponse(BaseModel):
 
 @router.get("/workflow/{workflow_id}/versions", response_model=MarketplaceResponse)
 async def get_workflow_versions(
-    workflow_id: int,
+    workflow_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ):
     """Get all versions of a workflow."""
@@ -527,7 +528,7 @@ async def get_workflow_versions(
 
 @router.post("/workflow/{workflow_id}/version", response_model=MarketplaceResponse)
 async def create_workflow_version(
-    workflow_id: int,
+    workflow_id: uuid.UUID,
     request: CreateVersionRequest,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -616,7 +617,7 @@ async def create_workflow_version(
 
 @router.get("/workflow/{workflow_id}/version/{version_number}", response_model=MarketplaceResponse)
 async def get_workflow_version(
-    workflow_id: int,
+    workflow_id: uuid.UUID,
     version_number: int,
     db: AsyncSession = Depends(get_db),
 ):
@@ -667,7 +668,7 @@ async def get_workflow_version(
 
 @router.post("/workflow/{workflow_id}/rollback/{version_number}", response_model=MarketplaceResponse)
 async def rollback_to_version(
-    workflow_id: int,
+    workflow_id: uuid.UUID,
     version_number: int,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),

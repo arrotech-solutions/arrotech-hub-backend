@@ -5,6 +5,7 @@ Handles OAuth 2.0 authorization flow for Google Workspace integration.
 import logging
 import os
 from typing import Dict, Any
+import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -198,7 +199,7 @@ async def oauth_callback(
 
 @router.delete("/disconnect/{connection_id}")
 async def disconnect_google_workspace(
-    connection_id: int,
+    connection_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> Dict[str, Any]:

@@ -4,6 +4,7 @@ Comprehensive settings management with proper API response format.
 """
 
 from typing import Any, Dict, Optional
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -81,8 +82,8 @@ class UserSettingsUpdate(BaseModel):
 
 class UserSettingsResponse(BaseModel):
     """User settings response model."""
-    id: int
-    user_id: int
+    id: uuid.UUID
+    user_id: uuid.UUID
     notification_settings: NotificationSettings
     api_settings: APISettings
     dashboard_settings: DashboardSettings
@@ -98,7 +99,7 @@ class UserSettingsResponse(BaseModel):
 
 # ================== Helper Functions ==================
 
-async def get_or_create_user_settings(db: AsyncSession, user_id: int) -> UserSettings:
+async def get_or_create_user_settings(db: AsyncSession, user_id: uuid.UUID) -> UserSettings:
     """Get or create user settings."""
     result = await db.execute(
         select(UserSettings).where(UserSettings.user_id == user_id)

@@ -4,6 +4,7 @@ RESTful API endpoints for organizations, members, invitations, departments, and 
 """
 
 from typing import Any, Dict, List, Optional
+import uuid
 import os
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -46,14 +47,14 @@ class UpdateOrganizationRequest(BaseModel):
 
 
 class AddMemberRequest(BaseModel):
-    user_id: int
+    user_id: uuid.UUID
     role: str = OrgRole.MEMBER
     title: Optional[str] = None
 
 
 class UpdateMemberRequest(BaseModel):
     role: Optional[str] = None
-    department_id: Optional[int] = None
+    department_id: Optional[uuid.UUID] = None
 
 
 class CreateInvitationRequest(BaseModel):
@@ -68,19 +69,19 @@ class AcceptInvitationRequest(BaseModel):
 class CreateDepartmentRequest(BaseModel):
     name: str
     description: Optional[str] = None
-    head_id: Optional[int] = None
+    head_id: Optional[uuid.UUID] = None
 
 
 class UpdateDepartmentRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
-    head_id: Optional[int] = None
+    head_id: Optional[uuid.UUID] = None
 
 
 # ── Helper: require org role ────────────────────────────────────────────
 
 async def _require_role(
-    db: AsyncSession, org_id: int, user_id: int, required_role: str
+    db: AsyncSession, org_id: uuid.UUID, user_id: uuid.UUID, required_role: str
 ):
     """Raise 403 if user doesn't have sufficient role."""
     has_perm = await organization_service.check_permission(db, org_id, user_id, required_role)
@@ -143,7 +144,7 @@ async def list_organizations(
 
 @router.get("/{org_id}")
 async def get_organization(
-    org_id: int,
+    org_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -175,7 +176,7 @@ async def get_organization(
 
 @router.put("/{org_id}")
 async def update_organization(
-    org_id: int,
+    org_id: uuid.UUID,
     request: Request,
     data: UpdateOrganizationRequest,
     current_user: User = Depends(get_current_user),
@@ -195,7 +196,7 @@ async def update_organization(
 
 @router.delete("/{org_id}")
 async def delete_organization(
-    org_id: int,
+    org_id: uuid.UUID,
     request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -216,7 +217,7 @@ async def delete_organization(
 
 @router.get("/{org_id}/members")
 async def list_members(
-    org_id: int,
+    org_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -228,7 +229,7 @@ async def list_members(
 
 @router.post("/{org_id}/members", status_code=status.HTTP_201_CREATED)
 async def add_member(
-    org_id: int,
+    org_id: uuid.UUID,
     request: Request,
     data: AddMemberRequest,
     current_user: User = Depends(get_current_user),
@@ -249,8 +250,8 @@ async def add_member(
 
 @router.put("/{org_id}/members/{user_id}")
 async def update_member(
-    org_id: int,
-    user_id: int,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
     request: Request,
     data: UpdateMemberRequest,
     current_user: User = Depends(get_current_user),
@@ -284,8 +285,8 @@ async def update_member(
 
 @router.delete("/{org_id}/members/{user_id}")
 async def remove_member(
-    org_id: int,
-    user_id: int,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
     request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -312,7 +313,7 @@ async def remove_member(
 
 @router.post("/{org_id}/invitations", status_code=status.HTTP_201_CREATED)
 async def create_invitation(
-    org_id: int,
+    org_id: uuid.UUID,
     request: Request,
     data: CreateInvitationRequest,
     current_user: User = Depends(get_current_user),
@@ -358,7 +359,7 @@ async def create_invitation(
 
 @router.get("/{org_id}/invitations")
 async def list_invitations(
-    org_id: int,
+    org_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -370,8 +371,8 @@ async def list_invitations(
 
 @router.delete("/{org_id}/invitations/{invitation_id}")
 async def revoke_invitation(
-    org_id: int,
-    invitation_id: int,
+    org_id: uuid.UUID,
+    invitation_id: uuid.UUID,
     request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -445,7 +446,7 @@ async def get_invitation_info(
 
 @router.get("/{org_id}/departments")
 async def list_departments(
-    org_id: int,
+    org_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -457,7 +458,7 @@ async def list_departments(
 
 @router.post("/{org_id}/departments", status_code=status.HTTP_201_CREATED)
 async def create_department(
-    org_id: int,
+    org_id: uuid.UUID,
     request: Request,
     data: CreateDepartmentRequest,
     current_user: User = Depends(get_current_user),
@@ -478,8 +479,8 @@ async def create_department(
 
 @router.put("/{org_id}/departments/{dept_id}")
 async def update_department(
-    org_id: int,
-    dept_id: int,
+    org_id: uuid.UUID,
+    dept_id: uuid.UUID,
     request: Request,
     data: UpdateDepartmentRequest,
     current_user: User = Depends(get_current_user),
@@ -499,8 +500,8 @@ async def update_department(
 
 @router.delete("/{org_id}/departments/{dept_id}")
 async def delete_department(
-    org_id: int,
-    dept_id: int,
+    org_id: uuid.UUID,
+    dept_id: uuid.UUID,
     request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -521,9 +522,9 @@ async def delete_department(
 
 @router.get("/{org_id}/audit-log")
 async def get_audit_log(
-    org_id: int,
+    org_id: uuid.UUID,
     action: Optional[str] = None,
-    actor_id: Optional[int] = None,
+    actor_id: Optional[uuid.UUID] = None,
     limit: int = 50,
     offset: int = 0,
     current_user: User = Depends(get_current_user),

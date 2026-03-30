@@ -1,6 +1,7 @@
 
 import logging
 from typing import Any, Dict, List, Optional
+import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,7 +17,7 @@ class WorkflowService:
 
     async def create_draft_workflow(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         title: str,
         description: str,
         steps: List[Dict[str, Any]],
@@ -54,7 +55,7 @@ class WorkflowService:
 
     async def list_workflows(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         db: AsyncSession
     ) -> Dict[str, Any]:
         """List workflows for a user."""
@@ -85,7 +86,7 @@ class WorkflowService:
 
     async def get_workflow(
         self,
-        workflow_id: int,
+        workflow_id: uuid.UUID,
         db: AsyncSession
     ) -> Dict[str, Any]:
         """Get a specific workflow."""

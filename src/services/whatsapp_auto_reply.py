@@ -7,6 +7,7 @@ import logging
 import re
 from datetime import datetime
 from typing import Optional, List, Dict, Any
+import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
@@ -38,7 +39,7 @@ class AutoReplyEngine:
     async def process_incoming_message(
         self,
         db: AsyncSession,
-        user_id: int,
+        user_id: uuid.UUID,
         contact: WhatsAppContact,
         message: WhatsAppMessage
     ) -> Optional[WhatsAppMessage]:
@@ -293,7 +294,7 @@ Instructions:
     async def _send_reply(
         self,
         db: AsyncSession,
-        user_id: int,
+        user_id: uuid.UUID,
         contact: WhatsAppContact,
         text: str,
         rule: WhatsAppAutoReply

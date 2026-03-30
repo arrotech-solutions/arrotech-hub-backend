@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
+import uuid
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,7 +47,7 @@ class MpesaReconciliationService:
 
     async def get_config(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         db: AsyncSession
     ) -> Optional[MpesaAgentConfig]:
         """Get M-Pesa agent configuration for user (credentials remain encrypted)."""
@@ -69,7 +70,7 @@ class MpesaReconciliationService:
 
     async def create_or_update_config(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         config_data: Dict[str, Any],
         db: AsyncSession
     ) -> MpesaAgentConfig:
@@ -113,7 +114,7 @@ class MpesaReconciliationService:
 
     async def process_payment_notification(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         payment_data: Dict[str, Any],
         db: AsyncSession
     ) -> MpesaPayment:
@@ -445,7 +446,7 @@ class MpesaReconciliationService:
 
     async def match_all_pending_payments(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         db: AsyncSession,
         external_invoices: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
@@ -673,7 +674,7 @@ class MpesaReconciliationService:
 
     async def get_payment_summary(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         start_date: datetime,
         end_date: datetime,
         db: AsyncSession
@@ -716,7 +717,7 @@ class MpesaReconciliationService:
 
     async def query_payments(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         query: str,
         db: AsyncSession,
         limit: int = 10
@@ -736,7 +737,7 @@ class MpesaReconciliationService:
 
     async def get_unmatched_payments(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         db: AsyncSession,
         limit: int = 20
     ) -> List[MpesaPayment]:
@@ -753,7 +754,7 @@ class MpesaReconciliationService:
 
     async def get_payments_by_date_range(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         start_date: datetime,
         end_date: datetime,
         db: AsyncSession,
@@ -771,7 +772,7 @@ class MpesaReconciliationService:
 
     async def get_payment_by_transaction_id(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         db: AsyncSession,
         transaction_id: str
     ) -> Optional[MpesaPayment]:

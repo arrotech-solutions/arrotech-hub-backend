@@ -8,6 +8,7 @@ and what capabilities the user can leverage.
 
 import logging
 from typing import Any, Dict, List, Optional
+import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -252,7 +253,7 @@ CATEGORY_LABELS = {
 class ToolContextEngine:
     """Builds rich, connection-aware tool context for the AI assistant."""
 
-    async def get_user_connections(self, user_id: int, db: AsyncSession) -> List[Dict[str, Any]]:
+    async def get_user_connections(self, user_id: uuid.UUID, db: AsyncSession) -> List[Dict[str, Any]]:
         """Get all connections for a user with their statuses."""
         try:
             stmt = select(Connection).where(Connection.user_id == user_id)
@@ -296,7 +297,7 @@ class ToolContextEngine:
 
     async def build_tool_awareness_context(
         self, 
-        user_id: int, 
+        user_id: uuid.UUID, 
         db: AsyncSession,
         available_tools: List[Dict[str, Any]] = None
     ) -> str:
@@ -533,7 +534,7 @@ class ToolContextEngine:
 
     async def get_capabilities_summary(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         db: AsyncSession,
         available_tools: List[Dict[str, Any]] = None
     ) -> Dict[str, Any]:

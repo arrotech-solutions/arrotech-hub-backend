@@ -8,6 +8,7 @@ import logging
 import re
 from datetime import datetime
 from typing import Optional, Dict, Any, List
+import uuid
 
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -83,7 +84,7 @@ class WhatsAppWorkflowTrigger:
     @classmethod
     async def on_message_received(
         cls,
-        user_id: int,
+        user_id: uuid.UUID,
         contact: WhatsAppContact,
         message: WhatsAppMessage
     ):
@@ -235,7 +236,7 @@ async def register_whatsapp_workflow_actions():
 
 async def execute_whatsapp_action(
     action_name: str,
-    user_id: int,
+    user_id: uuid.UUID,
     parameters: Dict[str, Any]
 ) -> Dict[str, Any]:
     """

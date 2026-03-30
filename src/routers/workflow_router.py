@@ -1,5 +1,6 @@
 import logging
 from typing import Any, Dict, List, Optional
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -33,7 +34,7 @@ class WorkflowCreate(BaseModel):
 
 class WorkflowFromConversation(BaseModel):
     """Request model for extracting workflow from conversation."""
-    conversation_id: int
+    conversation_id: uuid.UUID
     workflow_name: str
     description: str = None
     selected_step_ids: List[str] = None  # Optional: subset of steps to include
@@ -83,7 +84,7 @@ class VariableSubstitution(BaseModel):
 
 
 class WorkflowResponse(BaseModel):
-    id: int = Field(..., description="The unique database identifier for this workflow.")
+    id: uuid.UUID = Field(..., description="The unique database identifier for this workflow.")
     name: str = Field(..., description="The human-readable name of the workflow.")
     description: str = Field(..., description="The goal or logic this workflow automates.")
     status: str = Field(..., description="Current status of the workflow blueprint.")
@@ -99,8 +100,8 @@ class WorkflowResponse(BaseModel):
 
 
 class WorkflowExecutionResponse(BaseModel):
-    id: int
-    workflow_id: int
+    id: uuid.UUID
+    workflow_id: uuid.UUID
     status: str
     trigger_type: str
     input_data: Optional[Dict[str, Any]]
@@ -344,7 +345,7 @@ async def get_all_executions(
 
 @router.get("/{workflow_id}")
 async def get_workflow(
-    workflow_id: int,
+    workflow_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
@@ -399,7 +400,7 @@ async def get_workflow(
 
 @router.put("/{workflow_id}")
 async def update_workflow(
-    workflow_id: int,
+    workflow_id: uuid.UUID,
     data: WorkflowUpdate,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
@@ -479,7 +480,7 @@ async def update_workflow(
 
 @router.delete("/{workflow_id}")
 async def delete_workflow(
-    workflow_id: int,
+    workflow_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
@@ -506,7 +507,7 @@ async def delete_workflow(
 
 @router.post("/{workflow_id}/execute")
 async def execute_workflow(
-    workflow_id: int,
+    workflow_id: uuid.UUID,
     data: WorkflowExecute,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
@@ -564,7 +565,7 @@ async def execute_workflow(
 
 @router.get("/{workflow_id}/executions")
 async def get_workflow_executions(
-    workflow_id: int,
+    workflow_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
@@ -1008,7 +1009,7 @@ async def create_workflow_from_steps(
 
 @router.get("/conversation/{conversation_id}/tool-calls")
 async def get_conversation_tool_calls(
-    conversation_id: int,
+    conversation_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):

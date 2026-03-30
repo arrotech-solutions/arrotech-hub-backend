@@ -8,6 +8,7 @@ import json
 import os
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+import uuid
 
 import aiohttp
 from fastapi import (APIRouter, Depends, HTTPException, Request, Response,
@@ -70,8 +71,8 @@ class ConversationUpdate(BaseModel):
 
 
 class MessageRead(BaseModel):
-    id: int = Field(..., description="Unique identifier for the message.")
-    conversation_id: int = Field(..., description="The ID of the conversation this message belongs to.")
+    id: uuid.UUID = Field(..., description="Unique identifier for the message.")
+    conversation_id: uuid.UUID = Field(..., description="The ID of the conversation this message belongs to.")
     role: str = Field(..., description="The role of the message sender (e.g., 'user', 'assistant', 'system', 'tool').")
     content: str = Field(..., description="The textual content of the message.")
     status: str = Field(..., description="The current delivery or processing status of the message.")
@@ -191,7 +192,7 @@ async def get_conversations(
 
 @router.get("/conversations/{conversation_id}", response_model=Dict[str, Any])
 async def get_conversation(
-    conversation_id: int,
+    conversation_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
@@ -586,7 +587,7 @@ async def analyze_conversation_complexity(messages: List[Message], user_message:
     }
 
 
-async def get_dynamic_context(conversation_id: int, db: AsyncSession, user_message: str) -> List[Message]:
+async def get_dynamic_context(conversation_id: uuid.UUID, db: AsyncSession, user_message: str) -> List[Message]:
     """
     Get dynamically optimized context based on conversation analysis.
     """
@@ -635,7 +636,7 @@ async def get_dynamic_context(conversation_id: int, db: AsyncSession, user_messa
         return recent_messages
 
 
-async def get_optimized_context(conversation_id: int, db: AsyncSession, max_messages: int = 4, user_message: str = "") -> List[Message]:
+async def get_optimized_context(conversation_id: uuid.UUID, db: AsyncSession, max_messages: int = 4, user_message: str = "") -> List[Message]:
     """
     Get optimized conversation context for LLM.
     Uses dynamic chunking based on conversation analysis.
@@ -1356,7 +1357,7 @@ async def process_ollama(provider: str, data: MessageCreate, user: User, db: Asy
 
 @router.post("/conversations/{conversation_id}/messages", response_model=MessageRead)
 async def send_message(
-    conversation_id: int,
+    conversation_id: uuid.UUID,
     data: MessageCreate,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
@@ -1441,7 +1442,7 @@ async def send_message(
 
 @router.post("/conversations/{conversation_id}/messages/stream")
 async def send_message_stream(
-    conversation_id: int,
+    conversation_id: uuid.UUID,
     data: MessageCreate,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
@@ -1559,7 +1560,7 @@ async def send_message_stream(
 
 @router.put("/conversations/{conversation_id}")
 async def update_conversation(
-    conversation_id: int,
+    conversation_id: uuid.UUID,
     data: ConversationUpdate,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
@@ -1595,7 +1596,7 @@ async def update_conversation(
 
 @router.delete("/conversations/{conversation_id}")
 async def delete_conversation(
-    conversation_id: int,
+    conversation_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
@@ -1757,7 +1758,7 @@ async def test_direct_response(
 
 @router.get("/conversations/{conversation_id}/messages")
 async def get_messages(
-    conversation_id: int,
+    conversation_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
@@ -1904,8 +1905,8 @@ async def get_available_tools(
 
 @router.get("/download/{conversation_id}/{message_id}/{filename}")
 async def download_file(
-    conversation_id: int,
-    message_id: int,
+    conversation_id: uuid.UUID,
+    message_id: uuid.UUID,
     filename: str,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
@@ -1993,8 +1994,8 @@ async def download_file(
 
 @router.get("/files/{conversation_id}/{message_id}")
 async def get_file_info(
-    conversation_id: int,
-    message_id: int,
+    conversation_id: uuid.UUID,
+    message_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
@@ -2055,7 +2056,7 @@ async def get_file_info(
 
 @router.post("/conversations/{conversation_id}/validate-tool")
 async def validate_tool_call(
-    conversation_id: int,
+    conversation_id: uuid.UUID,
     tool_call: Dict[str, Any],
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
@@ -2093,7 +2094,7 @@ async def validate_tool_call(
 
 @router.post("/conversations/{conversation_id}/explain-intent")
 async def explain_intent(
-    conversation_id: int,
+    conversation_id: uuid.UUID,
     data: MessageCreate,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
@@ -2114,7 +2115,7 @@ async def explain_intent(
 
 @router.post("/conversations/{conversation_id}/explain-tools")
 async def explain_relevant_tools(
-    conversation_id: int,
+    conversation_id: uuid.UUID,
     data: MessageCreate,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
@@ -2148,7 +2149,7 @@ async def explain_relevant_tools(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-async def get_conversation_or_404(conversation_id: int, user_id: int, db: AsyncSession) -> Conversation:
+async def get_conversation_or_404(conversation_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession) -> Conversation:
     """Get conversation or raise 404 if not found or user doesn't have access."""
     result = await db.execute(
         select(Conversation)

@@ -5,6 +5,7 @@ Handles leave management and policy search for regional businesses.
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 class HRService:
     """Service for HR operations."""
 
-    async def get_leave_balance(self, user_id: int, employee_id: str) -> Dict[str, Any]:
+    async def get_leave_balance(self, user_id: uuid.UUID, employee_id: str) -> Dict[str, Any]:
         """Get leave balance for an employee."""
         # In production, this would query the leave_balances table
         # For now, return mock data to demonstrate functionality
@@ -41,7 +42,7 @@ class HRService:
             "remaining_days": remaining
         }
 
-    async def apply_leave(self, user_id: int, data: Dict[str, Any]) -> Dict[str, Any]:
+    async def apply_leave(self, user_id: uuid.UUID, data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply for leave."""
         employee_id = data.get("employee_id")
         leave_type = data.get("leave_type", "annual")
@@ -94,7 +95,7 @@ class HRService:
             "results": policies
         }
 
-    async def get_pending_requests(self, user_id: int) -> List[Dict[str, Any]]:
+    async def get_pending_requests(self, user_id: uuid.UUID) -> List[Dict[str, Any]]:
         """Get pending leave requests for approval."""
         return [
             {
