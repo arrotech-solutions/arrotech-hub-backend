@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from typing import Dict, List, Set, Any
+import uuid
 from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
@@ -16,7 +17,7 @@ class ConnectionManager:
         self.active_connections: Dict[int, Set[WebSocket]] = {}
         self.lock = asyncio.Lock()
 
-    async def connect(self, websocket: WebSocket, user_id: int):
+    async def connect(self, websocket: WebSocket, user_id: uuid.UUID):
         await websocket.accept()
         async with self.lock:
             if user_id not in self.active_connections:
@@ -24,7 +25,7 @@ class ConnectionManager:
             self.active_connections[user_id].add(websocket)
             logger.info(f"WebSocket connected for user {user_id}. Active sessions: {len(self.active_connections[user_id])}")
 
-    async def disconnect(self, websocket: WebSocket, user_id: int):
+    async def disconnect(self, websocket: WebSocket, user_id: uuid.UUID):
         async with self.lock:
             if user_id in self.active_connections:
                 self.active_connections[user_id].discard(websocket)
@@ -32,7 +33,7 @@ class ConnectionManager:
                     del self.active_connections[user_id]
                 logger.info(f"WebSocket disconnected for user {user_id}.")
 
-    async def push_to_user(self, user_id: int, event_type: str, data: Any):
+    async def push_to_user(self, user_id: uuid.UUID, event_type: str, data: Any):
         """
         Push a JSON event to all active WebSocket connections for a specific user.
         """

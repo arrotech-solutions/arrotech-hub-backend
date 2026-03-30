@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
+import uuid
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,7 +32,7 @@ class FraudDetectionService:
         "account_history": 0.05 # User history
     }
 
-    async def analyze_payment(self, payment_id: int, db: AsyncSession) -> Dict[str, Any]:
+    async def analyze_payment(self, payment_id: uuid.UUID, db: AsyncSession) -> Dict[str, Any]:
         """
         Run full fraud analysis on a payment.
         """
@@ -191,7 +192,7 @@ class FraudDetectionService:
             }
         return None
 
-    async def verify_with_daraja(self, payment_id: int, db: AsyncSession) -> Dict[str, Any]:
+    async def verify_with_daraja(self, payment_id: uuid.UUID, db: AsyncSession) -> Dict[str, Any]:
         """
         Verify the transaction against Safaricom's source of truth.
         """

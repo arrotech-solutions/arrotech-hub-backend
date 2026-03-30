@@ -7,6 +7,7 @@ scoring algorithms for measuring user productivity across the platform.
 
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+import uuid
 from dataclasses import dataclass, asdict
 from enum import Enum
 import logging
@@ -111,7 +112,7 @@ class ProductivityService:
     
     async def log_activity(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         activity_type: ActivityType,
         metadata: Optional[Dict[str, Any]] = None,
         timestamp: Optional[datetime] = None
@@ -152,7 +153,7 @@ class ProductivityService:
     
     async def calculate_daily_score(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         date: Optional[datetime] = None
     ) -> DailyScore:
         """
@@ -215,7 +216,7 @@ class ProductivityService:
     
     async def calculate_weekly_score(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         week_start: Optional[datetime] = None
     ) -> Dict[str, Any]:
         """
@@ -253,7 +254,7 @@ class ProductivityService:
     
     async def get_productivity_trend(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         days: int = 30
     ) -> List[DailyScore]:
         """
@@ -276,7 +277,7 @@ class ProductivityService:
         
         return scores
     
-    async def get_current_streak(self, user_id: int) -> StreakData:
+    async def get_current_streak(self, user_id: uuid.UUID) -> StreakData:
         """
         Get user's current productivity streak.
         
@@ -307,7 +308,7 @@ class ProductivityService:
     
     async def update_streak(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         activity_type: ActivityType
     ) -> StreakData:
         """
@@ -354,7 +355,7 @@ class ProductivityService:
     
     async def get_activity_breakdown(
         self,
-        user_id: int,
+        user_id: uuid.UUID,
         period: str = "week"
     ) -> ActivityStats:
         """
@@ -429,7 +430,7 @@ class ProductivityService:
             trend=trend
         )
     
-    async def get_achievements(self, user_id: int) -> List[Dict[str, Any]]:
+    async def get_achievements(self, user_id: uuid.UUID) -> List[Dict[str, Any]]:
         """
         Get user's productivity achievements and milestones.
         
@@ -513,7 +514,7 @@ class ProductivityService:
         
         return achievements
     
-    async def get_weekly_comparison(self, user_id: int) -> Dict[str, Any]:
+    async def get_weekly_comparison(self, user_id: uuid.UUID) -> Dict[str, Any]:
         """
         Compare this week's productivity to last week.
         

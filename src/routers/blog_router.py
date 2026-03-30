@@ -4,6 +4,7 @@ Public blog + admin CRUD endpoints.
 """
 
 from typing import Optional, List
+import uuid
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from pydantic import BaseModel
 from sqlalchemy import select, func as sa_func
@@ -30,7 +31,7 @@ class BlogPostCreate(BaseModel):
     cover_image: Optional[str] = None
     author_name: Optional[str] = None
     author_avatar: Optional[str] = None
-    category_id: Optional[int] = None
+    category_id: Optional[uuid.UUID] = None
     tags: Optional[List[str]] = None
     status: Optional[str] = "draft"
     is_featured: Optional[bool] = False
@@ -45,7 +46,7 @@ class BlogPostUpdate(BaseModel):
     cover_image: Optional[str] = None
     author_name: Optional[str] = None
     author_avatar: Optional[str] = None
-    category_id: Optional[int] = None
+    category_id: Optional[uuid.UUID] = None
     tags: Optional[List[str]] = None
     status: Optional[str] = None
     is_featured: Optional[bool] = None
@@ -239,7 +240,7 @@ async def create_post(
 
 @router.put("/posts/{post_id}")
 async def update_post(
-    post_id: int,
+    post_id: uuid.UUID,
     data: BlogPostUpdate,
     current_user: User = Depends(require_permission("blog_write")),
     db: AsyncSession = Depends(get_db),
@@ -278,7 +279,7 @@ async def update_post(
 
 @router.delete("/posts/{post_id}")
 async def delete_post(
-    post_id: int,
+    post_id: uuid.UUID,
     current_user: User = Depends(require_permission("blog_publish")),
     db: AsyncSession = Depends(get_db),
 ):

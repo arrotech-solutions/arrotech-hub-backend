@@ -5,6 +5,7 @@ Allows users to bookmark/favorite workflows.
 
 import logging
 from typing import Any, List, Optional
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -79,7 +80,7 @@ async def get_my_favorites(
 
 @router.post("/{workflow_id}", response_model=ApiResponse)
 async def add_to_favorites(
-    workflow_id: int,
+    workflow_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -121,7 +122,7 @@ async def add_to_favorites(
 
 @router.delete("/{workflow_id}", response_model=ApiResponse)
 async def remove_from_favorites(
-    workflow_id: int,
+    workflow_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -143,7 +144,7 @@ async def remove_from_favorites(
 
 @router.get("/{workflow_id}/check", response_model=ApiResponse)
 async def check_favorite(
-    workflow_id: int,
+    workflow_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):

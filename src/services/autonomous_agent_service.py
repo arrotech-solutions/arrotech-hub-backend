@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
+import uuid
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,8 +49,8 @@ class AutonomousAgentService:
         
     async def create_agent_from_workflow(
         self,
-        workflow_id: int,
-        user_id: int,
+        workflow_id: uuid.UUID,
+        user_id: uuid.UUID,
         db: AsyncSession,
         agent_config: Dict[str, Any] = None
     ) -> Dict[str, Any]:
@@ -608,7 +609,7 @@ You are now an autonomous agent ready to execute this workflow independently.
         await db.commit()
         return True
     
-    async def get_user_agents(self, user_id: int, db: AsyncSession) -> List[Dict[str, Any]]:
+    async def get_user_agents(self, user_id: uuid.UUID, db: AsyncSession) -> List[Dict[str, Any]]:
         """
         Get all agents for a user.
         """

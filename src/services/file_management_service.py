@@ -11,6 +11,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+import uuid
 from urllib.parse import urlparse
 
 import aiofiles
@@ -213,7 +214,7 @@ class FileManagementService:
         # This can be extended with more template types
         return self._generate_default_template(data)
     
-    async def upload_file(self, file: UploadFile, user_id: int) -> Dict[str, Any]:
+    async def upload_file(self, file: UploadFile, user_id: uuid.UUID) -> Dict[str, Any]:
         """Upload and store a file."""
         try:
             # Create user-specific directory
@@ -242,7 +243,7 @@ class FileManagementService:
             logger.error(f"Error uploading file: {e}")
             return {"success": False, "error": str(e)}
     
-    async def upload_content(self, filename: str, content: str, user_id: int) -> Dict[str, Any]:
+    async def upload_content(self, filename: str, content: str, user_id: uuid.UUID) -> Dict[str, Any]:
         """Upload and store content as a file (for base64 data)."""
         try:
             # Create user-specific directory
@@ -275,7 +276,7 @@ class FileManagementService:
             logger.error(f"Error uploading content: {e}")
             return {"success": False, "error": str(e)}
     
-    async def download_file(self, filename: str, user_id: int) -> Dict[str, Any]:
+    async def download_file(self, filename: str, user_id: uuid.UUID) -> Dict[str, Any]:
         """Download a file by filename."""
         try:
             user_dir = self.upload_dir / str(user_id)
@@ -297,7 +298,7 @@ class FileManagementService:
             logger.error(f"Error downloading file: {e}")
             return {"success": False, "error": str(e)}
     
-    async def list_user_files(self, user_id: int) -> Dict[str, Any]:
+    async def list_user_files(self, user_id: uuid.UUID) -> Dict[str, Any]:
         """List all files for a user."""
         try:
             user_dir = self.upload_dir / str(user_id)
@@ -320,7 +321,7 @@ class FileManagementService:
             logger.error(f"Error listing files: {e}")
             return {"success": False, "error": str(e)}
     
-    async def delete_file(self, filename: str, user_id: int) -> Dict[str, Any]:
+    async def delete_file(self, filename: str, user_id: uuid.UUID) -> Dict[str, Any]:
         """Delete a file."""
         try:
             user_dir = self.upload_dir / str(user_id)

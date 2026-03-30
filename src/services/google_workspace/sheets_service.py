@@ -3,6 +3,7 @@ Sheets Service for Google Workspace Integration
 Handles spreadsheet operations including reading, writing, and formatting.
 """
 from typing import Dict, List, Any, Optional
+import uuid
 
 from .base_client import GoogleWorkspaceBaseClient
 
@@ -294,7 +295,7 @@ class SheetsService:
     async def create_chart(
         self,
         spreadsheet_id: str,
-        sheet_id: int,
+        sheet_id: uuid.UUID,
         chart_type: str,
         data_range: str,
         position: Dict[str, int]

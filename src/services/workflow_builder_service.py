@@ -6,6 +6,7 @@ import json
 import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
+import uuid
 
 from jinja2 import Template
 from sqlalchemy import delete, select, update
@@ -32,7 +33,7 @@ class WorkflowBuilderService:
         self.llm_service = LLMService()
         self.tool_executor = ToolExecutor()
         
-    async def create_workflow_from_nlp(self, user_id: int, description: str, db: AsyncSession, name: str = None) -> Workflow:
+    async def create_workflow_from_nlp(self, user_id: uuid.UUID, description: str, db: AsyncSession, name: str = None) -> Workflow:
         """
         Create a workflow from natural language description and save to database.
         """
@@ -88,7 +89,7 @@ class WorkflowBuilderService:
         
         return workflow
     
-    async def get_workflow(self, workflow_id: int, user_id: int, db: AsyncSession) -> Optional[Workflow]:
+    async def get_workflow(self, workflow_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession) -> Optional[Workflow]:
         """
         Get a workflow by ID for a specific user.
         """
@@ -100,7 +101,7 @@ class WorkflowBuilderService:
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
     
-    async def get_user_workflows(self, user_id: int, db: AsyncSession) -> List[Workflow]:
+    async def get_user_workflows(self, user_id: uuid.UUID, db: AsyncSession) -> List[Workflow]:
         """
         Get all workflows for a user.
         """
@@ -111,7 +112,7 @@ class WorkflowBuilderService:
         result = await db.execute(stmt)
         return result.scalars().all()
     
-    async def update_workflow(self, workflow_id: int, user_id: int, updates: Dict[str, Any], db: AsyncSession) -> Optional[Workflow]:
+    async def update_workflow(self, workflow_id: uuid.UUID, user_id: uuid.UUID, updates: Dict[str, Any], db: AsyncSession) -> Optional[Workflow]:
         """
         Update a workflow.
         """
@@ -165,7 +166,7 @@ class WorkflowBuilderService:
         await db.refresh(workflow)
         return workflow
     
-    async def delete_workflow(self, workflow_id: int, user_id: int, db: AsyncSession) -> bool:
+    async def delete_workflow(self, workflow_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession) -> bool:
         """
         Delete a workflow.
         """
@@ -178,7 +179,7 @@ class WorkflowBuilderService:
         return True
 
     @staticmethod
-    async def get_active_workflow_count(user_id: int, db: AsyncSession) -> int:
+    async def get_active_workflow_count(user_id: uuid.UUID, db: AsyncSession) -> int:
         """
         Count active workflows for a user.
         """
@@ -190,7 +191,7 @@ class WorkflowBuilderService:
         result = await db.execute(stmt)
         return result.scalar() or 0
     
-    async def _analyze_workflow_requirements(self, description: str, user_id: int, db: AsyncSession) -> List[Dict[str, Any]]:
+    async def _analyze_workflow_requirements(self, description: str, user_id: uuid.UUID, db: AsyncSession) -> List[Dict[str, Any]]:
         """
         Analyze natural language description to create workflow steps with conditional logic.
         """
@@ -352,7 +353,7 @@ class WorkflowBuilderService:
         
         return steps
     
-    async def execute_workflow(self, workflow_id: int, user_id: int, db: AsyncSession, input_data: Dict[str, Any] = None) -> WorkflowExecution:
+    async def execute_workflow(self, workflow_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession, input_data: Dict[str, Any] = None) -> WorkflowExecution:
         """
         Execute a workflow with enhanced conditional logic and variable substitution.
         """
@@ -531,7 +532,7 @@ class WorkflowBuilderService:
         except Exception:
             return None
     
-    async def _execute_workflow_step(self, step: WorkflowStep, execution_id: int, db: AsyncSession, context: Dict[str, Any] = None, user_id: int = None) -> WorkflowStepExecution:
+    async def _execute_workflow_step(self, step: WorkflowStep, execution_id: uuid.UUID, db: AsyncSession, context: Dict[str, Any] = None, user_id: uuid.UUID = None) -> WorkflowStepExecution:
         """
         Execute a single workflow step with variable substitution and enhanced error handling.
         """
@@ -712,7 +713,7 @@ class WorkflowBuilderService:
         if execution:
             await self._execute_workflow_step(step, step_execution.workflow_execution_id, db, context, execution.user_id)
     
-    async def get_workflow_executions(self, workflow_id: int, user_id: int, db: AsyncSession) -> List[WorkflowExecution]:
+    async def get_workflow_executions(self, workflow_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession) -> List[WorkflowExecution]:
         """
         Get all executions for a specific workflow.
         """
@@ -759,7 +760,7 @@ You have access to all the tools mentioned above. Execute the workflow step by s
         
         return prompt
     
-    async def create_workflow_template(self, name: str, description: str, steps: List[Dict[str, Any]], user_id: int, db: AsyncSession) -> Workflow:
+    async def create_workflow_template(self, name: str, description: str, steps: List[Dict[str, Any]], user_id: uuid.UUID, db: AsyncSession) -> Workflow:
         """
         Create a workflow template with conditional logic support.
         """

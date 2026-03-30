@@ -3,6 +3,7 @@ Connection management router for Mini-Hub.
 """
 
 from typing import Any, Dict
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -180,7 +181,7 @@ async def create_connection(
 
 @router.put("/{connection_id}")
 async def update_connection(
-    connection_id: int,
+    connection_id: uuid.UUID,
     connection_data: ConnectionUpdate,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
@@ -229,7 +230,7 @@ async def update_connection(
 
 @router.delete("/{connection_id}")
 async def delete_connection(
-    connection_id: int,
+    connection_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -266,7 +267,7 @@ async def delete_connection(
 
 @router.post("/{connection_id}/test")
 async def test_connection(
-    connection_id: int,
+    connection_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):

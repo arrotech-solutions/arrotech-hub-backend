@@ -121,20 +121,13 @@ async def seed_admin_user():
 
 
 async def init_db():
-    """Initialize database tables."""
-    eng = get_engine()
-    async with eng.begin() as conn:
-        # Import models to ensure they're registered with SQLAlchemy
-        from .models import Subscription, UsageLog, User  # noqa: F401
-        from .models import (  # noqa: F401
-            Organization, OrganizationMember, OrganizationInvitation,
-            Department, AuditLogEntry,
-        )
-
-        # Create all tables
-        await conn.run_sync(Base.metadata.create_all)
+    """Initialize database tables via Alembic and seed admin user."""
+    # We no longer run Base.metadata.create_all here. Tables are managed by Alembic.
     
-    # Seed admin user
+    # Import models to ensure they're registered with SQLAlchemy
+    from .models import Subscription, UsageLog, User, Organization, OrganizationMember, OrganizationInvitation, Department, AuditLogEntry  # noqa: F401
+
+    # Seed admin user AFTER migrator has created tables
     try:
         await seed_admin_user()
     except Exception as e:

@@ -2,6 +2,7 @@
 Database models for Mini-Hub MCP Server.
 """
 
+import uuid
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -9,6 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Numeric, Float
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -178,7 +180,7 @@ class User(Base):
     """User model."""
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
     name = Column(String, nullable=False)
     password_hash = Column(String, nullable=False)
@@ -217,8 +219,8 @@ class Conversation(Base):
     """Conversation model for chat sessions."""
     __tablename__ = "conversations"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     title = Column(String, nullable=True)  # Auto-generated from first message
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -235,8 +237,8 @@ class Message(Base):
     """Message model for chat messages."""
     __tablename__ = "messages"
 
-    id = Column(Integer, primary_key=True, index=True)
-    conversation_id = Column(Integer, ForeignKey(
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    conversation_id = Column(PG_UUID(as_uuid=True), ForeignKey(
         "conversations.id"), nullable=False)
     role = Column(String, nullable=False)  # user, assistant, system, tool
     content = Column(Text, nullable=False)
@@ -255,8 +257,8 @@ class Workflow(Base):
     """Workflow model for storing business automation workflows."""
     __tablename__ = "workflows"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     status = Column(String, default=WorkflowStatus.DRAFT)
@@ -297,8 +299,8 @@ class WorkflowStep(Base):
     """Workflow step model for individual workflow steps."""
     __tablename__ = "workflow_steps"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    workflow_id = Column(PG_UUID(as_uuid=True), ForeignKey("workflows.id"), nullable=False)
     step_number = Column(Integer, nullable=False)
     tool_name = Column(String, nullable=False)
     tool_parameters = Column(JSON, nullable=True)  # Parameters for the tool
@@ -318,9 +320,9 @@ class WorkflowExecution(Base):
     """Workflow execution model for tracking workflow runs."""
     __tablename__ = "workflow_executions"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    workflow_id = Column(PG_UUID(as_uuid=True), ForeignKey("workflows.id"), nullable=False)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     status = Column(String, default=WorkflowExecutionStatus.PENDING)
     trigger_type = Column(String, default=WorkflowTriggerType.MANUAL)
     trigger_data = Column(JSON, nullable=True)  # Data that triggered the execution
@@ -341,9 +343,9 @@ class WorkflowStepExecution(Base):
     """Workflow step execution model for tracking individual step runs."""
     __tablename__ = "workflow_step_executions"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workflow_execution_id = Column(Integer, ForeignKey("workflow_executions.id"), nullable=False)
-    step_id = Column(Integer, ForeignKey("workflow_steps.id"), nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    workflow_execution_id = Column(PG_UUID(as_uuid=True), ForeignKey("workflow_executions.id"), nullable=False)
+    step_id = Column(PG_UUID(as_uuid=True), ForeignKey("workflow_steps.id"), nullable=False)
     status = Column(String, default=WorkflowExecutionStatus.PENDING)
     input_data = Column(JSON, nullable=True)
     output_data = Column(JSON, nullable=True)
@@ -362,12 +364,12 @@ class WorkflowDownload(Base):
     """Tracks workflow downloads/imports by users."""
     __tablename__ = "workflow_downloads"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    workflow_id = Column(PG_UUID(as_uuid=True), ForeignKey("workflows.id"), nullable=False)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     downloaded_at = Column(DateTime(timezone=True), server_default=func.now())
     source_version = Column(Integer, default=1)  # Version at time of download
-    imported_workflow_id = Column(Integer, nullable=True)  # If user imported to their own workflows
+    imported_workflow_id = Column(PG_UUID(as_uuid=True), nullable=True)  # If user imported to their own workflows
 
     # Relationships
     workflow = relationship("Workflow", back_populates="downloads")
@@ -378,9 +380,9 @@ class WorkflowReview(Base):
     """User reviews for shared workflows."""
     __tablename__ = "workflow_reviews"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    workflow_id = Column(PG_UUID(as_uuid=True), ForeignKey("workflows.id"), nullable=False)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     rating = Column(Integer, nullable=False)  # 1-5 stars
     title = Column(String, nullable=True)
     comment = Column(Text, nullable=True)
@@ -397,8 +399,8 @@ class UserSettings(Base):
     """User settings model for storing user preferences and configurations."""
     __tablename__ = "user_settings"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"),
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"),
                      nullable=False, unique=True)
 
     # Notification Settings
@@ -456,8 +458,8 @@ class WebAuthnCredential(Base):
     """WebAuthn credentials (Passkeys) for a user."""
     __tablename__ = "webauthn_credentials"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     credential_id = Column(String, unique=True, index=True, nullable=False)
     public_key = Column(String, nullable=False)
     sign_count = Column(Integer, default=0)
@@ -474,8 +476,8 @@ class Connection(Base):
     """Connection model for marketing tool integrations."""
     __tablename__ = "connections"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     platform = Column(String, nullable=False)  # hubspot, ga4, slack
     name = Column(String, nullable=False)
     status = Column(String, default=ConnectionStatus.PENDING)
@@ -493,8 +495,8 @@ class Subscription(Base):
     """Subscription model."""
     __tablename__ = "subscriptions"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     stripe_subscription_id = Column(String, nullable=True)
     tier = Column(String, nullable=False)
     status = Column(String, default="active")
@@ -510,8 +512,8 @@ class UsageLog(Base):
     """Usage log model."""
     __tablename__ = "usage_logs"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     tool_name = Column(String, nullable=False)
     arguments = Column(Text, nullable=True)  # JSON string
     response_time_ms = Column(Integer, nullable=True)
@@ -530,8 +532,8 @@ class UsageRecord(Base):
     """
     __tablename__ = "usage_records"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     
     # Period tracking (monthly)
     period_start = Column(DateTime(timezone=True), nullable=False, index=True)
@@ -565,8 +567,8 @@ class Payment(Base):
     """Payment model for tracking transactions."""
     __tablename__ = "payments"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     payment_method = Column(String, nullable=False)  # mpesa, stripe
     amount = Column(Integer, nullable=False)  # Amount in cents
     currency = Column(String, default="KES")
@@ -585,8 +587,8 @@ class CreatorProfile(Base):
     """Creator profile for marketplace authors."""
     __tablename__ = "creator_profiles"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), unique=True, nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), unique=True, nullable=False)
     
     # Profile information
     display_name = Column(String, nullable=False)
@@ -628,8 +630,8 @@ class WorkflowVersion(Base):
     """Track workflow versions for updates and rollbacks."""
     __tablename__ = "workflow_versions"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workflow_id = Column(Integer, ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    workflow_id = Column(PG_UUID(as_uuid=True), ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False)
     version_number = Column(Integer, nullable=False)
     
     # Snapshot of workflow at this version
@@ -644,7 +646,7 @@ class WorkflowVersion(Base):
     is_breaking = Column(Boolean, default=False)  # Breaking changes flag
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_by = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
 
     # Relationships
     workflow = relationship("Workflow", back_populates="versions")
@@ -654,8 +656,8 @@ class WorkflowAnalytics(Base):
     """Analytics tracking for marketplace workflows."""
     __tablename__ = "workflow_analytics"
 
-    id = Column(Integer, primary_key=True, index=True)
-    workflow_id = Column(Integer, ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    workflow_id = Column(PG_UUID(as_uuid=True), ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False, index=True)
     
     # Daily aggregated metrics
     date = Column(DateTime(timezone=True), nullable=False, index=True)
@@ -701,8 +703,8 @@ class Notification(Base):
     """In-app notifications for users."""
     __tablename__ = "notifications"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     
     # Notification content
     notification_type = Column(String, nullable=False)
@@ -710,8 +712,8 @@ class Notification(Base):
     message = Column(Text, nullable=False)
     
     # Related entities
-    workflow_id = Column(Integer, ForeignKey("workflows.id", ondelete="SET NULL"), nullable=True)
-    actor_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)  # User who triggered
+    workflow_id = Column(PG_UUID(as_uuid=True), ForeignKey("workflows.id", ondelete="SET NULL"), nullable=True)
+    actor_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)  # User who triggered
     
     # Extra data
     extra_data = Column(JSON, nullable=True)  # Additional data (e.g., rating value, download count)
@@ -735,9 +737,9 @@ class WorkflowFavorite(Base):
     """User's favorite/bookmarked workflows."""
     __tablename__ = "workflow_favorites"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    workflow_id = Column(Integer, ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    workflow_id = Column(PG_UUID(as_uuid=True), ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
@@ -753,8 +755,8 @@ class UserPreferences(Base):
     """User preferences for notifications and app behavior."""
     __tablename__ = "user_preferences"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
     
     # Email notification preferences
     email_on_download = Column(Boolean, default=True)
@@ -786,9 +788,9 @@ class CreatorFollower(Base):
     """Follower relationship between users."""
     __tablename__ = "creator_followers"
 
-    id = Column(Integer, primary_key=True, index=True)
-    follower_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    following_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    follower_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    following_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Unique constraint: a user can only follow another user once
@@ -805,9 +807,9 @@ class ActivityFeedItem(Base):
     """Activity feed for followed creators."""
     __tablename__ = "activity_feed"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    actor_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    actor_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     
     # Activity type and content
     activity_type = Column(String, nullable=False)  # workflow_published, workflow_updated, milestone, etc.
@@ -815,7 +817,7 @@ class ActivityFeedItem(Base):
     description = Column(Text, nullable=True)
     
     # Related entities
-    workflow_id = Column(Integer, ForeignKey("workflows.id", ondelete="SET NULL"), nullable=True)
+    workflow_id = Column(PG_UUID(as_uuid=True), ForeignKey("workflows.id", ondelete="SET NULL"), nullable=True)
     
     # Extra data
     extra_data = Column(JSON, nullable=True)
@@ -832,8 +834,8 @@ class MpesaPayment(Base):
     """M-Pesa payment record for business reconciliation."""
     __tablename__ = "mpesa_payments"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     transaction_id = Column(String, unique=True, nullable=False, index=True)
     amount = Column(Numeric(10, 2), nullable=False)
     phone_number = Column(String(20), nullable=False)
@@ -841,7 +843,7 @@ class MpesaPayment(Base):
     description = Column(Text, nullable=True)
     transaction_time = Column(DateTime(timezone=True), nullable=False, index=True)
     status = Column(String, nullable=False, default="pending", index=True)  # pending, matched, unmatched, verified
-    matched_invoice_id = Column(Integer, nullable=True)
+    matched_invoice_id = Column(PG_UUID(as_uuid=True), nullable=True)
     match_confidence = Column(Float, nullable=True)
     channel = Column(String, nullable=True)
     
@@ -851,7 +853,7 @@ class MpesaPayment(Base):
     fraud_flags = Column(JSON, nullable=True)  # List of triggered fraud rules
     verification_status = Column(String, default="unverified")  # unverified, verified, failed
     locked_at = Column(DateTime(timezone=True), nullable=True)
-    locked_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    locked_by = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -865,8 +867,8 @@ class MpesaAgentConfig(Base):
     """M-Pesa agent configuration per user."""
     __tablename__ = "mpesa_agent_configs"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, unique=True, index=True)
     
     # Daraja API configuration (Tenant isolated)
     daraja_consumer_key = Column(String, nullable=True)
@@ -895,8 +897,8 @@ class Invoice(Base):
     """Invoice model for reconciliation."""
     __tablename__ = "invoices"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     invoice_number = Column(String, nullable=False)
     amount = Column(Numeric(10, 2), nullable=False)
     due_date = Column(DateTime(timezone=True), nullable=True)
@@ -925,9 +927,9 @@ class FraudSignal(Base):
     """Track fraud indicators for machine learning."""
     __tablename__ = "fraud_signals"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    payment_id = Column(Integer, ForeignKey("mpesa_payments.id"), nullable=True, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    payment_id = Column(PG_UUID(as_uuid=True), ForeignKey("mpesa_payments.id"), nullable=True, index=True)
     
     # Signal metadata
     signal_type = Column(String, index=True)  # duplicate, frequency, amount_anomaly, time_anomaly, staff_pattern
@@ -943,7 +945,7 @@ class FraudSignal(Base):
     
     # Human review
     is_false_positive = Column(Boolean, default=False, index=True)
-    reviewed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    reviewed_by = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     reviewed_at = Column(DateTime(timezone=True), nullable=True)
     
     # Action taken
@@ -960,7 +962,7 @@ class AccessRequest(Base):
     """Model for tracking early access/waitlist requests."""
     __tablename__ = "access_requests"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
     name = Column(String, nullable=True)
     status = Column(String, default=AccessRequestStatus.PENDING)
@@ -979,8 +981,8 @@ class WhatsAppContact(Base):
     """WhatsApp contact/customer model."""
     __tablename__ = "whatsapp_contacts"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     phone_number = Column(String, nullable=False, index=True)
     name = Column(String, nullable=True)  # User-assigned name
     profile_name = Column(String, nullable=True)  # From WhatsApp profile
@@ -1014,9 +1016,9 @@ class WhatsAppMessage(Base):
     """WhatsApp message model for conversation history."""
     __tablename__ = "whatsapp_messages"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    contact_id = Column(Integer, ForeignKey("whatsapp_contacts.id"), nullable=False, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    contact_id = Column(PG_UUID(as_uuid=True), ForeignKey("whatsapp_contacts.id"), nullable=False, index=True)
     
     # Message details
     direction = Column(String, nullable=False)  # incoming/outgoing
@@ -1035,7 +1037,7 @@ class WhatsAppMessage(Base):
     
     # Auto-reply tracking
     is_auto_reply = Column(Boolean, default=False)
-    auto_reply_rule_id = Column(Integer, ForeignKey("whatsapp_auto_replies.id"), nullable=True)
+    auto_reply_rule_id = Column(PG_UUID(as_uuid=True), ForeignKey("whatsapp_auto_replies.id"), nullable=True)
     
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -1056,8 +1058,8 @@ class WhatsAppAutoReply(Base):
     """Auto-reply rules for WhatsApp automation."""
     __tablename__ = "whatsapp_auto_replies"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     
     # Rule identification
     name = Column(String, nullable=False)  # "Welcome Message", "Price List", etc.
@@ -1099,8 +1101,8 @@ class WhatsAppBusinessProfile(Base):
     """Business profile for WhatsApp AI chatbot context."""
     __tablename__ = "whatsapp_business_profiles"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, unique=True)
     
     # Business info
     business_name = Column(String, nullable=True)
@@ -1144,8 +1146,8 @@ class WhatsAppTemplate(Base):
     """Cached WhatsApp message templates from Meta."""
     __tablename__ = "whatsapp_templates"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     
     # Template info from Meta
     template_id = Column(String, nullable=False)  # Meta's template ID
@@ -1178,8 +1180,8 @@ class WhatsAppBroadcast(Base):
     """Bulk message broadcast campaigns."""
     __tablename__ = "whatsapp_broadcasts"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     
     # Campaign info
     name = Column(String, nullable=False)
@@ -1187,7 +1189,7 @@ class WhatsAppBroadcast(Base):
     
     # Message content
     message_type = Column(String, default="template")  # template, text
-    template_id = Column(Integer, ForeignKey("whatsapp_templates.id"), nullable=True)
+    template_id = Column(PG_UUID(as_uuid=True), ForeignKey("whatsapp_templates.id"), nullable=True)
     template_variables = Column(JSON, nullable=True)  # Variables to replace in template
     text_content = Column(Text, nullable=True)  # For plain text broadcasts
     
@@ -1226,9 +1228,9 @@ class WhatsAppBroadcastRecipient(Base):
     """Individual recipient status in a broadcast."""
     __tablename__ = "whatsapp_broadcast_recipients"
 
-    id = Column(Integer, primary_key=True, index=True)
-    broadcast_id = Column(Integer, ForeignKey("whatsapp_broadcasts.id"), nullable=False)
-    contact_id = Column(Integer, ForeignKey("whatsapp_contacts.id"), nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    broadcast_id = Column(PG_UUID(as_uuid=True), ForeignKey("whatsapp_broadcasts.id"), nullable=False)
+    contact_id = Column(PG_UUID(as_uuid=True), ForeignKey("whatsapp_contacts.id"), nullable=False)
     
     # Status tracking
     status = Column(String, default="pending")  # pending, sent, delivered, read, failed
@@ -1284,8 +1286,8 @@ class TikTokProfile(Base):
     """TikTok creator profile."""
     __tablename__ = "tiktok_profiles"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), index=True)
     tiktok_user_id = Column(String, index=True)  # OpenID
     username = Column(String, index=True)
     display_name = Column(String)
@@ -1314,8 +1316,8 @@ class TikTokVideo(Base):
     """TikTok video content (posted or scheduled)."""
     __tablename__ = "tiktok_videos"
 
-    id = Column(Integer, primary_key=True, index=True)
-    profile_id = Column(Integer, ForeignKey("tiktok_profiles.id"), index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    profile_id = Column(PG_UUID(as_uuid=True), ForeignKey("tiktok_profiles.id"), index=True)
     tiktok_video_id = Column(String, nullable=True) # ID returned by TikTok API, e.g. "v_pub_file~..."
     
     # Content
@@ -1347,8 +1349,8 @@ class PremiumLink(Base):
     """Paywalled links for Link-in-Bio."""
     __tablename__ = "premium_links"
 
-    id = Column(Integer, primary_key=True, index=True)
-    profile_id = Column(Integer, ForeignKey("tiktok_profiles.id"), index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    profile_id = Column(PG_UUID(as_uuid=True), ForeignKey("tiktok_profiles.id"), index=True)
     
     title = Column(String, nullable=False)
     url = Column(String, nullable=False) # The content URL (hidden until paid)
@@ -1370,9 +1372,9 @@ class CreatorTransaction(Base):
     """Track transactions from premium link sales (revenue split ledger)."""
     __tablename__ = "creator_transactions"
 
-    id = Column(Integer, primary_key=True, index=True)
-    profile_id = Column(Integer, ForeignKey("tiktok_profiles.id"), index=True)
-    premium_link_id = Column(Integer, ForeignKey("premium_links.id"), nullable=True, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    profile_id = Column(PG_UUID(as_uuid=True), ForeignKey("tiktok_profiles.id"), index=True)
+    premium_link_id = Column(PG_UUID(as_uuid=True), ForeignKey("premium_links.id"), nullable=True, index=True)
     
     # Payment details
     paystack_reference = Column(String, unique=True, nullable=True, index=True)
@@ -1400,8 +1402,8 @@ class TipTransaction(Base):
     """Tip/donation transactions from fans to creators."""
     __tablename__ = "tip_transactions"
 
-    id = Column(Integer, primary_key=True, index=True)
-    profile_id = Column(Integer, ForeignKey("tiktok_profiles.id"), index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    profile_id = Column(PG_UUID(as_uuid=True), ForeignKey("tiktok_profiles.id"), index=True)
     
     # Fan info
     fan_email = Column(String, nullable=True)
@@ -1427,8 +1429,8 @@ class LinkClickAnalytics(Base):
     """Track clicks and views on premium links for analytics."""
     __tablename__ = "link_click_analytics"
 
-    id = Column(Integer, primary_key=True, index=True)
-    premium_link_id = Column(Integer, ForeignKey("premium_links.id"), index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    premium_link_id = Column(PG_UUID(as_uuid=True), ForeignKey("premium_links.id"), index=True)
     
     # Event type
     event_type = Column(String, nullable=False)  # "view", "click", "purchase"
@@ -1454,8 +1456,8 @@ class FanContact(Base):
     """Collected fan contacts from purchases and tips."""
     __tablename__ = "fan_contacts"
 
-    id = Column(Integer, primary_key=True, index=True)
-    profile_id = Column(Integer, ForeignKey("tiktok_profiles.id"), index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    profile_id = Column(PG_UUID(as_uuid=True), ForeignKey("tiktok_profiles.id"), index=True)
     
     # Contact info
     email = Column(String, nullable=False)
@@ -1464,7 +1466,7 @@ class FanContact(Base):
     
     # Source tracking
     source_type = Column(String, nullable=False)  # "premium_link", "tip", "subscription"
-    source_link_id = Column(Integer, ForeignKey("premium_links.id"), nullable=True)
+    source_link_id = Column(PG_UUID(as_uuid=True), ForeignKey("premium_links.id"), nullable=True)
     
     # Engagement stats
     total_spent = Column(Numeric(10, 2), default=0.0)  # Total KES spent
@@ -1487,7 +1489,7 @@ class BlogCategory(Base):
     """Blog category model."""
     __tablename__ = "blog_categories"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     name = Column(String, nullable=False, unique=True)
     slug = Column(String, nullable=False, unique=True, index=True)
     description = Column(Text, nullable=True)
@@ -1503,7 +1505,7 @@ class BlogPostModel(Base):
     """Blog post model for company blog."""
     __tablename__ = "blog_posts"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     slug = Column(String, unique=True, nullable=False, index=True)
     title = Column(String, nullable=False)
     description = Column(Text, nullable=False)
@@ -1511,7 +1513,7 @@ class BlogPostModel(Base):
     cover_image = Column(String, nullable=True)
     author_name = Column(String, nullable=False)
     author_avatar = Column(String, nullable=True)
-    category_id = Column(Integer, ForeignKey("blog_categories.id"), nullable=True)
+    category_id = Column(PG_UUID(as_uuid=True), ForeignKey("blog_categories.id"), nullable=True)
     tags = Column(JSON, nullable=True)
     status = Column(String, default="draft")  # draft, published, archived
     is_featured = Column(Boolean, default=False)
@@ -1534,7 +1536,7 @@ class Organization(Base):
     """Organization model for company/team onboarding."""
     __tablename__ = "organizations"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     name = Column(String, nullable=False)
     slug = Column(String, unique=True, nullable=False, index=True)
     logo_url = Column(String, nullable=True)
@@ -1546,7 +1548,7 @@ class Organization(Base):
     subscription_tier = Column(String, default=SubscriptionTier.FREE)
     settings = Column(JSON, nullable=True)  # Org-level settings and config
     is_active = Column(Boolean, default=True)
-    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_by = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -1562,11 +1564,11 @@ class OrganizationMember(Base):
     """Membership link between users and organizations."""
     __tablename__ = "organization_members"
 
-    id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    org_id = Column(PG_UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     role = Column(String, default=OrgRole.MEMBER, nullable=False)
-    department_id = Column(Integer, ForeignKey("departments.id", ondelete="SET NULL"), nullable=True)
+    department_id = Column(PG_UUID(as_uuid=True), ForeignKey("departments.id", ondelete="SET NULL"), nullable=True)
     title = Column(String, nullable=True)  # e.g. "Engineering Lead"
     is_active = Column(Boolean, default=True)
     joined_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -1587,11 +1589,11 @@ class OrganizationInvitation(Base):
     """Pending invitations to join an organization."""
     __tablename__ = "organization_invitations"
 
-    id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    org_id = Column(PG_UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     email = Column(String, nullable=False)
     role = Column(String, default=OrgRole.MEMBER, nullable=False)
-    invited_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    invited_by = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     token = Column(String, unique=True, nullable=False, index=True)
     status = Column(String, default=OrgInvitationStatus.PENDING, nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=False)
@@ -1610,11 +1612,11 @@ class Department(Base):
     """Departments within an organization."""
     __tablename__ = "departments"
 
-    id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    org_id = Column(PG_UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
-    head_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    head_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -1632,9 +1634,9 @@ class AuditLogEntry(Base):
     """Immutable audit log for organization actions."""
     __tablename__ = "audit_log"
 
-    id = Column(Integer, primary_key=True, index=True)
-    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
-    actor_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    org_id = Column(PG_UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    actor_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     action = Column(String, nullable=False)  # e.g. "member.added", "org.updated"
     entity_type = Column(String, nullable=True)  # e.g. "member", "department"
     entity_id = Column(String, nullable=True)  # ID of affected entity
@@ -1655,8 +1657,8 @@ class DeveloperApp(Base):
     """Developer Application model for API access."""
     __tablename__ = "developer_apps"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     client_id = Column(String, unique=True, index=True, nullable=False)
@@ -1677,9 +1679,9 @@ class AuthorizationCode(Base):
     """Temporary codes for 3-legged OAuth flow."""
     __tablename__ = "authorization_codes"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    app_id = Column(Integer, ForeignKey("developer_apps.id"), nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    app_id = Column(PG_UUID(as_uuid=True), ForeignKey("developer_apps.id"), nullable=False)
     code = Column(String, unique=True, index=True, nullable=False)
     redirect_uri = Column(String, nullable=False)
     scopes = Column(JSON, nullable=True)
@@ -1695,9 +1697,9 @@ class AppToken(Base):
     """Refresh tokens and metadata for app authentication."""
     __tablename__ = "app_tokens"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # Nullable for 2-legged flow
-    app_id = Column(Integer, ForeignKey("developer_apps.id"), nullable=False)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)  # Nullable for 2-legged flow
+    app_id = Column(PG_UUID(as_uuid=True), ForeignKey("developer_apps.id"), nullable=False)
     refresh_token = Column(String, unique=True, index=True, nullable=True)
     scopes = Column(JSON, nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=True)

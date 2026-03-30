@@ -6,6 +6,7 @@ Handles bulk messaging campaigns and template management.
 import logging
 from datetime import datetime
 from typing import List, Optional
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel
@@ -30,7 +31,7 @@ router = APIRouter(prefix="/api/whatsapp", tags=["whatsapp-broadcast"])
 # ============== Pydantic Schemas ==============
 
 class TemplateResponse(BaseModel):
-    id: int
+    id: uuid.UUID
     template_id: str
     name: str
     language: str
@@ -48,7 +49,7 @@ class BroadcastCreate(BaseModel):
     name: str
     description: Optional[str] = None
     message_type: str = "template"  # template or text
-    template_id: Optional[int] = None
+    template_id: Optional[uuid.UUID] = None
     template_variables: Optional[dict] = None
     text_content: Optional[str] = None
     target_type: str = "all"  # all, tag, selected
@@ -58,11 +59,11 @@ class BroadcastCreate(BaseModel):
 
 
 class BroadcastResponse(BaseModel):
-    id: int
+    id: uuid.UUID
     name: str
     description: Optional[str]
     message_type: str
-    template_id: Optional[int]
+    template_id: Optional[uuid.UUID]
     target_type: str
     target_tag: Optional[str]
     status: str
@@ -259,7 +260,7 @@ async def create_broadcast(
 
 @router.get("/broadcasts/{broadcast_id}", response_model=dict)
 async def get_broadcast(
-    broadcast_id: int,
+    broadcast_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -277,7 +278,7 @@ async def get_broadcast(
 
 @router.post("/broadcasts/{broadcast_id}/send", response_model=dict)
 async def send_broadcast(
-    broadcast_id: int,
+    broadcast_id: uuid.UUID,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -315,7 +316,7 @@ async def send_broadcast(
 
 @router.post("/broadcasts/{broadcast_id}/cancel", response_model=dict)
 async def cancel_broadcast(
-    broadcast_id: int,
+    broadcast_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -343,7 +344,7 @@ async def cancel_broadcast(
 
 @router.delete("/broadcasts/{broadcast_id}", response_model=dict)
 async def delete_broadcast(
-    broadcast_id: int,
+    broadcast_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -367,7 +368,7 @@ async def delete_broadcast(
 
 @router.get("/broadcasts/{broadcast_id}/recipients", response_model=dict)
 async def get_broadcast_recipients(
-    broadcast_id: int,
+    broadcast_id: uuid.UUID,
     status: Optional[str] = None,
     limit: int = Query(default=50, le=200),
     offset: int = 0,
@@ -415,7 +416,7 @@ async def get_broadcast_recipients(
 
 async def _count_broadcast_recipients(
     db: AsyncSession,
-    user_id: int,
+    user_id: uuid.UUID,
     data: BroadcastCreate
 ) -> int:
     """Count potential recipients for a broadcast."""
@@ -435,7 +436,7 @@ async def _count_broadcast_recipients(
     return result.scalar() or 0
 
 
-async def _execute_broadcast(broadcast_id: int, user_id: int):
+async def _execute_broadcast(broadcast_id: uuid.UUID, user_id: uuid.UUID):
     """Background task to execute broadcast sending."""
     from ..database import AsyncSessionLocal
     

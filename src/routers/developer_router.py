@@ -5,6 +5,7 @@ Allows users to create and manage their own developer apps.
 
 import secrets
 from typing import List, Optional
+import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -37,7 +38,7 @@ class DeveloperAppUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 class DeveloperAppRead(DeveloperAppBase):
-    id: int
+    id: uuid.UUID
     client_id: str
     is_active: bool
     created_at: datetime
@@ -104,7 +105,7 @@ async def list_apps(
 
 @router.get("/{app_id}")
 async def get_app(
-    app_id: int,
+    app_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -125,7 +126,7 @@ async def get_app(
 
 @router.patch("/{app_id}")
 async def update_app(
-    app_id: int,
+    app_id: uuid.UUID,
     app_update: DeveloperAppUpdate,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
@@ -154,7 +155,7 @@ async def update_app(
 
 @router.post("/{app_id}/rotate-secret")
 async def rotate_secret(
-    app_id: int,
+    app_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -184,7 +185,7 @@ async def rotate_secret(
 
 @router.delete("/{app_id}")
 async def delete_app(
-    app_id: int,
+    app_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
