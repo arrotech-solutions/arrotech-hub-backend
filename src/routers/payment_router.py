@@ -776,7 +776,8 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         
         if metadata.get('type') == 'workflow_purchase':
             workflow_id = int(metadata.get('workflow_id'))
-            user_id = int(metadata.get('user_id'))
+            import uuid
+            user_id = uuid.UUID(metadata.get('user_id'))
             
             # Update payment status
             result = await db.execute(

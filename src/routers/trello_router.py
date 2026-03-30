@@ -100,7 +100,8 @@ async def oauth_callback(
         if not request_token_secret or not user_id_str:
              return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error=Invalid or expired session command")
 
-        user_id = int(user_id_str)
+        import uuid
+        user_id = uuid.UUID(user_id_str)
         
         # Clean up store
         del request_token_store[oauth_token]

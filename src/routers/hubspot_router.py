@@ -103,7 +103,8 @@ async def oauth_callback(
             )
 
         try:
-            user_id = int(state.replace("user_", ""))
+            import uuid
+            user_id = uuid.UUID(state.replace("user_", ""))
         except ValueError:
             return RedirectResponse(
                 url=f"{FRONTEND_URL}?error=Invalid+state+format",

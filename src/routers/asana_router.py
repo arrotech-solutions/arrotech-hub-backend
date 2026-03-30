@@ -48,7 +48,8 @@ async def callback(code: str, state: str = None):
                 # Expected format: "asana_connection::{user_id}"
                 parts = state.split("::")
                 if len(parts) == 2:
-                    system_user_id = int(parts[1])
+                    import uuid
+                    system_user_id = uuid.UUID(parts[1])
             except ValueError:
                 logger.warning(f"Invalid user_id in state: {state}")
         

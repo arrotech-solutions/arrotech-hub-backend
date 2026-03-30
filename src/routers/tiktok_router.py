@@ -83,7 +83,8 @@ async def oauth_callback(
 
     service = TikTokService(db)
     try:
-        user_id = int(state)
+        import uuid
+        user_id = uuid.UUID(state)
         redirect_uri = f"{settings.API_BASE_URL}/api/tiktok/callback"
         
         # 1. Exchange Code

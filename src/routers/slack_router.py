@@ -93,7 +93,8 @@ async def oauth_callback(
             raise HTTPException(status_code=400, detail="Invalid state parameter")
         
         try:
-            user_id = int(state.replace("user_", ""))
+            import uuid
+            user_id = uuid.UUID(state.replace("user_", ""))
         except ValueError:
              raise HTTPException(status_code=400, detail="Invalid state parameter format")
 
