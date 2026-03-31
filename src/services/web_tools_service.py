@@ -30,6 +30,13 @@ except ImportError:
     SELENIUM_AVAILABLE = False
     print("Warning: Selenium not available. Advanced web scraping features will be disabled.")
 
+try:
+    from duckduckgo_search import DDGS
+    DDG_AVAILABLE = True
+except ImportError:
+    DDG_AVAILABLE = False
+    print("Warning: duckduckgo-search not available. Live web search will be disabled.")
+
 logger = logging.getLogger(__name__)
 
 
@@ -944,6 +951,42 @@ class WebToolsService:
             logger.error(f"Error extracting emails from {url}: {e}")
             return {"success": False, "error": str(e)}
     
+    async def perform_web_search(self, query: str, max_results: int = 5) -> Dict[str, Any]:
+        """Perform a live web search using DuckDuckGo."""
+        if not DDG_AVAILABLE:
+            return {
+                "success": False,
+                "error": "duckduckgo-search package is not installed. Live web search is disabled."
+            }
+            
+        try:
+            # duckduckgo_search offers sync methods, so we run it in a thread pool
+            loop = asyncio.get_event_loop()
+            
+            def _sync_search():
+                results = []
+                with DDGS() as ddgs:
+                    for r in ddgs.text(query, max_results=max_results):
+                        results.append(r)
+                return results
+                
+            search_results = await loop.run_in_executor(None, _sync_search)
+            
+            return {
+                "success": True,
+                "query": query,
+                "max_results": max_results,
+                "sources": search_results,
+                "timestamp": time.time()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error performing web search for query '{query}': {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
     async def close(self):
         """Close the service and cleanup resources."""
         if self.session and not self.session.closed:
