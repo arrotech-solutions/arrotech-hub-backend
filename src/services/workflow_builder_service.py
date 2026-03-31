@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Union
 import uuid
 
 from jinja2 import Template
+from jinja2.sandbox import SandboxedEnvironment
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -637,11 +638,15 @@ class WorkflowBuilderService:
             return parameters
         
         substituted = {}
+        # Create a sandboxed environment to prevent Server-Side Template Injection (SSTI)
+        # RCE vulnerabilities from untrusted user/agent generated prompts
+        env = SandboxedEnvironment()
+        
         for key, value in parameters.items():
             if isinstance(value, str) and "{{" in value:
                 try:
-                    # Use Jinja2 for robust expression evaluation (e.g. {{ a if b else c }})
-                    template = Template(value)
+                    # Use SandboxedEnvironment for safe expression evaluation
+                    template = env.from_string(value)
                     # Use render to get string result
                     rendered = template.render(**context)
                     # Handle cases where Jinja returns 'None' for missing attributes in some contexts
@@ -660,7 +665,7 @@ class WorkflowBuilderService:
                         new_list.append(self._substitute_variables(item, context))
                     elif isinstance(item, str) and "{{" in item:
                         try:
-                            template = Template(item)
+                            template = env.from_string(item)
                             new_list.append(template.render(**context))
                         except Exception:
                             new_list.append(item)
