@@ -965,9 +965,32 @@ class WebToolsService:
             
             def _sync_search():
                 results = []
-                with DDGS() as ddgs:
-                    for r in ddgs.text(query, max_results=max_results):
-                        results.append(r)
+                # Try primary backend (usually 'api')
+                try:
+                    with DDGS() as ddgs:
+                        for r in ddgs.text(query, max_results=max_results):
+                            results.append(r)
+                except Exception as e:
+                    logger.warning(f"DDGS primary backend failed: {e}")
+                
+                # Fallback 1: Try 'html' backend if primary returned empty or failed
+                if not results:
+                    try:
+                        with DDGS() as ddgs:
+                            for r in ddgs.text(query, max_results=max_results, backend='html'):
+                                results.append(r)
+                    except Exception as e:
+                        logger.warning(f"DDGS html backend failed: {e}")
+                
+                # Fallback 2: Try 'lite' backend
+                if not results:
+                    try:
+                        with DDGS() as ddgs:
+                            for r in ddgs.text(query, max_results=max_results, backend='lite'):
+                                results.append(r)
+                    except Exception as e:
+                        logger.warning(f"DDGS lite backend failed: {e}")
+                
                 return results
                 
             search_results = await loop.run_in_executor(None, _sync_search)
