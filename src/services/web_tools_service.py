@@ -972,14 +972,29 @@ class WebToolsService:
                         if response.status == 200:
                             data = await response.json()
                             results = data.get("results", [])
-                            mapped_sources = [
-                                {
+                            mapped_sources = []
+                            for r in results:
+                                url = r.get("url", "")
+                                domain = ""
+                                favicon = None
+                                if url:
+                                    try:
+                                        from urllib.parse import urlparse
+                                        domain = urlparse(url).netloc
+                                        if domain.startswith("www."):
+                                            domain = domain[4:]
+                                        favicon = f"https://www.google.com/s2/favicons?domain={domain}&sz=64"
+                                    except Exception:
+                                        pass
+                                        
+                                mapped_sources.append({
                                     "title": r.get("title", ""),
-                                    "href": r.get("url", ""),
-                                    "body": r.get("content", "")
-                                } 
-                                for r in results
-                            ]
+                                    "url": url,
+                                    "snippet": r.get("content", ""),
+                                    "domain": domain,
+                                    "favicon": favicon
+                                })
+                                
                             return {
                                 "success": True,
                                 "query": query,
@@ -1038,7 +1053,30 @@ class WebToolsService:
                     except Exception as e:
                         logger.warning(f"DDGS lite backend failed: {e}")
                 
-                return results
+                mapped_results = []
+                for r in results:
+                    url = r.get("href", "")
+                    domain = ""
+                    favicon = None
+                    if url:
+                        try:
+                            from urllib.parse import urlparse
+                            domain = urlparse(url).netloc
+                            if domain.startswith("www."):
+                                domain = domain[4:]
+                            favicon = f"https://www.google.com/s2/favicons?domain={domain}&sz=64"
+                        except Exception:
+                            pass
+                            
+                    mapped_results.append({
+                        "title": r.get("title", ""),
+                        "url": url,
+                        "snippet": r.get("body", ""),
+                        "domain": domain,
+                        "favicon": favicon
+                    })
+                    
+                return mapped_results
                 
             search_results = await loop.run_in_executor(None, _sync_search)
             
