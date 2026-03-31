@@ -89,9 +89,57 @@ class WebToolsService:
         
         return self.driver
     
+    def _is_safe_url(self, url: str) -> bool:
+        """Validate URL to prevent Server-Side Request Forgery (SSRF)."""
+        import socket
+        import ipaddress
+        from urllib.parse import urlparse
+        
+        try:
+            parsed = urlparse(url)
+            # Only allow HTTP/HTTPS, block file://, ftp:// etc.
+            if parsed.scheme not in ('http', 'https'):
+                logger.warning(f"SSRF blocked: Invalid scheme {parsed.scheme}")
+                return False
+                
+            hostname = parsed.hostname
+            if not hostname:
+                return False
+                
+            # Prevent simple localhost bypasses
+            if hostname.lower() in ('localhost', '127.0.0.1', '0.0.0.0', '[::1]'):
+                logger.warning(f"SSRF blocked: localhost request")
+                return False
+                
+            # Resolve the hostname to an IP to check if it points internally
+            ip_addr = socket.gethostbyname(hostname)
+            ip = ipaddress.ip_address(ip_addr)
+            
+            # Check if it's a private, loopback, link-local, or multicast address
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast:
+                logger.warning(f"SSRF blocked: Private IP address {ip}")
+                return False
+                
+            # Explicitly block AWS/GCP/Azure instance metadata endpoints
+            if str(ip) == "169.254.169.254":
+                logger.warning(f"SSRF blocked: Cloud metadata service request")
+                return False
+                
+            return True
+        except socket.gaierror:
+            # Domain could not be resolved
+            return False
+        except Exception as e:
+            logger.warning(f"URL validation failed for {url}: {e}")
+            return False
+
     async def scrape_website_robust(self, url: str, use_selenium: bool = True) -> Dict[str, Any]:
         """Production-ready website scraping with multiple strategies."""
         try:
+            # Prevent Server-Side Request Forgery (SSRF) BEFORE making any HTTP request
+            if not self._is_safe_url(url):
+                return {"success": False, "error": f"URL {url} is not allowed or could not be resolved (SSRF protection activated)"}
+                
             logger.info(f"Starting robust scraping of: {url}")
             
             # Strategy 1: Try basic HTTP scraping first
@@ -380,7 +428,7 @@ class WebToolsService:
             structured_data["opengraph"][property_name] = meta.get('content', '')
         
         # Twitter Cards
-        for meta in soup.find_all('meta', name=re.compile(r'^twitter:')):
+        for meta in soup.find_all('meta', attrs={'name': re.compile(r'^twitter:')}):
             property_name = meta.get('name', '').replace('twitter:', '')
             structured_data["twitter_cards"][property_name] = meta.get('content', '')
         
@@ -606,6 +654,10 @@ class WebToolsService:
     async def extract_structured_data(self, url: str) -> Dict[str, Any]:
         """Extract structured data (JSON-LD, microdata) from a website."""
         try:
+            # Prevent Server-Side Request Forgery (SSRF)
+            if not self._is_safe_url(url):
+                return {"success": False, "error": f"URL {url} is not allowed (SSRF protection activated)"}
+                
             session = await self._get_session()
             
             async with session.get(url) as response:
@@ -655,7 +707,7 @@ class WebToolsService:
                     structured_data["opengraph"][property_name] = tag.get('content', '')
                 
                 # Extract Twitter Cards
-                twitter_tags = soup.find_all('meta', name=re.compile(r'^twitter:'))
+                twitter_tags = soup.find_all('meta', attrs={'name': re.compile(r'^twitter:')})
                 for tag in twitter_tags:
                     property_name = tag.get('name', '').replace('twitter:', '')
                     structured_data["twitter_cards"][property_name] = tag.get('content', '')
@@ -768,6 +820,11 @@ class WebToolsService:
             }
         
         try:
+            target_url = task_config.get("url", "")
+            # Prevent Server-Side Request Forgery (SSRF)
+            if not target_url or not self._is_safe_url(target_url):
+                return {"success": False, "error": f"URL {target_url} is not allowed (SSRF protection activated)"}
+                
             # Initialize Chrome driver
             chrome_options = Options()
             chrome_options.add_argument("--headless")
