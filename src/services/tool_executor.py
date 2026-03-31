@@ -197,6 +197,8 @@ class ToolExecutor:
                 return await self._execute_file_management_tool(arguments, user, db, getattr(self, '_tools_called', []))
             elif tool_name == "web_tools":
                 return await self._execute_web_tools_tool(arguments, user, db)
+            elif tool_name == "web_search":
+                return await self._execute_web_search_tool(arguments, user, db)
             elif tool_name == "content_creation":
                 return await self._execute_content_creation_tool(arguments, user, db)
             elif tool_name == "mpesa_payment_reconciliation":
@@ -4735,6 +4737,29 @@ class ToolExecutor:
                 }
         except Exception as e:
             logger.error(f"Error executing web tools: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_web_search_tool(self, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute web search using DuckDuckGo."""
+        try:
+            from .web_tools_service import web_tools_service
+            
+            query = arguments.get("query")
+            if not query:
+                return {
+                    "success": False,
+                    "error": "Missing required 'query' parameter for web search"
+                }
+                
+            max_results = arguments.get("max_results", 5)
+            
+            return await web_tools_service.perform_web_search(
+                query=query, 
+                max_results=max_results
+            )
+            
+        except Exception as e:
+            logger.error(f"Error executing web search: {e}")
             return {"success": False, "error": str(e)}
 
     async def _execute_content_creation_tool(self, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
