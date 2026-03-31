@@ -148,6 +148,7 @@ class BaseConfig(BaseSettings):
     HUGGINGFACE_API_KEY: Optional[str] = None
     TOGETHER_API_KEY: Optional[str] = None
     ANTHROPIC_API_KEY: Optional[str] = None
+    TAVILY_API_KEY: Optional[str] = None
 
     # Zoho Configuration
     ZOHO_CLIENT_ID: Optional[str] = None

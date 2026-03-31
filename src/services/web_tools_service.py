@@ -16,6 +16,8 @@ import aiohttp
 import shortuuid
 from bs4 import BeautifulSoup
 
+from ..config import settings
+
 # Try to import Selenium, but make it optional
 try:
     from selenium import webdriver
@@ -952,11 +954,56 @@ class WebToolsService:
             return {"success": False, "error": str(e)}
     
     async def perform_web_search(self, query: str, max_results: int = 5) -> Dict[str, Any]:
-        """Perform a live web search using DuckDuckGo."""
+        """Perform a live web search using Tavily API (if available) or DuckDuckGo fallback."""
+        
+        tavily_key = settings.TAVILY_API_KEY
+        if tavily_key:
+            try:
+                # Prioritize Tavily API for highly reliable LLM-optimized search
+                async with aiohttp.ClientSession() as session:
+                    payload = {
+                        "api_key": tavily_key,
+                        "query": query,
+                        "search_depth": "basic",
+                        "include_answer": False,
+                        "max_results": max_results
+                    }
+                    async with session.post("https://api.tavily.com/search", json=payload) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            results = data.get("results", [])
+                            mapped_sources = [
+                                {
+                                    "title": r.get("title", ""),
+                                    "href": r.get("url", ""),
+                                    "body": r.get("content", "")
+                                } 
+                                for r in results
+                            ]
+                            return {
+                                "success": True,
+                                "query": query,
+                                "max_results": max_results,
+                                "sources": mapped_sources,
+                                "timestamp": time.time(),
+                                "provider": "tavily"
+                            }
+                        else:
+                            error_text = await response.text()
+                            logger.error(f"Tavily API returned status {response.status}: {error_text}")
+                            # Fall through to DuckDuckGo backup
+            except Exception as e:
+                logger.error(f"Tavily API call failed, falling back to DuckDuckGo: {e}")
+                
         if not DDG_AVAILABLE:
+            if tavily_key:
+                return {
+                    "success": False,
+                    "error": "Tavily API search failed and DuckDuckGo is not available."
+                }
             return {
                 "success": False,
-                "error": "duckduckgo-search package is not installed. Live web search is disabled."
+                "error": "duckduckgo-search package is not installed and TAVILY_API_KEY is missing. Live web search is disabled."
             }
             
         try:
@@ -994,6 +1041,13 @@ class WebToolsService:
                 return results
                 
             search_results = await loop.run_in_executor(None, _sync_search)
+            
+            # If all backends return empty, DuckDuckGo has blocked the datacenter IP
+            if not search_results:
+                return {
+                    "success": False,
+                    "error": "Search failed: DuckDuckGo is actively blocking search requests from this server's datacenter IP (Railway/Cloud). For production environments, please integrate a dedicated search API (e.g., Google Custom Search, SERP API, or Tavily)."
+                }
             
             return {
                 "success": True,
