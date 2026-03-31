@@ -1485,6 +1485,7 @@ async def send_message_stream(
         accumulated_reasoning = ""
         tools_called_final = []
         tokens_used_final = 0
+        message_saved = False
         
         try:
             async for event in orchestrator.process_message_stream(
@@ -1510,25 +1511,31 @@ async def send_message_stream(
                 yield f"data: {json.dumps(event)}\n\n"
             
             # Save final assistant message to DB
-            content_to_save = accumulated_content
-            if accumulated_reasoning:
-                content_to_save = f"<think>\n{accumulated_reasoning}\n</think>\n\n{accumulated_content}"
+            try:
+                content_to_save = accumulated_content
+                if accumulated_reasoning:
+                    content_to_save = f"<think>\n{accumulated_reasoning}\n</think>\n\n{accumulated_content}"
 
-            if content_to_save:
-                assistant_message = Message(
-                    conversation_id=conversation_id,
-                    role=MessageRole.ASSISTANT,
-                    content=content_to_save,
-                    status=MessageStatus.COMPLETED,
-                    tools_called=tools_called_final if tools_called_final else None,
-                    tokens_used=tokens_used_final
-                )
-                db.add(assistant_message)
-                await db.commit()
-                await db.refresh(assistant_message)
-                
-                # Send the message_id back to the client in a final event
-                yield f"data: {json.dumps({'type': 'message_saved', 'message_id': assistant_message.id})}\n\n"
+                if content_to_save:
+                    assistant_message = Message(
+                        conversation_id=conversation_id,
+                        role=MessageRole.ASSISTANT,
+                        content=content_to_save,
+                        status=MessageStatus.COMPLETED,
+                        tools_called=tools_called_final if tools_called_final else None,
+                        tokens_used=tokens_used_final
+                    )
+                    db.add(assistant_message)
+                    await db.commit()
+                    await db.refresh(assistant_message)
+                    message_saved = True
+                    
+                    # Send the message_id back to the client in a final event
+                    yield f"data: {json.dumps({'type': 'message_saved', 'message_id': assistant_message.id})}\n\n"
+            except Exception as save_err:
+                print(f"⚠️ Error saving streamed message to DB: {save_err}")
+                # Content was already streamed to the client, so don't send an error event
+                # The user already saw the response
         
         except Exception as e:
             print(f"❌ SSE stream error: {e}")
@@ -1536,16 +1543,20 @@ async def send_message_stream(
             print(f"❌ Traceback: {traceback.format_exc()}")
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
             
-            # Save error message to DB
-            error_msg = Message(
-                conversation_id=conversation_id,
-                role=MessageRole.ASSISTANT,
-                content="I apologize, but I encountered an issue processing your request. Please try again.",
-                status=MessageStatus.COMPLETED,
-                error_message=str(e)
-            )
-            db.add(error_msg)
-            await db.commit()
+            # Only save an error message if we didn't already save a successful one
+            if not message_saved:
+                try:
+                    error_msg = Message(
+                        conversation_id=conversation_id,
+                        role=MessageRole.ASSISTANT,
+                        content="I apologize, but I encountered an issue processing your request. Please try again.",
+                        status=MessageStatus.COMPLETED,
+                        error_message=str(e)
+                    )
+                    db.add(error_msg)
+                    await db.commit()
+                except Exception as db_err:
+                    print(f"⚠️ Failed to save error message: {db_err}")
 
     return StreamingResponse(
         event_generator(),
