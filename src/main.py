@@ -448,6 +448,7 @@ async def run_mcp_server():
                         "operation": {"type": "string", "enum": ["scrape_website", "extract_data", "generate_short_link", "generate_tracking_link", "automate_task", "check_status", "extract_emails"]},
                         "url": {"type": "string"},
                         "selectors": {"type": "object"},
+                        "use_selenium": {"type": "boolean", "description": "Use full headless browser (slower but loads JS)"},
                         "original_url": {"type": "string"},
                         "custom_alias": {"type": "string"},
                         "campaign": {"type": "string"},
