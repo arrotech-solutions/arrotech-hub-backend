@@ -613,6 +613,39 @@ class DynamicToolRegistry:
                         "response": "Formatted WhatsApp listing: 3BR House in Ngoingwa — KES 35,000/month"
                     }
                 ]
+            },
+            # RAG & Knowledge Base Tools - Always available
+            "rag_ingest_content": {
+                "name": "rag_ingest_content",
+                "description": "Universal Knowledge Ingestion: Ingest any text, markdown, or JSON data into a specific Knowledge Base. Supports single items or lists from Google, Zoho, Slack, etc.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "any", "description": "Text, JSON, or list of items to ingest"},
+                        "kb_id": {"type": "string", "description": "The UUID of the Knowledge Base"},
+                        "namespace": {"type": "string", "description": "Vector namespace (optional)"},
+                        "source_url": {"type": "string", "description": "Optional source override"}
+                    },
+                    "required": ["content", "kb_id"]
+                },
+                "category": "advanced",
+                "always_available": True
+            },
+            "rag_search": {
+                "name": "rag_search",
+                "description": "Knowledge Search: Search your Knowledge Base using semantic queries to retrieve relevant context.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "The semantic search query"},
+                        "kb_id": {"type": "string", "description": "The UUID of the Knowledge Base"},
+                        "namespace": {"type": "string"},
+                        "top_k": {"type": "integer", "default": 5}
+                    },
+                    "required": ["query", "kb_id"]
+                },
+                "category": "advanced",
+                "always_available": True
             }
         }
     
@@ -703,7 +736,9 @@ class DynamicToolRegistry:
                 "web_search",
                 "content_creation",
                 "email_template",
-                "real_estate_tools"
+                "real_estate_tools",
+                "rag_ingest_content",
+                "rag_search"
             }
             
             if include_all:
