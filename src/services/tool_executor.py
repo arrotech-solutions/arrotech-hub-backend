@@ -3595,10 +3595,7 @@ class ToolExecutor:
                         target_folder_id=arguments.get("folder_id")
                     )
                 elif operation == "list_folders":
-                    # Delegate to DocsService.list_folders which is already implemented
-                    from .google_workspace import DocsService
-                    docs_service = DocsService(base_client)
-                    return await docs_service.list_folders()
+                    return await service.list_folders()
             
             elif tool_name == "google_workspace_sheets":
                 service = SheetsService(base_client)

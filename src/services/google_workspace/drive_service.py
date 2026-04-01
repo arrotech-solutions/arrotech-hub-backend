@@ -384,3 +384,32 @@ class DriveService:
                 'success': False,
                 'error': str(e)
             }
+    async def list_folders(self) -> Dict[str, Any]:
+        """
+        List all available folders in Google Drive for selection
+        """
+        try:
+            service = self.base_client.get_service(self.service_name, self.version)
+            
+            result = service.files().list(
+                q="mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+                pageSize=100,
+                fields="files(id, name)"
+            ).execute()
+            
+            folders = result.get('files', [])
+            
+            # Format for dynamic options: list of {label, value}
+            options = [{'label': folder['name'], 'value': folder['id']} for folder in folders]
+            
+            return {
+                'success': True,
+                'options': options,
+                'count': len(options)
+            }
+        except Exception as e:
+            logger.error(f"Error listing Google Drive folders: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
