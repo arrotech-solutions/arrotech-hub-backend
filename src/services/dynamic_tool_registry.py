@@ -1720,7 +1720,7 @@ class DynamicToolRegistry:
                     "properties": {
                         "operation": {
                             "type": "string",
-                            "enum": ["upload_file", "download_file", "list_files", "create_folder", "delete_file", "share_file", "search_files", "get_metadata", "move_file"],
+                            "enum": ["upload_file", "download_file", "list_files", "create_folder", "delete_file", "share_file", "search_files", "get_metadata", "move_file", "list_folders"],
                             "description": "Drive operation to perform"
                         },
                         "filename": {"type": "string"},
@@ -1770,12 +1770,18 @@ class DynamicToolRegistry:
                     "properties": {
                         "operation": {
                             "type": "string",
-                            "enum": ["create_document", "read_document", "insert_text", "append_text", "replace_text", "format_text", "insert_table", "batch_update", "export_pdf"],
+                            "enum": ["create_document", "read_document", "read_all_documents", "insert_text", "append_text", "replace_text", "format_text", "insert_table", "batch_update", "export_pdf"],
                             "description": "Docs operation to perform"
                         },
                         "document_id": {"type": "string"},
                         "title": {"type": "string"},
-                        "text": {"type": "string"}
+                        "text": {"type": "string"},
+                        "folder_id": {
+                            "type": "string", 
+                            "description": "Folder ID to restrict search",
+                            "x-dynamic-options": "google_workspace_drive.list_folders"
+                        },
+                        "query": {"type": "string", "description": "Search query for documents"}
                     },
                     "required": ["operation"]
                 },

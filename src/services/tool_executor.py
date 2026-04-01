@@ -3592,8 +3592,13 @@ class ToolExecutor:
                 elif operation == "move_file":
                     return await service.move_file(
                         file_id=arguments.get("file_id"),
-                        folder_id=arguments.get("folder_id")
+                        target_folder_id=arguments.get("folder_id")
                     )
+                elif operation == "list_folders":
+                    # Delegate to DocsService.list_folders which is already implemented
+                    from .google_workspace import DocsService
+                    docs_service = DocsService(base_client)
+                    return await docs_service.list_folders()
             
             elif tool_name == "google_workspace_sheets":
                 service = SheetsService(base_client)
@@ -3646,6 +3651,11 @@ class ToolExecutor:
                 elif operation == "read_document":
                     return await service.read_document(
                         document_id=arguments.get("document_id")
+                    )
+                elif operation == "read_all_documents":
+                    return await service.read_all_documents(
+                        folder_id=arguments.get("folder_id"),
+                        query=arguments.get("query")
                     )
                 elif operation == "insert_text":
                     return await service.insert_text(
