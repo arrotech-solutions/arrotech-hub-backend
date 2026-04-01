@@ -933,7 +933,7 @@ class PlatformRegistry:
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "operation": {"type": "string", "enum": ["create_document", "read_document", "read_all_documents"]},
+                        "operation": {"type": "string", "enum": ["create_document", "read_document", "read_all_documents", "insert_text", "append_text", "replace_text", "format_text", "insert_table", "batch_update", "export_pdf"]},
                         "title": {"type": "string"},
                         "document_id": {"type": "string"},
                         "folder_id": {
@@ -941,11 +941,25 @@ class PlatformRegistry:
                             "description": "Folder ID to restrict search",
                             "x-dynamic-options": "google_workspace_drive.list_folders"
                         },
-                        "query": {"type": "string", "description": "Search query for documents"}
+                        "query": {"type": "string", "description": "Search query for documents"},
+                        "text": {"type": "string"},
+                        "index": {"type": "integer"},
+                        "find_text": {"type": "string"},
+                        "replace_text": {"type": "string"},
+                        "match_case": {"type": "boolean"},
+                        "start_index": {"type": "integer"},
+                        "end_index": {"type": "integer"},
+                        "bold": {"type": "boolean"},
+                        "italic": {"type": "boolean"},
+                        "font_size": {"type": "integer"},
+                        "foreground_color": {"type": "object"},
+                        "rows": {"type": "integer"},
+                        "columns": {"type": "integer"},
+                        "requests": {"type": "array", "items": {"type": "object"}}
                     },
                     "required": ["operation"]
                 },
-                operations=["create_document", "read_document", "read_all_documents"]
+                operations=["create_document", "read_document", "read_all_documents", "insert_text", "append_text", "replace_text", "format_text", "insert_table", "batch_update", "export_pdf"]
             )
         ]
         
@@ -2964,10 +2978,10 @@ class PlatformRegistry:
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "operation": {"type": "string", "enum": ["upload_file", "download_file", "list_files", "create_folder", "delete_file", "share_file", "search_files", "get_metadata", "move_file"]},
+                        "operation": {"type": "string", "enum": ["upload_file", "download_file", "list_files", "create_folder", "delete_file", "share_file", "search_files", "get_metadata", "move_file", "list_folders"]},
                         "filename": {"type": "string"},
-                        "content": {"type": "string"},
-                        "mime_type": {"type": "string"},
+                        "content": {"type": "string", "default": ""},
+                        "mime_type": {"type": "string", "default": "application/octet-stream"},
                         "folder_id": {"type": "string"},
                         "file_id": {"type": "string"},
                         "query": {"type": "string"},
@@ -2978,7 +2992,7 @@ class PlatformRegistry:
                     },
                     "required": ["operation"]
                 },
-                operations=["upload_file", "download_file", "list_files", "create_folder", "delete_file", "share_file", "search_files", "get_metadata", "move_file"]
+                operations=["upload_file", "download_file", "list_files", "create_folder", "delete_file", "share_file", "search_files", "get_metadata", "move_file", "list_folders"]
             ),
             # Sheets Capabilities
             PlatformCapability(
@@ -3022,10 +3036,14 @@ class PlatformRegistry:
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "operation": {"type": "string", "enum": ["create_document", "read_document", "insert_text", "append_text", "replace_text", "format_text", "insert_table", "batch_update", "export_pdf"]},
+                        "operation": {"type": "string", "enum": ["create_document", "read_document", "read_all_documents", "insert_text", "append_text", "replace_text", "format_text", "insert_table", "batch_update", "export_pdf"]},
                         "document_id": {"type": "string"},
                         "title": {"type": "string"},
                         "text": {"type": "string"},
+                        "folder_id": {
+                            "type": "string",
+                            "x-dynamic-options": "google_workspace_drive.list_folders"
+                        },
                         "index": {"type": "integer"},
                         "find_text": {"type": "string"},
                         "replace_text": {"type": "string"},
@@ -3045,6 +3063,7 @@ class PlatformRegistry:
                 operations=[
                     "create_document", 
                     "read_document", 
+                    "read_all_documents",
                     "insert_text", 
                     "append_text", 
                     "replace_text", 
