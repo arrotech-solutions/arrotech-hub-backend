@@ -1708,3 +1708,62 @@ class AppToken(Base):
     # Relationships
     user = relationship("User")
     app = relationship("DeveloperApp", back_populates="tokens")
+
+
+class KnowledgeBase(Base):
+    """Knowledge Base for RAG pipelines."""
+    __tablename__ = "knowledge_bases"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    embedding_model = Column(String, nullable=False, default="text-embedding-3-small")
+    vector_db = Column(String, nullable=False, default="pinecone")
+    chunk_size = Column(Integer, default=512)
+    chunk_overlap = Column(Integer, default=50)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    user = relationship("User", backref="knowledge_bases")
+    data_sources = relationship("DataSource", back_populates="knowledge_base", cascade="all, delete-orphan")
+
+
+class DataSource(Base):
+    """Data source for a particular Knowledge Base."""
+    __tablename__ = "data_sources"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    kb_id = Column(PG_UUID(as_uuid=True), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_type = Column(String, nullable=False)  # google_drive, notion, website, etc.
+    name = Column(String, nullable=False)
+    config = Column(JSON, nullable=False)  # url, folder_id, page_id, etc.
+    status = Column(String, default="active")  # active, indexing, error
+    sync_mode = Column(String, default="manual")  # manual, scheduled, realtime
+    last_synced_at = Column(DateTime(timezone=True), nullable=True)
+    metadata_fields = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    knowledge_base = relationship("KnowledgeBase", back_populates="data_sources")
+    sync_logs = relationship("SyncLog", back_populates="data_source", cascade="all, delete-orphan")
+
+
+class SyncLog(Base):
+    """Logs the results and status of data source ingestion operations."""
+    __tablename__ = "sync_logs"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    data_source_id = Column(PG_UUID(as_uuid=True), ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(String, nullable=False)  # success, failed, in_progress
+    chunks_added = Column(Integer, default=0)
+    chunks_deleted = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    data_source = relationship("DataSource", back_populates="sync_logs")
+

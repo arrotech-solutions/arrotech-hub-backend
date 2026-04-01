@@ -58,6 +58,7 @@ from .google_workspace import (
     DocsService,
     AnalyticsService
 )
+from .rag_pipeline_service import RAGPipelineService
 from .feature_flags import FeatureGate
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,7 @@ class ToolExecutor:
             "quickbooks": QuickBooksService(),
             "xero": XeroService(),
             "airtable": AirtableService(),
+            "rag": RAGPipelineService(),
         }
         # Initialize services
         self._initialized = False
@@ -219,6 +221,12 @@ class ToolExecutor:
                 return await self._execute_kra_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("xero_"):
                 return await self._execute_xero_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("llamaparse_"):
+                return await self._execute_llamaparse_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("firecrawl_"):
+                return await self._execute_firecrawl_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("pinecone_"):
+                return await self._execute_pinecone_tool(tool_name, arguments, user, db)
             elif tool_name.endswith("_payment_ops"):
                 return await self._execute_fintech_tool(tool_name, arguments, user, db)
             elif tool_name.endswith("_ecommerce_ops"):
@@ -231,6 +239,8 @@ class ToolExecutor:
                 return await self._execute_health_tool(tool_name, arguments, user, db)
             elif tool_name.endswith("_utility_ops"):
                 return await self._execute_utility_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("rag_"):
+                return await self._execute_rag_tool(tool_name, arguments, user, db)
             elif tool_name == "workflow_management":
                 return await self._execute_system_tool(tool_name, arguments, user, db)
             else:
@@ -377,6 +387,39 @@ class ToolExecutor:
         if tool_name.endswith("_utility_ops"): return tool_name.replace("_utility_ops", "")
         
         return None
+
+    async def _execute_llamaparse_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        from .llamaparse_service import LlamaParseService
+        service = LlamaParseService()
+        if tool_name == "llamaparse_parse_document" or tool_name == "llamaparse_parse_from_url":
+            res = await service.llamaparse_parse_document(arguments.get("file_path_or_url"))
+            return {"success": True, "result": res}
+        return {"success": False, "error": f"Unknown tool: {tool_name}"}
+
+    async def _execute_firecrawl_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        from .firecrawl_service import FirecrawlService
+        service = FirecrawlService()
+        if tool_name == "firecrawl_crawl_website":
+            res = await service.firecrawl_crawl_website(arguments.get("start_url"), arguments.get("max_depth", 2))
+            return {"success": True, "result": res}
+        elif tool_name == "firecrawl_scrape_url":
+            res = await service.firecrawl_scrape_url(arguments.get("start_url"))
+            return {"success": True, "result": res}
+        return {"success": False, "error": f"Unknown tool: {tool_name}"}
+
+    async def _execute_pinecone_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        from .pinecone_service import PineconeService
+        service = PineconeService()
+        if tool_name == "pinecone_upsert_vectors":
+            res = await service.pinecone_upsert_vectors(arguments.get("index_name"), arguments.get("namespace"), [])
+            return {"success": True, "result": res}
+        elif tool_name == "pinecone_query":
+            res = await service.pinecone_query(arguments.get("index_name"), arguments.get("namespace"), [])
+            return {"success": True, "result": res}
+        elif tool_name == "pinecone_delete_namespace":
+            res = await service.pinecone_delete_namespace(arguments.get("index_name"), arguments.get("namespace"))
+            return {"success": True, "result": res}
+        return {"success": False, "error": f"Unknown tool: {tool_name}"}
 
     async def _execute_slack_tool(
         self,
@@ -6132,6 +6175,31 @@ Description: {payment.description or 'N/A'}"""
                 return {"success": False, "error": f"Unknown Airtable record operation: {operation}"}
         
         return {"success": False, "error": f"Unknown Airtable tool: {tool_name}", "result": None}
+
+    async def _execute_rag_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute RAG-related tools."""
+        service = self.services["rag"]
+        
+        if tool_name == "rag_ingest_content":
+            # Direct text ingestion for workflows
+            res = await service.rag_ingest_content(
+                content=arguments.get("content"),
+                kb_id=arguments.get("kb_id"),
+                namespace=arguments.get("namespace"),
+                source_url=arguments.get("source_url", "workflow_step")
+            )
+            return {"success": res.get("status") == "success", "result": res.get("message"), "data": res}
+            
+        elif tool_name == "rag_search":
+            res = await service.rag_search_query(
+                query=arguments.get("query"),
+                kb_id=arguments.get("kb_id"),
+                namespace=arguments.get("namespace"),
+                top_k=arguments.get("top_k", 5)
+            )
+            return {"success": res.get("success"), "result": f"Found {len(res.get('results', []))} relevant matches", "data": res}
+            
+        return {"success": False, "error": f"Unknown RAG tool: {tool_name}"}
 
 
 # Global tool executor instance

@@ -40,6 +40,7 @@ class PlatformRegistry:
         self.platforms: Dict[str, Platform] = {}
         self._initialize_default_platforms()
         self._initialize_kenyan_platforms()
+        self._initialize_rag_platforms()
     
     def _initialize_default_platforms(self):
         """Initialize default platforms with their capabilities."""
@@ -3615,6 +3616,141 @@ class PlatformRegistry:
                 return False
         
         return True
+
+    def _initialize_rag_platforms(self):
+        """Initialize RAG and Knowledge Base capabilities."""
+        rag_capabilities = [
+            PlatformCapability(
+                name="Universal Knowledge Ingestion",
+                description="The 'Universal Sink' for your Knowledge Base. Simply pass any data—a single Google Doc, a list of 50 Zoho articles, or a thread of Slack messages—and this tool will intelligently extract the text and sync it all in one go.",
+                tool_name="rag_ingest_content",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "any", "description": "Single item or list of items from any source (Google, Zoho, Slack, HubSpot, etc.)"},
+                        "kb_id": {"type": "string", "description": "The UUID of the Knowledge Base"},
+                        "namespace": {"type": "string", "description": "Vector namespace (optional)"},
+                        "source_url": {"type": "string", "description": "Optional source override"}
+                    },
+                    "required": ["content", "kb_id"]
+                },
+                operations=["ingest"]
+            ),
+            PlatformCapability(
+                name="Knowledge Search",
+                description="Search your Knowledge Base using semantic queries.",
+                tool_name="rag_search",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "The semantic search query"},
+                        "kb_id": {"type": "string", "description": "The UUID of the Knowledge Base"},
+                        "namespace": {"type": "string"},
+                        "top_k": {"type": "integer", "default": 5}
+                    },
+                    "required": ["query", "kb_id"]
+                },
+                operations=["search"]
+            )
+        ]
+
+        self.platforms["rag"] = Platform(
+            id="rag",
+            name="RAG Pipeline",
+            description="Dynamic Knowledge Base ingestion and semantic search",
+            icon="database",
+            features=["Dynamic Ingestion", "Semantic Search", "Multi-source logic"],
+            capabilities=rag_capabilities,
+            config_schema={"type": "object", "properties": {}, "required": []},
+            test_function="test_system_status"
+        )
+
+        # LlamaParse Platform
+        llamaparse_capabilities = [
+            PlatformCapability(
+                name="PDF Parsing",
+                description="Parse complex PDF documents, including tables and images, returning markdown output.",
+                tool_name="llamaparse_parse_document",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "file_path_or_url": {"type": "string", "description": "URL or path to PDF"}
+                    },
+                    "required": ["file_path_or_url"]
+                },
+                operations=["llamaparse_parse_document", "llamaparse_parse_from_url"]
+            )
+        ]
+        
+        self.platforms["llamaparse"] = Platform(
+            id="llamaparse",
+            name="LlamaParse",
+            description="Complex document (PDF) parsing",
+            icon="document",
+            features=["PDF Parsing", "Table extraction"],
+            capabilities=llamaparse_capabilities,
+            config_schema={"type": "object", "properties": {"api_key": {"type": "string"}}, "required": ["api_key"]},
+            test_function="test_llamaparse_connection"
+        )
+        
+        # Firecrawl Platform
+        firecrawl_capabilities = [
+            PlatformCapability(
+                name="Website Crawling",
+                description="Crawl websites and return clean markdown.",
+                tool_name="firecrawl_crawl_website",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "start_url": {"type": "string"},
+                        "max_depth": {"type": "integer", "default": 2}
+                    },
+                    "required": ["start_url"]
+                },
+                operations=["firecrawl_crawl_website", "firecrawl_scrape_url", "firecrawl_map_sitemap"]
+            )
+        ]
+        
+        self.platforms["firecrawl"] = Platform(
+            id="firecrawl",
+            name="Firecrawl",
+            description="Web scraping and crawling to Markdown",
+            icon="globe",
+            features=["Website scraping", "Sitemap URL mining"],
+            capabilities=firecrawl_capabilities,
+            config_schema={"type": "object", "properties": {"api_key": {"type": "string"}}, "required": ["api_key"]},
+            test_function="test_firecrawl_connection"
+        )
+        
+        # Pinecone Platform
+        pinecone_capabilities = [
+            PlatformCapability(
+                name="Vector Operations",
+                description="Upsert and query vectors in a multi-tenant vector DB.",
+                tool_name="pinecone_ops",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["upsert", "query", "delete"]},
+                        "index_name": {"type": "string"},
+                        "namespace": {"type": "string"}
+                    },
+                    "required": ["operation", "index_name", "namespace"]
+                },
+                operations=["pinecone_upsert_vectors", "pinecone_query", "pinecone_delete_namespace"]
+            )
+        ]
+        
+        self.platforms["pinecone"] = Platform(
+            id="pinecone",
+            name="Pinecone",
+            description="Scalable Serverless Vector Database",
+            icon="database",
+            features=["Vector search", "Namespace Multitenancy"],
+            capabilities=pinecone_capabilities,
+            config_schema={"type": "object", "properties": {"api_key": {"type": "string"}}, "required": ["api_key"]},
+            test_function="test_pinecone_connection"
+        )
 
 
 # Global platform registry instance
