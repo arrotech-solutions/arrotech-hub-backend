@@ -891,9 +891,9 @@ class PlatformRegistry:
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "operation": {"type": "string", "enum": ["upload_file", "download_file", "list_files", "create_folder", "delete_file", "share_file", "search_files", "get_metadata", "move_file"]},
+                        "operation": {"type": "string", "enum": ["upload_file", "download_file", "list_files", "create_folder", "delete_file", "share_file", "search_files", "get_metadata", "move_file", "list_folders"]},
                         "filename": {"type": "string"},
-                        "content": {"type": "string"},
+                        "content": {"type": "string", "default": ""},
                         "mime_type": {"type": "string", "default": "application/octet-stream"},
                         "folder_id": {"type": "string"},
                         "file_id": {"type": "string"},
@@ -904,7 +904,7 @@ class PlatformRegistry:
                     },
                     "required": ["operation"]
                 },
-                operations=["upload_file", "download_file", "list_files", "create_folder", "delete_file", "share_file", "search_files", "get_metadata", "move_file"]
+                operations=["upload_file", "download_file", "list_files", "create_folder", "delete_file", "share_file", "search_files", "get_metadata", "move_file", "list_folders"]
             ),
             PlatformCapability(
                 name="Sheets Operations",
@@ -933,12 +933,19 @@ class PlatformRegistry:
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "operation": {"type": "string", "enum": ["create_document"]},
-                        "title": {"type": "string"}
+                        "operation": {"type": "string", "enum": ["create_document", "read_document", "read_all_documents"]},
+                        "title": {"type": "string"},
+                        "document_id": {"type": "string"},
+                        "folder_id": {
+                            "type": "string", 
+                            "description": "Folder ID to restrict search",
+                            "x-dynamic-options": "google_workspace_drive.list_folders"
+                        },
+                        "query": {"type": "string", "description": "Search query for documents"}
                     },
-                    "required": ["operation", "title"]
+                    "required": ["operation"]
                 },
-                operations=["create_document"]
+                operations=["create_document", "read_document", "read_all_documents"]
             )
         ]
         

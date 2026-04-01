@@ -77,7 +77,6 @@ class DocsService:
                 'success': True,
                 'document_id': doc.get('documentId'),
                 'title': doc.get('title'),
-                'revision_id': doc.get('revisionId'),
                 'content': full_text,
                 'body': doc.get('body')
             }
@@ -86,6 +85,92 @@ class DocsService:
             return {
                 'success': False,
                 'error': str(e)
+            }
+
+    async def read_all_documents(
+        self,
+        folder_id: Optional[str] = None,
+        query: Optional[str] = None,
+        max_results: int = 100
+    ) -> Dict[str, Any]:
+        """
+        Read all Google Docs content (optionally filtered by folder or query)
+        
+        Args:
+            folder_id: Optional parent folder ID to restrict search
+            query: Optional search query (e.g., name contains 'Report')
+            max_results: Maximum number of documents to read
+        """
+        try:
+            # We need Drive API for listing
+            drive_service = self.base_client.get_service('drive', 'v3')
+            
+            # Build list query
+            q_parts = ["mimeType = 'application/vnd.google-apps.document'", "trashed = false"]
+            if folder_id:
+                q_parts.append(f"'{folder_id}' in parents")
+            if query:
+                q_parts.append(f"name contains '{query}'")
+            
+            q_string = ' and '.join(q_parts)
+            
+            result = drive_service.files().list(
+                q=q_string,
+                pageSize=max_results,
+                fields="files(id, name)"
+            ).execute()
+            
+            files = result.get('files', [])
+            documents = []
+            
+            for file in files:
+                doc_result = await self.read_document(file['id'])
+                if doc_result.get('success'):
+                    documents.append({
+                        'id': file['id'],
+                        'title': file['name'],
+                        'content': doc_result.get('content'),
+                        'platform': 'google_workspace',
+                        'type': 'document'
+                    })
+            
+            return {
+                'success': True,
+                'documents': documents,
+                'count': len(documents)
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f"Failed to read all documents: {str(e)}"
+            }
+
+    async def list_folders(self) -> Dict[str, Any]:
+        """
+        List all available folders in Google Drive for selection
+        """
+        try:
+            drive_service = self.base_client.get_service('drive', 'v3')
+            result = drive_service.files().list(
+                q="mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+                pageSize=100,
+                fields="files(id, name)"
+            ).execute()
+            
+            folders = result.get('files', [])
+            
+            # Format for dynamic options: list of {label, value}
+            options = [{'label': folder['name'], 'value': folder['id']} for folder in folders]
+            
+            return {
+                'success': True,
+                'options': options
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f"Failed to list folders: {str(e)}"
             }
     
     async def insert_text(
