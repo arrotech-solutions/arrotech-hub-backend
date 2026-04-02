@@ -60,6 +60,9 @@ from .google_workspace import (
 )
 from .rag_pipeline_service import RAGPipelineService
 from .feature_flags import FeatureGate
+from .openai_service import OpenAIEmbeddingService
+from .cohere_service import CohereService
+from .huggingface_service import HuggingFaceService
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +101,11 @@ class ToolExecutor:
             "accounting": AccountingService(),
             "agritech": AgritechService(),
             "health": HealthService(),
+            "ai_embeddings": {
+                "openai": OpenAIEmbeddingService(),
+                "cohere": CohereService(),
+                "huggingface": HuggingFaceService()
+            },
             "utility": UtilitiesService(),
             "workflow": WorkflowService(),
             "clickup": ClickUpService(),
@@ -227,6 +235,14 @@ class ToolExecutor:
                 return await self._execute_firecrawl_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("pinecone_"):
                 return await self._execute_pinecone_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("qdrant_"):
+                return await self._execute_qdrant_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("weaviate_"):
+                return await self._execute_weaviate_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("unstructured_"):
+                return await self._execute_unstructured_tool(tool_name, arguments, user, db)
+            elif tool_name == "ai_embeddings":
+                return await self._execute_ai_embeddings_tool(arguments)
             elif tool_name.endswith("_payment_ops"):
                 return await self._execute_fintech_tool(tool_name, arguments, user, db)
             elif tool_name.endswith("_ecommerce_ops"):
@@ -377,6 +393,14 @@ class ToolExecutor:
         if tool_name.startswith("clickup_"): return "clickup"
         if tool_name.startswith("kra_"): return "kra_portal"
         if tool_name.startswith("xero_"): return "xero"
+        if tool_name.startswith("rag_"): return "rag_pipeline"
+        if tool_name.startswith("pinecone_"): return "vector_databases"
+        if tool_name.startswith("qdrant_"): return "vector_databases"
+        if tool_name.startswith("weaviate_"): return "vector_databases"
+        if tool_name.startswith("llamaparse_"): return "document_parsers"
+        if tool_name.startswith("unstructured_"): return "document_parsers"
+        if tool_name.startswith("firecrawl_"): return "document_parsers"
+        if tool_name == "ai_embeddings": return "ai_models"
         
         # Kenyan Specific Mappings
         if tool_name.endswith("_payment_ops"): return tool_name.replace("_payment_ops", "")
@@ -391,7 +415,20 @@ class ToolExecutor:
     async def _execute_llamaparse_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
         from .llamaparse_service import LlamaParseService
         service = LlamaParseService()
-        if tool_name == "llamaparse_parse_document" or tool_name == "llamaparse_parse_from_url":
+        operation = arguments.get("operation", "")
+        # Handle both "llamaparse_operations" (registry name) and individual tool names
+        if tool_name == "llamaparse_operations":
+            if operation == "parse_document":
+                res = await service.llamaparse_parse_document(arguments.get("url", arguments.get("file_path_or_url")))
+                return {"success": True, "result": res}
+            elif operation == "parse_from_url":
+                res = await service.llamaparse_parse_document(arguments.get("url", arguments.get("file_path_or_url")))
+                return {"success": True, "result": res}
+            elif operation == "get_job_result":
+                res = await service.llamaparse_get_job_result(arguments.get("job_id"))
+                return {"success": True, "result": res}
+            return {"success": False, "error": f"Unknown llamaparse operation: {operation}"}
+        elif tool_name == "llamaparse_parse_document" or tool_name == "llamaparse_parse_from_url":
             res = await service.llamaparse_parse_document(arguments.get("file_path_or_url"))
             return {"success": True, "result": res}
         return {"success": False, "error": f"Unknown tool: {tool_name}"}
@@ -399,7 +436,20 @@ class ToolExecutor:
     async def _execute_firecrawl_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
         from .firecrawl_service import FirecrawlService
         service = FirecrawlService()
-        if tool_name == "firecrawl_crawl_website":
+        operation = arguments.get("operation", "")
+        # Handle both "firecrawl_operations" (registry name) and individual tool names
+        if tool_name == "firecrawl_operations":
+            if operation == "scrape_url":
+                res = await service.firecrawl_scrape_url(arguments.get("url", arguments.get("start_url")))
+                return {"success": True, "result": res}
+            elif operation == "crawl_website":
+                res = await service.firecrawl_crawl_website(arguments.get("url", arguments.get("start_url")), arguments.get("max_depth", 2))
+                return {"success": True, "result": res}
+            elif operation == "map_sitemap":
+                res = await service.firecrawl_crawl_website(arguments.get("url"), arguments.get("max_depth", 1))
+                return {"success": True, "result": res}
+            return {"success": False, "error": f"Unknown firecrawl operation: {operation}"}
+        elif tool_name == "firecrawl_crawl_website":
             res = await service.firecrawl_crawl_website(arguments.get("start_url"), arguments.get("max_depth", 2))
             return {"success": True, "result": res}
         elif tool_name == "firecrawl_scrape_url":
@@ -410,7 +460,20 @@ class ToolExecutor:
     async def _execute_pinecone_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
         from .pinecone_service import PineconeService
         service = PineconeService()
-        if tool_name == "pinecone_upsert_vectors":
+        operation = arguments.get("operation", "")
+        # Handle both "pinecone_operations" (registry name) and individual tool names
+        if tool_name == "pinecone_operations":
+            if operation == "upsert":
+                res = await service.pinecone_upsert_vectors(arguments.get("index_name"), arguments.get("namespace"), arguments.get("vectors", []))
+                return {"success": True, "result": res}
+            elif operation == "query":
+                res = await service.pinecone_query(arguments.get("index_name"), arguments.get("namespace"), arguments.get("query_vector", []))
+                return {"success": True, "result": res}
+            elif operation == "delete_namespace":
+                res = await service.pinecone_delete_namespace(arguments.get("index_name"), arguments.get("namespace"))
+                return {"success": True, "result": res}
+            return {"success": False, "error": f"Unknown pinecone operation: {operation}"}
+        elif tool_name == "pinecone_upsert_vectors":
             res = await service.pinecone_upsert_vectors(arguments.get("index_name"), arguments.get("namespace"), [])
             return {"success": True, "result": res}
         elif tool_name == "pinecone_query":
@@ -420,6 +483,71 @@ class ToolExecutor:
             res = await service.pinecone_delete_namespace(arguments.get("index_name"), arguments.get("namespace"))
             return {"success": True, "result": res}
         return {"success": False, "error": f"Unknown tool: {tool_name}"}
+
+    async def _execute_qdrant_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute Qdrant vector DB operations."""
+        try:
+            from .qdrant_service import QdrantService
+            service = QdrantService()
+            operation = arguments.get("operation", "")
+            collection = arguments.get("collection_name", "")
+
+            if operation == "upsert":
+                res = await service.qdrant_upsert_points(collection, arguments.get("points", []))
+                return {"success": True, "result": res}
+            elif operation == "search":
+                res = await service.qdrant_search(collection, arguments.get("query_vector", []), arguments.get("limit", 5))
+                return {"success": True, "result": res}
+            elif operation == "delete_collection":
+                res = await service.qdrant_delete_collection(collection)
+                return {"success": True, "result": res}
+            return {"success": False, "error": f"Unknown qdrant operation: {operation}"}
+        except ImportError:
+            return {"success": False, "error": "Qdrant service is not available. Please install qdrant-client."}
+        except Exception as e:
+            return {"success": False, "error": f"Qdrant error: {str(e)}"}
+
+    async def _execute_weaviate_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute Weaviate vector DB operations."""
+        try:
+            from .weaviate_service import WeaviateService
+            service = WeaviateService()
+            operation = arguments.get("operation", "")
+            class_name = arguments.get("class_name", "")
+
+            if operation == "add_objects":
+                res = await service.weaviate_add_objects(class_name, arguments.get("objects", []), arguments.get("tenant"))
+                return {"success": True, "result": res}
+            elif operation == "hybrid_search":
+                res = await service.weaviate_hybrid_search(class_name, arguments.get("query", ""), arguments.get("vector"), arguments.get("limit", 5), arguments.get("tenant"))
+                return {"success": True, "result": res}
+            elif operation == "delete_tenant":
+                res = await service.weaviate_delete_tenant(class_name, arguments.get("tenant"))
+                return {"success": True, "result": res}
+            return {"success": False, "error": f"Unknown weaviate operation: {operation}"}
+        except ImportError:
+            return {"success": False, "error": "Weaviate service is not available. Please install weaviate-client."}
+        except Exception as e:
+            return {"success": False, "error": f"Weaviate error: {str(e)}"}
+
+    async def _execute_unstructured_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute Unstructured document parsing operations."""
+        try:
+            from .unstructured_service import UnstructuredService
+            service = UnstructuredService()
+            operation = arguments.get("operation", "")
+
+            if operation == "partition_document":
+                res = await service.unstructured_partition_document(arguments.get("filename", ""))
+                return {"success": True, "result": res}
+            elif operation == "chunk_elements":
+                res = await service.unstructured_chunk_elements(arguments.get("elements", []))
+                return {"success": True, "result": res}
+            return {"success": False, "error": f"Unknown unstructured operation: {operation}"}
+        except ImportError:
+            return {"success": False, "error": "Unstructured service is not available. Please install unstructured."}
+        except Exception as e:
+            return {"success": False, "error": f"Unstructured error: {str(e)}"}
 
     async def _execute_slack_tool(
         self,
@@ -6184,16 +6312,31 @@ Description: {payment.description or 'N/A'}"""
         return {"success": False, "error": f"Unknown Airtable tool: {tool_name}", "result": None}
 
     async def _execute_rag_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
-        """Execute RAG-related tools."""
+        """Execute RAG-related tools with correct signatures."""
         service = self.services["rag"]
+        user_id = str(user.id) if user else "internal"
         
         if tool_name == "rag_ingest_content":
-            # Direct text ingestion for workflows
             res = await service.rag_ingest_content(
                 content=arguments.get("content"),
                 kb_id=arguments.get("kb_id"),
-                namespace=arguments.get("namespace"),
-                source_url=arguments.get("source_url", "workflow_step")
+                user_id=user_id,
+                source_url=arguments.get("source_url", "workflow_step"),
+                source_name=arguments.get("source_name"),
+                source_tool=arguments.get("source_tool", "custom"),
+                user=user,
+                db=db
+            )
+            return {"success": res.get("status") == "success", "result": res.get("message"), "data": res}
+            
+        elif tool_name == "rag_ingest_source":
+            res = await service.rag_ingest_source(
+                url_or_id=arguments.get("url_or_id", arguments.get("url", arguments.get("id", ""))),
+                kb_id=arguments.get("kb_id"),
+                user_id=user_id,
+                source_type=arguments.get("source_type", "website"),
+                user=user,
+                db=db
             )
             return {"success": res.get("status") == "success", "result": res.get("message"), "data": res}
             
@@ -6201,12 +6344,53 @@ Description: {payment.description or 'N/A'}"""
             res = await service.rag_search_query(
                 query=arguments.get("query"),
                 kb_id=arguments.get("kb_id"),
-                namespace=arguments.get("namespace"),
-                top_k=arguments.get("top_k", 5)
+                user_id=user_id,
+                top_k=arguments.get("top_k", 5),
+                rerank=arguments.get("rerank", False),
+                rerank_top_n=arguments.get("rerank_top_n", 3),
+                user=user,
+                db=db
             )
             return {"success": res.get("success"), "result": f"Found {len(res.get('results', []))} relevant matches", "data": res}
+
+        elif tool_name == "rag_delete_kb":
+            res = await service.rag_delete_knowledge_base(
+                kb_id=arguments.get("kb_id"),
+                user_id=user_id,
+                vector_db=arguments.get("vector_db", "pinecone")
+            )
+            return {"success": res.get("success", False), "result": "Knowledge base deleted", "data": res}
+            
+        elif tool_name == "ai_embeddings":
+            return await self._execute_ai_embeddings_tool(arguments)
             
         return {"success": False, "error": f"Unknown RAG tool: {tool_name}"}
+
+    async def _execute_ai_embeddings_tool(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Routes embedding requests to the appropriate service."""
+        operation = parameters.get("operation")
+        input_data = parameters.get("input")
+        
+        if not operation or not input_data:
+            return {"success": False, "error": "Operation and input are required"}
+
+        texts = input_data if isinstance(input_data, list) else [input_data]
+        ai_services = self.services.get("ai_embeddings", {})
+
+        try:
+            if operation == "openai_small":
+                return await ai_services["openai"].openai_batch_create_embeddings(texts, model="text-embedding-3-small")
+            elif operation == "openai_large":
+                return await ai_services["openai"].openai_batch_create_embeddings(texts, model="text-embedding-3-large")
+            elif operation == "cohere_multilingual":
+                return await ai_services["cohere"].cohere_embed(texts, model="embed-multilingual-v3.0")
+            elif operation == "huggingface_local":
+                return await ai_services["huggingface"].huggingface_batch_embed(texts, model="sentence-transformers/all-MiniLM-L6-v2")
+            else:
+                return {"success": False, "error": f"Unsupported embedding operation: {operation}"}
+        except Exception as e:
+            logger.error(f"Error in AI Embeddings tool: {e}")
+            return {"success": False, "error": str(e)}
 
 
 # Global tool executor instance

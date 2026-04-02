@@ -41,6 +41,7 @@ class PlatformRegistry:
         self._initialize_default_platforms()
         self._initialize_kenyan_platforms()
         self._initialize_rag_platforms()
+        self._initialize_ai_platforms()
     
     def _initialize_default_platforms(self):
         """Initialize default platforms with their capabilities."""
@@ -3643,54 +3644,6 @@ class PlatformRegistry:
         
         return True
 
-    def _initialize_rag_platforms(self):
-        """Initialize RAG and Knowledge Base capabilities."""
-        rag_capabilities = [
-            PlatformCapability(
-                name="Universal Knowledge Ingestion",
-                description="The 'Universal Sink' for your Knowledge Base. Simply pass any data—a single Google Doc, a list of 50 Zoho articles, or a thread of Slack messages—and this tool will intelligently extract the text and sync it all in one go.",
-                tool_name="rag_ingest_content",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "content": {"type": "any", "description": "Single item or list of items from any source (Google, Zoho, Slack, HubSpot, etc.)"},
-                        "kb_id": {"type": "string", "description": "The UUID of the Knowledge Base"},
-                        "namespace": {"type": "string", "description": "Vector namespace (optional)"},
-                        "source_url": {"type": "string", "description": "Optional source override"}
-                    },
-                    "required": ["content", "kb_id"]
-                },
-                operations=["ingest"]
-            ),
-            PlatformCapability(
-                name="Knowledge Search",
-                description="Search your Knowledge Base using semantic queries.",
-                tool_name="rag_search",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "The semantic search query"},
-                        "kb_id": {"type": "string", "description": "The UUID of the Knowledge Base"},
-                        "namespace": {"type": "string"},
-                        "top_k": {"type": "integer", "default": 5}
-                    },
-                    "required": ["query", "kb_id"]
-                },
-                operations=["search"]
-            )
-        ]
-
-        self.platforms["rag"] = Platform(
-            id="rag",
-            name="RAG Pipeline",
-            description="Dynamic Knowledge Base ingestion and semantic search",
-            icon="database",
-            features=["Dynamic Ingestion", "Semantic Search", "Multi-source logic"],
-            capabilities=rag_capabilities,
-            config_schema={"type": "object", "properties": {}, "required": []},
-            test_function="test_system_status"
-        )
-
         # LlamaParse Platform
         llamaparse_capabilities = [
             PlatformCapability(
@@ -3778,6 +3731,298 @@ class PlatformRegistry:
             test_function="test_pinecone_connection"
         )
 
+    def _initialize_ai_platforms(self):
+        """Initialize AI-specific platforms (Embeddings, Reranking, etc.)"""
+        ai_capabilities = [
+            PlatformCapability(
+                name="AI Embeddings",
+                description="Convert text into numerical vectors for search, clustering, and AI memory",
+                tool_name="ai_embeddings",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string", 
+                            "enum": ["openai_small", "openai_large", "cohere_multilingual", "huggingface_local"],
+                            "description": "Choice of embedding model"
+                        },
+                        "input": {
+                            "oneOf": [
+                                {"type": "string"},
+                                {"type": "array", "items": {"type": "string"}}
+                            ],
+                            "description": "Text or list of texts to embed"
+                        }
+                    },
+                    "required": ["operation", "input"]
+                },
+                operations=["openai_small", "openai_large", "cohere_multilingual", "huggingface_local"]
+            )
+        ]
+
+        self.platforms["ai_models"] = Platform(
+            id="ai_models",
+            name="AI Models & Embeddings",
+            description="Core AI capabilities for search and intelligence",
+            icon="zap",
+            features=[
+                "High-performance embeddings",
+                "Multilingual support",
+                "Local/On-premise options"
+            ],
+            capabilities=ai_capabilities,
+            config_schema={},
+            test_function="test_ai_connection"
+        )
+
+    def _initialize_rag_platforms(self):
+        """Initialize RAG Pipeline tools (Search, Ingestion, Source Fetch, Deletion)"""
+        rag_capabilities = [
+            PlatformCapability(
+                name="Knowledge Ingestion",
+                description="Ingest text or documents into a Knowledge Base for AI search",
+                tool_name="rag_ingest_content",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string", "description": "Text to ingest"},
+                        "kb_id": {
+                            "type": "string", 
+                            "description": "ID of the Knowledge Base",
+                            "x-dynamic-options": "rag_kb.list_available"
+                        },
+                        "source_url": {"type": "string", "description": "Original source URL"},
+                        "source_name": {"type": "string", "description": "Document/File name"},
+                        "source_tool": {"type": "string", "description": "e.g., google_drive, notion"}
+                    },
+                    "required": ["content", "kb_id"]
+                },
+                operations=["rag_ingest_content"]
+            ),
+            PlatformCapability(
+                name="Source Ingestion",
+                description="Fetch data from a connected MCP tool source and ingest into a Knowledge Base",
+                tool_name="rag_ingest_source",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "url_or_id": {"type": "string", "description": "URL or ID of the source to ingest"},
+                        "kb_id": {
+                            "type": "string", 
+                            "description": "ID of the Knowledge Base",
+                            "x-dynamic-options": "rag_kb.list_available"
+                        },
+                        "source_type": {
+                            "type": "string",
+                            "enum": ["website", "google_drive", "notion", "airtable", "google_sheets", "slack", "gmail", "hubspot"],
+                            "description": "Type of source to fetch from"
+                        }
+                    },
+                    "required": ["url_or_id", "kb_id", "source_type"]
+                },
+                operations=["rag_ingest_source"]
+            ),
+            PlatformCapability(
+                name="Knowledge Search",
+                description="Search for relevant information in a specific Knowledge Base",
+                tool_name="rag_search",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                        "kb_id": {
+                            "type": "string", 
+                            "description": "ID of the Knowledge Base",
+                            "x-dynamic-options": "rag_kb.list_available"
+                        },
+                        "top_k": {"type": "integer", "default": 5},
+                        "rerank": {"type": "boolean", "default": False, "description": "Use Cohere reranking for higher accuracy"},
+                        "rerank_top_n": {"type": "integer", "default": 3}
+                    },
+                    "required": ["query", "kb_id"]
+                },
+                operations=["rag_search"]
+            ),
+            PlatformCapability(
+                name="Delete Knowledge Base",
+                description="Delete all vectors for a Knowledge Base from the vector DB",
+                tool_name="rag_delete_kb",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "kb_id": {
+                            "type": "string",
+                            "description": "ID of the Knowledge Base to delete",
+                            "x-dynamic-options": "rag_kb.list_available"
+                        },
+                        "vector_db": {
+                            "type": "string",
+                            "enum": ["pinecone", "qdrant", "weaviate"],
+                            "default": "pinecone"
+                        }
+                    },
+                    "required": ["kb_id"]
+                },
+                operations=["rag_delete_kb"]
+            )
+        ]
+
+        self.platforms["rag_pipeline"] = Platform(
+            id="rag_pipeline",
+            name="RAG Knowledge Base",
+            description="Manage and search your company knowledge base with dynamic vector DB and embedding model selection",
+            icon="database",
+            features=[
+                "High-precision semantic search",
+                "Multi-source ingestion (Drive, Notion, Slack, etc.)",
+                "Dynamic vector DB routing (Pinecone, Qdrant, Weaviate)",
+                "Optional Cohere reranking",
+                "Multi-tenant namespace isolation",
+                "Scheduled & manual sync"
+            ],
+            capabilities=rag_capabilities,
+            config_schema={},
+            test_function="test_rag_pipeline_connection"
+        )
+
+        # --- Vector DB Tools (exposed as composable MCP tools) ---
+        vector_db_capabilities = [
+            PlatformCapability(
+                name="Pinecone Operations",
+                description="Upsert, query, and delete vectors in Pinecone",
+                tool_name="pinecone_operations",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["upsert", "query", "delete_namespace"]},
+                        "namespace": {"type": "string"},
+                        "vectors": {"type": "array", "items": {"type": "object"}},
+                        "query_vector": {"type": "array", "items": {"type": "number"}},
+                        "top_k": {"type": "integer", "default": 5}
+                    },
+                    "required": ["operation", "namespace"]
+                },
+                operations=["upsert", "query", "delete_namespace"]
+            ),
+            PlatformCapability(
+                name="Qdrant Operations",
+                description="Upsert, search, and delete points in Qdrant",
+                tool_name="qdrant_operations",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["upsert", "search", "delete_collection"]},
+                        "collection_name": {"type": "string"},
+                        "points": {"type": "array", "items": {"type": "object"}},
+                        "query_vector": {"type": "array", "items": {"type": "number"}},
+                        "limit": {"type": "integer", "default": 5}
+                    },
+                    "required": ["operation", "collection_name"]
+                },
+                operations=["upsert", "search", "delete_collection"]
+            ),
+            PlatformCapability(
+                name="Weaviate Operations",
+                description="Add objects, hybrid search, and manage tenants in Weaviate",
+                tool_name="weaviate_operations",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["add_objects", "hybrid_search", "delete_tenant"]},
+                        "class_name": {"type": "string"},
+                        "objects": {"type": "array", "items": {"type": "object"}},
+                        "query": {"type": "string"},
+                        "vector": {"type": "array", "items": {"type": "number"}},
+                        "tenant": {"type": "string"},
+                        "limit": {"type": "integer", "default": 5}
+                    },
+                    "required": ["operation", "class_name"]
+                },
+                operations=["add_objects", "hybrid_search", "delete_tenant"]
+            )
+        ]
+
+        self.platforms["vector_databases"] = Platform(
+            id="vector_databases",
+            name="Vector Databases",
+            description="Direct access to vector database operations for advanced workflows",
+            icon="database",
+            features=[
+                "Pinecone serverless",
+                "Qdrant (self-hosted or cloud)",
+                "Weaviate hybrid search",
+                "Multi-tenant isolation"
+            ],
+            capabilities=vector_db_capabilities,
+            config_schema={},
+            test_function="test_vector_db_connection"
+        )
+
+        # --- Document Parser Tools (exposed as composable MCP tools) ---
+        parser_capabilities = [
+            PlatformCapability(
+                name="LlamaParse",
+                description="Parse PDFs and complex documents with high accuracy",
+                tool_name="llamaparse_operations",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["parse_document", "parse_from_url", "get_job_result"]},
+                        "url": {"type": "string", "description": "URL of document to parse"},
+                        "job_id": {"type": "string", "description": "Job ID for async result"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["parse_document", "parse_from_url", "get_job_result"]
+            ),
+            PlatformCapability(
+                name="Unstructured",
+                description="Partition 20+ file formats (DOCX, PPTX, XLSX, HTML, etc.)",
+                tool_name="unstructured_operations",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["partition_document", "chunk_elements"]},
+                        "filename": {"type": "string"},
+                        "elements": {"type": "array", "items": {"type": "object"}}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["partition_document", "chunk_elements"]
+            ),
+            PlatformCapability(
+                name="Firecrawl",
+                description="Scrape and crawl websites for clean markdown content",
+                tool_name="firecrawl_operations",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["scrape_url", "crawl_website", "map_sitemap"]},
+                        "url": {"type": "string"},
+                        "max_depth": {"type": "integer", "default": 2}
+                    },
+                    "required": ["operation", "url"]
+                },
+                operations=["scrape_url", "crawl_website", "map_sitemap"]
+            )
+        ]
+
+        self.platforms["document_parsers"] = Platform(
+            id="document_parsers",
+            name="Document Parsers",
+            description="Parse and extract text from any document format",
+            icon="file-text",
+            features=[
+                "PDF parsing (LlamaParse)",
+                "20+ file formats (Unstructured)",
+                "Website scraping (Firecrawl)",
+                "Clean markdown output"
+            ],
+            capabilities=parser_capabilities,
+            config_schema={},
+            test_function="test_parser_connection"
+        )
+
 
 # Global platform registry instance
-platform_registry = PlatformRegistry() 
+platform_registry = PlatformRegistry()
