@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 import uuid
 
-from jinja2 import Template
+from jinja2 import DebugUndefined, Template
 from jinja2.sandbox import SandboxedEnvironment
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -437,6 +437,14 @@ class WorkflowBuilderService:
                 
                 # Update context with step results
                 step_result = step_execution.output_data or {}
+                
+                # Make step_result more forgiving for templates that expect direct array access
+                if isinstance(step_result, dict) and "data" in step_result and isinstance(step_result["data"], dict):
+                    # Copy data contents to root of step_result for easier access (e.g. step_2.results instead of step_2.data.results)
+                    for k, v in step_result["data"].items():
+                        if k not in step_result:
+                            step_result[k] = v
+
                 context["steps"][f"step_{step.step_number}"] = step_result
                 
                 # Also add to root context for easier variable access (e.g. {{step_1.field}})
@@ -640,7 +648,9 @@ class WorkflowBuilderService:
         substituted = {}
         # Create a sandboxed environment to prevent Server-Side Template Injection (SSTI)
         # RCE vulnerabilities from untrusted user/agent generated prompts
-        env = SandboxedEnvironment()
+        # Use DebugUndefined to gracefully handle missing variables by rendering them as strings 
+        # instead of throwing an exception that drops the whole substituted string.
+        env = SandboxedEnvironment(undefined=DebugUndefined)
         
         for key, value in parameters.items():
             if isinstance(value, str) and "{{" in value:
