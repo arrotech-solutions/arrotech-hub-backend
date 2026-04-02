@@ -142,13 +142,18 @@ class BaseConfig(BaseSettings):
     WHATSAPP_APP_ID: Optional[str] = None
     WHATSAPP_APP_SECRET: Optional[str] = None
 
-    # LLM API Keys
+    # LLM & RAG API Keys
     OPENAI_API_KEY: Optional[str] = None
     GEMINI_API_KEY: Optional[str] = None
     HUGGINGFACE_API_KEY: Optional[str] = None
     TOGETHER_API_KEY: Optional[str] = None
     ANTHROPIC_API_KEY: Optional[str] = None
     TAVILY_API_KEY: Optional[str] = None
+    PINECONE_API_KEY: Optional[str] = None
+    PINECONE_INDEX_HOST: Optional[str] = None
+    FIRECRAWL_API_KEY: Optional[str] = None
+    COHERE_API_KEY: Optional[str] = None
+    LLAMA_CLOUD_API_KEY: Optional[str] = None
 
     # Zoho Configuration
     ZOHO_CLIENT_ID: Optional[str] = None
