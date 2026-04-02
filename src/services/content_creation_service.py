@@ -495,6 +495,88 @@ class ContentCreationService:
         
         return topics.get(content_type, ["General content"])
     
+    async def generate_text(
+        self,
+        prompt: str,
+        context: str = "",
+        max_tokens: int = 500,
+        system_prompt: str = "",
+        temperature: float = 0.3,
+    ) -> Dict[str, Any]:
+        """
+        Generate text content using the LLM service.
+
+        Used by RAG pipelines to produce grounded answers from retrieved context,
+        and by general content-creation workflows that need free-form text generation.
+
+        Args:
+            prompt: The user's question or instruction.
+            context: Optional retrieved context (KB chunks, docs, etc.).
+            max_tokens: Maximum tokens for the response.
+            system_prompt: Optional system-level instruction override.
+            temperature: Sampling temperature (lower = more deterministic).
+
+        Returns:
+            Dict with ``success``, ``content``, and metadata keys.
+        """
+        try:
+            from .llm_service import llm_service
+
+            # Build the system message
+            if not system_prompt:
+                if context:
+                    system_prompt = (
+                        "You are a helpful AI assistant. Answer the user's question "
+                        "accurately and concisely using ONLY the provided context. "
+                        "If the context does not contain enough information, say so. "
+                        "Do not make up information."
+                    )
+                else:
+                    system_prompt = (
+                        "You are a helpful AI assistant. Provide a clear, "
+                        "accurate, and concise response."
+                    )
+
+            # Build the user message
+            if context:
+                user_message = (
+                    f"Context:\n{context}\n\n"
+                    f"Question: {prompt}\n\n"
+                    "Answer:"
+                )
+            else:
+                user_message = prompt
+
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ]
+
+            response = await llm_service.chat_completion(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                use_background_model=True,
+            )
+
+            if response.error:
+                return {
+                    "success": False,
+                    "error": f"LLM generation failed: {response.error}",
+                }
+
+            return {
+                "success": True,
+                "content": response.content,
+                "result": response.content,
+                "tokens_used": response.tokens_used,
+                "prompt": prompt,
+            }
+
+        except Exception as e:
+            logger.error(f"Error generating text content: {e}")
+            return {"success": False, "error": str(e)}
+
     def get_available_templates(self) -> Dict[str, Any]:
         """Get list of available templates."""
         return {

@@ -5025,6 +5025,70 @@ class ToolExecutor:
                     content_types=arguments.get("content_types")
                 )
             
+            elif operation == "generate":
+                # LLM-powered text generation (used by RAG pipelines and general workflows)
+                # Accept multiple parameter name conventions for the prompt
+                prompt = (
+                    arguments.get("prompt")
+                    or arguments.get("question")
+                    or arguments.get("text")
+                    or arguments.get("customer_question")
+                    or ""
+                )
+                if not prompt:
+                    return {
+                        "success": False,
+                        "error": "Missing required 'prompt' (or 'question'/'text') parameter for text generation."
+                    }
+
+                # Build context string from various possible sources
+                context = arguments.get("context", "")
+
+                # If context looks like a list of KB results, flatten to readable text
+                if isinstance(context, list):
+                    context_parts = []
+                    for i, item in enumerate(context, 1):
+                        if isinstance(item, dict):
+                            text = item.get("text", item.get("content", str(item)))
+                            source = item.get("source", item.get("file", ""))
+                            score = item.get("score", "")
+                            header = f"[Source {i}]"
+                            if source:
+                                header += f" ({source})"
+                            if score:
+                                header += f" [score: {score}]"
+                            context_parts.append(f"{header}\n{text}")
+                        else:
+                            context_parts.append(str(item))
+                    context = "\n\n---\n\n".join(context_parts)
+                elif isinstance(context, dict):
+                    # Handle dict context (e.g. raw step_1 output)
+                    results = context.get("results", context.get("data", []))
+                    if isinstance(results, list) and results:
+                        context_parts = []
+                        for i, item in enumerate(results, 1):
+                            if isinstance(item, dict):
+                                text = item.get("text", item.get("content", str(item)))
+                                source = item.get("source", "")
+                                context_parts.append(f"[Source {i}] ({source})\n{text}")
+                            else:
+                                context_parts.append(str(item))
+                        context = "\n\n---\n\n".join(context_parts)
+                    else:
+                        context = str(context)
+
+                max_tokens = int(arguments.get("max_tokens", 500))
+                system_prompt = arguments.get("system_prompt", "")
+                temperature = float(arguments.get("temperature", 0.3))
+
+                return await content_creation_service.generate_text(
+                    prompt=prompt,
+                    context=context,
+                    max_tokens=max_tokens,
+                    system_prompt=system_prompt,
+                    temperature=temperature,
+                )
+
             else:
                 return {
                     "success": False,
