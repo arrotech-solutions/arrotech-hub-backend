@@ -1627,10 +1627,10 @@ WORKFLOW_TEMPLATES = [
             }
         ],
         "variables": {
-            "website_url": {"type": "string", "required": True, "format": "url", "description": "Website URL to scrape and ingest"},
-            "kb_id": {"type": "string", "required": True, "description": "Knowledge Base ID to ingest into"},
+            "website_url": {"type": "string", "required": True, "format": "url", "description": "Website URL to scrape and ingest", "placeholder": "https://example.com"},
+            "kb_id": {"type": "string", "required": True, "description": "Knowledge Base ID to ingest into", "default": "default", "placeholder": "e.g. default, support-kb, sales-kb", "connection_for": "rag_pipeline"},
             "test_query": {"type": "string", "default": "What does this company do?", "description": "A test query to verify ingestion"},
-            "notification_channel": {"type": "string", "default": "#general", "description": "Slack channel for notifications"}
+            "notification_channel": {"type": "string", "default": "#general", "description": "Slack channel for notifications", "connection_for": "slack"}
         }
     },
     {
@@ -1666,8 +1666,8 @@ WORKFLOW_TEMPLATES = [
             }
         ],
         "variables": {
-            "document_url": {"type": "string", "required": True, "description": "URL or path of the document to ingest"},
-            "kb_id": {"type": "string", "required": True, "description": "Knowledge Base ID"},
+            "document_url": {"type": "string", "required": True, "description": "URL or path of the document to ingest", "placeholder": "https://example.com/report.pdf"},
+            "kb_id": {"type": "string", "required": True, "description": "Knowledge Base ID", "default": "default", "placeholder": "e.g. default, support-kb", "connection_for": "rag_pipeline"},
             "source_type": {"type": "string", "enum": ["website", "google_drive", "notion"], "default": "website", "description": "Type of document source"},
             "verification_query": {"type": "string", "default": "Summarize the key points", "description": "Query to verify ingestion"}
         }
@@ -1727,11 +1727,11 @@ WORKFLOW_TEMPLATES = [
             }
         ],
         "variables": {
-            "drive_folder_id": {"type": "string", "required": True, "description": "Google Drive folder ID to sync"},
-            "notion_page_id": {"type": "string", "required": True, "description": "Notion page or database ID to sync"},
-            "kb_id": {"type": "string", "required": True, "description": "Knowledge Base ID"},
+            "drive_folder_id": {"type": "string", "required": True, "description": "Google Drive folder ID to sync", "ui_hint": "folder_picker", "connection_for": "google_workspace"},
+            "notion_page_id": {"type": "string", "required": True, "description": "Notion page or database ID to sync", "placeholder": "e.g. abc123def456", "connection_for": "notion"},
+            "kb_id": {"type": "string", "required": True, "description": "Knowledge Base ID", "default": "default", "placeholder": "e.g. default", "connection_for": "rag_pipeline"},
             "test_query": {"type": "string", "default": "What are the latest updates?", "description": "Test query to verify sync"},
-            "notification_channel": {"type": "string", "default": "#knowledge-base", "description": "Slack channel for notifications"}
+            "notification_channel": {"type": "string", "default": "#knowledge-base", "description": "Slack channel for notifications", "connection_for": "slack"}
         }
     },
     {
@@ -1779,9 +1779,9 @@ WORKFLOW_TEMPLATES = [
             }
         ],
         "variables": {
-            "customer_question": {"type": "string", "required": True, "description": "The customer's question"},
-            "kb_id": {"type": "string", "required": True, "description": "Knowledge Base ID to search"},
-            "response_channel": {"type": "string", "default": "#customer-support", "description": "Slack channel to post the answer"}
+            "customer_question": {"type": "string", "required": True, "description": "The customer's question", "placeholder": "e.g. How do I reset my password?"},
+            "kb_id": {"type": "string", "required": True, "description": "Knowledge Base ID to search", "default": "default", "placeholder": "e.g. default, support-kb", "connection_for": "rag_pipeline"},
+            "response_channel": {"type": "string", "default": "#customer-support", "description": "Slack channel to post the answer", "connection_for": "slack"}
         }
     },
     {
@@ -1827,8 +1827,8 @@ WORKFLOW_TEMPLATES = [
             }
         ],
         "variables": {
-            "kb_id": {"type": "string", "required": True, "description": "Knowledge Base ID to maintain"},
-            "source_url": {"type": "string", "required": True, "description": "Original source URL/ID to re-ingest from"},
+            "kb_id": {"type": "string", "required": True, "description": "Knowledge Base ID to maintain", "default": "default", "placeholder": "e.g. default, support-kb", "connection_for": "rag_pipeline"},
+            "source_url": {"type": "string", "required": True, "description": "Original source URL/ID to re-ingest from", "placeholder": "https://example.com"},
             "source_type": {"type": "string", "enum": ["website", "google_drive", "notion", "airtable"], "default": "website"},
             "vector_db": {"type": "string", "enum": ["pinecone", "qdrant", "weaviate"], "default": "pinecone", "description": "Vector database backend"},
             "verification_query": {"type": "string", "default": "What is the main topic?", "description": "Query to verify re-ingestion"}
@@ -1889,10 +1889,10 @@ WORKFLOW_TEMPLATES = [
             }
         ],
         "variables": {
-            "research_url": {"type": "string", "required": True, "format": "url", "description": "URL to research (e.g., competitor website, article)"},
-            "research_question": {"type": "string", "required": True, "description": "Specific research question to answer"},
-            "kb_id": {"type": "string", "required": True, "description": "Knowledge Base ID (use a dedicated research KB)"},
-            "output_channel": {"type": "string", "default": "#research", "description": "Slack channel for the research report"}
+            "research_url": {"type": "string", "required": True, "format": "url", "description": "URL to research (e.g., competitor website, article)", "placeholder": "https://competitor.com"},
+            "research_question": {"type": "string", "required": True, "description": "Specific research question to answer", "placeholder": "e.g. What is their pricing strategy?"},
+            "kb_id": {"type": "string", "required": True, "description": "Knowledge Base ID (use a dedicated research KB)", "default": "research", "placeholder": "e.g. research, default", "connection_for": "rag_pipeline"},
+            "output_channel": {"type": "string", "default": "#research", "description": "Slack channel for the research report", "connection_for": "slack"}
         }
     }
 ]
@@ -1918,6 +1918,82 @@ class TemplateResponse(BaseModel):
     success: bool
     data: Any = None
     message: str = None
+
+
+@router.get("/helpers/drive-folders", response_model=TemplateResponse)
+async def list_drive_folders(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List Google Drive folders for folder picker dropdowns."""
+    try:
+        # Find user's google_workspace connection
+        from ..models import Connection, ConnectionStatus
+        result = await db.execute(
+            select(Connection).where(
+                Connection.user_id == current_user.id,
+                Connection.platform == "google_workspace",
+                Connection.status == ConnectionStatus.ACTIVE,
+            )
+        )
+        connection = result.scalar_one_or_none()
+
+        if not connection:
+            return TemplateResponse(
+                success=False,
+                message="Google Workspace not connected",
+                data=[]
+            )
+
+        # Build credentials and initialize Drive service (same pattern as tool_executor)
+        from ..services.google_workspace.base_client import GoogleWorkspaceBaseClient
+        from ..services.google_workspace.drive_service import DriveService
+
+        client_id = connection.config.get("client_id")
+        client_secret = connection.config.get("client_secret")
+        refresh_token = connection.config.get("refresh_token")
+
+        if not all([client_id, client_secret, refresh_token]):
+            return TemplateResponse(
+                success=False,
+                message="Incomplete Google Workspace credentials",
+                data=[]
+            )
+
+        credentials_data = {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+            "access_token": connection.config.get("access_token"),
+            "scopes": connection.config.get("scopes"),
+        }
+        base_client = GoogleWorkspaceBaseClient(credentials_data)
+        drive_service = DriveService(base_client)
+
+        folders_result = await drive_service.list_folders()
+
+        if not folders_result.get("success"):
+            return TemplateResponse(
+                success=False,
+                message=folders_result.get("error", "Failed to list folders"),
+                data=[]
+            )
+
+        # Map {label, value} from list_folders() to {id, name} for the frontend
+        folder_list = [
+            {"id": opt.get("value"), "name": opt.get("label")}
+            for opt in folders_result.get("options", [])
+        ]
+
+        return TemplateResponse(success=True, data=folder_list)
+
+    except Exception as e:
+        logger.error(f"Failed to list Drive folders: {e}")
+        return TemplateResponse(
+            success=False,
+            message="Failed to fetch Google Drive folders",
+            data=[]
+        )
 
 
 @router.get("/", response_model=TemplateResponse)
