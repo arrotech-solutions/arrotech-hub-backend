@@ -1,56 +1,268 @@
 """
 RAG Pipeline Service 
-Orchestrates fetching, parsing, chunking, and vector DB insertion.
+Orchestrates fetching, parsing, chunking, embedding, and vector DB insertion.
+Fully dynamic — routes to the correct vector DB, embedding model, and parser
+based on each KnowledgeBase's stored configuration.
 """
 import logging
 import uuid
-from typing import Dict, Any, List
+import tiktoken
+from typing import Dict, Any, List, Optional
+from datetime import datetime, timezone
 
-from .firecrawl_service import FirecrawlService
-from .openai_service import OpenAIEmbeddingService
 from .pinecone_service import PineconeService
+from .qdrant_service import QdrantService
+from .weaviate_service import WeaviateService
+from .firecrawl_service import FirecrawlService
+from .unstructured_service import UnstructuredService
+from .cohere_service import CohereService
 
 logger = logging.getLogger(__name__)
 
+
 class RAGPipelineService:
-    """Zero File Storage RAG Pipeline Orchestrator."""
+    """Zero File Storage RAG Pipeline Orchestrator.
+    
+    Dynamically routes to the correct vector DB (Pinecone/Qdrant/Weaviate),
+    embedding model (OpenAI/Cohere/HuggingFace), and parser (LlamaParse/
+    Unstructured/Firecrawl) based on each KnowledgeBase's stored config.
+    """
     
     def __init__(self):
+        # Vector DB services — lazily selected per KB config
+        self._vector_services = {
+            "pinecone": PineconeService(),
+            "qdrant": QdrantService(),
+            "weaviate": WeaviateService(),
+        }
+        # Parser services
         self.firecrawl = FirecrawlService()
-        self.openai = OpenAIEmbeddingService()
-        self.pinecone = PineconeService()
+        self.unstructured = UnstructuredService()
+        # Reranker
+        self.cohere = CohereService()
+        
+        try:
+            self.tokenizer = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            self.tokenizer = tiktoken.encoding_for_model("gpt-4o")
 
-    def chunk_text(self, text: str, chunk_size: int = 512, overlap: int = 50) -> List[str]:
-        """Simple character overlap chunking algorithm."""
+    # ================================================================
+    # VECTOR DB ROUTING — dynamic based on KB config
+    # ================================================================
+
+    def _get_vector_service(self, vector_db: str):
+        """Return the correct vector DB service based on KB config."""
+        service = self._vector_services.get(vector_db)
+        if not service:
+            logger.warning(f"Unknown vector_db '{vector_db}', falling back to Pinecone")
+            return self._vector_services["pinecone"]
+        return service
+
+    async def _vector_upsert(self, vector_db: str, namespace: str, vectors: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Route upsert to the correct vector DB."""
+        service = self._get_vector_service(vector_db)
+        
+        if vector_db == "pinecone":
+            return await service.pinecone_upsert_vectors(
+                index_host=None, namespace=namespace, vectors=vectors
+            )
+        elif vector_db == "qdrant":
+            # Qdrant uses collection_name = namespace, points format differs
+            points = [{
+                "id": v["id"],
+                "vector": v["values"],
+                "payload": v["metadata"]
+            } for v in vectors]
+            return await service.qdrant_upsert_points(
+                collection_name=namespace, points=points
+            )
+        elif vector_db == "weaviate":
+            # Weaviate uses class_name + tenant
+            objects = [{
+                "properties": v["metadata"],
+                "vector": v["values"]
+            } for v in vectors]
+            return await service.weaviate_add_objects(
+                class_name="KnowledgeChunk", objects=objects, tenant=namespace
+            )
+        
+        return {"success": False, "error": f"Unsupported vector_db: {vector_db}"}
+
+    async def _vector_query(self, vector_db: str, namespace: str, query_vector: List[float], top_k: int = 5) -> Dict[str, Any]:
+        """Route query to the correct vector DB."""
+        service = self._get_vector_service(vector_db)
+        
+        if vector_db == "pinecone":
+            return await service.pinecone_query(
+                index_host=None, namespace=namespace,
+                vector=query_vector, top_k=top_k
+            )
+        elif vector_db == "qdrant":
+            res = await service.qdrant_search(
+                collection_name=namespace, query_vector=query_vector, limit=top_k
+            )
+            # Normalize Qdrant response to match Pinecone format
+            if res.get("success"):
+                matches = [{
+                    "score": r.get("score", 0),
+                    "metadata": r.get("payload", {})
+                } for r in res.get("result", [])]
+                return {"success": True, "matches": matches}
+            return res
+        elif vector_db == "weaviate":
+            res = await service.weaviate_hybrid_search(
+                class_name="KnowledgeChunk", query="",
+                vector=query_vector, tenant=namespace, limit=top_k
+            )
+            # Normalize Weaviate response
+            if res.get("success"):
+                matches = [{
+                    "score": 1.0 - r.get("_additional", {}).get("distance", 0),
+                    "metadata": {k: v for k, v in r.items() if k != "_additional"}
+                } for r in res.get("results", [])]
+                return {"success": True, "matches": matches}
+            return res
+
+        return {"success": False, "error": f"Unsupported vector_db: {vector_db}"}
+
+    async def _vector_delete_namespace(self, vector_db: str, namespace: str) -> Dict[str, Any]:
+        """Delete an entire namespace/collection/tenant from the vector DB."""
+        service = self._get_vector_service(vector_db)
+        
+        if vector_db == "pinecone":
+            return await service.pinecone_delete_namespace(index_host=None, namespace=namespace)
+        elif vector_db == "qdrant":
+            return await service.qdrant_delete_collection(collection_name=namespace)
+        elif vector_db == "weaviate":
+            return await service.weaviate_delete_tenant(class_name="KnowledgeChunk", tenant=namespace)
+        
+        return {"success": False, "error": f"Unsupported vector_db: {vector_db}"}
+
+    # ================================================================
+    # KB CONFIG RESOLUTION — reads settings from database
+    # ================================================================
+
+    async def _resolve_kb_config(self, kb_id: str, user_id: str, db) -> Optional[Dict[str, Any]]:
+        """Look up a KnowledgeBase's config from the database."""
+        try:
+            from ..models import KnowledgeBase
+            from sqlalchemy import select
+            
+            stmt = select(KnowledgeBase).filter(
+                KnowledgeBase.id == uuid.UUID(kb_id),
+                KnowledgeBase.user_id == uuid.UUID(user_id)
+            )
+            result = await db.execute(stmt)
+            kb = result.scalars().first()
+            
+            if not kb:
+                logger.warning(f"KnowledgeBase {kb_id} not found for user {user_id}")
+                return None
+            
+            return {
+                "kb_id": str(kb.id),
+                "user_id": str(kb.user_id),
+                "name": kb.name,
+                "embedding_model": kb.embedding_model or "text-embedding-3-small",
+                "vector_db": kb.vector_db or "pinecone",
+                "chunk_size": kb.chunk_size or 512,
+                "chunk_overlap": kb.chunk_overlap or 50,
+            }
+        except Exception as e:
+            logger.error(f"Error resolving KB config: {e}")
+            return None
+
+    def _embedding_model_to_operation(self, model_name: str) -> str:
+        """Map a KB's embedding_model string to the ai_embeddings operation name."""
+        mapping = {
+            "text-embedding-3-small": "openai_small",
+            "text-embedding-3-large": "openai_large",
+            "embed-multilingual-v3.0": "cohere_multilingual",
+            "all-MiniLM-L6-v2": "huggingface_local",
+            # Also accept operation names directly
+            "openai_small": "openai_small",
+            "openai_large": "openai_large",
+            "cohere_multilingual": "cohere_multilingual",
+            "huggingface_local": "huggingface_local",
+        }
+        return mapping.get(model_name, "openai_small")
+
+    # ================================================================
+    # CHUNKING — native recursive token splitter
+    # ================================================================
+
+    def native_recursive_token_splitter(self, text: str, chunk_size: int = 512, overlap: int = 50) -> List[str]:
+        """
+        Native Recursive Token Splitter using tiktoken.
+        Splits on paragraphs → sentences → words while staying within token limits.
+        """
         if not text:
             return []
-        
-        chunks = []
-        start = 0
-        text_len = len(text)
-        
-        while start < text_len:
-            end = min(start + chunk_size, text_len)
-            
-            # If we're not at the end of the text, try to find a natural break point
-            if end < text_len:
-                last_newline = text.rfind('\n', start, end)
-                if last_newline != -1 and last_newline > start + chunk_size // 2:
-                    end = last_newline + 1
-                else:
-                    last_space = text.rfind(' ', start, end)
-                    if last_space != -1 and last_space > start + chunk_size // 2:
-                        end = last_space + 1
 
-            chunk = text[start:end].strip()
-            if chunk:
-                chunks.append(chunk)
+        def get_tokens(t):
+            return self.tokenizer.encode(t)
+
+        final_chunks = []
+        paragraphs = text.split('\n\n')
+        
+        current_chunk_tokens = []
+        current_chunk_text = ""
+        
+        for para in paragraphs:
+            para_tokens = get_tokens(para)
+            
+            if len(current_chunk_tokens) + len(para_tokens) <= chunk_size:
+                current_chunk_tokens.extend(para_tokens)
+                current_chunk_text += (para + "\n\n")
+            else:
+                if current_chunk_text:
+                    final_chunks.append(current_chunk_text.strip())
                 
-            start = end - overlap
-            if start >= text_len or end >= text_len:
-                break
-                
-        return chunks
+                if len(para_tokens) > chunk_size:
+                    sentences = para.replace('\n', ' ').split('. ')
+                    current_chunk_tokens = []
+                    current_chunk_text = ""
+                    
+                    for sent in sentences:
+                        sent = sent.strip() + ". "
+                        sent_tokens = get_tokens(sent)
+                        
+                        if len(current_chunk_tokens) + len(sent_tokens) <= chunk_size:
+                            current_chunk_tokens.extend(sent_tokens)
+                            current_chunk_text += sent
+                        else:
+                            if current_chunk_text:
+                                final_chunks.append(current_chunk_text.strip())
+                            
+                            if len(sent_tokens) > chunk_size:
+                                words = sent.split(' ')
+                                current_chunk_tokens = []
+                                current_chunk_text = ""
+                                for word in words:
+                                    word = word + " "
+                                    word_tokens = get_tokens(word)
+                                    if len(current_chunk_tokens) + len(word_tokens) > chunk_size:
+                                        final_chunks.append(current_chunk_text.strip())
+                                        current_chunk_tokens = word_tokens
+                                        current_chunk_text = word
+                                    else:
+                                        current_chunk_tokens.extend(word_tokens)
+                                        current_chunk_text += word
+                            else:
+                                current_chunk_tokens = sent_tokens
+                                current_chunk_text = sent
+                else:
+                    current_chunk_tokens = para_tokens
+                    current_chunk_text = para + "\n\n"
+                    
+        if current_chunk_text:
+            final_chunks.append(current_chunk_text.strip())
+            
+        return final_chunks
+
+    # ================================================================
+    # TEXT EXTRACTION — smart extraction from diverse platform objects
+    # ================================================================
 
     def _smart_extract_text(self, item: Any) -> Dict[str, str]:
         """
@@ -63,11 +275,9 @@ class RAGPipelineService:
         if not item:
             return {"text": "", "url": source_url}
             
-        # 1. Handle simple string/text
         if isinstance(item, str):
             return {"text": item, "url": source_url}
             
-        # 2. Handle Dictionary (Platform Objects)
         if isinstance(item, dict):
             # Google Workspace Docs / Drive
             if 'content' in item and 'mime_type' in item:
@@ -86,34 +296,81 @@ class RAGPipelineService:
                 props = item.get('properties', {})
                 text = "\n".join([f"- **{k}**: {v}" for k, v in props.items()])
                 source_url = f"hubspot://{item.get('id', 'record')}"
+            # Notion pages
+            elif 'blocks' in item or 'results' in item:
+                import json
+                text = json.dumps(item, indent=2)
+                source_url = f"notion://{item.get('id', 'page')}"
+            # Airtable records
+            elif 'fields' in item:
+                fields = item.get('fields', {})
+                text = "\n".join([f"- **{k}**: {v}" for k, v in fields.items()])
+                source_url = f"airtable://{item.get('id', 'record')}"
             # Generic JSON
             else:
                 import json
                 text = json.dumps(item, indent=2)
                 
-        # 3. Handle Lists (Recursive call for nested structures if needed)
         elif isinstance(item, list):
-             import json
-             text = json.dumps(item, indent=2)
+            import json
+            text = json.dumps(item, indent=2)
 
         return {"text": text, "url": source_url}
+
+    # ================================================================
+    # INGESTION — universal content ingestion with dynamic routing
+    # ================================================================
 
     async def rag_ingest_content(
         self, 
         content: Any, 
         kb_id: str, 
-        namespace: str, 
+        user_id: str,
         source_url: str = None,
-        metadata: Dict[str, Any] = None
+        source_name: str = None,
+        source_tool: str = "custom",
+        embedding_model: str = None,
+        chunk_size: int = None,
+        chunk_overlap: int = None,
+        vector_db: str = None,
+        metadata: Dict[str, Any] = None,
+        user: Any = None,
+        db: Any = None
     ) -> Dict[str, Any]:
         """
         Universal Knowledge Sink: Handles single items or lists from any source.
+        Dynamically routes to the correct embedding model and vector DB based on
+        the KnowledgeBase's stored config (with parameter overrides supported).
         """
+        from .tool_executor import ToolExecutor
+        executor = ToolExecutor()
+        
+        # Resolve KB config from database if available
+        kb_config = None
+        if db and user_id:
+            kb_config = await self._resolve_kb_config(kb_id, user_id, db)
+        
+        # Use KB config as defaults, allow parameter overrides
+        effective_embedding = embedding_model or (kb_config or {}).get("embedding_model", "text-embedding-3-small")
+        effective_chunk_size = chunk_size or (kb_config or {}).get("chunk_size", 512)
+        effective_chunk_overlap = chunk_overlap or (kb_config or {}).get("chunk_overlap", 50)
+        effective_vector_db = vector_db or (kb_config or {}).get("vector_db", "pinecone")
+        
+        # Map embedding model name to operation
+        embed_operation = self._embedding_model_to_operation(effective_embedding)
+        
         items_to_process = content if isinstance(content, list) else [content]
         all_chunks = []
         all_vectors = []
         
-        logger.info(f"Universal Ingestion: Processing {len(items_to_process)} items for KB {kb_id}")
+        # Multi-tenant isolated namespace
+        namespace = f"user_{user_id}_kb_{kb_id}"
+        
+        logger.info(
+            f"RAG Ingestion: Processing {len(items_to_process)} items for KB {kb_id} "
+            f"(Namespace: {namespace}, VectorDB: {effective_vector_db}, "
+            f"Embedding: {embed_operation}, ChunkSize: {effective_chunk_size})"
+        )
         
         # 1. Batch Extraction & Chunking
         for item in items_to_process:
@@ -124,32 +381,52 @@ class RAGPipelineService:
             if not item_text.strip():
                 continue
                 
-            item_chunks = self.chunk_text(item_text, 512)
-            for chunk in item_chunks:
+            item_chunks = self.native_recursive_token_splitter(
+                item_text, chunk_size=effective_chunk_size, overlap=effective_chunk_overlap
+            )
+            
+            for idx, chunk in enumerate(item_chunks):
                 all_chunks.append({
                     "text": chunk,
-                    "url": item_url
+                    "url": item_url,
+                    "index": idx,
+                    "file_name": source_name or "document"
                 })
 
         if not all_chunks:
-             return {"status": "success", "message": "No valid text content found to ingest", "chunks_added": 0}
+            return {"status": "success", "message": "No valid text content found", "chunks_added": 0}
 
-        # 2. Batch Embedding (OpenAI)
+        # 2. Batch Embedding via ToolExecutor (dynamically routes to correct provider)
         texts_only = [c["text"] for c in all_chunks]
-        embeddings_result = await self.openai.openai_batch_create_embeddings(texts_only)
+        embed_params = {
+            "operation": embed_operation,
+            "input": texts_only
+        }
         
-        if not embeddings_result.get("success"):
-            return {"status": "error", "message": f"Embedding failed: {embeddings_result.get('error')}"}
+        embed_res = await executor.execute_tool("ai_embeddings", embed_params, user, db)
         
-        embeddings_list = embeddings_result.get("embeddings", [])
+        if not embed_res.get("success"):
+            return {"status": "error", "message": f"Embedding Error: {embed_res.get('error')}"}
         
-        # 3. Batch Preparing Vectors
+        embeddings_list = embed_res.get("embeddings", [])
+        
+        if len(embeddings_list) != len(all_chunks):
+            return {"status": "error", "message": f"Embedding count mismatch: got {len(embeddings_list)}, expected {len(all_chunks)}"}
+        
+        # 3. Prepare vectors with metadata
+        now = datetime.now(timezone.utc).isoformat()
         for i, (chunk_data, embedding) in enumerate(zip(all_chunks, embeddings_list)):
-            vector_id = f"v_{uuid.uuid4().hex[:6]}_{i}"
+            vector_id = f"chunk_{uuid.uuid4().hex[:12]}_{i}"
+            
             meta = {
-                "text": chunk_data["text"][:5000],
+                "text": chunk_data["text"][:8192],  # Protect against metadata size limits
                 "source_url": chunk_data["url"],
-                "kb_id": kb_id
+                "source_tool": source_tool,
+                "source_file_name": chunk_data["file_name"],
+                "kb_id": kb_id,
+                "customer_id": user_id,
+                "chunk_index": chunk_data["index"],
+                "last_modified": now
             }
             if metadata:
                 meta.update(metadata)
@@ -160,122 +437,323 @@ class RAGPipelineService:
                 "metadata": meta
             })
             
-        # 4. Final Bulk Upsert
-        upsert_res = await self.pinecone.pinecone_upsert_vectors(
-            index_host=None,
-            namespace=namespace,
-            vectors=all_vectors
-        )
+        # 4. Dynamic Vector DB Upsert
+        upsert_res = await self._vector_upsert(effective_vector_db, namespace, all_vectors)
+        
+        if not upsert_res.get("success", False):
+            return {"status": "error", "message": f"Vector DB Error: {upsert_res.get('error')}"}
         
         return {
             "status": "success",
             "count": len(items_to_process),
-            "chunks_added": upsert_res.get("upserted_count", len(all_vectors)),
+            "chunks_added": upsert_res.get("upserted_count", upsert_res.get("upserted", upsert_res.get("added", len(all_vectors)))),
+            "namespace": namespace,
+            "vector_db": effective_vector_db,
+            "embedding_model": embed_operation,
             "message": f"Successfully ingested {len(items_to_process)} sources into Knowledge Base."
         }
 
+
+    # ================================================================
+    # SOURCE INGESTION — fetches from MCP tools, then ingests
+    # ================================================================
 
     async def rag_ingest_source(
         self, 
         url_or_id: str, 
         kb_id: str, 
-        namespace: str, 
+        user_id: str,
         source_type: str = "website", 
         user: Any = None, 
         db: Any = None
     ) -> Dict[str, Any]:
         """
-        Refactored: Now fetches data and passes it to rag_ingest_content.
+        Fetches data from an MCP tool source, parses it, and ingests via rag_ingest_content.
+        Dynamically routes to the correct MCP tool based on source_type.
         """
-        logger.info(f"Starting MCP fetch for {source_type}: {url_or_id}")
+        logger.info(f"Starting source fetch for {source_type}: {url_or_id}")
         raw_text = ""
         source_url = url_or_id
+        source_name = url_or_id  # Safe default — no NameError
         
         try:
             from .tool_executor import ToolExecutor
             executor = ToolExecutor()
             
+            # ---- Website (Firecrawl) ----
             if source_type == "website":
                 scrape_result = await self.firecrawl.firecrawl_scrape_url(url_or_id)
                 if not scrape_result.get("success"):
                     return {"status": "error", "message": f"Scraping failed: {scrape_result.get('error')}"}
                 raw_text = scrape_result.get("markdown", "")
+                source_name = url_or_id
                 
+            # ---- Google Drive ----
             elif source_type in ["google_drive", "google_workspace_drive"]:
-                res = await executor.execute_tool("google_workspace_drive", {"operation": "download_file", "file_id": url_or_id}, user, db)
-                if not res.get("success"): return {"status": "error", "message": "Drive fetch failed"}
+                res = await executor.execute_tool(
+                    "google_workspace_drive", 
+                    {"operation": "download_file", "file_id": url_or_id}, 
+                    user, db
+                )
+                if not res.get("success"):
+                    return {"status": "error", "message": f"Drive fetch failed: {res.get('error')}"}
                 
-                from .llamaparse_service import LlamaParseService
-                import asyncio
-                parse_res = await LlamaParseService().llamaparse_parse_document(res.get("content"), f"{url_or_id}.pdf")
-                if parse_res.get("success"):
-                    job_id = parse_res.get("job_id")
-                    for _ in range(6): 
-                        await asyncio.sleep(10)
-                        job_res = await LlamaParseService().llamaparse_get_job_result(job_id)
-                        if job_res.get("status") == "SUCCESS":
-                            raw_text = job_res.get("markdown", "")
-                            break
+                content = res.get("content")
+                mime_type = res.get("mime_type", "")
+                source_name = res.get("name", url_or_id)
+                
+                # Smart parser routing based on MIME type
+                if mime_type == "application/pdf":
+                    from .llamaparse_service import LlamaParseService
+                    import asyncio
+                    parse_res = await LlamaParseService().llamaparse_parse_document(content, f"{source_name}")
+                    if parse_res.get("success"):
+                        job_id = parse_res.get("job_id")
+                        for _ in range(6): 
+                            await asyncio.sleep(10)
+                            job_res = await LlamaParseService().llamaparse_get_job_result(job_id)
+                            if job_res.get("status") == "SUCCESS":
+                                raw_text = job_res.get("markdown", "")
+                                break
+                else:
+                    # Use Unstructured for Office Docs (DOCX, PPTX, XLSX, TXT)
+                    parse_res = await self.unstructured.unstructured_partition_document(content, source_name)
+                    if parse_res.get("success"):
+                        elements = parse_res.get("elements", [])
+                        raw_text = "\n\n".join([el.get("text", "") for el in elements if el.get("text")])
+                
                 source_url = f"https://drive.google.com/file/d/{url_or_id}/view"
                 
+            # ---- Notion ----
             elif source_type == "notion":
-                res = await executor.execute_tool("notion_pages", {"operation": "read", "page_id": url_or_id}, user, db)
-                if not res.get("success"): return {"status": "error", "message": "Notion fetch failed"}
+                res = await executor.execute_tool(
+                    "notion_pages", 
+                    {"operation": "read", "page_id": url_or_id}, 
+                    user, db
+                )
+                if not res.get("success"):
+                    return {"status": "error", "message": f"Notion fetch failed: {res.get('error')}"}
                 raw_text = str(res.get("data", ""))
                 source_url = f"notion://{url_or_id}"
+                source_name = f"Notion Page {url_or_id}"
                 
-            # Finalize via generic ingestion
-            return await self.rag_ingest_content(raw_text, kb_id, namespace, source_url)
+            # ---- Airtable ----
+            elif source_type == "airtable":
+                res = await executor.execute_tool(
+                    "airtable_record_management",
+                    {"operation": "list_records", "base_id": url_or_id.split("/")[0], "table_name": url_or_id.split("/")[1] if "/" in url_or_id else "Table"},
+                    user, db
+                )
+                if not res.get("success"):
+                    return {"status": "error", "message": f"Airtable fetch failed: {res.get('error')}"}
+                raw_text = str(res.get("data", res.get("result", "")))
+                source_url = f"airtable://{url_or_id}"
+                source_name = f"Airtable {url_or_id}"
+                
+            # ---- Google Sheets ----
+            elif source_type in ["google_sheets", "google_workspace_sheets"]:
+                res = await executor.execute_tool(
+                    "google_workspace_sheets",
+                    {"operation": "read_range", "spreadsheet_id": url_or_id, "range_name": "A:Z"},
+                    user, db
+                )
+                if not res.get("success"):
+                    return {"status": "error", "message": f"Sheets fetch failed: {res.get('error')}"}
+                raw_text = str(res.get("data", res.get("result", "")))
+                source_url = f"https://docs.google.com/spreadsheets/d/{url_or_id}"
+                source_name = f"Google Sheet {url_or_id}"
+                
+            # ---- Slack ----
+            elif source_type == "slack":
+                res = await executor.execute_tool(
+                    "slack_search",
+                    {"action": "get_channel_history", "channel": url_or_id, "limit": 100},
+                    user, db
+                )
+                if not res.get("success"):
+                    return {"status": "error", "message": f"Slack fetch failed: {res.get('error')}"}
+                messages = res.get("data", {}).get("messages", [])
+                raw_text = "\n\n".join([f"[{m.get('user', 'Unknown')}]: {m.get('text', '')}" for m in messages])
+                source_url = f"slack://{url_or_id}"
+                source_name = f"Slack #{url_or_id}"
+                
+            # ---- Gmail ----
+            elif source_type in ["gmail", "google_workspace_gmail"]:
+                res = await executor.execute_tool(
+                    "google_workspace_gmail",
+                    {"operation": "search_emails", "query": url_or_id, "max_results": 50},
+                    user, db
+                )
+                if not res.get("success"):
+                    return {"status": "error", "message": f"Gmail fetch failed: {res.get('error')}"}
+                emails = res.get("data", {}).get("emails", [])
+                raw_text = "\n\n---\n\n".join([
+                    f"Subject: {e.get('subject', '')}\nFrom: {e.get('from', '')}\n\n{e.get('body', e.get('snippet', ''))}"
+                    for e in emails
+                ])
+                source_url = f"gmail://search/{url_or_id}"
+                source_name = f"Gmail: {url_or_id}"
+                
+            # ---- HubSpot ----
+            elif source_type == "hubspot":
+                res = await executor.execute_tool(
+                    "hubspot_contact_operations",
+                    {"operation": "read", "limit": 100},
+                    user, db
+                )
+                if not res.get("success"):
+                    return {"status": "error", "message": f"HubSpot fetch failed: {res.get('error')}"}
+                raw_text = str(res.get("data", res.get("result", "")))
+                source_url = f"hubspot://contacts"
+                source_name = "HubSpot Contacts"
+            
+            # ---- Generic MCP Tool (dynamic) ----
+            else:
+                logger.warning(f"Source type '{source_type}' not specifically handled, attempting generic MCP fetch")
+                res = await executor.execute_tool(
+                    source_type,
+                    {"operation": "read", "id": url_or_id},
+                    user, db
+                )
+                if not res.get("success"):
+                    return {"status": "error", "message": f"Generic fetch failed for {source_type}: {res.get('error')}"}
+                raw_text = str(res.get("data", res.get("result", "")))
+                source_url = f"{source_type}://{url_or_id}"
+                source_name = f"{source_type}: {url_or_id}"
+            
+            # If no text was extracted, return error
+            if not raw_text or not raw_text.strip():
+                return {"status": "error", "message": f"No text content extracted from {source_type} source"}
+            
+            # Delegate to generic ingestion with KB-aware parameters
+            return await self.rag_ingest_content(
+                content=raw_text, 
+                kb_id=kb_id, 
+                user_id=user_id, 
+                source_url=source_url,
+                source_name=source_name,
+                source_tool=source_type,
+                user=user,
+                db=db
+            )
                  
         except Exception as e:
-             logger.error(f"Error in dynamic source fetch: {e}")
-             return {"status": "error", "message": str(e)}
+            logger.error(f"Error in source ingestion for {source_type}: {e}", exc_info=True)
+            return {"status": "error", "message": str(e)}
 
 
-    async def rag_search_query(self, query: str, namespace: str, top_k: int = 5) -> Dict[str, Any]:
+    # ================================================================
+    # RETRIEVAL — dynamic embedding + vector search + optional reranking
+    # ================================================================
+
+    async def rag_search_query(
+        self, 
+        query: str, 
+        kb_id: str, 
+        user_id: str, 
+        embedding_model: str = None,
+        vector_db: str = None,
+        top_k: int = 5,
+        rerank: bool = False,
+        rerank_top_n: int = 3,
+        user: Any = None,
+        db: Any = None
+    ) -> Dict[str, Any]:
         """
-        Retrieval flow for a given query against a Knowledge Base namespace.
+        Retrieval flow: Dynamically routes to correct embedding model and vector DB
+        based on KB config. Optionally reranks results using Cohere.
         """
-        logger.info(f"Searching namespace {namespace} for query: {query}")
+        from .tool_executor import ToolExecutor
+        executor = ToolExecutor()
         
-        # Embed query
-        embed_res = await self.openai.openai_create_embedding(query)
+        # Resolve KB config from database
+        kb_config = None
+        if db and user_id:
+            kb_config = await self._resolve_kb_config(kb_id, user_id, db)
+        
+        effective_embedding = embedding_model or (kb_config or {}).get("embedding_model", "text-embedding-3-small")
+        effective_vector_db = vector_db or (kb_config or {}).get("vector_db", "pinecone")
+        embed_operation = self._embedding_model_to_operation(effective_embedding)
+        
+        # Multi-tenant namespace
+        namespace = f"user_{user_id}_kb_{kb_id}"
+        logger.info(f"RAG Search: {namespace} | VectorDB: {effective_vector_db} | Query: {query[:100]}")
+        
+        # 1. Embed query via ToolExecutor
+        embed_params = {
+            "operation": embed_operation,
+            "input": query
+        }
+        embed_res = await executor.execute_tool("ai_embeddings", embed_params, user, db)
+        
         if not embed_res.get("success"):
-            return {"success": False, "error": embed_res.get("error")}
+            return {"success": False, "error": f"Query embedding failed: {embed_res.get('error')}"}
             
-        query_vector = embed_res.get("embedding")
+        query_vector = embed_res.get("embeddings", [])[0]
         
-        # Vector search
-        search_res = await self.pinecone.pinecone_query(
-            index_host=None,
-            namespace=namespace,
-            vector=query_vector,
-            top_k=top_k
-        )
+        # 2. Dynamic Vector DB Query
+        search_res = await self._vector_query(effective_vector_db, namespace, query_vector, top_k=top_k)
         
         if not search_res.get("success"):
-             return {"success": False, "error": search_res.get("error")}
+            return {"success": False, "error": search_res.get("error")}
              
         matches = search_res.get("matches", [])
         results = [
             {
                 "score": match.get("score"),
                 "text": match.get("metadata", {}).get("text", ""),
-                "source": match.get("metadata", {}).get("source_url", "")
+                "source": match.get("metadata", {}).get("source_url", ""),
+                "file": match.get("metadata", {}).get("source_file_name", ""),
+                "tool": match.get("metadata", {}).get("source_tool", ""),
+                "modified": match.get("metadata", {}).get("last_modified", "")
             }
             for match in matches
         ]
-             
-        return {"success": True, "results": results}
-
         
+        # 3. Optional Cohere Reranking
+        if rerank and results:
+            try:
+                documents = [r["text"] for r in results if r["text"]]
+                if documents:
+                    rerank_res = await self.cohere.cohere_rerank(
+                        query=query, documents=documents, top_n=rerank_top_n
+                    )
+                    if rerank_res.get("success"):
+                        reranked = rerank_res.get("results", [])
+                        # Reorder results based on reranking scores
+                        reranked_results = []
+                        for rr in reranked:
+                            idx = rr.get("index", 0)
+                            if idx < len(results):
+                                result = results[idx].copy()
+                                result["rerank_score"] = rr.get("relevance_score", 0)
+                                reranked_results.append(result)
+                        results = reranked_results
+                        logger.info(f"Reranked {len(results)} results")
+            except Exception as e:
+                logger.warning(f"Reranking failed (non-fatal): {e}")
+             
+        return {
+            "success": True, 
+            "results": results, 
+            "namespace": namespace,
+            "vector_db": effective_vector_db,
+            "reranked": rerank
+        }
+
+
+    # ================================================================
+    # SYNC — scheduled background sync with delta tracking
+    # ================================================================
+
     async def rag_sync_schedule(self):
         """
-        Background task to sync all Data Sources. Pulls actual User context for True MCP execution.
+        Background task to sync all scheduled Data Sources. 
+        Pulls actual User context for MCP execution. Creates SyncLog entries.
         """
-        logger.info("Running RAG scheduled sync task via ToolExecutor abstraction")
+        logger.info("Running RAG scheduled sync task")
         from ..database import get_session_maker
-        from ..models import DataSource, KnowledgeBase, User
+        from ..models import DataSource, KnowledgeBase, User, SyncLog
         from sqlalchemy import select
         
         session_maker = get_session_maker()
@@ -289,24 +767,33 @@ class RAGPipelineService:
                 sources = result.scalars().all()
                 
                 for source in sources:
+                    # Look up KB
                     kb_stmt = select(KnowledgeBase).filter(KnowledgeBase.id == source.kb_id)
                     kb_result = await session.execute(kb_stmt)
                     kb = kb_result.scalars().first()
                     
                     if not kb:
                         continue
-                        
-                    namespace = f"user_{kb.user_id}_kb_{kb.id}"
                     
-                    # Native User Extractor
+                    # Look up User
                     user_stmt = select(User).filter(User.id == kb.user_id)
                     user_res = await session.execute(user_stmt)
                     actual_user = user_res.scalars().first()
                     
                     if not actual_user:
-                        logger.warning(f"User {kb.user_id} not found for Knowledge Base {kb.id}")
+                        logger.warning(f"User {kb.user_id} not found for KB {kb.id}")
                         continue
-                            
+                    
+                    # Create SyncLog entry
+                    sync_log = SyncLog(
+                        data_source_id=source.id,
+                        status="in_progress",
+                        started_at=datetime.now(timezone.utc)
+                    )
+                    session.add(sync_log)
+                    await session.commit()
+                    
+                    # Determine the source identifier
                     url_or_id = None
                     if source.source_type == "website":
                         url_or_id = source.config.get("url")
@@ -314,20 +801,74 @@ class RAGPipelineService:
                         url_or_id = source.config.get("file_id")
                     elif source.source_type == "notion":
                         url_or_id = source.config.get("page_id")
+                    elif source.source_type == "airtable":
+                        url_or_id = source.config.get("base_id")
+                    elif source.source_type in ["google_sheets", "google_workspace_sheets"]:
+                        url_or_id = source.config.get("spreadsheet_id")
+                    elif source.source_type == "slack":
+                        url_or_id = source.config.get("channel")
+                    elif source.source_type in ["gmail", "google_workspace_gmail"]:
+                        url_or_id = source.config.get("query", source.config.get("label"))
+                    elif source.source_type == "hubspot":
+                        url_or_id = source.config.get("object_type", "contacts")
+                    else:
+                        url_or_id = source.config.get("id", source.config.get("url"))
                         
-                    if url_or_id:
+                    if not url_or_id:
+                        sync_log.status = "failed"
+                        sync_log.error_message = "No source identifier found in config"
+                        sync_log.completed_at = datetime.now(timezone.utc)
+                        await session.commit()
+                        continue
+                    
+                    try:
+                        # Delta sync: delete old vectors for this source first
+                        namespace = f"user_{kb.user_id}_kb_{kb.id}"
+                        # Note: Full delta requires per-document deletion in vector DB
+                        # which needs filter-based delete. For now, we re-ingest.
+                        
                         sync_res = await self.rag_ingest_source(
                             url_or_id=url_or_id,
                             kb_id=str(kb.id),
-                            namespace=namespace,
+                            user_id=str(kb.user_id),
                             source_type=source.source_type,
                             user=actual_user,
                             db=session
                         )
-                        logger.info(f"Scheduled sync result for source {source.id} ({source.source_type}): {sync_res}")
+                        
+                        # Update SyncLog
+                        sync_log.status = "success" if sync_res.get("status") == "success" else "failed"
+                        sync_log.chunks_added = sync_res.get("chunks_added", 0)
+                        sync_log.error_message = sync_res.get("message") if sync_res.get("status") != "success" else None
+                        sync_log.completed_at = datetime.now(timezone.utc)
+                        
+                        # Update DataSource last_synced_at
+                        source.last_synced_at = datetime.now(timezone.utc)
+                        
+                        await session.commit()
+                        
+                        logger.info(f"Sync result for source {source.id} ({source.source_type}): {sync_res.get('status')}")
+                        
+                    except Exception as e:
+                        sync_log.status = "failed"
+                        sync_log.error_message = str(e)
+                        sync_log.completed_at = datetime.now(timezone.utc)
+                        await session.commit()
+                        logger.error(f"Sync failed for source {source.id}: {e}")
                             
             except Exception as e:
-                logger.error(f"Error in RAG sync scheduler: {e}")
+                logger.error(f"Error in RAG sync scheduler: {e}", exc_info=True)
+
+
+    # ================================================================
+    # DELETE — remove KB namespace from vector DB
+    # ================================================================
+
+    async def rag_delete_knowledge_base(self, kb_id: str, user_id: str, vector_db: str = "pinecone") -> Dict[str, Any]:
+        """Delete all vectors for a knowledge base from the vector DB."""
+        namespace = f"user_{user_id}_kb_{kb_id}"
+        logger.info(f"Deleting namespace {namespace} from {vector_db}")
+        return await self._vector_delete_namespace(vector_db, namespace)
 
 
 def get_rag_pipeline_service() -> RAGPipelineService:

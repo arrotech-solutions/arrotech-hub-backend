@@ -1579,6 +1579,321 @@ WORKFLOW_TEMPLATES = [
             "days_until_expiry": {"type": "integer", "default": 30, "description": "Days until lease expires"},
             "landlord_phone": {"type": "string", "required": False, "description": "Landlord phone for notification"}
         }
+    },
+    # ────────────────────────────────────────────────────────────────────────
+    # RAG / Knowledge Base Workflow Templates
+    # ────────────────────────────────────────────────────────────────────────
+    {
+        "id": "website-knowledge-base",
+        "name": "Website Knowledge Base",
+        "description": "Scrape a website, ingest it into your AI Knowledge Base, and verify with a test search query — perfect for building customer support or sales-enablement KBs.",
+        "category": "Knowledge Management",
+        "icon": "🧠",
+        "difficulty": "beginner",
+        "estimated_time": "5 mins",
+        "tags": ["rag", "knowledge-base", "scraping", "ai", "search"],
+        "required_connections": ["rag_pipeline"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "rag_ingest_source",
+                "tool_parameters": {
+                    "url_or_id": "{{input.website_url}}",
+                    "kb_id": "{{input.kb_id}}",
+                    "source_type": "website"
+                },
+                "description": "Scrape and ingest website content into Knowledge Base"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "rag_search",
+                "tool_parameters": {
+                    "query": "{{input.test_query}}",
+                    "kb_id": "{{input.kb_id}}",
+                    "top_k": 3,
+                    "rerank": True
+                },
+                "description": "Run a test search query to verify ingestion"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "slack_team_communication",
+                "tool_parameters": {
+                    "action": "send_message",
+                    "channel": "{{input.notification_channel}}",
+                    "message": "🧠 Knowledge Base Updated\n\nSource: {{input.website_url}}\nKB: {{input.kb_id}}\nTest query: \"{{input.test_query}}\"\nTop result: {{step_2.results[0].text}}"
+                },
+                "description": "Notify team that KB was updated"
+            }
+        ],
+        "variables": {
+            "website_url": {"type": "string", "required": True, "format": "url", "description": "Website URL to scrape and ingest"},
+            "kb_id": {"type": "string", "required": True, "description": "Knowledge Base ID to ingest into"},
+            "test_query": {"type": "string", "default": "What does this company do?", "description": "A test query to verify ingestion"},
+            "notification_channel": {"type": "string", "default": "#general", "description": "Slack channel for notifications"}
+        }
+    },
+    {
+        "id": "document-ingestion-pipeline",
+        "name": "Document Ingestion Pipeline",
+        "description": "Parse a PDF or complex document with LlamaParse, then ingest the extracted text into your Knowledge Base for AI-powered search.",
+        "category": "Knowledge Management",
+        "icon": "📄",
+        "difficulty": "beginner",
+        "estimated_time": "5 mins",
+        "tags": ["rag", "document", "pdf", "llamaparse", "ingestion"],
+        "required_connections": ["rag_pipeline"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "rag_ingest_source",
+                "tool_parameters": {
+                    "url_or_id": "{{input.document_url}}",
+                    "kb_id": "{{input.kb_id}}",
+                    "source_type": "{{input.source_type}}"
+                },
+                "description": "Parse and ingest document into Knowledge Base"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "rag_search",
+                "tool_parameters": {
+                    "query": "{{input.verification_query}}",
+                    "kb_id": "{{input.kb_id}}",
+                    "top_k": 3
+                },
+                "description": "Verify document was ingested with a search query"
+            }
+        ],
+        "variables": {
+            "document_url": {"type": "string", "required": True, "description": "URL or path of the document to ingest"},
+            "kb_id": {"type": "string", "required": True, "description": "Knowledge Base ID"},
+            "source_type": {"type": "string", "enum": ["website", "google_drive", "notion"], "default": "website", "description": "Type of document source"},
+            "verification_query": {"type": "string", "default": "Summarize the key points", "description": "Query to verify ingestion"}
+        }
+    },
+    {
+        "id": "multi-source-knowledge-sync",
+        "name": "Multi-Source Knowledge Sync",
+        "description": "Pull content from Google Drive and Notion simultaneously, ingest both into your Knowledge Base, and notify the team — keep your KB always up to date.",
+        "category": "Knowledge Management",
+        "icon": "🔄",
+        "difficulty": "intermediate",
+        "estimated_time": "10 mins",
+        "tags": ["rag", "sync", "google-drive", "notion", "knowledge-base", "multi-source"],
+        "required_connections": ["rag_pipeline", "google_workspace", "notion", "slack"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "rag_ingest_source",
+                "tool_parameters": {
+                    "url_or_id": "{{input.drive_folder_id}}",
+                    "kb_id": "{{input.kb_id}}",
+                    "source_type": "google_drive"
+                },
+                "description": "Ingest documents from Google Drive folder"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "rag_ingest_source",
+                "tool_parameters": {
+                    "url_or_id": "{{input.notion_page_id}}",
+                    "kb_id": "{{input.kb_id}}",
+                    "source_type": "notion"
+                },
+                "description": "Ingest pages from Notion workspace"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "rag_search",
+                "tool_parameters": {
+                    "query": "{{input.test_query}}",
+                    "kb_id": "{{input.kb_id}}",
+                    "top_k": 5,
+                    "rerank": True,
+                    "rerank_top_n": 3
+                },
+                "description": "Verify both sources are searchable"
+            },
+            {
+                "step_number": 4,
+                "tool_name": "slack_team_communication",
+                "tool_parameters": {
+                    "action": "send_message",
+                    "channel": "{{input.notification_channel}}",
+                    "message": "🔄 Knowledge Base Sync Complete\n\n📁 Google Drive: {{input.drive_folder_id}}\n📝 Notion: {{input.notion_page_id}}\n📊 Test query returned {{step_3.results.length}} results\n\nYour KB '{{input.kb_id}}' is now up to date!"
+                },
+                "description": "Notify team that multi-source sync is complete"
+            }
+        ],
+        "variables": {
+            "drive_folder_id": {"type": "string", "required": True, "description": "Google Drive folder ID to sync"},
+            "notion_page_id": {"type": "string", "required": True, "description": "Notion page or database ID to sync"},
+            "kb_id": {"type": "string", "required": True, "description": "Knowledge Base ID"},
+            "test_query": {"type": "string", "default": "What are the latest updates?", "description": "Test query to verify sync"},
+            "notification_channel": {"type": "string", "default": "#knowledge-base", "description": "Slack channel for notifications"}
+        }
+    },
+    {
+        "id": "ai-customer-support-kb",
+        "name": "AI-Powered Customer Support",
+        "description": "When a customer asks a question, search your Knowledge Base for the best answer and deliver it via Slack or WhatsApp — instant, accurate AI support.",
+        "category": "Customer Support",
+        "icon": "🤖",
+        "difficulty": "intermediate",
+        "estimated_time": "8 mins",
+        "tags": ["rag", "support", "ai", "search", "slack", "whatsapp", "customer-service"],
+        "required_connections": ["rag_pipeline", "slack"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "rag_search",
+                "tool_parameters": {
+                    "query": "{{input.customer_question}}",
+                    "kb_id": "{{input.kb_id}}",
+                    "top_k": 5,
+                    "rerank": True,
+                    "rerank_top_n": 3
+                },
+                "description": "Search Knowledge Base for relevant answers"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "content_creation",
+                "tool_parameters": {
+                    "operation": "generate",
+                    "prompt": "Based on the following knowledge base results, write a helpful, concise customer support response to the question: '{{input.customer_question}}'\n\nKB Results:\n{{step_1.results}}",
+                    "max_tokens": 500
+                },
+                "description": "Generate a polished answer from KB results"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "slack_team_communication",
+                "tool_parameters": {
+                    "action": "send_message",
+                    "channel": "{{input.response_channel}}",
+                    "message": "🤖 *AI Support Response*\n\n❓ *Question:* {{input.customer_question}}\n\n💡 *Answer:* {{step_2.content}}\n\n📚 _Sources: {{step_1.results[0].source}} ({{step_1.results[0].score}} confidence)_"
+                },
+                "description": "Deliver AI-generated answer to support channel"
+            }
+        ],
+        "variables": {
+            "customer_question": {"type": "string", "required": True, "description": "The customer's question"},
+            "kb_id": {"type": "string", "required": True, "description": "Knowledge Base ID to search"},
+            "response_channel": {"type": "string", "default": "#customer-support", "description": "Slack channel to post the answer"}
+        }
+    },
+    {
+        "id": "knowledge-base-maintenance",
+        "name": "Knowledge Base Maintenance",
+        "description": "Delete stale KB vectors, re-ingest from the original source, and verify with a test query — scheduled KB hygiene made easy.",
+        "category": "Knowledge Management",
+        "icon": "🔧",
+        "difficulty": "advanced",
+        "estimated_time": "12 mins",
+        "tags": ["rag", "maintenance", "cleanup", "re-index", "knowledge-base"],
+        "required_connections": ["rag_pipeline"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "rag_delete_kb",
+                "tool_parameters": {
+                    "kb_id": "{{input.kb_id}}",
+                    "vector_db": "{{input.vector_db}}"
+                },
+                "description": "Delete all existing vectors for this Knowledge Base"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "rag_ingest_source",
+                "tool_parameters": {
+                    "url_or_id": "{{input.source_url}}",
+                    "kb_id": "{{input.kb_id}}",
+                    "source_type": "{{input.source_type}}"
+                },
+                "description": "Re-ingest content from the original source"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "rag_search",
+                "tool_parameters": {
+                    "query": "{{input.verification_query}}",
+                    "kb_id": "{{input.kb_id}}",
+                    "top_k": 3,
+                    "rerank": True
+                },
+                "description": "Verify re-ingestion with a test search"
+            }
+        ],
+        "variables": {
+            "kb_id": {"type": "string", "required": True, "description": "Knowledge Base ID to maintain"},
+            "source_url": {"type": "string", "required": True, "description": "Original source URL/ID to re-ingest from"},
+            "source_type": {"type": "string", "enum": ["website", "google_drive", "notion", "airtable"], "default": "website"},
+            "vector_db": {"type": "string", "enum": ["pinecone", "qdrant", "weaviate"], "default": "pinecone", "description": "Vector database backend"},
+            "verification_query": {"type": "string", "default": "What is the main topic?", "description": "Query to verify re-ingestion"}
+        }
+    },
+    {
+        "id": "rag-research-assistant",
+        "name": "RAG-Powered Research Assistant",
+        "description": "Scrape a URL, ingest it into a temporary KB, search for targeted insights, and generate a research summary — AI-powered desk research in one click.",
+        "category": "Content",
+        "icon": "🔬",
+        "difficulty": "intermediate",
+        "estimated_time": "10 mins",
+        "tags": ["rag", "research", "scraping", "ai", "summary", "content"],
+        "required_connections": ["rag_pipeline"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "rag_ingest_source",
+                "tool_parameters": {
+                    "url_or_id": "{{input.research_url}}",
+                    "kb_id": "{{input.kb_id}}",
+                    "source_type": "website"
+                },
+                "description": "Scrape and ingest research source"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "rag_search",
+                "tool_parameters": {
+                    "query": "{{input.research_question}}",
+                    "kb_id": "{{input.kb_id}}",
+                    "top_k": 8,
+                    "rerank": True,
+                    "rerank_top_n": 5
+                },
+                "description": "Search for targeted insights"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "content_creation",
+                "tool_parameters": {
+                    "operation": "generate",
+                    "prompt": "You are a research analyst. Based on the following search results from '{{input.research_url}}', write a comprehensive research summary answering: '{{input.research_question}}'\n\nSearch Results:\n{{step_2.results}}\n\nProvide:\n1. Key Findings\n2. Supporting Evidence\n3. Recommendations",
+                    "max_tokens": 1000
+                },
+                "description": "Generate research summary from KB results"
+            },
+            {
+                "step_number": 4,
+                "tool_name": "slack_team_communication",
+                "tool_parameters": {
+                    "action": "send_message",
+                    "channel": "{{input.output_channel}}",
+                    "message": "🔬 *Research Report*\n\n📌 Source: {{input.research_url}}\n❓ Question: {{input.research_question}}\n\n{{step_3.content}}"
+                },
+                "description": "Post research report to Slack"
+            }
+        ],
+        "variables": {
+            "research_url": {"type": "string", "required": True, "format": "url", "description": "URL to research (e.g., competitor website, article)"},
+            "research_question": {"type": "string", "required": True, "description": "Specific research question to answer"},
+            "kb_id": {"type": "string", "required": True, "description": "Knowledge Base ID (use a dedicated research KB)"},
+            "output_channel": {"type": "string", "default": "#research", "description": "Slack channel for the research report"}
+        }
     }
 ]
 
@@ -1595,6 +1910,7 @@ CATEGORIES = [
     {"id": "operations", "name": "Operations", "icon": "⚙️", "color": "#64748B"},
     {"id": "fintech", "name": "Fintech", "icon": "💳", "color": "#06B6D4"},
     {"id": "real-estate", "name": "Real Estate", "icon": "🏠", "color": "#D97706"},
+    {"id": "knowledge-management", "name": "Knowledge Management", "icon": "🧠", "color": "#7C3AED"},
 ]
 
 
