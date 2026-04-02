@@ -28,7 +28,9 @@ class PineconeService:
         if not self.api_key or not target_host:
             return {"success": False, "error": "Pinecone API Key or Index Host not configured"}
 
-        url = f"https://{target_host}/vectors/upsert"
+        # Strip https:// or http:// if user mistakenly included it in the host
+        clean_host = target_host.replace("https://", "").replace("http://", "").rstrip("/")
+        url = f"https://{clean_host}/vectors/upsert"
         payload = {
             "vectors": vectors,
             "namespace": namespace
@@ -48,9 +50,11 @@ class PineconeService:
         """Query vectors within a specific namespace."""
         target_host = index_host or self.host
         if not self.api_key or not target_host:
-             return {"success": False, "error": "Pinecone API Key or Index Host not configured"}
+            return {"success": False, "error": "Pinecone API Key or Index Host not configured"}
 
-        url = f"https://{target_host}/query"
+        # Strip https:// or http://
+        clean_host = target_host.replace("https://", "").replace("http://", "").rstrip("/")
+        url = f"https://{clean_host}/query"
         payload = {
             "vector": vector,
             "topK": top_k,
@@ -73,9 +77,11 @@ class PineconeService:
         """Deletes an entire customer's namespace data upon offboarding."""
         target_host = index_host or self.host
         if not self.api_key or not target_host:
-             return {"success": False, "error": "Pinecone API Key or Index Host not configured"}
-
-        url = f"https://{target_host}/vectors/delete"
+            return {"success": False, "error": "Pinecone API Key or Index Host not configured"}
+            
+        # Strip https:// or http://
+        clean_host = target_host.replace("https://", "").replace("http://", "").rstrip("/")
+        url = f"https://{clean_host}/vectors/delete"
         payload = {
             "deleteAll": True,
             "namespace": namespace
