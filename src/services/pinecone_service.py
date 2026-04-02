@@ -10,11 +10,11 @@ from typing import Dict, Any, List
 logger = logging.getLogger(__name__)
 
 class PineconeService:
-    def __init__(self):
-        self.api_key = os.getenv("PINECONE_API_KEY")
+    def __init__(self, api_key: str = None, host: str = None):
+        self.api_key = api_key or os.getenv("PINECONE_API_KEY")
         # In a real scenario, this would ideally be pulled from the KB config 
         # but for REST, Pinecone requires the specific index host.
-        self.host = os.getenv("PINECONE_INDEX_HOST") 
+        self.host = host or os.getenv("PINECONE_INDEX_HOST") 
 
     def _get_headers(self):
         return {

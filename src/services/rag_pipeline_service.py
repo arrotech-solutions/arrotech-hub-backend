@@ -26,16 +26,21 @@ class RAGPipelineService:
     Dynamically routes to the correct vector DB (Pinecone/Qdrant/Weaviate),
     embedding model (OpenAI/Cohere/HuggingFace), and parser (LlamaParse/
     Unstructured/Firecrawl) based on each KnowledgeBase's stored config.
+    
+    Supports hybrid credential resolution:
+    1. User-level BYOK keys (from Connection records or UserSettings)
+    2. Platform-managed keys (from environment variables)
     """
     
     def __init__(self):
         # Vector DB services — lazily selected per KB config
+        # Default instances use platform env vars
         self._vector_services = {
             "pinecone": PineconeService(),
             "qdrant": QdrantService(),
             "weaviate": WeaviateService(),
         }
-        # Parser services
+        # Parser services (defaults from env vars)
         self.firecrawl = FirecrawlService()
         self.unstructured = UnstructuredService()
         # Reranker
@@ -45,6 +50,86 @@ class RAGPipelineService:
             self.tokenizer = tiktoken.get_encoding("cl100k_base")
         except Exception:
             self.tokenizer = tiktoken.encoding_for_model("gpt-4o")
+
+    # ================================================================
+    # CREDENTIAL RESOLUTION — user BYOK keys → platform env vars
+    # ================================================================
+
+    async def _resolve_credentials(self, user, db) -> Dict[str, Any]:
+        """Resolve API credentials with hybrid fallback.
+        
+        Priority: User Connection keys → UserSettings keys → Platform env vars.
+        Returns a dict of resolved credentials per service.
+        """
+        import os
+        credentials = {
+            "pinecone_api_key": os.getenv("PINECONE_API_KEY"),
+            "pinecone_host": os.getenv("PINECONE_INDEX_HOST"),
+            "firecrawl_api_key": os.getenv("FIRECRAWL_API_KEY"),
+            "openai_api_key": os.getenv("OPENAI_API_KEY"),
+            "cohere_api_key": os.getenv("COHERE_API_KEY"),
+        }
+        
+        if not user or not db:
+            return credentials
+        
+        try:
+            from sqlalchemy import select
+            from ..models import Connection, UserSettings
+            
+            # Check user Connections for BYOK keys
+            result = await db.execute(
+                select(Connection).filter(
+                    Connection.user_id == user.id,
+                    Connection.status == "active"
+                )
+            )
+            connections = result.scalars().all()
+            
+            for conn in connections:
+                config = conn.config or {}
+                platform = conn.platform.lower() if conn.platform else ""
+                
+                if "pinecone" in platform:
+                    credentials["pinecone_api_key"] = config.get("api_key") or credentials["pinecone_api_key"]
+                    credentials["pinecone_host"] = config.get("index_host") or credentials["pinecone_host"]
+                elif "firecrawl" in platform:
+                    credentials["firecrawl_api_key"] = config.get("api_key") or credentials["firecrawl_api_key"]
+                elif "openai" in platform:
+                    credentials["openai_api_key"] = config.get("api_key") or credentials["openai_api_key"]
+                elif "cohere" in platform:
+                    credentials["cohere_api_key"] = config.get("api_key") or credentials["cohere_api_key"]
+            
+            # Also check UserSettings for LLM BYOK keys (existing pattern)
+            settings_result = await db.execute(
+                select(UserSettings).filter(UserSettings.user_id == user.id)
+            )
+            settings = settings_result.scalars().first()
+            
+            if settings:
+                if settings.openai_api_key:
+                    credentials["openai_api_key"] = settings.openai_api_key
+                    
+        except Exception as e:
+            logger.warning(f"Error resolving user credentials (using platform defaults): {e}")
+        
+        return credentials
+
+    def _get_vector_service_with_creds(self, vector_db: str, credentials: Dict[str, Any] = None):
+        """Return the correct vector DB service, optionally with user-specific credentials."""
+        if vector_db == "pinecone" and credentials:
+            api_key = credentials.get("pinecone_api_key")
+            host = credentials.get("pinecone_host")
+            # Only create a new instance if user has BYOK keys different from default
+            if api_key or host:
+                return PineconeService(api_key=api_key, host=host)
+        return self._get_vector_service(vector_db)
+
+    def _get_firecrawl_with_creds(self, credentials: Dict[str, Any] = None):
+        """Return Firecrawl service with user-specific or platform credentials."""
+        if credentials and credentials.get("firecrawl_api_key"):
+            return FirecrawlService(api_key=credentials["firecrawl_api_key"])
+        return self.firecrawl
 
     # ================================================================
     # VECTOR DB ROUTING — dynamic based on KB config
@@ -345,6 +430,9 @@ class RAGPipelineService:
         from .tool_executor import ToolExecutor
         executor = ToolExecutor()
         
+        # Resolve hybrid credentials (user BYOK → platform env vars)
+        credentials = await self._resolve_credentials(user, db)
+        
         # Resolve KB config from database if available
         kb_config = None
         if db and user_id:
@@ -437,8 +525,20 @@ class RAGPipelineService:
                 "metadata": meta
             })
             
-        # 4. Dynamic Vector DB Upsert
-        upsert_res = await self._vector_upsert(effective_vector_db, namespace, all_vectors)
+        # 4. Dynamic Vector DB Upsert (with resolved credentials)
+        vector_service = self._get_vector_service_with_creds(effective_vector_db, credentials)
+        if effective_vector_db == "pinecone":
+            upsert_res = await vector_service.pinecone_upsert_vectors(
+                index_host=None, namespace=namespace, vectors=all_vectors
+            )
+        elif effective_vector_db == "qdrant":
+            points = [{"id": v["id"], "vector": v["values"], "payload": v["metadata"]} for v in all_vectors]
+            upsert_res = await vector_service.qdrant_upsert_points(collection_name=namespace, points=points)
+        elif effective_vector_db == "weaviate":
+            objects = [{"properties": v["metadata"], "vector": v["values"]} for v in all_vectors]
+            upsert_res = await vector_service.weaviate_add_objects(class_name="KnowledgeChunk", objects=objects, tenant=namespace)
+        else:
+            upsert_res = await self._vector_upsert(effective_vector_db, namespace, all_vectors)
         
         if not upsert_res.get("success", False):
             return {"status": "error", "message": f"Vector DB Error: {upsert_res.get('error')}"}
@@ -480,9 +580,13 @@ class RAGPipelineService:
             from .tool_executor import ToolExecutor
             executor = ToolExecutor()
             
+            # Resolve hybrid credentials (user BYOK → platform env vars)
+            credentials = await self._resolve_credentials(user, db)
+            
             # ---- Website (Firecrawl) ----
             if source_type == "website":
-                scrape_result = await self.firecrawl.firecrawl_scrape_url(url_or_id)
+                firecrawl = self._get_firecrawl_with_creds(credentials)
+                scrape_result = await firecrawl.firecrawl_scrape_url(url_or_id)
                 if not scrape_result.get("success"):
                     return {"status": "error", "message": f"Scraping failed: {scrape_result.get('error')}"}
                 raw_text = scrape_result.get("markdown", "")
@@ -666,6 +770,9 @@ class RAGPipelineService:
         from .tool_executor import ToolExecutor
         executor = ToolExecutor()
         
+        # Resolve hybrid credentials (user BYOK → platform env vars)
+        credentials = await self._resolve_credentials(user, db)
+        
         # Resolve KB config from database
         kb_config = None
         if db and user_id:
@@ -691,8 +798,34 @@ class RAGPipelineService:
             
         query_vector = embed_res.get("embeddings", [])[0]
         
-        # 2. Dynamic Vector DB Query
-        search_res = await self._vector_query(effective_vector_db, namespace, query_vector, top_k=top_k)
+        # 2. Dynamic Vector DB Query (with resolved credentials)
+        vector_service = self._get_vector_service_with_creds(effective_vector_db, credentials)
+        if effective_vector_db == "pinecone":
+            search_res = await vector_service.pinecone_query(
+                index_host=None, namespace=namespace,
+                vector=query_vector, top_k=top_k
+            )
+        elif effective_vector_db == "qdrant":
+            res = await vector_service.qdrant_search(
+                collection_name=namespace, query_vector=query_vector, limit=top_k
+            )
+            if res.get("success"):
+                matches = [{"score": r.get("score", 0), "metadata": r.get("payload", {})} for r in res.get("result", [])]
+                search_res = {"success": True, "matches": matches}
+            else:
+                search_res = res
+        elif effective_vector_db == "weaviate":
+            res = await vector_service.weaviate_hybrid_search(
+                class_name="KnowledgeChunk", query="",
+                vector=query_vector, tenant=namespace, limit=top_k
+            )
+            if res.get("success"):
+                matches = [{"score": 1.0 - r.get("_additional", {}).get("distance", 0), "metadata": {k: v for k, v in r.items() if k != "_additional"}} for r in res.get("results", [])]
+                search_res = {"success": True, "matches": matches}
+            else:
+                search_res = res
+        else:
+            search_res = await self._vector_query(effective_vector_db, namespace, query_vector, top_k=top_k)
         
         if not search_res.get("success"):
             return {"success": False, "error": search_res.get("error")}

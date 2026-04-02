@@ -10,8 +10,8 @@ from typing import Dict, Any
 logger = logging.getLogger(__name__)
 
 class FirecrawlService:
-    def __init__(self):
-        self.api_key = os.getenv("FIRECRAWL_API_KEY")
+    def __init__(self, api_key: str = None):
+        self.api_key = api_key or os.getenv("FIRECRAWL_API_KEY")
 
     def _get_headers(self) -> Dict[str, str]:
         return {
