@@ -3806,7 +3806,6 @@ class PlatformRegistry:
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "url_or_id": {"type": "string", "description": "URL or ID of the source to ingest"},
                         "kb_id": {
                             "type": "string", 
                             "description": "ID of the Knowledge Base",
@@ -3816,9 +3815,10 @@ class PlatformRegistry:
                             "type": "string",
                             "enum": ["website", "google_drive", "notion", "airtable", "google_sheets", "slack", "gmail", "hubspot"],
                             "description": "Type of source to fetch from"
-                        }
+                        },
+                        "url_or_id": {"type": "string", "description": "URL or ID of the source to ingest"}
                     },
-                    "required": ["url_or_id", "kb_id", "source_type"]
+                    "required": ["source_type", "kb_id", "url_or_id"]
                 },
                 operations=["rag_ingest_source"]
             ),
