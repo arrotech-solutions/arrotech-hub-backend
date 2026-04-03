@@ -85,7 +85,43 @@ class DriveService:
         try:
             service = self.base_client.get_service(self.service_name, self.version)
             
-            request = service.files().get_media(fileId=file_id)
+            # Get file metadata FIRST to check mime type
+            metadata = service.files().get(
+                fileId=file_id,
+                fields='name, mimeType, size'
+            ).execute()
+            
+            mime_type = metadata.get('mimeType')
+            original_name = metadata.get('name', 'Untitled')
+            
+            if mime_type and mime_type.startswith('application/vnd.google-apps.'):
+                # Google Workspace docs must be exported
+                export_mime_type = 'application/pdf'  # Default for unsupported docs
+                downloaded_name = f"{original_name}.pdf"
+                
+                if mime_type == 'application/vnd.google-apps.document':
+                    export_mime_type = 'application/pdf'
+                    downloaded_name = f"{original_name}.pdf"
+                elif mime_type == 'application/vnd.google-apps.spreadsheet':
+                    export_mime_type = 'text/csv'
+                    downloaded_name = f"{original_name}.csv"
+                elif mime_type == 'application/vnd.google-apps.presentation':
+                    export_mime_type = 'application/pdf'
+                    downloaded_name = f"{original_name}.pdf"
+                elif mime_type == 'application/vnd.google-apps.script':
+                    export_mime_type = 'application/vnd.google-apps.script+json'
+                    downloaded_name = f"{original_name}.json"
+                
+                request = service.files().export_media(
+                    fileId=file_id, 
+                    mimeType=export_mime_type
+                )
+                
+                downloaded_mime_type = export_mime_type
+            else:
+                request = service.files().get_media(fileId=file_id)
+                downloaded_mime_type = mime_type
+                downloaded_name = original_name
             
             file_buffer = io.BytesIO()
             downloader = MediaIoBaseDownload(file_buffer, request)
@@ -96,17 +132,12 @@ class DriveService:
             
             file_buffer.seek(0)
             
-            # Get file metadata
-            metadata = service.files().get(
-                fileId=file_id,
-                fields='name, mimeType, size'
-            ).execute()
-            
             return {
                 'success': True,
                 'file_id': file_id,
-                'name': metadata.get('name'),
-                'mime_type': metadata.get('mimeType'),
+                'name': downloaded_name,
+                'mime_type': downloaded_mime_type,
+                'original_mime_type': mime_type,
                 'size': metadata.get('size'),
                 'content': file_buffer.getvalue()
             }
