@@ -95,29 +95,28 @@ class DriveService:
             original_name = metadata.get('name', 'Untitled')
             
             if mime_type and mime_type.startswith('application/vnd.google-apps.'):
-                # Google Workspace docs must be exported
-                export_mime_type = 'application/pdf'  # Default for unsupported docs
-                downloaded_name = f"{original_name}.pdf"
+                exportable_mime_types = {
+                    'application/vnd.google-apps.document': ('application/pdf', '.pdf'),
+                    'application/vnd.google-apps.spreadsheet': ('text/csv', '.csv'),
+                    'application/vnd.google-apps.presentation': ('application/pdf', '.pdf'),
+                    'application/vnd.google-apps.drawing': ('application/pdf', '.pdf'),
+                    'application/vnd.google-apps.script': ('application/vnd.google-apps.script+json', '.json')
+                }
                 
-                if mime_type == 'application/vnd.google-apps.document':
-                    export_mime_type = 'application/pdf'
-                    downloaded_name = f"{original_name}.pdf"
-                elif mime_type == 'application/vnd.google-apps.spreadsheet':
-                    export_mime_type = 'text/csv'
-                    downloaded_name = f"{original_name}.csv"
-                elif mime_type == 'application/vnd.google-apps.presentation':
-                    export_mime_type = 'application/pdf'
-                    downloaded_name = f"{original_name}.pdf"
-                elif mime_type == 'application/vnd.google-apps.script':
-                    export_mime_type = 'application/vnd.google-apps.script+json'
-                    downloaded_name = f"{original_name}.json"
-                
-                request = service.files().export_media(
-                    fileId=file_id, 
-                    mimeType=export_mime_type
-                )
-                
-                downloaded_mime_type = export_mime_type
+                if mime_type in exportable_mime_types:
+                    export_mime_type, ext = exportable_mime_types[mime_type]
+                    downloaded_name = f"{original_name}{ext}"
+                    
+                    request = service.files().export_media(
+                        fileId=file_id, 
+                        mimeType=export_mime_type
+                    )
+                    downloaded_mime_type = export_mime_type
+                else:
+                    return {
+                        'success': False,
+                        'error': f"Export only supports Docs Editors files. Type '{mime_type}' cannot be downloaded."
+                    }
             else:
                 request = service.files().get_media(fileId=file_id)
                 downloaded_mime_type = mime_type
