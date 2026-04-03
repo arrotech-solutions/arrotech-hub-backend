@@ -45,6 +45,7 @@ from .agritech_service import AgritechService
 from .health_service import HealthService
 from .utilities_service import UtilitiesService
 from .workflow_service import WorkflowService
+from .llm_service import LLMService
 from .quickbooks_service import QuickBooksService
 from .xero_service import XeroService
 from .airtable_service import AirtableService
@@ -6415,7 +6416,53 @@ Description: {payment.description or 'N/A'}"""
                 user=user,
                 db=db
             )
-            return {"success": res.get("success"), "result": f"Found {len(res.get('results', []))} relevant matches", "data": res}
+            
+            # Synthesize a human-readable answer from the retrieved KB chunks
+            results = res.get("results", [])
+            query = arguments.get("query", "")
+            answer = f"Found {len(results)} relevant matches"
+            
+            if results and query:
+                try:
+                    # Build context from non-empty search results
+                    context_chunks = "\n\n---\n\n".join(
+                        f"Source: {r.get('file', 'Unknown')}\n{r.get('text', '')}"
+                        for r in results
+                        if r.get("text") and r.get("text") != "NO_CONTENT_HERE"
+                    )
+                    
+                    if context_chunks:
+                        llm = LLMService()
+                        llm_response = await llm.chat_completion(
+                            messages=[
+                                {
+                                    "role": "system",
+                                    "content": (
+                                        "You are a helpful assistant. Answer the user's question based ONLY on the "
+                                        "provided context from the knowledge base. Be concise, direct, and helpful. "
+                                        "If the context doesn't contain relevant information to answer the question, "
+                                        "say so clearly. Do not make up information."
+                                    )
+                                },
+                                {
+                                    "role": "user",
+                                    "content": f"Question: {query}\n\nKnowledge Base Context:\n{context_chunks}"
+                                }
+                            ],
+                            temperature=0.3,
+                            max_tokens=500,
+                            use_background_model=True
+                        )
+                        
+                        if llm_response.content:
+                            answer = llm_response.content
+                        else:
+                            logger.warning(f"LLM returned empty response for RAG synthesis: {llm_response.error}")
+                except Exception as llm_err:
+                    logger.error(f"Failed to synthesize RAG answer via LLM: {llm_err}")
+                    # Fall back to the match count string — don't break the workflow
+            
+            return {"success": res.get("success"), "result": answer, "data": res}
 
         elif tool_name == "rag_delete_kb":
             res = await service.rag_delete_knowledge_base(
