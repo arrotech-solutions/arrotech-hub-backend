@@ -55,12 +55,14 @@ class SlackWorkflowTrigger:
                 )
                 workflows = result.scalars().all()
                 
+                logger.info(f"[SLACK_TRIGGER] Checking {len(workflows)} active event-triggered workflows for user {user_id}")
                 for workflow in workflows:
                     trigger_config = workflow.trigger_config or {}
                     event_type = trigger_config.get("event_type") or trigger_config.get("trigger", "")
                     platform = trigger_config.get("platform", "")
                     
                     if platform != "slack":
+                        logger.debug(f"[SLACK_TRIGGER] Skipping workflow {workflow.id}: platform mismatch ({platform} != slack)")
                         continue
                         
                     # Check if this workflow should trigger
@@ -70,6 +72,8 @@ class SlackWorkflowTrigger:
                         should_trigger = True
                     elif event_type == "slack_app_mention" and is_mention:
                         should_trigger = True
+                    else:
+                        logger.debug(f"[SLACK_TRIGGER] Skipping workflow {workflow.id}: event_type mismatch ({event_type}) or is_mention={is_mention}")
                         
                     # Check for keyword matching if specified
                     if should_trigger and "keywords" in trigger_config and trigger_config["keywords"]:
@@ -80,6 +84,8 @@ class SlackWorkflowTrigger:
                             if keyword.lower() in content:
                                 should_trigger = True
                                 break
+                        if not should_trigger:
+                            logger.debug(f"[SLACK_TRIGGER] Skipping workflow {workflow.id}: keyword mismatch")
                     
                     if should_trigger:
                         # Build input variables for workflow
