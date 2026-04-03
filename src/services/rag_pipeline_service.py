@@ -594,6 +594,59 @@ class RAGPipelineService:
                 
             # ---- Google Drive ----
             elif source_type in ["google_drive", "google_workspace_drive"]:
+                # Check if it's a folder first
+                meta_res = await executor.execute_tool(
+                    "google_workspace_drive",
+                    {"operation": "get_metadata", "file_id": url_or_id},
+                    user, db
+                )
+                
+                is_folder = False
+                if meta_res.get("success") and meta_res.get("file", {}).get("mimeType") == "application/vnd.google-apps.folder":
+                    is_folder = True
+                
+                if is_folder:
+                    list_res = await executor.execute_tool(
+                        "google_workspace_drive",
+                        {"operation": "list_files", "folder_id": url_or_id, "max_results": 100},
+                        user, db
+                    )
+                    if not list_res.get("success"):
+                        return {"status": "error", "message": f"Drive folder fetch failed: {list_res.get('error')}"}
+                    
+                    files = list_res.get("files", [])
+                    if not files:
+                        return {"status": "success", "message": "Drive folder is empty", "chunks_added": 0}
+                    
+                    total_chunks = 0
+                    processed = 0
+                    for f in files:
+                        f_id = f.get("id")
+                        f_mime = f.get("mimeType", "")
+                        
+                        # Skip subfolders (prevent infinite recursion and deep nesting)
+                        if f_mime == "application/vnd.google-apps.folder":
+                            continue
+                            
+                        r = await self.rag_ingest_source(
+                            url_or_id=f_id,
+                            kb_id=kb_id,
+                            user_id=user_id,
+                            source_type=source_type,
+                            user=user,
+                            db=db
+                        )
+                        if r.get("status") == "success":
+                            total_chunks += r.get("chunks_added", 0)
+                            processed += 1
+                            
+                    return {
+                        "status": "success", 
+                        "chunks_added": total_chunks, 
+                        "message": f"Successfully ingested {processed} files from Drive folder."
+                    }
+
+                # If not a folder, download as file
                 res = await executor.execute_tool(
                     "google_workspace_drive", 
                     {"operation": "download_file", "file_id": url_or_id}, 
