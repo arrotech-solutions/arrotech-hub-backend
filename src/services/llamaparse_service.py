@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 class LlamaParseService:
     def __init__(self):
-        self.api_key = os.getenv("LLAMAPARSE_API_KEY")
+        self.api_key = os.getenv("LLAMA_CLOUD_API_KEY")
         self.base_url = "https://api.cloud.llamaindex.ai/api/parsing"
 
     def _get_headers(self) -> Dict[str, str]:
