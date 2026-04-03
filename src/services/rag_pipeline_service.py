@@ -683,12 +683,17 @@ class RAGPipelineService:
                             if job_res.get("status") == "SUCCESS":
                                 raw_text = job_res.get("markdown", "")
                                 break
+                    if not raw_text:
+                        error_msg = parse_res.get("error", "LlamaParse job timed out or failed")
+                        return {"status": "error", "message": f"Parsing failed for {source_name}: {error_msg}"}
                 else:
                     # Use Unstructured for Office Docs (DOCX, PPTX, XLSX, TXT)
                     parse_res = await self.unstructured.unstructured_partition_document(content, source_name)
                     if parse_res.get("success"):
                         elements = parse_res.get("elements", [])
                         raw_text = "\n\n".join([el.get("text", "") for el in elements if el.get("text")])
+                    else:
+                        return {"status": "error", "message": f"Unstructured parser failed for {source_name}: {parse_res.get('error')}"}
                 
                 source_url = f"https://drive.google.com/file/d/{url_or_id}/view"
                 
