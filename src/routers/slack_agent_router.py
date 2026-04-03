@@ -224,7 +224,8 @@ async def slack_events(
                     user_id=user.id,
                     channel=channel,
                     message=text,
-                    slack_user_id=slack_user_id
+                    slack_user_id=slack_user_id,
+                    is_mention=bot_mentioned
                 )
         
         return {"status": "ok"}
@@ -392,7 +393,8 @@ async def process_message_async(
     user_id: uuid.UUID,
     channel: str,
     message: str,
-    slack_user_id: str
+    slack_user_id: str,
+    is_mention: bool = False
 ):
     """Process regular message (not slash command) asynchronously and send response."""
     from ..database import get_session_maker
@@ -409,37 +411,15 @@ async def process_message_async(
                 logger.error(f"User {user_id} not found")
                 return
             
-            # Process with M-Pesa agent
-            agent = MpesaReconciliationAgent(user, db)
-            response = await agent.process_message(message, channel, slack_user_id)
-            
-            # Send response via channel message
-            if response.get("success") and response.get("response"):
-                from ..services.slack_service import SlackService
-                from slack_sdk.web import WebClient
-                from ..models import Connection, ConnectionPlatform, ConnectionStatus
-                
-                slack_service = SlackService()
-                
-                # Get user's Slack connection
-                stmt = select(Connection).where(
-                    Connection.user_id == user.id,
-                    Connection.platform == ConnectionPlatform.SLACK,
-                    Connection.status == ConnectionStatus.ACTIVE
-                ).order_by(Connection.created_at.desc()).limit(1)
-                result = await db.execute(stmt)
-                connection = result.scalar_one_or_none()
-                
-                if connection:
-                    bot_token = connection.config.get("bot_token")
-                    if bot_token and channel:
-                        slack_service.client = WebClient(token=bot_token)
-                        result = await slack_service.send_message(
-                            channel=channel,
-                            message=response.get("response") or response.get("error") or "Sorry, I couldn't process your request."
-                        )
-                        if not result.get("success"):
-                            logger.error(f"Failed to send Slack message: {result.get('error')}")
+            # Delegate entirely to the generic workflow engine
+            from ..services.slack_workflow_trigger import SlackWorkflowTrigger
+            await SlackWorkflowTrigger.on_message_received(
+                user_id=user.id,
+                channel=channel,
+                message=message,
+                slack_user_id=slack_user_id,
+                is_mention=is_mention
+            )
         
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
