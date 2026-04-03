@@ -49,22 +49,27 @@ async def get_user_from_slack_team(
 ) -> Optional[User]:
     """
     Get user from Slack team ID.
-    For now, returns the first user with an active Slack connection.
-    TODO: Implement proper team_id to user mapping.
+    Matches the team_id stored in the connection config.
     """
     stmt = select(Connection).options(
         selectinload(Connection.user)
     ).where(
         Connection.platform == ConnectionPlatform.SLACK,
         Connection.status == ConnectionStatus.ACTIVE
-    ).limit(1)
-    
+    )
     result = await db.execute(stmt)
-    connection = result.scalar_one_or_none()
+    connections = result.scalars().all()
     
-    if connection:
-        return connection.user
-    
+    # Filter by team_id in config
+    for conn in connections:
+        if conn.config and conn.config.get("team_id") == team_id:
+            return conn.user
+            
+    # Fallback for single-user systems where team_id might be missing/mismatched
+    if connections and len(connections) == 1:
+        logger.info(f"Fallback to single connection for team_id={team_id}")
+        return connections[0].user
+        
     return None
 
 
