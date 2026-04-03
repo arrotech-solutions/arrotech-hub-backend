@@ -11,6 +11,7 @@ import aiohttp
 from slack_sdk.models.blocks import (ContextBlock, DividerBlock, HeaderBlock,
                                      SectionBlock)
 from slack_sdk.web import WebClient
+import re
 
 from ..config import settings
 
@@ -108,6 +109,22 @@ class SlackService:
                 "error": f"Slack connection test failed: {str(e)}"
             }
 
+    def _format_markdown_for_slack(self, text: str) -> str:
+        """Convert standard Markdown to Slack's mrkdwn format."""
+        if not text:
+            return ""
+            
+        # 1. Convert Links: [Link Text](http://url) -> <http://url|Link Text>
+        text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<\2|\1>', text)
+        
+        # 2. Convert Bold: **text** -> *text*
+        text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
+        
+        # 3. Convert Headers: # Header -> *Header*
+        text = re.sub(r'^(#{1,6})\s+(.+)$', r'*\2*', text, flags=re.MULTILINE)
+        
+        return text
+
     async def send_message(self, channel: str, message: str,
                            blocks: Optional[List[Dict[str, Any]]] = None,
                            thread_ts: Optional[str] = None) -> Dict[str, Any]:
@@ -116,10 +133,12 @@ class SlackService:
             raise Exception("Slack client not initialized")
 
         try:
+            formatted_message = self._format_markdown_for_slack(message)
+            
             # Prepare message
             message_data = {
                 "channel": channel,
-                "text": message
+                "text": formatted_message
             }
 
             if blocks:
