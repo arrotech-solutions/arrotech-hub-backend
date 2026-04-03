@@ -227,6 +227,12 @@ async def slack_events(
             if bot_user_id and slack_user_id == bot_user_id:
                 return {"status": "ok"}
                 
+            # If the bot is mentioned in a channel message, Slack will ALSO fire an 'app_mention' event.
+            # To avoid duplicate processing, let the 'app_mention' event handle this case.
+            if bot_mentioned and not is_dm:
+                logger.info(f"Delegating mention in channel {channel} to app_mention handler.")
+                return {"status": "ok"}
+                
             # Process all messages (DM, Mention, or Passive Channel Listen)
             logger.info(f"Processing message: DM={is_dm}, Mentioned={bot_mentioned}, Channel={channel}")
             background_tasks.add_task(
