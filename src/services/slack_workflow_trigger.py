@@ -11,7 +11,7 @@ import uuid
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database import AsyncSessionLocal
+from ..database import get_session_maker
 from ..models import (
     Workflow, WorkflowStatus, WorkflowTriggerType
 )
@@ -41,7 +41,8 @@ class SlackWorkflowTrigger:
         Called when a new Slack message is received.
         Checks for matching workflows and triggers them.
         """
-        async with AsyncSessionLocal() as db:
+        session_maker = get_session_maker()
+        async with session_maker() as db:
             try:
                 # Find workflows with Slack triggers
                 result = await db.execute(
