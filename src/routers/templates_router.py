@@ -1621,7 +1621,7 @@ WORKFLOW_TEMPLATES = [
                 "tool_parameters": {
                     "action": "send_message",
                     "channel": "{{input.notification_channel}}",
-                    "message": "🧠 Knowledge Base Updated\n\nSource: {{input.website_url}}\nKB: {{input.kb_id}}\nTest query: \"{{input.test_query}}\"\nTop result: {{step_2.results[0].text}}"
+                    "message": "🧠 *Knowledge Base Updated*\n\n📍 *Source:* {{input.website_url}}\n📁 *KB:* {{input.kb_id}}\n🔍 *Test query:* \"{{input.test_query}}\"\n\n*Top Result Snippet:*\n```{{step_2.results[0].text | truncate(250)}}```"
                 },
                 "description": "Notify team that KB was updated"
             }
