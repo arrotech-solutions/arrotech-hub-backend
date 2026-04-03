@@ -98,11 +98,7 @@ async def call_tool(
     try:
         # Get the tool definition
         tool = dynamic_tool_registry.get_tool(request.name)
-        
-        # Internal UI tools that provide dynamic options but might not be in the public registry
-        internal_tools = ["rag_kb"]
-        
-        if not tool and request.name not in internal_tools:
+        if not tool:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Unknown tool: {request.name}"

@@ -6428,19 +6428,6 @@ Description: {payment.description or 'N/A'}"""
         elif tool_name == "ai_embeddings":
             return await self._execute_ai_embeddings_tool(arguments)
             
-        elif tool_name == "rag_kb":
-            if arguments.get("operation") == "list_available":
-                from sqlalchemy import select
-                from ..models import KnowledgeBase
-                
-                result = await db.execute(
-                    select(KnowledgeBase).filter(KnowledgeBase.user_id == user.id)
-                )
-                kbs = result.scalars().all()
-                options = [{"label": f"{kb.name} ({kb.id})", "value": str(kb.id)} for kb in kbs]
-                return {"success": True, "result": {"options": options}}
-            return {"success": False, "error": f"Unknown rag_kb operation: {arguments.get('operation')}"}
-            
         return {"success": False, "error": f"Unknown RAG tool: {tool_name}"}
 
     async def _execute_ai_embeddings_tool(self, parameters: Dict[str, Any]) -> Dict[str, Any]:

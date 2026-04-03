@@ -3788,8 +3788,7 @@ class PlatformRegistry:
                         "content": {"type": "string", "description": "Text to ingest"},
                         "kb_id": {
                             "type": "string", 
-                            "description": "ID of the Knowledge Base",
-                            "x-dynamic-options": "rag_kb.list_available"
+                            "description": "ID of the Knowledge Base"
                         },
                         "source_url": {"type": "string", "description": "Original source URL"},
                         "source_name": {"type": "string", "description": "Document/File name"},
@@ -3808,8 +3807,7 @@ class PlatformRegistry:
                     "properties": {
                         "kb_id": {
                             "type": "string", 
-                            "description": "ID of the Knowledge Base",
-                            "x-dynamic-options": "rag_kb.list_available"
+                            "description": "ID of the Knowledge Base"
                         },
                         "source_type": {
                             "type": "string",
@@ -3832,8 +3830,7 @@ class PlatformRegistry:
                         "query": {"type": "string", "description": "Search query"},
                         "kb_id": {
                             "type": "string", 
-                            "description": "ID of the Knowledge Base",
-                            "x-dynamic-options": "rag_kb.list_available"
+                            "description": "ID of the Knowledge Base"
                         },
                         "top_k": {"type": "integer", "default": 5},
                         "rerank": {"type": "boolean", "default": False, "description": "Use Cohere reranking for higher accuracy"},
