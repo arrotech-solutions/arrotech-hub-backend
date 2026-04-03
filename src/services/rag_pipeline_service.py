@@ -620,9 +620,12 @@ class RAGPipelineService:
                     
                     total_chunks = 0
                     processed = 0
+                    errors = []
+                    
                     for f in files:
                         f_id = f.get("id")
-                        f_mime = f.get("mimeType", "")
+                        f_mime = f.get("mime_type", "")
+                        f_name = f.get("name", f_id)
                         
                         # Skip subfolders (prevent infinite recursion and deep nesting)
                         if f_mime == "application/vnd.google-apps.folder":
@@ -639,11 +642,19 @@ class RAGPipelineService:
                         if r.get("status") == "success":
                             total_chunks += r.get("chunks_added", 0)
                             processed += 1
+                        else:
+                            errors.append(f"{f_name}: {r.get('message', 'Unknown error')}")
+                            
+                    msg = f"Successfully ingested {processed} files from Drive folder."
+                    if errors:
+                        msg += f" Encountered {len(errors)} errors: " + " | ".join(errors[:3])
+                        if len(errors) > 3:
+                            msg += "..."
                             
                     return {
-                        "status": "success", 
+                        "status": "success" if processed > 0 else "error", 
                         "chunks_added": total_chunks, 
-                        "message": f"Successfully ingested {processed} files from Drive folder."
+                        "message": msg
                     }
 
                 # If not a folder, download as file
