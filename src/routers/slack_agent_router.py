@@ -7,6 +7,7 @@ import hmac
 import hashlib
 import json
 import logging
+import re
 from typing import Any, Dict, Optional
 import uuid
 
@@ -227,6 +228,43 @@ async def slack_events(
                     slack_user_id=slack_user_id,
                     is_mention=bot_mentioned
                 )
+        
+        # Handle app_mention events (fired when someone @mentions the bot)
+        # This is a SEPARATE event type from "message" — Slack sends it as event.type = "app_mention"
+        elif event_type == "app_mention":
+            channel = event.get("channel")
+            text = event.get("text", "")
+            slack_user_id = event.get("user")
+            
+            logger.info(f"[APP_MENTION] Received app_mention in channel={channel}, user={slack_user_id}, text={text[:80]}")
+            
+            # Skip if missing required fields
+            if not channel or not text or not slack_user_id:
+                logger.warning("[APP_MENTION] Missing required fields, skipping")
+                return {"status": "ok"}
+            
+            # Get user from team
+            user = await get_user_from_slack_team(team_id or "", db)
+            if not user:
+                logger.warning(f"[APP_MENTION] No user found for team {team_id}")
+                return {"status": "ok"}
+            
+            # Strip the bot mention tag from the text to get the clean query
+            # Slack sends mentions as "<@U12345> what is our refund policy?"
+            clean_text = re.sub(r'<@[A-Z0-9]+>\s*', '', text).strip()
+            if not clean_text:
+                clean_text = text  # Fallback to original if stripping leaves nothing
+            
+            logger.info(f"[APP_MENTION] Firing workflow trigger for user {user.id}, clean_text='{clean_text[:80]}'")
+            
+            background_tasks.add_task(
+                process_message_async,
+                user_id=user.id,
+                channel=channel,
+                message=clean_text,
+                slack_user_id=slack_user_id,
+                is_mention=True
+            )
         
         return {"status": "ok"}
     
