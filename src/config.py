@@ -154,6 +154,8 @@ class BaseConfig(BaseSettings):
     FIRECRAWL_API_KEY: Optional[str] = None
     COHERE_API_KEY: Optional[str] = None
     LLAMA_CLOUD_API_KEY: Optional[str] = None
+    UNSTRUCTURED_API_KEY: Optional[str] = None
+    UNSTRUCTURED_API_URL: str = "https://api.unstructured.io/general/v0/general"
 
     # Zoho Configuration
     ZOHO_CLIENT_ID: Optional[str] = None
