@@ -205,6 +205,7 @@ async def slack_events(
             if not connection:
                 logger.warning(f"No active Slack connection for user {user.id}")
                 return {"status": "ok"}
+                
             
             # Get bot user ID for mention detection
             bot_user_id = await get_bot_user_id(connection)
