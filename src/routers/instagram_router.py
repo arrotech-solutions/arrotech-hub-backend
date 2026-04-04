@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks, Response
 from fastapi.responses import RedirectResponse
 import httpx
 import logging
 import urllib.parse
+import json
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import Optional
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 FACEBOOK_GRAPH_URL = "https://graph.facebook.com/v22.0"
 # Scopes for Instagram Business
 # Note: Instagram Business API works via Facebook Login
-INSTAGRAM_SCOPES = "pages_show_list,pages_read_engagement"
+INSTAGRAM_SCOPES = "pages_show_list,pages_read_engagement,pages_manage_metadata,instagram_basic,instagram_manage_messages"
 
 @router.get("/auth-url")
 async def get_auth_url(user: User = Depends(get_current_user)):
@@ -148,3 +149,62 @@ async def oauth_callback(
         return RedirectResponse(
             url=f"{settings.FRONTEND_URL}/connections?error=internal_error"
         )
+
+@router.get("/webhook")
+async def verify_webhook(request: Request):
+    """
+    Verify the webhook with Meta.
+    Meta sends a GET request to this endpoint with hub.mode, hub.challenge, and hub.verify_token.
+    """
+    mode = request.query_params.get("hub.mode")
+    token = request.query_params.get("hub.verify_token")
+    challenge = request.query_params.get("hub.challenge")
+
+    # Assuming you set INSTAGRAM_WEBHOOK_VERIFY_TOKEN in config, otherwise use a placeholder or read from env
+    verify_token = getattr(settings, "INSTAGRAM_WEBHOOK_VERIFY_TOKEN", "Arrotech_Secr3t_Token_2026")
+
+    if mode and token:
+        if mode == "subscribe" and token == verify_token:
+            logger.info("Instagram Webhook verified successfully.")
+            return Response(content=challenge, media_type="text/plain")
+        else:
+            raise HTTPException(status_code=403, detail="Verification token mismatch")
+    
+    raise HTTPException(status_code=400, detail="Missing mode or token")
+
+@router.post("/webhook")
+async def webhook_event(request: Request, background_tasks: BackgroundTasks):
+    """
+    Receive webhook events from Meta (Instagram).
+    """
+    try:
+        body = await request.body()
+        data = json.loads(body)
+        
+        if data.get("object") == "instagram":
+            for entry in data.get("entry", []):
+                for messaging_event in entry.get("messaging", []):
+                    # We only care about message receives, not deliveries/reads
+                    if "message" in messaging_event:
+                        sender_id = messaging_event["sender"]["id"]
+                        recipient_id = messaging_event["recipient"]["id"]
+                        message_text = messaging_event["message"].get("text", "")
+                        
+                        if message_text:
+                            logger.info(f"[IG_WEBHOOK] Received message from {sender_id}: {message_text[:50]}")
+                            # Delegate to Trigger Engine asynchronously
+                            from ..services.instagram_workflow_trigger import InstagramWorkflowTrigger
+                            background_tasks.add_task(
+                                InstagramWorkflowTrigger.on_message_received,
+                                sender_id=sender_id,
+                                recipient_id=recipient_id,
+                                message=message_text
+                            )
+                        
+            return Response(content="EVENT_RECEIVED", status_code=200, media_type="text/plain")
+        else:
+            return Response(content="NOT_INSTAGRAM_EVENT", status_code=404, media_type="text/plain")
+            
+    except Exception as e:
+        logger.error(f"Error handling Instagram webhook: {str(e)}", exc_info=True)
+        return Response(content="SERVER_ERROR", status_code=500, media_type="text/plain")
