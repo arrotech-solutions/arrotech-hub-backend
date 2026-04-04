@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks, Response, Query
 from fastapi.responses import RedirectResponse
 import httpx
 import logging
@@ -151,26 +151,27 @@ async def oauth_callback(
         )
 
 @router.get("/webhook")
-async def verify_webhook(request: Request):
+async def verify_webhook(
+    hub_mode: str = Query(None, alias="hub.mode"),
+    hub_verify_token: str = Query(None, alias="hub.verify_token"),
+    hub_challenge: str = Query(None, alias="hub.challenge")
+):
     """
     Verify the webhook with Meta.
     Meta sends a GET request to this endpoint with hub.mode, hub.challenge, and hub.verify_token.
     """
-    mode = request.query_params.get("hub.mode")
-    token = request.query_params.get("hub.verify_token")
-    challenge = request.query_params.get("hub.challenge")
-
-    # Assuming you set INSTAGRAM_WEBHOOK_VERIFY_TOKEN in config, otherwise use a placeholder or read from env
-    verify_token = getattr(settings, "INSTAGRAM_WEBHOOK_VERIFY_TOKEN", "Arrotech_Secr3t_Token_2026")
-
-    if mode and token:
-        if mode == "subscribe" and token == verify_token:
-            logger.info("Instagram Webhook verified successfully.")
-            return Response(content=challenge, media_type="text/plain")
-        else:
-            raise HTTPException(status_code=403, detail="Verification token mismatch")
+    logger.info(f"[INSTAGRAM WEBHOOK] Verification request received")
+    logger.info(f"[INSTAGRAM WEBHOOK] Mode: {hub_mode}, Token: {hub_verify_token}")
     
-    raise HTTPException(status_code=400, detail="Missing mode or token")
+    # Check verification token
+    verify_token = getattr(settings, "INSTAGRAM_WEBHOOK_VERIFY_TOKEN", None) or "Arrotech_Secr3t_Token_2026"
+    
+    if hub_mode == "subscribe" and hub_verify_token == verify_token:
+        logger.info("[INSTAGRAM WEBHOOK] Verification successful!")
+        return Response(content=hub_challenge, media_type="text/plain")
+    else:
+        logger.warning(f"[INSTAGRAM WEBHOOK] Verification failed! Expected: {verify_token}, Got: {hub_verify_token}")
+        raise HTTPException(status_code=403, detail="Verification token mismatch")
 
 @router.post("/webhook")
 async def webhook_event(request: Request, background_tasks: BackgroundTasks):

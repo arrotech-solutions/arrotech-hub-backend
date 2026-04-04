@@ -55,6 +55,7 @@ class BaseConfig(BaseSettings):
     # Facebook (Pages) Configuration
     FACEBOOK_APP_ID: Optional[str] = None
     FACEBOOK_APP_SECRET: Optional[str] = None
+    INSTAGRAM_WEBHOOK_VERIFY_TOKEN: Optional[str] = None
 
     # Twitter (X) Configuration
     TWITTER_CLIENT_ID: Optional[str] = None
