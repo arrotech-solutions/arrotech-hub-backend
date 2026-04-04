@@ -3814,7 +3814,12 @@ class PlatformRegistry:
                             "enum": ["website", "google_drive", "notion", "airtable", "google_sheets", "slack", "gmail", "hubspot"],
                             "description": "Type of source to fetch from"
                         },
-                        "url_or_id": {"type": "string", "description": "URL or ID of the source to ingest"}
+                        "url_or_id": {"type": "string", "description": "URL or ID of the source to ingest"},
+                        "auto_sync": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Auto-sync the Knowledge Base whenever any changes are made to the folder"
+                        }
                     },
                     "required": ["source_type", "kb_id", "url_or_id"]
                 },
