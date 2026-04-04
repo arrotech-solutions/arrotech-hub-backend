@@ -564,6 +564,7 @@ class RAGPipelineService:
         kb_id: str, 
         user_id: str,
         source_type: str = "website", 
+        auto_sync: bool = False,
         user: Any = None, 
         db: Any = None
     ) -> Dict[str, Any]:
@@ -582,6 +583,49 @@ class RAGPipelineService:
             
             # Resolve hybrid credentials (user BYOK → platform env vars)
             credentials = await self._resolve_credentials(user, db)
+            
+            # ---- Handle Auto-Sync Registration ----
+            if auto_sync and source_type in ["google_drive", "google_workspace_drive"]:
+                try:
+                    from .google_workspace.drive_watch_service import GoogleDriveWatchService
+                    from ..models import Workflow, WorkflowTriggerType, WorkflowStatus
+                    from sqlalchemy import select
+                    
+                    watch_service = GoogleDriveWatchService()
+                    
+                    # Find if there's already an active workflow for this user that could host this watch
+                    # Or we might need the current workflow context. This tool is usually called within a workflow.
+                    # For now, we'll try to find the workflow this tool is running in if possible, 
+                    # but rag_ingest_source is generic.
+                    
+                    # If called from a workflow execution, we should have a workflow context 
+                    # but rag_ingest_source doesn't currently take workflow_id.
+                    # As a fallback, we ensure a drive-wide watch is active for this user.
+                    
+                    # Check for any active Google Drive trigger workflow for this user
+                    stmt = select(Workflow).where(
+                        Workflow.user_id == user.id,
+                        Workflow.status == WorkflowStatus.ACTIVE
+                    )
+                    res = await db.execute(stmt)
+                    workflows = res.scalars().all()
+                    
+                    target_wf = None
+                    for wf in workflows:
+                        # 1. Check if this is the workflow that HAS this tool step
+                        for step in wf.steps:
+                            if step.tool_name == "rag_ingest_source" and step.tool_parameters.get("url_or_id") == url_or_id:
+                                target_wf = wf
+                                break
+                        if target_wf: break
+                    
+                    if target_wf:
+                        await watch_service.register_drive_watch(db, user, target_wf)
+                    else:
+                        logger.warning(f"Could not find matching workflow to register Google Drive watch for folder {url_or_id}")
+                        
+                except Exception as e:
+                    logger.error(f"Failed to register Google Drive watch: {e}")
             
             # ---- Website (Firecrawl) ----
             if source_type == "website":
