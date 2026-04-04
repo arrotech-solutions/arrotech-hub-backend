@@ -165,7 +165,9 @@ class ToolExecutor:
 
 
             # Route to appropriate service based on tool name
-            if tool_name.startswith("slack_"):
+            if tool_name.startswith("instagram_"):
+                return await self._execute_instagram_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("slack_"):
                 return await self._execute_slack_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("teams_"):
                 return await self._execute_teams_tool(tool_name, arguments, user, db)
@@ -549,6 +551,50 @@ class ToolExecutor:
             return {"success": False, "error": "Unstructured service is not available. Please install unstructured."}
         except Exception as e:
             return {"success": False, "error": f"Unstructured error: {str(e)}"}
+
+    async def _execute_instagram_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute Instagram-related tools."""
+        result = await db.execute(
+            select(Connection)
+            .filter(
+                Connection.user_id == user.id,
+                Connection.platform == "instagram",
+                Connection.status == ConnectionStatus.ACTIVE
+            )
+        )
+        connection = result.scalar_one_or_none()
+
+        if not connection:
+            return {
+                "success": False,
+                "error": "No active Instagram connection found",
+                "result": None
+            }
+
+        access_token = connection.config.get("access_token")
+        if not access_token:
+            return {
+                "success": False,
+                "error": "No access token found in Instagram connection",
+                "result": None
+            }
+            
+        from .instagram_service import InstagramService
+        ig_service = InstagramService(access_token)
+        
+        if tool_name == "instagram_send_dm":
+            recipient_id = arguments.get("recipient_id")
+            message = arguments.get("message")
+            result = await ig_service.send_dm(recipient_id=recipient_id, message=message)
+            return {"success": result.get("success"), "error": result.get("error"), "result": result}
+            
+        return {"success": False, "error": f"Unknown Instagram tool: {tool_name}"}
 
     async def _execute_slack_tool(
         self,

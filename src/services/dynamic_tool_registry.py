@@ -673,6 +673,8 @@ class DynamicToolRegistry:
         for connection in connections:
             if connection.platform == "slack":
                 tools.extend(self._get_slack_tools(connection))
+            elif connection.platform == "instagram":
+                tools.extend(self._get_instagram_tools(connection))
             elif connection.platform == "hubspot":
                 tools.extend(self._get_hubspot_tools(connection))
             elif connection.platform == "salesforce":
@@ -728,6 +730,7 @@ class DynamicToolRegistry:
             allowed_tools = {
                 "mpesa_payment_reconciliation", 
                 "slack_send_message", 
+                "instagram_send_dm",
                 "context_intelligence",
                 "marketing_campaign_automation",
                 "campaign_performance_tracking",
@@ -752,6 +755,27 @@ class DynamicToolRegistry:
         
         return tools
     
+    def _get_instagram_tools(self, connection: Connection) -> List[Dict[str, Any]]:
+        """Get Instagram tools for a connection."""
+        return [
+            {
+                "name": "instagram_send_dm",
+                "description": "Send a direct message to an Instagram user via Meta Graph API",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "recipient_id": {"type": "string", "description": "The Instagram Scoped ID (IGSID) of the recipient"},
+                        "message": {"type": "string", "description": "Message context to send"}
+                    },
+                    "required": ["recipient_id", "message"]
+                },
+                "connection_id": connection.id,
+                "platform": "instagram",
+                "status": "available",
+                "id": "instagram_send_dm"
+            }
+        ]
+
     def _get_slack_tools(self, connection: Connection) -> List[Dict[str, Any]]:
         """Get Slack tools for a connection."""
         return [
