@@ -165,6 +165,36 @@ class WorkflowBuilderService:
         
         await db.commit()
         await db.refresh(workflow)
+
+        # ---- Handle Google Drive Watch Registration ----
+        if workflow.status == WorkflowStatus.ACTIVE:
+            trigger_config = workflow.trigger_config or {}
+            is_drive_trigger = (
+                workflow.trigger_type == WorkflowTriggerType.EVENT.value and 
+                trigger_config.get("platform") == "google_drive"
+            )
+            
+            # Also check if any step has auto_sync enabled
+            has_auto_sync = any(
+                step.tool_name == "rag_ingest_source" and 
+                step.tool_parameters.get("auto_sync") 
+                for step in workflow.steps
+            )
+
+            if is_drive_trigger or has_auto_sync:
+                try:
+                    from .google_workspace.drive_watch_service import GoogleDriveWatchService
+                    from ..models import User
+                    
+                    user_res = await db.execute(select(User).where(User.id == workflow.user_id))
+                    user = user_res.scalar_one_or_none()
+                    
+                    if user:
+                        watch_service = GoogleDriveWatchService()
+                        await watch_service.register_drive_watch(db, user, workflow)
+                except Exception as e:
+                    logger.error(f"Failed to auto-register Google Drive watch: {e}")
+
         return workflow
     
     async def delete_workflow(self, workflow_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession) -> bool:
