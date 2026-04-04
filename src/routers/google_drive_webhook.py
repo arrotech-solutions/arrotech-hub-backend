@@ -64,125 +64,47 @@ async def process_drive_change_async(
         
     from ..database import get_session_maker
     from ..services.workflow_builder_service import WorkflowBuilderService
-    from ..models import Workflow, WorkflowStatus, WorkflowTriggerType, User
-    from ..services.google_workspace.base_client import GoogleWorkspaceBaseClient
-    from ..services.google_workspace.drive_service import DriveService
-    from sqlalchemy import select, and_, update
+    from ..models import Workflow, WorkflowStatus, WorkflowTriggerType
+    from sqlalchemy import select, and_
     
     session_maker = get_session_maker()
     async with session_maker() as db:
         try:
-            # Find workflows associated with this channel
+            # Find workflows with Google Drive triggers
             result = await db.execute(
                 select(Workflow).where(
                     and_(
                         Workflow.status == WorkflowStatus.ACTIVE,
-                        Workflow.workflow_metadata["google_drive_channel_id"].astext == channel_id
+                        Workflow.trigger_type == WorkflowTriggerType.EVENT.value
                     )
                 )
             )
             workflows = result.scalars().all()
             
-            if not workflows:
-                logger.info(f"[DRIVE_WEBHOOK] No active workflows found for channel {channel_id}")
-                return
-
-            # Group workflows by user to avoid redundant change listing
-            user_workflows = {}
-            for wf in workflows:
-                if wf.user_id not in user_workflows:
-                    user_workflows[wf.user_id] = []
-                user_workflows[wf.user_id].append(wf)
-
-            base_client = GoogleWorkspaceBaseClient()
-            drive_service = DriveService(base_client)
+            logger.info(f"[DRIVE_TRIGGER] Checking {len(workflows)} active event-triggered workflows for channel {channel_id}")
+            
             builder = WorkflowBuilderService()
-
-            for user_id, wfs in user_workflows.items():
-                # Get the user to authenticate
-                user_result = await db.execute(select(User).where(User.id == user_id))
-                user = user_result.scalar_one_or_none()
-                if not user:
-                    continue
-
-                # Get the last page token from the first workflow (they should share the same channel/token if grouped)
-                # In reality, multiple workflows might share a channel, but we'll use the one from the metadata
-                last_token = wfs[0].workflow_metadata.get("google_drive_last_page_token")
+            for workflow in workflows:
+                trigger_config = workflow.trigger_config or {}
+                platform = trigger_config.get("platform", "")
+                event_type = trigger_config.get("event_type", "")
                 
-                if not last_token:
-                    logger.warning(f"[DRIVE_WEBHOOK] No page token found for workflow {wfs[0].id}")
-                    continue
-
-                # Fetch changes
-                changes_result = await drive_service.list_changes(last_token)
-                if not changes_result.get("success"):
-                    logger.error(f"[DRIVE_WEBHOOK] Failed to list changes for user {user_id}: {changes_result.get('error')}")
-                    continue
-
-                changes = changes_result.get("changes", [])
-                new_token = changes_result.get("new_start_page_token")
-
-                # Update the page token in the database for ALL workflows sharing this channel
-                for wf in wfs:
-                    metadata = dict(wf.workflow_metadata)
-                    metadata["google_drive_last_page_token"] = new_token
-                    await db.execute(
-                        update(Workflow).where(Workflow.id == wf.id).values(workflow_metadata=metadata)
-                    )
-                await db.commit()
-
-                if not changes:
-                    logger.info(f"[DRIVE_WEBHOOK] No actual changes found in the notification for user {user_id}")
-                    continue
-
-                # For each workflow, check if any change matches its configured folder(s)
-                for wf in wfs:
-                    # Identify target folders from trigger_config or rag_ingest_source tool
-                    target_folders = []
-                    
-                    # 1. Check trigger config
-                    tc = wf.trigger_config or {}
-                    if tc.get("platform") == "google_drive" and tc.get("folder_id"):
-                        target_folders.append(tc.get("folder_id"))
-                    
-                    # 2. Check steps for rag_ingest_source with auto_sync
-                    for step in wf.steps:
-                        if step.tool_name == "rag_ingest_source":
-                            params = step.tool_parameters or {}
-                            if params.get("auto_sync") and params.get("source_type") == "google_drive":
-                                target_folders.append(params.get("url_or_id"))
-
-                    if not target_folders:
-                        # If no specific folder is targeted, maybe the user wants to monitor everything?
-                        # For now, let's assume we need a target folder to avoid noise.
-                        logger.info(f"[DRIVE_WEBHOOK] Workflow {wf.id} has no target folder configured.")
-                        continue
-
-                    # Check if any change intersects with target folders
-                    triggered = False
-                    for change in changes:
-                        file_data = change.get("file", {})
-                        parents = file_data.get("parents", [])
-                        
-                        # Check if file itself is a target folder OR if any of its parents are target folders
-                        if file_data.get("id") in target_folders or any(p in target_folders for p in parents):
-                            triggered = True
-                            break
-                    
-                    if triggered:
-                        logger.info(f"[DRIVE_WEBHOOK] Triggering workflow {wf.name} for user {user_id} due to drive changes.")
-                        try:
-                            await builder.execute_workflow(
-                                workflow_id=wf.id,
-                                user_id=user_id,
-                                db=db,
-                                input_data={
-                                    "google_drive_event": state,
-                                    "google_drive_changes": changes
-                                }
-                            )
-                        except Exception as e:
-                            logger.error(f"[DRIVE_WEBHOOK] Execution failed for {wf.id}: {e}")
+                if platform == "google_drive" and event_type == "google_drive_folder_changed":
+                    logger.info(f"[DRIVE_TRIGGER] Firing workflow '{workflow.name}' for user {workflow.user_id}")
+                    try:
+                        input_vars = {
+                            "google_drive_channel_id": channel_id,
+                            "google_drive_resource_id": resource_id,
+                            "google_drive_state": state
+                        }
+                        await builder.execute_workflow(
+                            workflow_id=workflow.id,
+                            user_id=workflow.user_id,
+                            db=db,
+                            input_data=input_vars
+                        )
+                    except Exception as e:
+                        logger.error(f"[DRIVE_TRIGGER] Failed to execute workflow {workflow.id}: {e}")
             
         except Exception as e:
             logger.error(f"Error processing Google Drive event: {e}", exc_info=True)
