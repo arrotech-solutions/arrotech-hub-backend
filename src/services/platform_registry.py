@@ -663,6 +663,37 @@ class PlatformRegistry:
             test_function="test_whatsapp_connection"
         )
 
+        # Telegram Platform
+        telegram_capabilities = [
+            PlatformCapability(
+                name="Messaging",
+                description="Send Telegram messages to users",
+                tool_name="telegram_send_message",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "chat_id": {"type": "string", "description": "The telegram chat ID or user ID"},
+                        "message": {"type": "string", "description": "The message text to send"}
+                    },
+                    "required": ["chat_id", "message"]
+                },
+                operations=["send"]
+            )
+        ]
+        
+        self.platforms["telegram"] = ConnectionPlatform(
+            id="telegram",
+            name="Telegram Bot",
+            description="Automate Telegram sending messages and responding to users",
+            icon="telegram",
+            features=[
+                "Send Automated Messages",
+                "Receive Webhook Events"
+            ],
+            capabilities=telegram_capabilities,
+            test_function="test_telegram_connection"
+        )
+
         # Airtable Platform
         airtable_capabilities = [
             PlatformCapability(

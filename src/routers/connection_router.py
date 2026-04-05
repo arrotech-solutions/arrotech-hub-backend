@@ -392,6 +392,8 @@ async def test_platform_connection(platform: str, config: Dict[str, Any]) -> Dic
             return await test_linkedin_connection(config)
         elif platform == "instagram":
             return await test_instagram_connection(config)
+        elif platform == "telegram":
+            return await test_telegram_connection(config)
         elif platform == "salesforce":
             return await test_salesforce_connection(config)
         elif platform == "teams":
@@ -614,6 +616,49 @@ async def test_instagram_connection(config: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "success": False,
             "error": f"Instagram connection test failed: {str(e)}"
+        }
+
+
+async def test_telegram_connection(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Test Telegram Bot connection."""
+    try:
+        from ..services.telegram_service import TelegramService
+        bot_token = config.get("bot_token")
+        
+        if not bot_token:
+            return {
+                "success": False,
+                "error": "Telegram Bot Token is required"
+            }
+        
+        # Test the bot token by calling getMe API
+        import httpx
+        url = f"https://api.telegram.org/bot{bot_token}/getMe"
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=10.0)
+            data = response.json()
+            
+            if response.status_code == 200 and data.get("ok"):
+                bot_info = data.get("result", {})
+                return {
+                    "success": True,
+                    "message": "Telegram connection test successful",
+                    "data": {
+                        "bot_username": bot_info.get("username"),
+                        "bot_id": bot_info.get("id"),
+                        "first_name": bot_info.get("first_name")
+                    }
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": data.get("description", "Invalid Telegram Bot Token")
+                }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Telegram connection test failed: {str(e)}"
         }
 
 

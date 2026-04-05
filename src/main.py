@@ -25,12 +25,12 @@ from .database import init_db
 from .routers import (access_router, agent_router, analytics_router, api_router, auth_router, chat_router,
                       connection_router, creator_router, favorites_router, google_workspace_router, marketplace_router, 
                       mcp_router, mpesa_agent_router, notification_router, payment_router, preferences_router,
-                      security_router, settings_router, slack_agent_router, slack_router, subscription_router, templates_router, whatsapp_router, workflow_router, facebook_router, instagram_router, twitter_router, clickup_router, teams_router, zoom_router,
+                      security_router, settings_router, slack_agent_router, slack_router, subscription_router, templates_router, whatsapp_router, workflow_router, facebook_router, instagram_router, telegram_router, twitter_router, clickup_router, teams_router, zoom_router,
                       outlook_router, notion_router, trello_router, jira_router, whatsapp_webhook, whatsapp_contacts, whatsapp_broadcast, tiktok_router, ai_router, support_router, kra_router, productivity_router, asana_router,
                        blog_router, employee_router, gmail_webhook, hubspot_router, ws_router, organization_router, quickbooks_router, airtable_router, xero_router, zoho_router, zoho_webhook, linkedin_router, rag_router)
 from .services import (BillingService, ContentCreationService,
                        FileManagementService, HubSpotService,
-                       RateLimitService, SlackService, SocialMediaService,
+                       RateLimitService, SlackService, SocialMediaService, TelegramService,
                        WebToolsService, WorkflowSchedulerService,
                        cache_service)
 
@@ -73,6 +73,7 @@ file_management_service = FileManagementService()
 web_tools_service = WebToolsService()
 content_creation_service = ContentCreationService()
 workflow_scheduler_service = WorkflowSchedulerService()
+telegram_service = TelegramService()
 
 
 @asynccontextmanager
@@ -99,6 +100,13 @@ async def lifespan(app: FastAPI):
         logger.warning("Slack service initialization timed out")
     except Exception as e:
         logger.warning(f"Slack service initialization failed: {e}")
+
+    try:
+        await asyncio.wait_for(telegram_service.initialize(), timeout=10.0)
+    except asyncio.TimeoutError:
+        logger.warning("Telegram service webhook registration timed out")
+    except Exception as e:
+        logger.warning(f"Telegram service webhook registration failed: {e}")
 
     try:
         await asyncio.wait_for(cache_service.initialize(), timeout=5.0)
@@ -259,6 +267,7 @@ app.include_router(whatsapp_contacts.router)  # WhatsApp contacts, messages, aut
 app.include_router(whatsapp_broadcast.router)  # WhatsApp broadcast campaigns
 app.include_router(facebook_router)
 app.include_router(instagram_router)
+app.include_router(telegram_router.router)
 app.include_router(twitter_router)
 app.include_router(linkedin_router.router)
 app.include_router(clickup_router.router)

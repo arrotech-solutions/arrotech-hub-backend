@@ -28,6 +28,7 @@ from .workflow_builder_service import WorkflowBuilderService
 from .workflow_scheduler import WorkflowSchedulerService
 from .whatsapp_service import WhatsAppService
 from .real_estate_tools import RealEstateTools
+from .telegram_service import TelegramService
 
 __all__ = [
     "ABTestingService",
@@ -56,4 +57,5 @@ __all__ = [
     "WorkflowSchedulerService",
     "WhatsAppService",
     "RealEstateTools",
+    "TelegramService",
 ]

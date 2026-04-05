@@ -712,6 +712,9 @@ class DynamicToolRegistry:
                     tool["id"] = tool["name"]
                     tools.append(tool)
         
+        # Add Telegram tools if configured globally
+        if settings.TELEGRAM_BOT_TOKEN:
+            tools.extend(self._get_telegram_tools())
         # If discovery mode, add all other available platform tools
         if include_all:
             processed_tool_names = {t["name"] for t in tools}
@@ -731,6 +734,7 @@ class DynamicToolRegistry:
                 "mpesa_payment_reconciliation", 
                 "slack_send_message", 
                 "instagram_send_dm",
+                "telegram_send_message",
                 "context_intelligence",
                 "marketing_campaign_automation",
                 "campaign_performance_tracking",
@@ -773,6 +777,27 @@ class DynamicToolRegistry:
                 "platform": "instagram",
                 "status": "available",
                 "id": "instagram_send_dm"
+            }
+        ]
+
+    def _get_telegram_tools(self, connection: Connection = None) -> List[Dict[str, Any]]:
+        """Get Telegram tools for a connection or global bot."""
+        return [
+            {
+                "name": "telegram_send_message",
+                "description": "Send a text message to a Telegram chat",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "chat_id": {"type": "string", "description": "The Telegram Chat ID to send the message to"},
+                        "message": {"type": "string", "description": "Message context to send"}
+                    },
+                    "required": ["chat_id", "message"]
+                },
+                "connection_id": connection.id if connection else "global",
+                "platform": "telegram",
+                "status": "available",
+                "id": "telegram_send_message"
             }
         ]
 

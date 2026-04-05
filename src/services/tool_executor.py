@@ -167,6 +167,8 @@ class ToolExecutor:
             # Route to appropriate service based on tool name
             if tool_name.startswith("instagram_"):
                 return await self._execute_instagram_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("telegram_"):
+                return await self._execute_telegram_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("slack_"):
                 return await self._execute_slack_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("teams_"):
@@ -595,6 +597,25 @@ class ToolExecutor:
             return {"success": result.get("success"), "error": result.get("error"), "result": result}
             
         return {"success": False, "error": f"Unknown Instagram tool: {tool_name}"}
+
+    async def _execute_telegram_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute Telegram-related tools."""
+        from .telegram_service import TelegramService
+        tg_service = TelegramService()
+        
+        if tool_name == "telegram_send_message":
+            chat_id = arguments.get("chat_id")
+            message = arguments.get("message")
+            result = await tg_service.send_message(chat_id=chat_id, message=message)
+            return {"success": result.get("success"), "error": result.get("error"), "result": result}
+            
+        return {"success": False, "error": f"Unknown Telegram tool: {tool_name}"}
 
     async def _execute_slack_tool(
         self,
