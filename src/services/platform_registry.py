@@ -691,6 +691,7 @@ class PlatformRegistry:
                 "Receive Webhook Events"
             ],
             capabilities=telegram_capabilities,
+            config_schema={},
             test_function="test_telegram_connection"
         )
 
