@@ -1,5 +1,6 @@
 import httpx
 import logging
+import re
 from typing import Dict, Any, Optional
 
 from ..config import settings
@@ -22,9 +23,14 @@ class TelegramService:
             return {"success": False, "error": "Telegram Bot Token is not configured"}
 
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        
+        # Format message for Telegram Markdown (Legacy)
+        formatted_message = self._format_markdown_for_telegram(message)
+        
         payload = {
             "chat_id": chat_id,
-            "text": message
+            "text": formatted_message,
+            "parse_mode": "Markdown"
         }
 
         async with httpx.AsyncClient() as client:
@@ -46,6 +52,32 @@ class TelegramService:
             except Exception as e:
                 logger.error(f"Unexpected error in Telegram send_message: {e}")
                 return {"success": False, "error": str(e)}
+
+    def _format_markdown_for_telegram(self, text: str) -> str:
+        """
+        Convert standard Markdown to Telegram's Markdown (Legacy) format.
+        Telegram Legacy Markdown uses:
+        - *bold*
+        - _italic_
+        - `code`
+        - [text](url)
+        """
+        if not text:
+            return ""
+
+        # 1. Handle Bold: **text** -> *text*
+        # (Standard AI output uses double asterisks for bold)
+        text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
+
+        # 2. Handle Headers: # Header -> *Header*
+        text = re.sub(r'^(#{1,6})\s+(.+)$', r'*\2*', text, flags=re.MULTILINE)
+
+        # 3. Handle Escaping for Legacy Markdown
+        # Telegram Legacy Markdown is actually very loose, but we should 
+        # ensure no stray single asterisks break the formatting.
+        # For now, the simple bold conversion is what's requested.
+
+        return text
 
     async def initialize(self):
         """
