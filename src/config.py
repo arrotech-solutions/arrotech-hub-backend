@@ -43,6 +43,10 @@ class BaseConfig(BaseSettings):
     ZOOM_CLIENT_SECRET: Optional[str] = None
     ZOOM_ACCOUNT_ID: Optional[str] = None
 
+    # Telegram Configuration
+    TELEGRAM_BOT_TOKEN: Optional[str] = None
+    TELEGRAM_BOT_NAME: Optional[str] = None
+
     # WhatsApp API Configuration
     WHATSAPP_TOKEN: Optional[str] = None
     WHATSAPP_PHONE_NUMBER_ID: Optional[str] = None
@@ -56,6 +60,9 @@ class BaseConfig(BaseSettings):
     FACEBOOK_APP_ID: Optional[str] = None
     FACEBOOK_APP_SECRET: Optional[str] = None
     INSTAGRAM_WEBHOOK_VERIFY_TOKEN: Optional[str] = None
+
+    # Telegram Configuration
+    TELEGRAM_BOT_TOKEN: Optional[str] = None
 
     # Twitter (X) Configuration
     TWITTER_CLIENT_ID: Optional[str] = None
