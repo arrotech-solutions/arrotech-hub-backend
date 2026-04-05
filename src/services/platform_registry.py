@@ -681,7 +681,7 @@ class PlatformRegistry:
             )
         ]
         
-        self.platforms["telegram"] = ConnectionPlatform(
+        self.platforms["telegram"] = Platform(
             id="telegram",
             name="Telegram Bot",
             description="Automate Telegram sending messages and responding to users",
