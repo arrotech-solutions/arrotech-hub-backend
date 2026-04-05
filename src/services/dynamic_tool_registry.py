@@ -9,6 +9,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import settings
 from ..database import get_db
 from ..models import Connection, ConnectionStatus, User, SubscriptionTier
 from .platform_registry import platform_registry
