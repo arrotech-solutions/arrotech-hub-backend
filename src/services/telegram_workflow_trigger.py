@@ -70,8 +70,8 @@ class TelegramWorkflowTrigger:
                         
                         input_vars = {
                             "telegram_message": message or "",
-                            "telegram_sender_id": sender_id,
-                            "telegram_chat_id": chat_id,
+                            "sender_id": sender_id,
+                            "chat_id": chat_id,
                             "timestamp": datetime.utcnow().isoformat()
                         }
                         
