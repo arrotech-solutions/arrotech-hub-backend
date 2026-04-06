@@ -227,6 +227,129 @@ PLATFORM_METADATA = {
             "Reconcile bank transactions",
             "Generate financial reports"
         ]
+    },
+    "telegram": {
+        "display_name": "Telegram",
+        "icon": "✈️",
+        "color": "blue",
+        "category": "communication",
+        "description": "Telegram bot messaging",
+        "capabilities_when_connected": [
+            "Send messages via Telegram bot",
+            "Receive and auto-reply to messages",
+            "Trigger workflows from Telegram events"
+        ]
+    },
+    "clickup": {
+        "display_name": "ClickUp",
+        "icon": "🟣",
+        "color": "purple",
+        "category": "project_management",
+        "description": "Project and task management",
+        "capabilities_when_connected": [
+            "Create and manage tasks",
+            "Organize spaces, folders, and lists",
+            "Track project progress",
+            "Assign work to team members"
+        ]
+    },
+    "notion": {
+        "display_name": "Notion",
+        "icon": "📝",
+        "color": "black",
+        "category": "productivity",
+        "description": "Workspace for docs, databases, and wikis",
+        "capabilities_when_connected": [
+            "Create and search pages",
+            "Query and update databases",
+            "Manage workspace content"
+        ]
+    },
+    "trello": {
+        "display_name": "Trello",
+        "icon": "📋",
+        "color": "blue",
+        "category": "project_management",
+        "description": "Visual project boards and cards",
+        "capabilities_when_connected": [
+            "Create and manage boards",
+            "Add and update cards",
+            "Organize with lists and labels"
+        ]
+    },
+    "jira": {
+        "display_name": "Jira",
+        "icon": "🔷",
+        "color": "blue",
+        "category": "project_management",
+        "description": "Issue and project tracking",
+        "capabilities_when_connected": [
+            "Create and track issues",
+            "Manage sprints and projects",
+            "Assign and transition tickets"
+        ]
+    },
+    "quickbooks": {
+        "display_name": "QuickBooks",
+        "icon": "💚",
+        "color": "green",
+        "category": "accounting",
+        "description": "Accounting, invoicing, and expenses",
+        "capabilities_when_connected": [
+            "Create and send invoices",
+            "Track expenses and vendors",
+            "Generate profit & loss reports",
+            "Manage customers and payments"
+        ]
+    },
+    "airtable": {
+        "display_name": "Airtable",
+        "icon": "📊",
+        "color": "teal",
+        "category": "productivity",
+        "description": "Spreadsheet-database hybrid",
+        "capabilities_when_connected": [
+            "Create and query records",
+            "Manage bases and tables",
+            "Automate data workflows"
+        ]
+    },
+    "tiktok": {
+        "display_name": "TikTok",
+        "icon": "🎵",
+        "color": "black",
+        "category": "social_media",
+        "description": "Short-form video content and analytics",
+        "capabilities_when_connected": [
+            "View video analytics",
+            "Manage business account",
+            "Track engagement metrics"
+        ]
+    },
+    "zoho": {
+        "display_name": "Zoho",
+        "icon": "🔴",
+        "color": "red",
+        "category": "crm",
+        "description": "CRM, finance, desk, and email suite",
+        "capabilities_when_connected": [
+            "Manage CRM contacts, deals, and leads",
+            "Handle support tickets via Desk",
+            "Send emails via Zoho Mail",
+            "Track invoices and expenses"
+        ]
+    },
+    "outlook": {
+        "display_name": "Microsoft Outlook",
+        "icon": "📬",
+        "color": "blue",
+        "category": "productivity",
+        "description": "Email, calendar, and contacts",
+        "capabilities_when_connected": [
+            "Send and read emails",
+            "Manage calendar events",
+            "Organize contacts"
+        ]
     }
 }
 
@@ -246,7 +369,13 @@ CATEGORY_LABELS = {
     "automation": "🔄 Automation",
     "file_management": "📁 File Management",
     "content": "✍️ Content Creation",
+    "content_creation": "✍️ Content Creation",
     "data": "📊 Data & Insights",
+    "web_tools": "🌐 Web Tools",
+    "enterprise": "🏢 Enterprise",
+    "email": "📧 Email Management",
+    "localization": "🌍 Localization & Intelligence",
+    "real_estate": "🏠 Real Estate",
 }
 
 
@@ -697,6 +826,189 @@ class ToolContextEngine:
             ])
         
         return suggestions[:6]  # Max 6 suggestions
+
+    async def build_discovery_response(
+        self,
+        user_id: uuid.UUID,
+        db: AsyncSession,
+        available_tools: List[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Build a structured, human-friendly discovery response.
+        
+        Returns categorized capabilities organized by:
+        - Active capabilities (from connected apps)
+        - Built-in capabilities (always available, no connection needed)
+        - Available to unlock (not connected yet)
+        - Suggested actions and workflows
+        
+        Used by:
+        - GET /chat/tools/discover endpoint (frontend capability explorer)
+        - System prompt injection for "What can you do?" queries
+        """
+        connections = await self.get_user_connections(user_id, db)
+        active_connections = [c for c in connections if c["status"] == ConnectionStatus.ACTIVE]
+        active_platforms = {c["platform"].lower() for c in active_connections}
+        
+        # ── 1. Active Capabilities (from connected apps) ──
+        active_capabilities = []
+        for conn in active_connections:
+            meta = self._get_platform_meta(conn["platform"])
+            # Count tools for this platform
+            platform_tools = []
+            if available_tools:
+                for tool in available_tools:
+                    t = tool.get('function', tool)
+                    tool_name = t.get('name', '').lower()
+                    if conn["platform"].lower() in tool_name:
+                        platform_tools.append({
+                            "name": t.get('name'),
+                            "description": t.get('description', ''),
+                        })
+            
+            active_capabilities.append({
+                "platform": conn["platform"],
+                "display_name": meta["display_name"],
+                "icon": meta["icon"],
+                "color": meta["color"],
+                "category": meta["category"],
+                "capabilities": meta.get("capabilities_when_connected", []),
+                "tool_count": len(platform_tools),
+                "tools": platform_tools[:5],  # Top 5 for brevity
+                "status": "connected"
+            })
+        
+        # ── 2. Built-in Capabilities (always available) ──
+        builtin_categories = {}
+        if available_tools:
+            for tool in available_tools:
+                t = tool.get('function', tool)
+                if t.get('always_available') or t.get('status') == 'available':
+                    # Skip platform-specific tools (already covered above)
+                    tool_name = t.get('name', '').lower()
+                    is_platform_tool = any(
+                        p in tool_name for p in active_platforms
+                    ) if active_platforms else False
+                    
+                    if not is_platform_tool:
+                        cat = t.get('category', 'general')
+                        cat_label = CATEGORY_LABELS.get(cat, f"🔧 {cat.replace('_', ' ').title()}")
+                        if cat_label not in builtin_categories:
+                            builtin_categories[cat_label] = {
+                                "category_key": cat,
+                                "label": cat_label,
+                                "tools": []
+                            }
+                        builtin_categories[cat_label]["tools"].append({
+                            "name": t.get('name'),
+                            "description": t.get('description', ''),
+                        })
+        
+        builtin_list = list(builtin_categories.values())
+        
+        # ── 3. Available to Unlock (not connected) ──
+        all_known = set(PLATFORM_METADATA.keys())
+        connected_keys = set()
+        for c in connections:
+            key = c["platform"].lower().replace(" ", "_").replace("-", "_")
+            connected_keys.add(key)
+            for k in PLATFORM_METADATA:
+                if k in key or key in k:
+                    connected_keys.add(k)
+        
+        available_to_unlock = []
+        for key in sorted(all_known - connected_keys):
+            meta = PLATFORM_METADATA[key]
+            available_to_unlock.append({
+                "platform": key,
+                "display_name": meta["display_name"],
+                "icon": meta["icon"],
+                "color": meta["color"],
+                "category": meta["category"],
+                "description": meta["description"],
+                "capabilities": meta.get("capabilities_when_connected", []),
+                "status": "not_connected"
+            })
+        
+        # ── 4. Dynamic Suggestions ──
+        suggestions = self._build_dynamic_suggestions(active_platforms, [
+            {"platform": c["platform"], **self._get_platform_meta(c["platform"])}
+            for c in active_connections
+        ])
+        
+        # ── 5. Workflow Suggestions ──
+        workflow_suggestions = self._generate_workflow_suggestions(active_platforms)
+        
+        # ── 6. Summary Stats ──
+        total_tools = len(available_tools) if available_tools else 0
+        total_builtin = sum(len(c["tools"]) for c in builtin_list)
+        total_platform = sum(c["tool_count"] for c in active_capabilities)
+        
+        return {
+            "active_capabilities": active_capabilities,
+            "builtin_capabilities": builtin_list,
+            "available_to_unlock": available_to_unlock,
+            "suggestions": suggestions,
+            "workflow_suggestions": workflow_suggestions,
+            "summary": {
+                "total_tools": total_tools,
+                "total_connected_apps": len(active_connections),
+                "total_builtin_tools": total_builtin,
+                "total_platform_tools": total_platform,
+                "total_available_to_connect": len(available_to_unlock),
+            },
+            "discovery_text": self._build_discovery_text(
+                active_capabilities, builtin_list, available_to_unlock, workflow_suggestions
+            )
+        }
+    
+    def _build_discovery_text(
+        self,
+        active_capabilities: List[Dict],
+        builtin_list: List[Dict],
+        available_to_unlock: List[Dict],
+        workflow_suggestions: List[str]
+    ) -> str:
+        """
+        Build a plain-text discovery summary for injection into the system prompt.
+        This is the template the LLM should follow when answering "What can you do?".
+        """
+        lines = []
+        
+        # Connected apps section
+        if active_capabilities:
+            lines.append("## 🟢 YOUR ACTIVE INTEGRATIONS")
+            for cap in active_capabilities:
+                lines.append(f"\n**{cap['icon']} {cap['display_name']}** ({cap['tool_count']} tools)")
+                for c in cap["capabilities"]:
+                    lines.append(f"  • {c}")
+        
+        # Built-in section
+        if builtin_list:
+            lines.append("\n## ⚡ BUILT-IN CAPABILITIES (always available)")
+            for cat in builtin_list:
+                lines.append(f"\n**{cat['label']}**")
+                for tool in cat["tools"][:4]:  # Max 4 per category for brevity
+                    lines.append(f"  • {tool['name'].replace('_', ' ').title()}: {tool['description'][:80]}")
+                if len(cat["tools"]) > 4:
+                    lines.append(f"  • ...and {len(cat['tools']) - 4} more")
+        
+        # Unlock section
+        if available_to_unlock:
+            lines.append("\n## 🔌 AVAILABLE TO CONNECT")
+            for app in available_to_unlock[:8]:  # Max 8
+                lines.append(f"  • {app['icon']} {app['display_name']} — {app['description']}")
+            if len(available_to_unlock) > 8:
+                lines.append(f"  • ...and {len(available_to_unlock) - 8} more integrations")
+            lines.append('\nConnect them in **Settings → Connections**.')
+        
+        # Workflows
+        if workflow_suggestions:
+            lines.append("\n## 💡 SUGGESTED WORKFLOWS")
+            for s in workflow_suggestions[:5]:
+                lines.append(f"  • {s}")
+        
+        return "\n".join(lines)
 
 
 # Global instance
