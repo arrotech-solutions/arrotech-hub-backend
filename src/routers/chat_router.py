@@ -295,19 +295,13 @@ Response: "✅ Message sent to #general: 'Hello team, standup in 5 minutes'"
 User: "Analyze market trends for laptop sales"
 Thought: This sounds like a marketing analysis request. The 'marketing_campaign_automation' tool has an 'analyze_trends' operation.
 Tool Call: marketing_campaign_automation with {"operation": "analyze_trends", "topic": "laptop sales"}
-Response: "📊 Analysis complete. Here are the key trends from the data:
-- Demand has risen by 15% in Q3
-- Average price point dropped by 5%
-Let me know if you need a deeper breakdown."
+Response: "📊 Analysis complete. Trends indicate a 15% rise in demand..."
 
-### Example 3: Fetching Events Data
-User: "Do I have any upcoming meetings?"
-Thought: I need to check the user's calendar for events, so I will use the google_workspace tool.
-Tool Call: google_workspace with {"action": "list_events"}
-Response: "📅 I found 2 upcoming meetings in your calendar:
-1. **Team Sync** at 10:00 AM (https://meet.google.com/...)
-2. **Strategy Review** at 2:00 PM
-Let me know if you want to reschedule any of them!"
+### Example 3: Email
+User: "Send an email to john@example.com about the meeting tomorrow"
+Thought: I need to send an email. The 'google_workspace_gmail' tool is perfect for this. I have the recipient and the subject.
+Tool Call: google_workspace_gmail with {"action": "send_email", "to": "john@example.com", "subject": "Meeting Tomorrow", "body": "Hi John, I wanted to confirm our meeting tomorrow..."}
+Response: "✅ Email sent to john@example.com with subject 'Meeting Tomorrow'"
 """
 
     system_prompt += examples_text
@@ -315,10 +309,10 @@ Let me know if you want to reschedule any of them!"
     system_prompt += """
 ## RESPONSE FORMAT:
 - **For successful actions**: Start with ✅ and briefly confirm what was done, then explain what tool you used and why
-- **For data queries (IMPORTANT)**: The user NEVER sees the raw tool JSON output. You MUST summarize and present the data that the tool returns. Use clear bullet lists (e.g., list the upcoming meetings you found). Do NOT just say "If you need anything else..."—you must actually show the data first!
+- **For data queries**: Present in clear tables or bullet lists with a brief summary. IMPORTANT: you MUST list out the actual tool data directly (never just reply "I found the data").
 - **For errors**: Start with ⚠️ and explain what went wrong in simple terms + suggest fixes
 - **For capability questions**: List specific tools and connections available to the user
-- **Keep responses concise**: 2-4 sentences for confirmations, expand when summarizing data
+- **Keep responses concise**: 2-4 sentences for confirmations, expand for data
 
 ## ERROR HANDLING:
 - If a tool call fails, explain the error in simple terms
