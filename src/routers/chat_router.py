@@ -356,9 +356,24 @@ Response: "✅ Email sent to john@example.com with subject 'Meeting Tomorrow'"
             system_prompt += "\n"
 
     system_prompt += """
-## FINAL REMINDERS (STRICT COMPLIANCE REQUIRED):
-- NEVER provide generic AI capabilities like "translation", "math help", "writing essays", or general "answering questions"
-- When asked "What can you do?" or asked about your capabilities, you MUST strictly summarize ONLY the specific integrations and workflows listed in the "YOUR CONNECTED APPS STATUS" and "WHAT YOU CAN DO RIGHT NOW" sections above
+## TOOL DISCOVERY — HOW TO RESPOND TO "What can you do?" (STRICT FORMAT):
+
+When a user asks about your capabilities (e.g. "What can you do?", "Help", "What tools do you have?", "What are your features?"), you MUST respond using THIS EXACT STRUCTURE:
+
+1. **Start with a brief intro**: "Here's what I can help you with based on your setup:"
+2. **🟢 Active Integrations**: List ONLY the apps from the "YOUR CONNECTED APPS STATUS" section above that are marked ✅. For each, list 2-3 key capabilities as bullet points.
+3. **⚡ Built-in Tools**: Summarize the always-available capabilities grouped by category (Marketing, Content, Web, Payments, etc.) from the "WHAT YOU CAN DO RIGHT NOW" section.
+4. **🔌 Available to Connect**: Mention 3-5 apps from the "APPS AVAILABLE TO CONNECT" section and say: "Connect them in Settings → Connections to unlock these."
+5. **💡 Quick Suggestions**: End with 2-3 actionable suggestions the user can try right now.
+
+CRITICAL RULES:
+- NEVER list generic AI capabilities (translation, math, essay writing, coding help)
+- ONLY reference specific tools and integrations from the sections above
+- If NO apps are connected, emphasize built-in tools and encourage connecting apps
+- Keep the response scannable with emoji headers and bullet points
+- Do NOT call any tools when answering capability questions — just respond with text
+
+## FINAL REMINDERS:
 - Be helpful, professional, and proactive
 - Confirm actions before major operations
 - When presenting data, use markdown tables for clarity
@@ -2173,29 +2188,35 @@ async def get_conversation_or_404(conversation_id: uuid.UUID, user_id: uuid.UUID
 
 
 # ======================================================================
-# Chat Capabilities & Tool Context Endpoints
+# Tool Discovery & Capabilities Endpoints
 # ======================================================================
 
-async def chat_capabilities_endpoint(
+@router.get("/tools/capabilities")
+async def get_tool_capabilities(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Get the user's AI assistant capabilities based on their connected apps.
-    Returns connected apps, available integrations, dynamic suggestions, and tool categories.
-    Used by frontend for dynamic welcome screen and capability explorer.
+    ### Get Tool Capabilities Summary
+
+    Returns a compact overview of the user's AI assistant capabilities:
+    - Connected apps with their statuses
+    - Available integrations to connect
+    - Dynamic chat suggestions based on connections
+    - Tool categories with counts
+    - Workflow suggestions for cross-platform automations
+
+    Used by the frontend for the sidebar, header badges, and quick-glance panels.
     """
     from ..services.tool_context_engine import tool_context_engine
-    
+
     try:
-        # Get available tools for context
         available_tools = await dynamic_tool_registry.get_tools_for_llm(user.id, db)
-        
-        # Build capabilities summary
+
         capabilities = await tool_context_engine.get_capabilities_summary(
             user.id, db, available_tools
         )
-        
+
         return {
             "success": True,
             **capabilities
@@ -2213,3 +2234,54 @@ async def chat_capabilities_endpoint(
             "workflow_suggestions": []
         }
 
+
+@router.get("/tools/discover")
+async def discover_tools(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    ### Discover Available Tools & Capabilities
+
+    Returns a fully structured, categorized discovery response. This is the
+    primary endpoint for the "What can you do?" experience.
+
+    **Response includes:**
+    - 🟢 `active_capabilities` — Tools from connected apps, grouped by platform
+    - ⚡ `builtin_capabilities` — Always-available tools, grouped by category
+    - 🔌 `available_to_unlock` — Apps the user hasn't connected yet
+    - 💡 `suggestions` — Dynamic chat prompts based on connections
+    - 🔄 `workflow_suggestions` — Cross-platform automation ideas
+    - 📊 `summary` — Aggregate stats (total tools, connected apps, etc.)
+    - 📝 `discovery_text` — Pre-formatted text the AI uses to answer capability questions
+
+    Used by the frontend for:
+    - Dynamic welcome screen suggestions
+    - CapabilityExplorer slide-out panel
+    - "What can I do?" quick action
+    """
+    from ..services.tool_context_engine import tool_context_engine
+
+    try:
+        available_tools = await dynamic_tool_registry.get_tools_for_llm(user.id, db)
+
+        discovery = await tool_context_engine.build_discovery_response(
+            user.id, db, available_tools
+        )
+
+        return {
+            "success": True,
+            **discovery
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "active_capabilities": [],
+            "builtin_capabilities": [],
+            "available_to_unlock": [],
+            "suggestions": [],
+            "workflow_suggestions": [],
+            "summary": {},
+            "discovery_text": ""
+        }

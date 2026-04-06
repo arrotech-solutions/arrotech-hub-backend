@@ -3185,6 +3185,92 @@ class PlatformRegistry:
             test_function="test_system_status"
         )
 
+        # LlamaParse Platform
+        llamaparse_capabilities = [
+            PlatformCapability(
+                name="PDF Parsing",
+                description="Parse complex PDF documents, including tables and images, returning markdown output.",
+                tool_name="llamaparse_parse_document",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "file_path_or_url": {"type": "string", "description": "URL or path to PDF"}
+                    },
+                    "required": ["file_path_or_url"]
+                },
+                operations=["llamaparse_parse_document", "llamaparse_parse_from_url"]
+            )
+        ]
+        
+        self.platforms["llamaparse"] = Platform(
+            id="llamaparse",
+            name="LlamaParse",
+            description="Complex document (PDF) parsing",
+            icon="document",
+            features=["PDF Parsing", "Table extraction"],
+            capabilities=llamaparse_capabilities,
+            config_schema={"type": "object", "properties": {"api_key": {"type": "string"}}, "required": ["api_key"]},
+            test_function="test_llamaparse_connection"
+        )
+        
+        # Firecrawl Platform
+        firecrawl_capabilities = [
+            PlatformCapability(
+                name="Website Crawling",
+                description="Crawl websites and return clean markdown.",
+                tool_name="firecrawl_crawl_website",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "start_url": {"type": "string"},
+                        "max_depth": {"type": "integer", "default": 2}
+                    },
+                    "required": ["start_url"]
+                },
+                operations=["firecrawl_crawl_website", "firecrawl_scrape_url", "firecrawl_map_sitemap"]
+            )
+        ]
+        
+        self.platforms["firecrawl"] = Platform(
+            id="firecrawl",
+            name="Firecrawl",
+            description="Web scraping and crawling to Markdown",
+            icon="globe",
+            features=["Website scraping", "Sitemap URL mining"],
+            capabilities=firecrawl_capabilities,
+            config_schema={"type": "object", "properties": {"api_key": {"type": "string"}}, "required": ["api_key"]},
+            test_function="test_firecrawl_connection"
+        )
+        
+        # Pinecone Platform
+        pinecone_capabilities = [
+            PlatformCapability(
+                name="Vector Operations",
+                description="Upsert and query vectors in a multi-tenant vector DB.",
+                tool_name="pinecone_ops",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["upsert", "query", "delete"]},
+                        "index_name": {"type": "string"},
+                        "namespace": {"type": "string"}
+                    },
+                    "required": ["operation", "index_name", "namespace"]
+                },
+                operations=["pinecone_upsert_vectors", "pinecone_query", "pinecone_delete_namespace"]
+            )
+        ]
+        
+        self.platforms["pinecone"] = Platform(
+            id="pinecone",
+            name="Pinecone",
+            description="Scalable Serverless Vector Database",
+            icon="database",
+            features=["Vector search", "Namespace Multitenancy"],
+            capabilities=pinecone_capabilities,
+            config_schema={"type": "object", "properties": {"api_key": {"type": "string"}}, "required": ["api_key"]},
+            test_function="test_pinecone_connection"
+        )
 
     def _initialize_kenyan_platforms(self):
         """Initialize the 50 new Kenyan business tools."""
@@ -3675,93 +3761,6 @@ class PlatformRegistry:
                 return False
         
         return True
-
-        # LlamaParse Platform
-        llamaparse_capabilities = [
-            PlatformCapability(
-                name="PDF Parsing",
-                description="Parse complex PDF documents, including tables and images, returning markdown output.",
-                tool_name="llamaparse_parse_document",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "file_path_or_url": {"type": "string", "description": "URL or path to PDF"}
-                    },
-                    "required": ["file_path_or_url"]
-                },
-                operations=["llamaparse_parse_document", "llamaparse_parse_from_url"]
-            )
-        ]
-        
-        self.platforms["llamaparse"] = Platform(
-            id="llamaparse",
-            name="LlamaParse",
-            description="Complex document (PDF) parsing",
-            icon="document",
-            features=["PDF Parsing", "Table extraction"],
-            capabilities=llamaparse_capabilities,
-            config_schema={"type": "object", "properties": {"api_key": {"type": "string"}}, "required": ["api_key"]},
-            test_function="test_llamaparse_connection"
-        )
-        
-        # Firecrawl Platform
-        firecrawl_capabilities = [
-            PlatformCapability(
-                name="Website Crawling",
-                description="Crawl websites and return clean markdown.",
-                tool_name="firecrawl_crawl_website",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "start_url": {"type": "string"},
-                        "max_depth": {"type": "integer", "default": 2}
-                    },
-                    "required": ["start_url"]
-                },
-                operations=["firecrawl_crawl_website", "firecrawl_scrape_url", "firecrawl_map_sitemap"]
-            )
-        ]
-        
-        self.platforms["firecrawl"] = Platform(
-            id="firecrawl",
-            name="Firecrawl",
-            description="Web scraping and crawling to Markdown",
-            icon="globe",
-            features=["Website scraping", "Sitemap URL mining"],
-            capabilities=firecrawl_capabilities,
-            config_schema={"type": "object", "properties": {"api_key": {"type": "string"}}, "required": ["api_key"]},
-            test_function="test_firecrawl_connection"
-        )
-        
-        # Pinecone Platform
-        pinecone_capabilities = [
-            PlatformCapability(
-                name="Vector Operations",
-                description="Upsert and query vectors in a multi-tenant vector DB.",
-                tool_name="pinecone_ops",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "operation": {"type": "string", "enum": ["upsert", "query", "delete"]},
-                        "index_name": {"type": "string"},
-                        "namespace": {"type": "string"}
-                    },
-                    "required": ["operation", "index_name", "namespace"]
-                },
-                operations=["pinecone_upsert_vectors", "pinecone_query", "pinecone_delete_namespace"]
-            )
-        ]
-        
-        self.platforms["pinecone"] = Platform(
-            id="pinecone",
-            name="Pinecone",
-            description="Scalable Serverless Vector Database",
-            icon="database",
-            features=["Vector search", "Namespace Multitenancy"],
-            capabilities=pinecone_capabilities,
-            config_schema={"type": "object", "properties": {"api_key": {"type": "string"}}, "required": ["api_key"]},
-            test_function="test_pinecone_connection"
-        )
 
     def _initialize_ai_platforms(self):
         """Initialize AI-specific platforms (Embeddings, Reranking, etc.)"""
