@@ -309,7 +309,7 @@ Response: "✅ Email sent to john@example.com with subject 'Meeting Tomorrow'"
     system_prompt += """
 ## RESPONSE FORMAT:
 - **For successful actions**: Start with ✅ and briefly confirm what was done, then explain what tool you used and why
-- **For data queries**: Present in clear tables or bullet lists with a brief summary. IMPORTANT: you MUST list out the actual tool data directly (never just reply "I found the data").
+- **For data queries**: Present in clear tables or bullet lists with a brief summary
 - **For errors**: Start with ⚠️ and explain what went wrong in simple terms + suggest fixes
 - **For capability questions**: List specific tools and connections available to the user
 - **Keep responses concise**: 2-4 sentences for confirmations, expand for data
@@ -419,7 +419,6 @@ async def select_tools_semantically(
         "xero": ["xero", "accounting", "invoice", "receipt", "contact", "finance"],
         "zoho": ["zoho", "crm", "desk", "mail", "finance"]
     }
-    
 
     for tool in available_tools:
         tool_name = tool['name'].lower()
