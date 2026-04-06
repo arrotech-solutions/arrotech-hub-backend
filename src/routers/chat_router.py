@@ -425,6 +425,7 @@ async def select_tools_semantically(
         "xero": ["xero", "accounting", "invoice", "receipt", "contact", "finance"],
         "zoho": ["zoho", "crm", "desk", "mail", "finance"]
     }
+    
 
     for tool in available_tools:
         tool_name = tool['name'].lower()
