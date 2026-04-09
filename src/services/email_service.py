@@ -26,12 +26,15 @@ class EmailService:
         self.smtp_password = os.getenv("SMTP_PASSWORD", "")
         self.from_email = os.getenv("FROM_EMAIL", "noreply@minihub.ai")
         self.from_name = os.getenv("FROM_NAME", "Mini-Hub")
-        self.enabled = bool(self.smtp_user and self.smtp_password)
+        self.resend_api_key = os.getenv("RESEND_API_KEY", "")
+        self.use_resend = bool(self.resend_api_key)
+        self.enabled = bool(self.resend_api_key or (self.smtp_user and self.smtp_password))
         
         # Log config on startup for diagnostics
-        logger.info(f"[EmailService] SMTP_HOST={self.smtp_host}, SMTP_PORT={self.smtp_port}, "
+        logger.info(f"[EmailService] transport={'resend' if self.use_resend else 'smtp'}, "
+                     f"RESEND_API_KEY={'set' if self.resend_api_key else 'NOT SET'}, "
+                     f"SMTP_HOST={self.smtp_host}, SMTP_PORT={self.smtp_port}, "
                      f"SMTP_USER={'set (' + self.smtp_user[:3] + '***)' if self.smtp_user else 'NOT SET'}, "
-                     f"SMTP_PASSWORD={'set' if self.smtp_password else 'NOT SET'}, "
                      f"FROM_EMAIL={self.from_email}, enabled={self.enabled}")
     
     def _get_base_template(self, content: str, title: str = "Mini-Hub Notification") -> str:
@@ -153,6 +156,10 @@ class EmailService:
             return True # Return True to simulate success for the caller
         
         try:
+            # Use Resend HTTP API on Railway (SMTP ports are blocked)
+            if self.use_resend:
+                return await self._send_resend(to_email, subject, html_content, text_content)
+            
             msg = MIMEMultipart('alternative')
             msg['From'] = f"{self.from_name} <{self.from_email}>"
             msg['To'] = to_email
@@ -185,6 +192,28 @@ class EmailService:
             )
             return False
     
+    async def _send_resend(self, to_email: str, subject: str, html_content: str, text_content: Optional[str] = None) -> bool:
+        """Send email via Resend HTTP API (HTTPS port 443 — works on Railway)."""
+        import aiohttp
+        url = "https://api.resend.com/emails"
+        headers = {"Authorization": f"Bearer {self.resend_api_key}", "Content-Type": "application/json"}
+        payload = {"from": f"{self.from_name} <{self.from_email}>", "to": [to_email], "subject": subject, "html": html_content}
+        if text_content:
+            payload["text"] = text_content
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    body = await resp.json()
+                    if resp.status in (200, 201):
+                        logger.info(f"[Resend] Email sent to {to_email} (id={body.get('id', '?')})")
+                        return True
+                    else:
+                        logger.error(f"[Resend] Failed {to_email}: HTTP {resp.status} — {body}")
+                        return False
+        except Exception as e:
+            logger.error(f"[Resend] Error sending to {to_email}: {type(e).__name__}: {e}")
+            return False
+
     def send_email_background(
         self,
         to_email: str,
