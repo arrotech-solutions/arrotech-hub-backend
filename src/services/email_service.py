@@ -491,6 +491,45 @@ class EmailService:
         html = self._get_base_template(content, "Login Verification Code")
         return await self.send_email(to_email, "🔐 Your Arrotech Hub Login Code", html, text_content=f"Your login code is: {otp}")
 
+    async def send_email_verification(
+        self,
+        to_email: str,
+        user_name: str,
+        otp: str
+    ) -> bool:
+        """Send email verification OTP to newly registered users."""
+        content = f"""
+        <h2>Verify Your Email Address ✉️</h2>
+        <p>Hi {user_name},</p>
+        <p>Welcome to Arrotech Hub! To complete your registration and unlock all features, please verify your email address by entering the code below:</p>
+        
+        <div style="background-color: #f3f4f6; color: #111827; font-size: 36px; font-weight: bold; letter-spacing: 0.3em; padding: 24px; text-align: center; border-radius: 12px; margin: 30px 0; font-family: monospace; border: 2px dashed #8B5CF6;">
+            {otp}
+        </div>
+        
+        <p style="text-align: center; color: #555; font-size: 14px; margin-bottom: 24px;">
+            This code expires in <strong>15 minutes</strong>.
+        </p>
+        
+        <div style="background-color: #FEF3C7; border-radius: 8px; padding: 16px; margin: 20px 0; border-left: 4px solid #F59E0B;">
+            <p style="margin: 0; color: #92400E; font-size: 13px;">
+                <strong>💡 Tip:</strong> If you don't see this email in your inbox, check your spam or junk folder.
+            </p>
+        </div>
+        
+        <p style="margin-top: 30px; color: #666; font-size: 14px;">
+            If you didn't create an account on Arrotech Hub, you can safely ignore this email.
+        </p>
+        """
+        
+        html = self._get_base_template(content, "Verify Your Email")
+        return await self.send_email(
+            to_email, 
+            "✉️ Verify your Arrotech Hub email", 
+            html, 
+            text_content=f"Hi {user_name}, your Arrotech Hub verification code is: {otp}. This code expires in 15 minutes."
+        )
+
 
 # Create singleton instance
 email_service = EmailService()

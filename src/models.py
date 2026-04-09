@@ -196,6 +196,10 @@ class User(Base):
     login_challenge = Column(String, nullable=True)  # Challenge for WebAuthn in-flight authentication
     login_otp = Column(String, nullable=True)  # Temporary Email 2FA OTP code
     login_otp_expiry = Column(DateTime(timezone=True), nullable=True)  # Expiry time for the OPT
+    # Email Verification
+    email_verified = Column(Boolean, default=False, server_default="true", nullable=False)  # server_default=true grandfathers existing users
+    email_verification_token = Column(String, nullable=True)  # 6-digit OTP code
+    email_verification_expiry = Column(DateTime(timezone=True), nullable=True)  # OTP expiry
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
