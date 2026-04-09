@@ -6,7 +6,9 @@ Supports SMTP email sending for various notification types.
 import asyncio
 import logging
 import os
+import socket
 import smtplib
+import traceback
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Dict, List, Optional
@@ -25,6 +27,12 @@ class EmailService:
         self.from_email = os.getenv("FROM_EMAIL", "noreply@minihub.ai")
         self.from_name = os.getenv("FROM_NAME", "Mini-Hub")
         self.enabled = bool(self.smtp_user and self.smtp_password)
+        
+        # Log config on startup for diagnostics
+        logger.info(f"[EmailService] SMTP_HOST={self.smtp_host}, SMTP_PORT={self.smtp_port}, "
+                     f"SMTP_USER={'set (' + self.smtp_user[:3] + '***)' if self.smtp_user else 'NOT SET'}, "
+                     f"SMTP_PASSWORD={'set' if self.smtp_password else 'NOT SET'}, "
+                     f"FROM_EMAIL={self.from_email}, enabled={self.enabled}")
     
     def _get_base_template(self, content: str, title: str = "Mini-Hub Notification") -> str:
         """Get the base HTML email template."""
@@ -168,10 +176,13 @@ class EmailService:
             return True
         
         except asyncio.TimeoutError:
-            logger.error(f"Email send to {to_email} timed out after 15s")
+            logger.error(f"[EmailService] TIMEOUT: Email send to {to_email} timed out after 15s")
             return False
         except Exception as e:
-            logger.error(f"Failed to send email to {to_email}: {str(e)}")
+            logger.error(
+                f"[EmailService] FAILED to send email to {to_email}: {type(e).__name__}: {e}\n"
+                f"{traceback.format_exc()}"
+            )
             return False
     
     def send_email_background(
@@ -191,10 +202,36 @@ class EmailService:
     
     def _send_smtp(self, msg: MIMEMultipart) -> None:
         """Send email via SMTP (blocking). Called inside a thread-pool executor."""
-        with smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=10) as server:
+        # Step 1: DNS resolution
+        try:
+            resolved = socket.getaddrinfo(self.smtp_host, self.smtp_port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            logger.info(f"[SMTP] DNS resolved {self.smtp_host}:{self.smtp_port} -> {resolved[0][4] if resolved else 'NONE'}")
+        except Exception as dns_err:
+            logger.error(f"[SMTP] DNS resolution FAILED for {self.smtp_host}:{self.smtp_port}: {dns_err}")
+            raise
+
+        # Step 2: Connect
+        logger.info(f"[SMTP] Connecting to {self.smtp_host}:{self.smtp_port} ...")
+        server = smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=10)
+        try:
+            logger.info(f"[SMTP] Connected. Starting TLS ...")
+
+            # Step 3: TLS
             server.starttls()
+            logger.info(f"[SMTP] TLS established. Logging in as {self.smtp_user[:3]}*** ...")
+
+            # Step 4: Auth
             server.login(self.smtp_user, self.smtp_password)
+            logger.info(f"[SMTP] Authenticated. Sending message ...")
+
+            # Step 5: Send
             server.send_message(msg)
+            logger.info(f"[SMTP] Message sent successfully.")
+        finally:
+            try:
+                server.quit()
+            except Exception:
+                pass
     
     # ================== Notification Templates ==================
     
