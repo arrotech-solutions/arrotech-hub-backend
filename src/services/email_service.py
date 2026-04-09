@@ -159,31 +159,39 @@ class EmailService:
             
             # Send email in a thread pool to avoid blocking
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self._send_smtp, msg)
+            await asyncio.wait_for(
+                loop.run_in_executor(None, self._send_smtp, msg),
+                timeout=15.0,  # 15-second overall timeout
+            )
             
             logger.info(f"Email sent successfully to {to_email}")
             return True
         
+        except asyncio.TimeoutError:
+            logger.error(f"Email send to {to_email} timed out after 15s")
+            return False
         except Exception as e:
             logger.error(f"Failed to send email to {to_email}: {str(e)}")
             return False
     
+    def send_email_background(
+        self,
+        to_email: str,
+        subject: str,
+        html_content: str,
+        text_content: Optional[str] = None
+    ) -> None:
+        """Fire-and-forget email: schedules send_email as a background task
+        so the caller's HTTP response is not blocked by SMTP latency."""
+        task = asyncio.create_task(
+            self.send_email(to_email, subject, html_content, text_content)
+        )
+        # Prevent 'Task was destroyed but it is pending' warnings
+        task.add_done_callback(lambda t: t.exception() if not t.cancelled() and t.exception() else None)
+    
     def _send_smtp(self, msg: MIMEMultipart) -> None:
-        """Send email via SMTP (blocking)."""
-        import socket
-        
-        # Resolve to IPv4 address to fix "Network is unreachable" errors on Railway/IPv6 environments
-        resolved_host = self.smtp_host
-        try:
-            # AF_INET forces IPv4 resolution
-            infos = socket.getaddrinfo(self.smtp_host, self.smtp_port, socket.AF_INET)
-            if infos:
-                resolved_host = infos[0][4][0]
-                logger.debug(f"Resolved {self.smtp_host} to IPv4: {resolved_host}")
-        except Exception as e:
-            logger.warning(f"Failed to resolve {self.smtp_host} to IPv4: {e}. Falling back to hostname.")
-
-        with smtplib.SMTP(resolved_host, self.smtp_port) as server:
+        """Send email via SMTP (blocking). Called inside a thread-pool executor."""
+        with smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=10) as server:
             server.starttls()
             server.login(self.smtp_user, self.smtp_password)
             server.send_message(msg)
