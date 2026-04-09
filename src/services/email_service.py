@@ -170,7 +170,20 @@ class EmailService:
     
     def _send_smtp(self, msg: MIMEMultipart) -> None:
         """Send email via SMTP (blocking)."""
-        with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
+        import socket
+        
+        # Resolve to IPv4 address to fix "Network is unreachable" errors on Railway/IPv6 environments
+        resolved_host = self.smtp_host
+        try:
+            # AF_INET forces IPv4 resolution
+            infos = socket.getaddrinfo(self.smtp_host, self.smtp_port, socket.AF_INET)
+            if infos:
+                resolved_host = infos[0][4][0]
+                logger.debug(f"Resolved {self.smtp_host} to IPv4: {resolved_host}")
+        except Exception as e:
+            logger.warning(f"Failed to resolve {self.smtp_host} to IPv4: {e}. Falling back to hostname.")
+
+        with smtplib.SMTP(resolved_host, self.smtp_port) as server:
             server.starttls()
             server.login(self.smtp_user, self.smtp_password)
             server.send_message(msg)
