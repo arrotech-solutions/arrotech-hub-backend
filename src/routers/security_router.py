@@ -35,7 +35,7 @@ from webauthn.helpers.structs import (
 
 from ..database import get_db
 from ..models import User, UserSettings, WebAuthnCredential
-from .auth_router import get_current_user, get_password_hash, verify_password
+from .auth_router import get_current_user, get_password_hash, verify_password, create_access_token, create_refresh_token, ACCESS_TOKEN_EXPIRE_MINUTES
 from ..services.email_service import email_service
 
 # Configuration
@@ -412,3 +412,103 @@ async def complete_webauthn_registration(
         user.login_challenge = None
         await db.commit()
         raise HTTPException(status_code=400, detail="Failed to verify passkey registration.")
+
+
+# --- Change Password ---
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+@router.post("/change-password")
+async def change_password(
+    data: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Change the user's password. Requires current password verification."""
+    # Reload user to ensure we have the latest hash
+    result = await db.execute(select(User).where(User.id == current_user.id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    # Verify current password
+    if not verify_password(data.current_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Current password is incorrect.")
+
+    # Validate new password length
+    if len(data.new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters.")
+
+    # Update password
+    user.password_hash = get_password_hash(data.new_password)
+    await db.commit()
+
+    return {"success": True, "message": "Password changed successfully."}
+
+
+# --- Change Email ---
+
+class ChangeEmailRequest(BaseModel):
+    new_email: str
+    password: str
+
+@router.post("/change-email")
+async def change_email(
+    data: ChangeEmailRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Change the user's email address. Requires password verification."""
+    from datetime import timedelta
+
+    # Reload user
+    result = await db.execute(select(User).where(User.id == current_user.id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    # Verify password
+    if not verify_password(data.password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Password is incorrect.")
+
+    # Validate email format (basic check)
+    if not data.new_email or "@" not in data.new_email:
+        raise HTTPException(status_code=400, detail="Invalid email address.")
+
+    # Normalize email
+    new_email = data.new_email.strip().lower()
+
+    # Check if same as current
+    if new_email == user.email:
+        raise HTTPException(status_code=400, detail="New email is the same as the current email.")
+
+    # Check for duplicate email
+    existing = await db.execute(select(User).where(User.email == new_email))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="This email is already in use by another account.")
+
+    # Update email
+    user.email = new_email
+    await db.commit()
+
+    # Issue new tokens since JWT subject is the email
+    access_token = create_access_token(
+        data={"sub": new_email},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    refresh_token = create_refresh_token(data={"sub": new_email})
+
+    return {
+        "success": True,
+        "message": "Email changed successfully.",
+        "data": {
+            "token": access_token,
+            "refresh_token": refresh_token,
+            "email": new_email
+        }
+    }
+
