@@ -202,36 +202,67 @@ class EmailService:
     
     def _send_smtp(self, msg: MIMEMultipart) -> None:
         """Send email via SMTP (blocking). Called inside a thread-pool executor."""
-        # Step 1: DNS resolution
+        # Step 1: DNS resolution — log ALL addresses (IPv4 + IPv6)
         try:
-            resolved = socket.getaddrinfo(self.smtp_host, self.smtp_port, socket.AF_UNSPEC, socket.SOCK_STREAM)
-            logger.info(f"[SMTP] DNS resolved {self.smtp_host}:{self.smtp_port} -> {resolved[0][4] if resolved else 'NONE'}")
+            all_addrs = socket.getaddrinfo(self.smtp_host, self.smtp_port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            logger.info(f"[SMTP] DNS resolved {self.smtp_host} -> {[a[4] for a in all_addrs]}")
         except Exception as dns_err:
-            logger.error(f"[SMTP] DNS resolution FAILED for {self.smtp_host}:{self.smtp_port}: {dns_err}")
+            logger.error(f"[SMTP] DNS resolution FAILED for {self.smtp_host}: {dns_err}")
             raise
 
-        # Step 2: Connect
-        logger.info(f"[SMTP] Connecting to {self.smtp_host}:{self.smtp_port} ...")
-        server = smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=10)
+        # Step 2: Resolve to IPv4 only — avoids "Network is unreachable" on IPv6-broken hosts
         try:
-            logger.info(f"[SMTP] Connected. Starting TLS ...")
+            ipv4_addrs = socket.getaddrinfo(self.smtp_host, self.smtp_port, socket.AF_INET, socket.SOCK_STREAM)
+            ipv4_ip = ipv4_addrs[0][4][0] if ipv4_addrs else None
+            logger.info(f"[SMTP] IPv4 resolved: {ipv4_ip}")
+        except Exception:
+            ipv4_ip = None
+            logger.warning(f"[SMTP] No IPv4 address found for {self.smtp_host}, using hostname directly")
 
-            # Step 3: TLS
-            server.starttls()
-            logger.info(f"[SMTP] TLS established. Logging in as {self.smtp_user[:3]}*** ...")
+        connect_host = ipv4_ip or self.smtp_host
 
-            # Step 4: Auth
-            server.login(self.smtp_user, self.smtp_password)
-            logger.info(f"[SMTP] Authenticated. Sending message ...")
-
-            # Step 5: Send
-            server.send_message(msg)
-            logger.info(f"[SMTP] Message sent successfully.")
-        finally:
+        # Step 3: Try STARTTLS on port 587
+        if self.smtp_port == 587:
             try:
-                server.quit()
-            except Exception:
-                pass
+                logger.info(f"[SMTP] Connecting to {connect_host}:587 (STARTTLS) ...")
+                server = smtplib.SMTP(connect_host, 587, timeout=10)
+                try:
+                    server.ehlo()
+                    server.starttls()
+                    server.ehlo()
+                    logger.info(f"[SMTP] TLS established. Logging in as {self.smtp_user[:3]}*** ...")
+                    server.login(self.smtp_user, self.smtp_password)
+                    logger.info(f"[SMTP] Authenticated. Sending message ...")
+                    server.send_message(msg)
+                    logger.info(f"[SMTP] Message sent successfully via port 587.")
+                    return
+                finally:
+                    try:
+                        server.quit()
+                    except Exception:
+                        pass
+            except OSError as e:
+                logger.warning(f"[SMTP] Port 587 failed ({type(e).__name__}: {e}), trying port 465 (SSL) ...")
+
+        # Step 4: Fallback — direct SSL on port 465
+        try:
+            logger.info(f"[SMTP] Connecting to {connect_host}:465 (SSL) ...")
+            server = smtplib.SMTP_SSL(connect_host, 465, timeout=10)
+            try:
+                server.ehlo()
+                logger.info(f"[SMTP] SSL connected. Logging in as {self.smtp_user[:3]}*** ...")
+                server.login(self.smtp_user, self.smtp_password)
+                logger.info(f"[SMTP] Authenticated. Sending message ...")
+                server.send_message(msg)
+                logger.info(f"[SMTP] Message sent successfully via port 465 (SSL).")
+            finally:
+                try:
+                    server.quit()
+                except Exception:
+                    pass
+        except Exception as ssl_err:
+            logger.error(f"[SMTP] Port 465 also failed: {type(ssl_err).__name__}: {ssl_err}")
+            raise
     
     # ================== Notification Templates ==================
     
