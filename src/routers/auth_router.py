@@ -119,7 +119,8 @@ def _build_auth_response(
                 "id": user.id,
                 "email": user.email,
                 "name": user.name,
-                "subscription_tier": user.subscription_tier
+                "subscription_tier": user.subscription_tier,
+                "email_verified": user.email_verified,
             },
             "organizations": organizations or [],
             "is_new_user": is_new_user,
@@ -265,18 +266,35 @@ async def register(
     hashed_password = get_password_hash(user_data.password)
     api_key = secrets.token_urlsafe(32)
 
+    # Generate email verification OTP (6-digit code)
+    verification_otp = "".join(str(secrets.randbelow(10)) for _ in range(6))
+
     user = User(
         email=user_data.email,
         name=user_data.name,
         password_hash=hashed_password,
-        api_key=api_key
+        api_key=api_key,
+        email_verified=False,
+        email_verification_token=verification_otp,
+        email_verification_expiry=datetime.now(timezone.utc) + timedelta(minutes=15),
     )
 
     db.add(user)
     await db.commit()
     await db.refresh(user)
 
-    # Create tokens
+    # Send verification email (fire-and-forget, don't block registration)
+    try:
+        await email_service.send_email_verification(
+            to_email=user.email,
+            user_name=user.name,
+            otp=verification_otp,
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to send verification email to {user.email}: {e}")
+
+    # Create tokens (user is logged in but unverified)
     access_token = create_access_token(
         data={"sub": user.email}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
@@ -347,7 +365,8 @@ async def google_auth(
                 email=email,
                 name=name,
                 password_hash=hashed_password,
-                api_key=api_key
+                api_key=api_key,
+                email_verified=True,  # OAuth users are pre-verified by Google
             )
             
             db.add(user)
@@ -424,7 +443,8 @@ async def microsoft_auth(
                 email=email,
                 name=name,
                 password_hash=hashed_password,
-                api_key=api_key
+                api_key=api_key,
+                email_verified=True,  # OAuth users are pre-verified by Microsoft
             )
             
             db.add(user)
@@ -848,7 +868,109 @@ async def get_current_user_info(
             "subscription_end_date": current_user.subscription_end_date.isoformat() if current_user.subscription_end_date else None,
             "role": getattr(current_user, 'role', 'user') or 'user',
             "permissions": getattr(current_user, 'permissions', {}) or {},
+            "email_verified": current_user.email_verified,
         }
+    }
+
+
+class VerifyEmailRequest(BaseModel):
+    code: str
+
+
+@router.post("/verify-email")
+async def verify_email(
+    data: VerifyEmailRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Verify user's email address using the 6-digit OTP code."""
+    if current_user.email_verified:
+        return {"success": True, "message": "Email is already verified."}
+
+    if not current_user.email_verification_token or not current_user.email_verification_expiry:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No active verification code. Please request a new one.",
+        )
+
+    # Check expiry (handle both aware and naive datetimes)
+    now = datetime.now(timezone.utc)
+    expiry = current_user.email_verification_expiry
+    if expiry and not expiry.tzinfo:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+
+    if now > expiry:
+        current_user.email_verification_token = None
+        current_user.email_verification_expiry = None
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Verification code has expired. Please request a new one.",
+        )
+
+    # Validate code
+    if current_user.email_verification_token != data.code:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid verification code.",
+        )
+
+    # Mark email as verified and clear token
+    current_user.email_verified = True
+    current_user.email_verification_token = None
+    current_user.email_verification_expiry = None
+    await db.commit()
+
+    return {"success": True, "message": "Email verified successfully!"}
+
+
+@router.post("/resend-verification")
+async def resend_verification(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Resend email verification code. Rate limited to prevent abuse."""
+    if current_user.email_verified:
+        return {"success": True, "message": "Email is already verified."}
+
+    # Rate limiting — prevent excessive resends
+    rate_limit_service = request.app.state.rate_limit_service
+    resend_key = f"resend_verification:{current_user.email}"
+    if not await rate_limit_service.check_limit(resend_key, tier="free"):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many resend attempts. Please wait a few minutes before trying again.",
+        )
+
+    # Generate new OTP
+    verification_otp = "".join(str(secrets.randbelow(10)) for _ in range(6))
+    current_user.email_verification_token = verification_otp
+    current_user.email_verification_expiry = datetime.now(timezone.utc) + timedelta(minutes=15)
+    await db.commit()
+
+    # Send verification email
+    try:
+        await email_service.send_email_verification(
+            to_email=current_user.email,
+            user_name=current_user.name,
+            otp=verification_otp,
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to resend verification email to {current_user.email}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send verification email. Please try again later.",
+        )
+
+    # Mask the email for the response
+    parts = current_user.email.split("@")
+    masked = parts[0][:2] + "***@" + parts[1] if len(parts) == 2 else "***"
+
+    return {
+        "success": True,
+        "message": f"Verification code sent to {masked}.",
     }
 
 
