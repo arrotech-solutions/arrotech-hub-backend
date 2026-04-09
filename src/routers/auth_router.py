@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -220,6 +220,7 @@ async def get_optional_current_user(
 async def register(
     request: Request,
     user_data: UserRegister,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db)
 ):
     """Register a new user."""
@@ -283,16 +284,19 @@ async def register(
     await db.commit()
     await db.refresh(user)
 
-    # Send verification email (fire-and-forget, don't block registration)
-    try:
-        await email_service.send_email_verification(
-            to_email=user.email,
-            user_name=user.name,
-            otp=verification_otp,
-        )
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Failed to send verification email to {user.email}: {e}")
+    # Send verification email in background (truly fire-and-forget)
+    async def _send_verification():
+        try:
+            await email_service.send_email_verification(
+                to_email=user.email,
+                user_name=user.name,
+                otp=verification_otp,
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to send verification email to {user.email}: {e}")
+
+    background_tasks.add_task(_send_verification)
 
     # Create tokens (user is logged in but unverified)
     access_token = create_access_token(
@@ -927,6 +931,7 @@ async def verify_email(
 @router.post("/resend-verification")
 async def resend_verification(
     request: Request,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -949,20 +954,23 @@ async def resend_verification(
     current_user.email_verification_expiry = datetime.now(timezone.utc) + timedelta(minutes=15)
     await db.commit()
 
-    # Send verification email
-    try:
-        await email_service.send_email_verification(
-            to_email=current_user.email,
-            user_name=current_user.name,
-            otp=verification_otp,
-        )
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Failed to resend verification email to {current_user.email}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send verification email. Please try again later.",
-        )
+    # Send verification email in background (don't block the HTTP response)
+    email_to_send = current_user.email
+    name_to_send = current_user.name
+    otp_to_send = verification_otp
+
+    async def _send_verification():
+        try:
+            await email_service.send_email_verification(
+                to_email=email_to_send,
+                user_name=name_to_send,
+                otp=otp_to_send,
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to resend verification email to {email_to_send}: {e}")
+
+    background_tasks.add_task(_send_verification)
 
     # Mask the email for the response
     parts = current_user.email.split("@")
