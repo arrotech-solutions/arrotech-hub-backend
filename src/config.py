@@ -223,6 +223,9 @@ class BaseConfig(BaseSettings):
     # Support Email Configuration
     SUPPORT_EMAIL_PASSWORD: Optional[str] = None
 
+    # Resend (transactional email API — used on Railway where SMTP ports are blocked)
+    RESEND_API_KEY: Optional[str] = None
+
     # Server Settings
     HOST: str = "0.0.0.0"
     PORT: int = int(os.getenv("PORT", "8000"))
