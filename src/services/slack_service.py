@@ -1877,14 +1877,7 @@ class SlackService:
                     for channel in response["channels"]:
                         if channel["name"] == clean_name:
                             target_channel_id = channel["id"]
-                            channel_name = channel["name"] # Exact match
                             break
-                    
-                    # Fallback: if not found, use the first available channel in the workspace
-                    if not target_channel_id and len(response.get("channels", [])) > 0:
-                        fallback_channel = response["channels"][0]
-                        target_channel_id = fallback_channel["id"]
-                        channel_name = fallback_channel["name"]
             
             if not target_channel_id:
                  return {
