@@ -22,7 +22,7 @@ from mcp.server.stdio import stdio_server
 
 from .config import settings
 from .database import init_db
-from .routers import (access_router, agent_router, analytics_router, api_router, auth_router, chat_router,
+from .routers import (access_router, agent_router, analytics_router, api_router, assistant_router, auth_router, chat_router,
                       connection_router, creator_router, favorites_router, google_workspace_router, marketplace_router, 
                       mcp_router, mpesa_agent_router, notification_router, payment_router, preferences_router,
                       security_router, settings_router, slack_agent_router, slack_router, subscription_router, templates_router, whatsapp_router, workflow_router, facebook_router, instagram_router, telegram_router, twitter_router, clickup_router, teams_router, zoom_router,
@@ -295,6 +295,7 @@ app.include_router(organization_router.router, prefix="/api/v1/organizations", t
 app.include_router(zoho_router.router) # Zoho OAuth connection flow
 app.include_router(zoho_webhook.router) # Zoho real-time events webhook
 app.include_router(rag_router.router)  # RAG Knowledge Base pipeline
+app.include_router(assistant_router.router)  # AI Assistant widget (KB + Tool Discovery)
 # We already included linkedin_router above
 
 
