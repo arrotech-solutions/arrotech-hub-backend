@@ -955,6 +955,15 @@ class ToolExecutor:
                     "result": f"Found {result.get('total_found', 0)} messages",
                     "data": result
                 }
+            elif action == "get_recent_messages":
+                limit = arguments.get("limit", 20)
+                
+                result = await slack_service.get_recent_messages_across_channels(limit=limit)
+                return {
+                    "success": result.get("success", False),
+                    "result": f"Found {result.get('total_found', 0)} recent overall messages",
+                    "data": result
+                }
             else:
                 return {
                     "success": False,

@@ -1877,7 +1877,14 @@ class SlackService:
                     for channel in response["channels"]:
                         if channel["name"] == clean_name:
                             target_channel_id = channel["id"]
+                            channel_name = channel["name"] # Exact match
                             break
+                    
+                    # Fallback: if not found, use the first available channel in the workspace
+                    if not target_channel_id and len(response.get("channels", [])) > 0:
+                        fallback_channel = response["channels"][0]
+                        target_channel_id = fallback_channel["id"]
+                        channel_name = fallback_channel["name"]
             
             if not target_channel_id:
                  return {
@@ -1925,6 +1932,85 @@ class SlackService:
                 "error": str(e)
             }
 
+    async def get_recent_messages_across_channels(self, limit: int = 20) -> Dict[str, Any]:
+        """Fetch and aggregate the most recent messages across multiple channels and DMs."""
+        if not self.client:
+            raise Exception("Slack client not initialized")
+
+        try:
+            # 1. Fetch the list of conversations
+            response = self.client.conversations_list(
+                types="public_channel,private_channel,im,mpim",
+                exclude_archived=True,
+                limit=10  # Cap at 10 to avoid API rate limits
+            )
+            
+            if not response.get("ok"):
+                return {
+                    "success": False,
+                    "error": f"Failed to list conversations: {response.get('error', 'Unknown error')}"
+                }
+                
+            channels = response.get("channels", [])
+            all_messages = []
+            
+            # Fetch user info mapping for DMs to display correct names
+            user_mapping = {}
+            for channel in channels:
+                if channel.get("is_im") and channel.get("user"):
+                    try:
+                        u_res = self.client.users_info(user=channel["user"])
+                        if u_res.get("ok"):
+                            user_mapping[channel["user"]] = u_res["user"].get("profile", {}).get("real_name") or u_res["user"].get("name")
+                    except Exception:
+                        pass
+            
+            # 2. Iterate through conversations and fetch history
+            for channel in channels:
+                channel_id = channel.get("id")
+                is_dm = channel.get("is_im", False)
+                
+                if is_dm:
+                    partner_name = user_mapping.get(channel.get("user"), "Unknown User")
+                    channel_name = f"DM: {partner_name}"
+                else:
+                    channel_name = f"#{channel.get('name', 'unknown')}"
+                    
+                history_response = self.client.conversations_history(
+                    channel=channel_id,
+                    limit=5  # fetch 5 from each stream to spread
+                )
+                
+                if history_response.get("ok"):
+                    for msg in history_response.get("messages", []):
+                        if "subtype" in msg and msg["subtype"] in ["channel_join", "channel_leave"]:
+                            continue
+                        all_messages.append({
+                            "text": msg.get("text", ""),
+                            "user": msg.get("user", "Unknown"),
+                            "timestamp": msg["ts"],
+                            "channel": channel_name,
+                            "is_dm": is_dm
+                        })
+                        
+            # 3. Sort chronologically descending
+            all_messages.sort(key=lambda x: float(x["timestamp"]), reverse=True)
+            
+            # 4. Limit to the target
+            recent_messages = all_messages[:limit]
+            
+            return {
+                "success": True,
+                "messages": recent_messages,
+                "total_found": len(recent_messages)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error fetching recent cross-channel messages: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
 
     # Search and Discovery
     async def search_files(self, query: str, channel: str = None, user: str = None, date_from: str = None, date_to: str = None, count: int = 20) -> Dict[str, Any]:
