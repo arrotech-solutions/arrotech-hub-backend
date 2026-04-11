@@ -222,8 +222,9 @@ class BaseConfig(BaseSettings):
 
     # Support Email Configuration
     SUPPORT_EMAIL_PASSWORD: Optional[str] = None
+    SUPPORT_SMTP_USER: Optional[str] = "support@arrotechsolutions.com"
 
-    # Resend (transactional email API — used on Railway where SMTP ports are blocked)
+    # Resend (transactional email API — backup transport, uncomment in .env if SMTP is blocked)
     RESEND_API_KEY: Optional[str] = None
 
     # Server Settings

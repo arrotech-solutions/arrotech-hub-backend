@@ -35,10 +35,10 @@ class SupportTicketResponse(BaseModel):
     ticket_id: str
 
 
-# Email configuration (using environment variables in production)
+# Email configuration — Zoho Mail SMTP
 SUPPORT_EMAIL = "support@arrotechsolutions.com"
-IMAP_SERVER = "mail.privateemail.com"
-SMTP_SERVER = "mail.privateemail.com"
+IMAP_SERVER = "imappro.zoho.com"
+SMTP_SERVER = "smtppro.zoho.com"
 SMTP_PORT = 465  # SSL
 # Note: Password should be stored in environment variables, not in code
 

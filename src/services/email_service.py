@@ -20,12 +20,12 @@ class EmailService:
     """Service for sending email notifications."""
     
     def __init__(self):
-        self.smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
-        self.smtp_port = int(os.getenv("SMTP_PORT", "587"))
+        self.smtp_host = os.getenv("SMTP_HOST", "smtppro.zoho.com")
+        self.smtp_port = int(os.getenv("SMTP_PORT", "465"))
         self.smtp_user = os.getenv("SMTP_USER", "")
         self.smtp_password = os.getenv("SMTP_PASSWORD", "")
-        self.from_email = os.getenv("FROM_EMAIL", "noreply@minihub.ai")
-        self.from_name = os.getenv("FROM_NAME", "Mini-Hub")
+        self.from_email = os.getenv("FROM_EMAIL", "noreply@arrotechsolutions.com")
+        self.from_name = os.getenv("FROM_NAME", "Arrotech Hub")
         self.resend_api_key = os.getenv("RESEND_API_KEY", "")
         self.use_resend = bool(self.resend_api_key)
         self.enabled = bool(self.resend_api_key or (self.smtp_user and self.smtp_password))
@@ -156,9 +156,10 @@ class EmailService:
             return True # Return True to simulate success for the caller
         
         try:
-            # Use Resend HTTP API on Railway (SMTP ports are blocked)
-            if self.use_resend:
-                return await self._send_resend(to_email, subject, html_content, text_content)
+            # Resend HTTP API — commented out, using Zoho SMTP instead.
+            # Uncomment the block below (and set RESEND_API_KEY in .env) to revert.
+            # if self.use_resend:
+            #     return await self._send_resend(to_email, subject, html_content, text_content)
             
             msg = MIMEMultipart('alternative')
             msg['From'] = f"{self.from_name} <{self.from_email}>"
@@ -250,20 +251,18 @@ class EmailService:
 
         connect_host = ipv4_ip or self.smtp_host
 
-        # Step 3: Try STARTTLS on port 587
-        if self.smtp_port == 587:
+        # Step 3: Try direct SSL on port 465 (Zoho default)
+        if self.smtp_port == 465:
             try:
-                logger.info(f"[SMTP] Connecting to {connect_host}:587 (STARTTLS) ...")
-                server = smtplib.SMTP(connect_host, 587, timeout=10)
+                logger.info(f"[SMTP] Connecting to {connect_host}:465 (SSL) ...")
+                server = smtplib.SMTP_SSL(connect_host, 465, timeout=10)
                 try:
                     server.ehlo()
-                    server.starttls()
-                    server.ehlo()
-                    logger.info(f"[SMTP] TLS established. Logging in as {self.smtp_user[:3]}*** ...")
+                    logger.info(f"[SMTP] SSL connected. Logging in as {self.smtp_user[:3]}*** ...")
                     server.login(self.smtp_user, self.smtp_password)
                     logger.info(f"[SMTP] Authenticated. Sending message ...")
                     server.send_message(msg)
-                    logger.info(f"[SMTP] Message sent successfully via port 587.")
+                    logger.info(f"[SMTP] Message sent successfully via port 465 (SSL).")
                     return
                 finally:
                     try:
@@ -271,26 +270,28 @@ class EmailService:
                     except Exception:
                         pass
             except OSError as e:
-                logger.warning(f"[SMTP] Port 587 failed ({type(e).__name__}: {e}), trying port 465 (SSL) ...")
+                logger.warning(f"[SMTP] Port 465 failed ({type(e).__name__}: {e}), trying port 587 (STARTTLS) ...")
 
-        # Step 4: Fallback — direct SSL on port 465
+        # Step 4: Fallback — STARTTLS on port 587
         try:
-            logger.info(f"[SMTP] Connecting to {connect_host}:465 (SSL) ...")
-            server = smtplib.SMTP_SSL(connect_host, 465, timeout=10)
+            logger.info(f"[SMTP] Connecting to {connect_host}:587 (STARTTLS) ...")
+            server = smtplib.SMTP(connect_host, 587, timeout=10)
             try:
                 server.ehlo()
-                logger.info(f"[SMTP] SSL connected. Logging in as {self.smtp_user[:3]}*** ...")
+                server.starttls()
+                server.ehlo()
+                logger.info(f"[SMTP] TLS established. Logging in as {self.smtp_user[:3]}*** ...")
                 server.login(self.smtp_user, self.smtp_password)
                 logger.info(f"[SMTP] Authenticated. Sending message ...")
                 server.send_message(msg)
-                logger.info(f"[SMTP] Message sent successfully via port 465 (SSL).")
+                logger.info(f"[SMTP] Message sent successfully via port 587 (STARTTLS).")
             finally:
                 try:
                     server.quit()
                 except Exception:
                     pass
-        except Exception as ssl_err:
-            logger.error(f"[SMTP] Port 465 also failed: {type(ssl_err).__name__}: {ssl_err}")
+        except Exception as tls_err:
+            logger.error(f"[SMTP] Port 587 also failed: {type(tls_err).__name__}: {tls_err}")
             raise
     
     # ================== Notification Templates ==================
