@@ -1771,3 +1771,44 @@ class SyncLog(Base):
     # Relationships
     data_source = relationship("DataSource", back_populates="sync_logs")
 
+
+# =============================================================================
+# PUBLIC FORMS — Contact Submissions & Newsletter Subscribers
+# =============================================================================
+
+class ContactSubmission(Base):
+    """Stores all contact form submissions for audit trail, analytics, and retry."""
+    __tablename__ = "contact_submissions"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    name = Column(String(255), nullable=True)
+    email = Column(String(255), nullable=False, index=True)
+    phone = Column(String(50), nullable=True)
+    category = Column(String(50), nullable=False)  # general, sales, partnership, support, billing
+    subject = Column(String(500), nullable=True)
+    message = Column(Text, nullable=False)
+    source_site = Column(String(255), nullable=True)  # which frontend submitted
+    routed_to = Column(String(255), nullable=True)  # which mailbox received it
+    email_sent = Column(Boolean, default=False)  # internal notification sent?
+    confirmation_sent = Column(Boolean, default=False)  # auto-reply to sender?
+    ip_address = Column(String(45), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index('ix_contact_submissions_email_created', 'email', 'created_at'),
+    )
+
+
+class NewsletterSubscriber(Base):
+    """Email newsletter subscriber list across all Arrotech websites."""
+    __tablename__ = "newsletter_subscribers"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    email = Column(String(255), nullable=False, unique=True, index=True)
+    name = Column(String(255), nullable=True)
+    source_site = Column(String(255), nullable=True)  # which website they subscribed from
+    is_active = Column(Boolean, default=True, index=True)
+    unsubscribe_token = Column(String(64), unique=True, nullable=False, index=True)
+    subscribed_at = Column(DateTime(timezone=True), server_default=func.now())
+    unsubscribed_at = Column(DateTime(timezone=True), nullable=True)
+
