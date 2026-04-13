@@ -224,6 +224,16 @@ class BaseConfig(BaseSettings):
     SUPPORT_EMAIL_PASSWORD: Optional[str] = None
     SUPPORT_SMTP_USER: Optional[str] = "support@arrotechsolutions.com"
 
+    # Centralized Email Routing — all Arrotech mailboxes
+    INFO_EMAIL: str = "info@arrotechsolutions.com"
+    SALES_EMAIL: str = "sales@arrotechsolutions.com"
+    BILLING_EMAIL: str = "billing@arrotechsolutions.com"
+    NOREPLY_EMAIL: str = "noreply@arrotechsolutions.com"
+    NOREPLY_SMTP_PASSWORD: Optional[str] = None
+    INFO_SMTP_PASSWORD: Optional[str] = None
+    SALES_SMTP_PASSWORD: Optional[str] = None
+    BILLING_SMTP_PASSWORD: Optional[str] = None
+
     # Resend (transactional email API — backup transport, uncomment in .env if SMTP is blocked)
     RESEND_API_KEY: Optional[str] = None
 
@@ -246,6 +256,7 @@ class BaseConfig(BaseSettings):
         "http://localhost:5176",
         "https://hub.arrotechsolutions.com",
         "https://arrotechsolutions.com",
+        "https://www.arrotechsolutions.com",
         "https://blog.arrotechsolutions.com"
     ]
 
@@ -340,6 +351,7 @@ class ProductionConfig(BaseConfig):
     ALLOWED_ORIGINS: list = [
         "https://hub.arrotechsolutions.com",
         "https://arrotechsolutions.com",
+        "https://www.arrotechsolutions.com",
         "https://mini-hub.fly.dev",
         "http://localhost:3000",
         "http://localhost:5173",
