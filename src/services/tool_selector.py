@@ -160,6 +160,38 @@ class PrecisionToolRouter:
             r'(mpesa|m-pesa).*summary': 'mpesa_payment_reconciliation',
             r'(mpesa|m-pesa).*reconcile': 'mpesa_payment_reconciliation',
             
+            # Order Management
+            r'create.*order': 'order_management',
+            r'new.*order': 'order_management',
+            r'place.*order': 'order_management',
+            r'update.*order.*status': 'order_management',
+            r'(get|list|show).*order': 'order_management',
+            r'cancel.*order': 'order_management',
+            r'validate.*order': 'order_management',
+            r'order.*receipt': 'order_management',
+            r'calculate.*total': 'order_management',
+            r'capture.*customer': 'order_management',
+            r'customer.*form': 'order_management',
+            
+            # Inventory Management
+            r'(create|add).*product': 'inventory_management',
+            r'(list|show).*product': 'inventory_management',
+            r'update.*stock': 'inventory_management',
+            r'(check|show).*inventory': 'inventory_management',
+            r'product.*category': 'inventory_management',
+            r'search.*product': 'inventory_management',
+            r'(check|show).*stock': 'inventory_management',
+
+            # Real Estate Management
+            r'classify.*inquiry': 'real_estate_management',
+            r'format.*rent.*reminder': 'real_estate_management',
+            r'format.*payment.*receipt': 'real_estate_management',
+            r'format.*listing': 'real_estate_management',
+            r'classify.*maintenance': 'real_estate_management',
+            r'format.*maintenance.*response': 'real_estate_management',
+            r'format.*viewing.*slots': 'real_estate_management',
+            r'format.*viewing.*confirmation': 'real_estate_management',
+
             # Slack Tools
             r'(send|post|write).*slack': 'slack_send_message',
             r'create.*slack.*channel': 'slack_create_channel',

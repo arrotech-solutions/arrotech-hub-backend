@@ -529,9 +529,75 @@ class DynamicToolRegistry:
                 "category": "email",
                 "always_available": True
             },
-            # Real Estate Tools - Always available
-            "real_estate_tools": {
-                "name": "real_estate_tools",
+            # Order Management - Always available
+            "order_management": {
+                "name": "order_management",
+                "description": "Order processing and capture tools for food, clothing, and retail. Operations: create_order, update_order_status, get_orders, capture_customer_input, validate_order, cancel_order, calculate_order_total, format_order_receipt, format_order_notification.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": [
+                                "create_order", "update_order_status", "get_orders", 
+                                "capture_customer_input", "validate_order", "cancel_order", 
+                                "calculate_order_total", "format_order_receipt", "format_order_notification"
+                            ],
+                            "description": "The order operation to perform"
+                        },
+                        "customer_name": {"type": "string"},
+                        "items": {"type": "array", "items": {"type": "object"}},
+                        "order_id": {"type": "string"},
+                        "new_status": {"type": "string"},
+                        "order_type": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                "category": "commerce",
+                "always_available": True,
+                "few_shot_examples": [
+                    {
+                        "user": "Create an order for John Doe with 2 kg ribeye steak",
+                        "tool_call": 'order_management(operation="create_order", customer_name="John Doe", items=[{"name": "Ribeye Steak", "quantity": 2, "unit": "kg", "unit_price": 1500}], order_type="food")',
+                        "response": "Order ORD-2026-X created for John Doe"
+                    }
+                ]
+            },
+            # Inventory Management - Always available
+            "inventory_management": {
+                "name": "inventory_management",
+                "description": "Inventory and product catalog management tools. Operations: create_product, list_products, update_stock, get_product_by_category, check_stock_availability, search_products.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": [
+                                "create_product", "list_products", "update_stock",
+                                "get_product_by_category", "check_stock_availability", "search_products"
+                            ],
+                            "description": "The inventory operation to perform"
+                        },
+                        "name": {"type": "string"},
+                        "category": {"type": "string"},
+                        "price": {"type": "number"},
+                        "product_id": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                "category": "commerce",
+                "always_available": True,
+                "few_shot_examples": [
+                    {
+                        "user": "Create a new product Ribeye Steak under meat category for 1500 per kg",
+                        "tool_call": 'inventory_management(operation="create_product", name="Ribeye Steak", category="meat", price=1500, unit_type="kg", cuts=["ribeye"])',
+                        "response": "Product Ribeye Steak created successfully"
+                    }
+                ]
+            },
+            # Real Estate Management - Always available
+            "real_estate_management": {
+                "name": "real_estate_management",
                 "description": "Real estate workflow tools for property management, rent collection, tenant communication, maintenance tracking, and listing management via WhatsApp. Operations: classify_inquiry, format_rent_reminder, format_payment_receipt, format_listing, classify_maintenance, format_maintenance_response, format_viewing_slots, format_viewing_confirmation, generate_rent_statement, generate_landlord_report, format_tenant_welcome, format_lease_reminder, parse_mpesa_confirmation, format_broadcast_listing, format_escalation_notice.",
                 "inputSchema": {
                     "type": "object",
@@ -600,17 +666,17 @@ class DynamicToolRegistry:
                 "few_shot_examples": [
                     {
                         "user": "I need a 2 bedroom apartment in Thika for about 15k",
-                        "tool_call": 'real_estate_tools(operation="classify_inquiry", message="I need a 2 bedroom apartment in Thika for about 15k")',
+                        "tool_call": 'real_estate_management(operation="classify_inquiry", message="I need a 2 bedroom apartment in Thika for about 15k")',
                         "response": "Classified as rental_inquiry for apartment (2BR, budget KES 15,000, Thika)"
                     },
                     {
                         "user": "Send a rent reminder to John for 25000 due on 5th",
-                        "tool_call": 'real_estate_tools(operation="format_rent_reminder", tenant_name="John", amount=25000, due_date="5th March", reminder_level="first")',
+                        "tool_call": 'real_estate_management(operation="format_rent_reminder", tenant_name="John", amount=25000, due_date="5th March", reminder_level="first")',
                         "response": "Generated friendly first rent reminder for KES 25,000"
                     },
                     {
                         "user": "Create a listing for a 3BR house in Ngoingwa for 35k per month",
-                        "tool_call": 'real_estate_tools(operation="format_listing", property_type="house", bedrooms=3, price=35000, location="Ngoingwa", listing_type="rent")',
+                        "tool_call": 'real_estate_management(operation="format_listing", property_type="house", bedrooms=3, price=35000, location="Ngoingwa", listing_type="rent")',
                         "response": "Formatted WhatsApp listing: 3BR House in Ngoingwa — KES 35,000/month"
                     }
                 ]
@@ -744,7 +810,9 @@ class DynamicToolRegistry:
                 "web_search",
                 "content_creation",
                 "email_template",
-                "real_estate_tools",
+                "real_estate_management",
+                "order_management",
+                "inventory_management",
                 "rag_ingest_content",
                 "rag_search"
             }

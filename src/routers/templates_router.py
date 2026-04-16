@@ -1186,7 +1186,7 @@ WORKFLOW_TEMPLATES = [
         "steps": [
             {
                 "step_number": 1,
-                "tool_name": "real_estate_tools",
+                "tool_name": "real_estate_management",
                 "tool_parameters": {
                     "operation": "classify_inquiry",
                     "message": "{{input.whatsapp_message_content}}"
@@ -1236,7 +1236,7 @@ WORKFLOW_TEMPLATES = [
         "steps": [
             {
                 "step_number": 1,
-                "tool_name": "real_estate_tools",
+                "tool_name": "real_estate_management",
                 "tool_parameters": {
                     "operation": "format_rent_reminder",
                     "tenant_name": "{{input.tenant_name}}",
@@ -1263,7 +1263,7 @@ WORKFLOW_TEMPLATES = [
             },
             {
                 "step_number": 3,
-                "tool_name": "real_estate_tools",
+                "tool_name": "real_estate_management",
                 "tool_parameters": {
                     "operation": "format_escalation_notice",
                     "tenant_name": "{{input.tenant_name}}",
@@ -1314,7 +1314,7 @@ WORKFLOW_TEMPLATES = [
         "steps": [
             {
                 "step_number": 1,
-                "tool_name": "real_estate_tools",
+                "tool_name": "real_estate_management",
                 "tool_parameters": {
                     "operation": "classify_maintenance",
                     "message": "{{input.whatsapp_message_content}}"
@@ -1323,7 +1323,7 @@ WORKFLOW_TEMPLATES = [
             },
             {
                 "step_number": 2,
-                "tool_name": "real_estate_tools",
+                "tool_name": "real_estate_management",
                 "tool_parameters": {
                     "operation": "format_maintenance_response",
                     "tenant_name": "{{input.whatsapp_contact_name}}",
@@ -1374,7 +1374,7 @@ WORKFLOW_TEMPLATES = [
         "steps": [
             {
                 "step_number": 1,
-                "tool_name": "real_estate_tools",
+                "tool_name": "real_estate_management",
                 "tool_parameters": {
                     "operation": "format_viewing_slots",
                     "property_description": "{{input.property_description}}",
@@ -1429,7 +1429,7 @@ WORKFLOW_TEMPLATES = [
         "steps": [
             {
                 "step_number": 1,
-                "tool_name": "real_estate_tools",
+                "tool_name": "real_estate_management",
                 "tool_parameters": {
                     "operation": "format_tenant_welcome",
                     "tenant_name": "{{input.tenant_name}}",
@@ -1483,7 +1483,7 @@ WORKFLOW_TEMPLATES = [
         "steps": [
             {
                 "step_number": 1,
-                "tool_name": "real_estate_tools",
+                "tool_name": "real_estate_management",
                 "tool_parameters": {
                     "operation": "generate_landlord_report",
                     "landlord_name": "{{input.landlord_name}}",
@@ -1535,7 +1535,7 @@ WORKFLOW_TEMPLATES = [
         "steps": [
             {
                 "step_number": 1,
-                "tool_name": "real_estate_tools",
+                "tool_name": "real_estate_management",
                 "tool_parameters": {
                     "operation": "format_lease_reminder",
                     "tenant_name": "{{input.tenant_name}}",

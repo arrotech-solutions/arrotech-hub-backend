@@ -64,6 +64,9 @@ from .feature_flags import FeatureGate
 from .openai_service import OpenAIEmbeddingService
 from .cohere_service import CohereService
 from .huggingface_service import HuggingFaceService
+from .order_service import OrderService
+from .inventory_service import InventoryService
+from .real_estate_service import RealEstateService
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +101,9 @@ class ToolExecutor:
             "logistics_hub": LogisticsService(),
             "context_intelligence": BilingualService(),
             "fintech": PaymentService(),
+            "order": OrderService(),
+            "inventory": InventoryService(),
+            "real_estate": RealEstateService(),
             "ecommerce": EcommerceService(),
             "accounting": AccountingService(),
             "agritech": AgritechService(),
@@ -264,6 +270,12 @@ class ToolExecutor:
                 return await self._execute_rag_tool(tool_name, arguments, user, db)
             elif tool_name == "workflow_management":
                 return await self._execute_system_tool(tool_name, arguments, user, db)
+            elif tool_name == "order_management":
+                return await self._execute_order_management_tool(arguments, user, db)
+            elif tool_name == "inventory_management":
+                return await self._execute_inventory_management_tool(arguments, user, db)
+            elif tool_name == "real_estate_management":
+                return await self._execute_real_estate_tool(arguments, user, db)
             else:
                 return {
                     "success": False,
@@ -6578,6 +6590,27 @@ Description: {payment.description or 'N/A'}"""
         except Exception as e:
             logger.error(f"Error in AI Embeddings tool: {e}")
             return {"success": False, "error": str(e)}
+
+    async def _execute_order_management_tool(self, parameters: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute order management tools using OrderService."""
+        operation = parameters.get("operation")
+        if not operation:
+            return {"success": False, "error": "Operation is required for order tools"}
+        return await self.services["order"].handle_operation(operation, **parameters)
+
+    async def _execute_inventory_management_tool(self, parameters: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute inventory management tools using InventoryService."""
+        operation = parameters.get("operation")
+        if not operation:
+            return {"success": False, "error": "Operation is required for inventory tools"}
+        return await self.services["inventory"].handle_operation(operation, **parameters)
+
+    async def _execute_real_estate_tool(self, parameters: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute real estate tools using RealEstateService."""
+        operation = parameters.get("operation")
+        if not operation:
+            return {"success": False, "error": "Operation is required for real estate tools"}
+        return await self.services["real_estate"].handle_operation(operation, **parameters)
 
 
 # Global tool executor instance
