@@ -266,6 +266,8 @@ class ToolExecutor:
                 return await self._execute_health_tool(tool_name, arguments, user, db)
             elif tool_name.endswith("_utility_ops"):
                 return await self._execute_utility_tool(tool_name, arguments, user, db)
+            elif tool_name == "ai_text_generation":
+                return await self._execute_ai_text_generation_tool(arguments, user, db)
             elif tool_name.startswith("rag_"):
                 return await self._execute_rag_tool(tool_name, arguments, user, db)
             elif tool_name == "workflow_management":
@@ -5185,6 +5187,135 @@ class ToolExecutor:
                 }
         except Exception as e:
             logger.error(f"Error executing content creation tool: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_ai_text_generation_tool(self, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute AI Text Generation tool — the workflow 'Brain'.
+        
+        Supports operations: generate, summarize, classify, extract, translate.
+        All operations route through content_creation_service.generate_text() which
+        calls llm_service.chat_completion() under the hood.
+        """
+        try:
+            from .content_creation_service import content_creation_service
+
+            operation = arguments.get("operation", "generate")
+
+            # ── Resolve prompt (accept multiple naming conventions) ──
+            prompt = (
+                arguments.get("prompt")
+                or arguments.get("question")
+                or arguments.get("text")
+                or arguments.get("message")
+                or arguments.get("input")
+                or ""
+            )
+            if not prompt:
+                return {
+                    "success": False,
+                    "error": "Missing required 'prompt' parameter. Provide the text or question for the AI to process."
+                }
+
+            # ── Flatten context from previous steps ──
+            context = arguments.get("context", "")
+
+            if isinstance(context, list):
+                context_parts = []
+                for i, item in enumerate(context, 1):
+                    if isinstance(item, dict):
+                        text = item.get("text", item.get("content", str(item)))
+                        source = item.get("source", item.get("file", ""))
+                        score = item.get("score", "")
+                        header = f"[Source {i}]"
+                        if source:
+                            header += f" ({source})"
+                        if score:
+                            header += f" [relevance: {score}]"
+                        context_parts.append(f"{header}\n{text}")
+                    else:
+                        context_parts.append(str(item))
+                context = "\n\n---\n\n".join(context_parts)
+            elif isinstance(context, dict):
+                # Handle raw step output (e.g. {{step_1}} which is the full result dict)
+                results = context.get("results", context.get("data", context.get("result", [])))
+                if isinstance(results, list) and results:
+                    context_parts = []
+                    for i, item in enumerate(results, 1):
+                        if isinstance(item, dict):
+                            text = item.get("text", item.get("content", str(item)))
+                            source = item.get("source", "")
+                            context_parts.append(f"[Source {i}] ({source})\n{text}")
+                        else:
+                            context_parts.append(str(item))
+                    context = "\n\n---\n\n".join(context_parts)
+                elif isinstance(results, str):
+                    context = results
+                else:
+                    # Fallback: serialize the whole dict
+                    import json as _json
+                    try:
+                        context = _json.dumps(context, indent=2, default=str)
+                    except Exception:
+                        context = str(context)
+
+            # ── Build operation-specific system prompts (if user didn't provide one) ──
+            system_prompt = arguments.get("system_prompt", "")
+
+            if not system_prompt:
+                if operation == "generate":
+                    system_prompt = (
+                        "You are a helpful AI assistant. Answer the user's question "
+                        "accurately and concisely using ONLY the provided context. "
+                        "If the context does not contain enough information, say so clearly. "
+                        "Do not make up information."
+                    )
+                elif operation == "summarize":
+                    system_prompt = (
+                        "You are a summarization expert. Provide a clear, concise summary "
+                        "of the provided context. Highlight the most important points. "
+                        "Keep the summary brief but comprehensive."
+                    )
+                elif operation == "classify":
+                    system_prompt = (
+                        "You are a text classification expert. Analyze the provided text "
+                        "and classify it into the most appropriate category. "
+                        "Respond with ONLY the category name unless additional context is requested."
+                    )
+                elif operation == "extract":
+                    system_prompt = (
+                        "You are a data extraction expert. Extract the requested information "
+                        "from the provided context. Return the extracted data in a structured, "
+                        "clear format. If the information is not found, say so."
+                    )
+                elif operation == "translate":
+                    target_lang = arguments.get("target_language", "English")
+                    system_prompt = (
+                        f"You are a professional translator. Translate the provided text "
+                        f"into {target_lang}. Maintain the original meaning, tone, and formatting. "
+                        f"Provide ONLY the translation without explanations."
+                    )
+
+            # ── Call the LLM ──
+            max_tokens = int(arguments.get("max_tokens", 500))
+            temperature = float(arguments.get("temperature", 0.3))
+
+            result = await content_creation_service.generate_text(
+                prompt=prompt,
+                context=context,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                temperature=temperature,
+            )
+
+            # Add operation metadata to the result
+            if result.get("success"):
+                result["operation"] = operation
+                result["tool"] = "ai_text_generation"
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error executing AI text generation tool: {e}")
             return {"success": False, "error": str(e)}
 
     async def _execute_workflow_management_tool(

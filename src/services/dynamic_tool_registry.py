@@ -713,6 +713,67 @@ class DynamicToolRegistry:
                 },
                 "category": "advanced",
                 "always_available": True
+            },
+            # AI Text Generation — The "Brain" for workflows
+            "ai_text_generation": {
+                "name": "ai_text_generation",
+                "description": "AI Text Generation Brain — Use AI to generate responses, summarize content, classify text, extract information, or transform data using context from previous workflow steps. Perfect as the 'Brain' between data retrieval (e.g. RAG Search) and output actions (e.g. Send Message). Operations: generate, summarize, classify, extract, translate.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["generate", "summarize", "classify", "extract", "translate"],
+                            "description": "The AI operation to perform: 'generate' for free-form responses, 'summarize' to condense text, 'classify' to categorize input, 'extract' to pull structured data, 'translate' to convert between languages"
+                        },
+                        "prompt": {
+                            "type": "string",
+                            "description": "The user question, instruction, or text to process"
+                        },
+                        "context": {
+                            "type": "any",
+                            "description": "Context from previous workflow steps (e.g. RAG search results, database rows, API responses). Accepts text string, list of objects, or dict."
+                        },
+                        "system_prompt": {
+                            "type": "string",
+                            "description": "System-level instructions that control AI behavior and personality (e.g. 'You are a helpful sales assistant for a butchery. Always include prices and stock levels.')"
+                        },
+                        "temperature": {
+                            "type": "number",
+                            "description": "Creativity level: 0.0 = deterministic/factual, 1.0 = creative/varied. Use 0.1-0.3 for factual answers, 0.7-1.0 for creative content.",
+                            "default": 0.3
+                        },
+                        "max_tokens": {
+                            "type": "integer",
+                            "description": "Maximum length of AI response in tokens (~4 chars per token). Use 150 for short replies, 500 for detailed answers, 1000+ for long-form content.",
+                            "default": 500
+                        },
+                        "target_language": {
+                            "type": "string",
+                            "description": "Target language for translate operation (e.g. 'Swahili', 'French', 'Spanish')"
+                        }
+                    },
+                    "required": ["operation", "prompt"]
+                },
+                "category": "ai",
+                "always_available": True,
+                "few_shot_examples": [
+                    {
+                        "user": "Use AI to answer a customer question using RAG context",
+                        "tool_call": 'ai_text_generation(operation="generate", prompt="{{telegram_message}}", context="{{step_1.result}}", system_prompt="You are a helpful sales assistant. Always include product price, stock status, and image links.")',
+                        "response": "AI-generated response based on knowledge base context with product details"
+                    },
+                    {
+                        "user": "Summarize the search results from step 1",
+                        "tool_call": 'ai_text_generation(operation="summarize", prompt="Summarize these product results for a customer", context="{{step_1.result}}")',
+                        "response": "Concise summary of the retrieved product information"
+                    },
+                    {
+                        "user": "Classify this customer message as inquiry, complaint, or order",
+                        "tool_call": 'ai_text_generation(operation="classify", prompt="{{telegram_message}}", system_prompt="Classify this message into: inquiry, complaint, order, greeting, or other. Respond with only the category.")',
+                        "response": "inquiry"
+                    }
+                ]
             }
         }
     
