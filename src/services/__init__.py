@@ -27,8 +27,10 @@ from .white_label_service import WhiteLabelService
 from .workflow_builder_service import WorkflowBuilderService
 from .workflow_scheduler import WorkflowSchedulerService
 from .whatsapp_service import WhatsAppService
-from .real_estate_tools import RealEstateTools
+from .real_estate_service import RealEstateService
 from .telegram_service import TelegramService
+from .order_service import OrderService
+from .inventory_service import InventoryService
 
 __all__ = [
     "ABTestingService",
@@ -56,6 +58,8 @@ __all__ = [
     "PowerBIService",
     "WorkflowSchedulerService",
     "WhatsAppService",
-    "RealEstateTools",
+    "RealEstateService",
     "TelegramService",
-]
+    "OrderService",
+    "InventoryService",
+]

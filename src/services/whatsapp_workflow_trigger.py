@@ -305,10 +305,10 @@ async def execute_whatsapp_action(
             
             elif action_name == "whatsapp_send_rent_reminder":
                 # Use real estate tools to format, then send via WhatsApp
-                from .real_estate_tools import RealEstateTools
-                re_tools = RealEstateTools()
+                from .real_estate_service import RealEstateService
+                re_service = RealEstateService()
                 
-                formatted = await re_tools.format_rent_reminder(
+                formatted = await re_service.format_rent_reminder(
                     tenant_name=parameters.get("tenant_name", "Tenant"),
                     amount=parameters.get("amount", 0),
                     due_date=parameters.get("due_date", ""),
@@ -342,10 +342,10 @@ async def execute_whatsapp_action(
                 return {"success": True, "message_id": send_result.get("message_id"), "formatted_message": formatted["message"]}
             
             elif action_name == "whatsapp_send_maintenance_ack":
-                from .real_estate_tools import RealEstateTools
-                re_tools = RealEstateTools()
+                from .real_estate_service import RealEstateService
+                re_service = RealEstateService()
                 
-                formatted = await re_tools.format_maintenance_response(
+                formatted = await re_service.format_maintenance_response(
                     tenant_name=parameters.get("tenant_name", "Tenant"),
                     category=parameters.get("category", "general"),
                     priority=parameters.get("priority", "normal"),
@@ -376,10 +376,10 @@ async def execute_whatsapp_action(
                 return {"success": True, "message_id": send_result.get("message_id"), "ticket_id": formatted.get("ticket_id")}
             
             elif action_name == "whatsapp_send_viewing_slots":
-                from .real_estate_tools import RealEstateTools
-                re_tools = RealEstateTools()
+                from .real_estate_service import RealEstateService
+                re_service = RealEstateService()
                 
-                formatted = await re_tools.format_viewing_slots(
+                formatted = await re_service.format_viewing_slots(
                     property_description=parameters.get("property_description", "the property"),
                     slots=parameters.get("slots"),
                     location=parameters.get("location", ""),
