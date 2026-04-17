@@ -6641,7 +6641,8 @@ Description: {payment.description or 'N/A'}"""
                 rerank=arguments.get("rerank", False),
                 rerank_top_n=arguments.get("rerank_top_n", 3),
                 user=user,
-                db=db
+                db=db,
+                session_key=arguments.get("session_key", ""),
             )
             
             # Synthesize a human-readable answer from the retrieved KB chunks

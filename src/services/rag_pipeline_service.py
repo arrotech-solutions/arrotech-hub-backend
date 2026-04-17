@@ -830,14 +830,22 @@ class RAGPipelineService:
         rerank: bool = False,
         rerank_top_n: int = 3,
         user: Any = None,
-        db: Any = None
+        db: Any = None,
+        session_key: str = "",
     ) -> Dict[str, Any]:
         """
         Retrieval flow: Dynamically routes to correct embedding model and vector DB
         based on KB config. Optionally reranks results using Cohere.
+
+        When ``session_key`` is provided (messaging workflows), the raw query is
+        first rewritten using conversation history so that vague follow-ups like
+        "How much does each cost?" become self-contained search queries.
         """
         from .tool_executor import ToolExecutor
         executor = ToolExecutor()
+        
+        # ── CCM: Rewrite vague follow-up queries using conversation history ──
+        effective_query = await self._rewrite_query_with_context(query, session_key)
         
         # Resolve hybrid credentials (user BYOK → platform env vars)
         credentials = await self._resolve_credentials(user, db)
@@ -853,12 +861,12 @@ class RAGPipelineService:
         
         # Multi-tenant namespace
         namespace = f"user_{user_id}_kb_{kb_id}"
-        logger.info(f"RAG Search: {namespace} | VectorDB: {effective_vector_db} | Query: {query[:100]}")
+        logger.info(f"RAG Search: {namespace} | VectorDB: {effective_vector_db} | Query: {effective_query[:100]}")
         
-        # 1. Embed query via ToolExecutor
+        # 1. Embed query via ToolExecutor (use rewritten query for better retrieval)
         embed_params = {
             "operation": embed_operation,
-            "input": query
+            "input": effective_query
         }
         embed_res = await executor.execute_tool("ai_embeddings", embed_params, user, db)
         
@@ -943,6 +951,134 @@ class RAGPipelineService:
             "reranked": rerank
         }
 
+
+    # ================================================================
+    # CONVERSATIONAL QUERY REWRITING — resolve vague follow-ups
+    # ================================================================
+
+    # Patterns that signal a query depends on prior conversation context.
+    # If the raw query contains any of these AND is short, we rewrite it.
+    _CONTEXT_DEPENDENT_SIGNALS = {
+        "it", "its", "they", "them", "their", "this", "that", "these",
+        "those", "each", "the same", "how much", "how many", "what about",
+        "tell me more", "and the", "check again", "what is", "which one",
+        "can i", "do you", "is it", "are they", "the one", "same thing",
+    }
+
+    async def _rewrite_query_with_context(
+        self, query: str, session_key: str
+    ) -> str:
+        """Rewrite a vague follow-up query using CCM conversation history.
+
+        When a user sends "How much does each cost?" after asking about
+        "men plain tshirt", the raw query is too vague for vector search.
+        This method rewrites it into a self-contained query like
+        "What is the price of the men plain tshirt?" so the RAG retrieval
+        returns the correct knowledge-base chunks.
+
+        Designed for **low latency** — skips rewriting when:
+        • No session_key is provided (non-messaging workflows)
+        • The query already looks self-contained (long & no pronouns)
+        • The CCM session has no prior history (first message)
+
+        Returns:
+            The rewritten query, or the original query if rewriting is
+            not needed or fails.
+        """
+        if not session_key:
+            return query
+
+        # Fast-path: Skip rewriting for queries that are already specific.
+        # A query with 8+ words and no context-dependent signal words is
+        # likely self-contained (e.g. "How many units of men plain tshirt").
+        query_lower = query.lower().strip()
+        word_count = len(query_lower.split())
+        has_signal = any(s in query_lower for s in self._CONTEXT_DEPENDENT_SIGNALS)
+
+        if word_count >= 8 and not has_signal:
+            logger.debug(f"[RAG] Query appears self-contained, skipping rewrite: {query[:80]}")
+            return query
+
+        # If query is long AND has no signal words, it's probably fine
+        if not has_signal and word_count >= 5:
+            return query
+
+        # ── Load conversation history from CCM ──
+        try:
+            from .conversation_context_manager import context_manager
+
+            session = await context_manager.get_session_by_key(session_key)
+            if not session or len(session.messages) < 2:
+                # No meaningful history to rewrite from (first message or empty session)
+                return query
+
+            # Build a compact history string (last 6 messages max, excluding current)
+            recent = session.messages[-7:-1]  # exclude the latest (it's the current query)
+            if not recent:
+                return query
+
+            history_lines = []
+            for msg in recent:
+                role_label = "Customer" if msg["role"] == "user" else "Assistant"
+                content = msg.get("content", "")[:200]  # Truncate long messages
+                history_lines.append(f"{role_label}: {content}")
+
+            history_text = "\n".join(history_lines)
+
+        except Exception as e:
+            logger.warning(f"[RAG] CCM load failed for query rewrite (using original): {e}")
+            return query
+
+        # ── Use a fast LLM call to rewrite the query ──
+        try:
+            from .llm_service import llm_service
+
+            rewrite_response = await llm_service.chat_completion(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a query rewriter for a knowledge-base search engine. "
+                            "Given a conversation history and the user's latest message, "
+                            "rewrite the latest message into a single, self-contained search query "
+                            "that can be understood WITHOUT any conversation history. "
+                            "Resolve all pronouns (it, they, each, etc.) and references "
+                            "to specific entities mentioned earlier.\n\n"
+                            "Rules:\n"
+                            "- Output ONLY the rewritten query, nothing else\n"
+                            "- Keep it concise (under 20 words)\n"
+                            "- If the message is already self-contained, return it unchanged\n"
+                            "- Do NOT answer the question, just rewrite it\n"
+                            "- Preserve the user's intent exactly"
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Conversation history:\n{history_text}\n\n"
+                            f"Latest message: {query}\n\n"
+                            f"Rewritten search query:"
+                        ),
+                    },
+                ],
+                temperature=0,
+                max_tokens=60,
+                use_background_model=True,
+            )
+
+            if rewrite_response and rewrite_response.content:
+                rewritten = rewrite_response.content.strip().strip('"').strip("'")
+                # Sanity check: if the rewrite is empty or absurdly long, use original
+                if rewritten and len(rewritten) < 200:
+                    logger.info(f"[RAG] Query rewritten: '{query}' → '{rewritten}'")
+                    return rewritten
+                else:
+                    logger.warning(f"[RAG] Rewrite produced invalid output, using original")
+
+        except Exception as e:
+            logger.warning(f"[RAG] Query rewrite LLM call failed (using original): {e}")
+
+        return query
 
     # ================================================================
     # SYNC — scheduled background sync with delta tracking

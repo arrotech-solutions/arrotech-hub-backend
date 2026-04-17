@@ -700,14 +700,18 @@ class DynamicToolRegistry:
             },
             "rag_search": {
                 "name": "rag_search",
-                "description": "Knowledge Search: Search your Knowledge Base using semantic queries to retrieve relevant context.",
+                "description": "Knowledge Search: Search your Knowledge Base using semantic queries to retrieve relevant context. When session_key is provided (from WhatsApp/Telegram triggers), vague follow-up queries are automatically rewritten using conversation history for accurate retrieval.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "query": {"type": "string", "description": "The semantic search query"},
                         "kb_id": {"type": "string", "description": "The UUID of the Knowledge Base"},
                         "namespace": {"type": "string"},
-                        "top_k": {"type": "integer", "default": 5}
+                        "top_k": {"type": "integer", "default": 5},
+                        "session_key": {
+                            "type": "string",
+                            "description": "Conversation session key for context-aware search. Use {{session_key}} from WhatsApp/Telegram trigger data to automatically resolve vague follow-up queries (e.g. 'How much does it cost?' → 'What is the price of men plain tshirt?')."
+                        }
                     },
                     "required": ["query", "kb_id"]
                 },
