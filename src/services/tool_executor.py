@@ -5269,8 +5269,12 @@ class ToolExecutor:
                 if operation == "generate":
                     system_prompt = (
                         "You are a helpful AI assistant. Answer the user's question "
-                        "accurately and concisely using ONLY the provided context. "
-                        "If the context does not contain enough information, say so clearly. "
+                        "accurately and concisely using the provided context. "
+                    )
+                    if session_key:
+                        system_prompt += "You must also use the conversation history to understand context and answer follow-up questions. "
+                    system_prompt += (
+                        "If the context and history do not contain enough information, say so clearly. "
                         "Do not make up information."
                     )
                 elif operation == "summarize":
@@ -6647,7 +6651,7 @@ Description: {payment.description or 'N/A'}"""
             
             # Synthesize a human-readable answer from the retrieved KB chunks
             results = res.get("results", [])
-            query = arguments.get("query", "")
+            query = res.get("effective_query", arguments.get("query", ""))
             answer = f"Found {len(results)} relevant matches"
             
             if results and query:
