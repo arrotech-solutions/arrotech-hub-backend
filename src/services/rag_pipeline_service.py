@@ -948,7 +948,8 @@ class RAGPipelineService:
             "results": results, 
             "namespace": namespace,
             "vector_db": effective_vector_db,
-            "reranked": rerank
+            "reranked": rerank,
+            "effective_query": effective_query
         }
 
 
