@@ -502,6 +502,7 @@ class ContentCreationService:
         max_tokens: int = 500,
         system_prompt: str = "",
         temperature: float = 0.3,
+        session_key: str = "",
     ) -> Dict[str, Any]:
         """
         Generate text content using the LLM service.
@@ -515,6 +516,7 @@ class ContentCreationService:
             max_tokens: Maximum tokens for the response.
             system_prompt: Optional system-level instruction override.
             temperature: Sampling temperature (lower = more deterministic).
+            session_key: Optional CCM session key for multi-turn context.
 
         Returns:
             Dict with ``success``, ``content``, and metadata keys.
@@ -547,10 +549,48 @@ class ContentCreationService:
             else:
                 user_message = prompt
 
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ]
+            # ── CCM: Load conversation history if session_key is provided ──
+            ccm_session = None
+            if session_key:
+                try:
+                    from .conversation_context_manager import context_manager
+
+                    ccm_session = await context_manager.get_session_by_key(session_key)
+                    if ccm_session:
+                        # Build messages with history from the session.
+                        # The session already contains the raw user message
+                        # (added by the trigger), so we replace the last user
+                        # message with the context-enriched version rather
+                        # than appending a duplicate.
+                        messages = await context_manager.get_context_messages(
+                            ccm_session,
+                            system_prompt=system_prompt,
+                        )
+
+                        # Replace the last user message with the enriched one
+                        # (the trigger already added the raw message to history)
+                        if messages and messages[-1].get("role") == "user":
+                            messages[-1] = {"role": "user", "content": user_message}
+                        else:
+                            messages.append({"role": "user", "content": user_message})
+                    else:
+                        # Session not found — fall back to stateless mode
+                        messages = [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_message},
+                        ]
+                except Exception as ccm_err:
+                    logger.warning(f"CCM load failed (falling back to stateless): {ccm_err}")
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_message},
+                    ]
+            else:
+                # Standard stateless mode
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ]
 
             response = await llm_service.chat_completion(
                 messages=messages,
@@ -564,6 +604,16 @@ class ContentCreationService:
                     "success": False,
                     "error": f"LLM generation failed: {response.error}",
                 }
+
+            # ── CCM: Persist AI response to session ──
+            if ccm_session and response.content:
+                try:
+                    from .conversation_context_manager import context_manager
+                    await context_manager.add_message(
+                        ccm_session, "assistant", response.content
+                    )
+                except Exception as ccm_err:
+                    logger.warning(f"CCM persist failed (non-blocking): {ccm_err}")
 
             return {
                 "success": True,

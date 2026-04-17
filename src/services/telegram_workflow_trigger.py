@@ -68,11 +68,37 @@ class TelegramWorkflowTrigger:
                     if should_trigger:
                         workflows_triggered += 1
                         
+                        # ── CCM: Persist incoming message to conversation session ──
+                        session_key = ""
+                        try:
+                            from .conversation_context_manager import context_manager
+
+                            session = await context_manager.get_or_create_session(
+                                platform="telegram",
+                                owner_user_id=str(workflow.user_id),
+                                sender_id=str(chat_id),
+                                metadata={
+                                    "sender_id": sender_id,
+                                    "chat_id": chat_id,
+                                }
+                            )
+                            session_key = session.session_key
+
+                            # Add incoming message to history
+                            await context_manager.add_message(
+                                session, "user", message or ""
+                            )
+                        except Exception as ccm_err:
+                            logger.warning(f"[TG_TRIGGER] CCM session init failed (non-blocking): {ccm_err}")
+
                         input_vars = {
                             "telegram_message": message or "",
                             "sender_id": sender_id,
                             "chat_id": chat_id,
-                            "timestamp": datetime.utcnow().isoformat()
+                            "timestamp": datetime.utcnow().isoformat(),
+                            # ── CCM: Inject session key for context-aware tools ──
+                            "session_key": session_key,
+                            "platform": "telegram",
                         }
                         
                         logger.info(f"[TG_TRIGGER] Firing workflow '{workflow.name}' for user {workflow.user_id}")

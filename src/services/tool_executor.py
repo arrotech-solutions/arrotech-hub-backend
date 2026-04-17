@@ -5195,6 +5195,10 @@ class ToolExecutor:
         Supports operations: generate, summarize, classify, extract, translate.
         All operations route through content_creation_service.generate_text() which
         calls llm_service.chat_completion() under the hood.
+        
+        When a session_key is provided (from WhatsApp/Telegram triggers), the
+        generate_text() call will load conversation history from the CCM and
+        inject it into the LLM messages for multi-turn context.
         """
         try:
             from .content_creation_service import content_creation_service
@@ -5295,6 +5299,9 @@ class ToolExecutor:
                         f"Provide ONLY the translation without explanations."
                     )
 
+            # ── Extract session_key for CCM context (from trigger input_data) ──
+            session_key = arguments.get("session_key", "")
+
             # ── Call the LLM ──
             max_tokens = int(arguments.get("max_tokens", 500))
             temperature = float(arguments.get("temperature", 0.3))
@@ -5305,6 +5312,7 @@ class ToolExecutor:
                 max_tokens=max_tokens,
                 system_prompt=system_prompt,
                 temperature=temperature,
+                session_key=session_key,
             )
 
             # Add operation metadata to the result

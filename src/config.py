@@ -260,6 +260,13 @@ class BaseConfig(BaseSettings):
         "https://blog.arrotechsolutions.com"
     ]
 
+    # Conversation Context Manager (CCM) — WhatsApp/Telegram memory
+    CCM_MAX_MESSAGES: int = 20             # Sliding window: max messages to keep
+    CCM_MAX_TOKENS: int = 2000             # Token budget for context window
+    CCM_SESSION_TTL: int = 7200            # Redis TTL in seconds (default: 2 hours)
+    CCM_ENABLE_SUMMARIZATION: bool = False  # Auto-summarize old messages via LLM
+    CCM_SUMMARY_THRESHOLD: int = 30        # Trigger summarization above this count
+
     # JWT Settings
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30

@@ -31,6 +31,7 @@ from .real_estate_service import RealEstateService
 from .telegram_service import TelegramService
 from .order_service import OrderService
 from .inventory_service import InventoryService
+from .conversation_context_manager import ConversationContextManager
 
 __all__ = [
     "ABTestingService",
@@ -62,4 +63,5 @@ __all__ = [
     "TelegramService",
     "OrderService",
     "InventoryService",
+    "ConversationContextManager",
 ]
