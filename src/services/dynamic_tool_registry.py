@@ -751,6 +751,10 @@ class DynamicToolRegistry:
                         "target_language": {
                             "type": "string",
                             "description": "Target language for translate operation (e.g. 'Swahili', 'French', 'Spanish')"
+                        },
+                        "session_key": {
+                            "type": "string",
+                            "description": "Conversation session key for multi-turn context memory. Use {{session_key}} from WhatsApp/Telegram trigger data to enable context-aware responses across messages."
                         }
                     },
                     "required": ["operation", "prompt"]
@@ -759,9 +763,9 @@ class DynamicToolRegistry:
                 "always_available": True,
                 "few_shot_examples": [
                     {
-                        "user": "Use AI to answer a customer question using RAG context",
-                        "tool_call": 'ai_text_generation(operation="generate", prompt="{{telegram_message}}", context="{{step_1.result}}", system_prompt="You are a helpful sales assistant. Always include product price, stock status, and image links.")',
-                        "response": "AI-generated response based on knowledge base context with product details"
+                        "user": "Use AI to answer a customer question using RAG context with conversation memory",
+                        "tool_call": 'ai_text_generation(operation="generate", prompt="{{telegram_message}}", context="{{step_1.result}}", system_prompt="You are a helpful sales assistant. Always include product price, stock status, and image links.", session_key="{{session_key}}")',
+                        "response": "AI-generated response based on knowledge base context with conversation history for multi-turn follow-ups"
                     },
                     {
                         "user": "Summarize the search results from step 1",

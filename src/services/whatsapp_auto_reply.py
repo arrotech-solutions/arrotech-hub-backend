@@ -232,11 +232,33 @@ class AutoReplyEngine:
         message: WhatsAppMessage,
         profile: Optional[WhatsAppBusinessProfile]
     ) -> str:
-        """Generate an AI response using the existing chat infrastructure."""
+        """Generate an AI response using conversation context for multi-turn memory."""
         try:
-            # Build context for AI
+            from .conversation_context_manager import context_manager
+
+            user_message = message.content or ""
+
+            # ── Load or create conversation session ──
+            session = await context_manager.get_or_create_session(
+                platform="whatsapp",
+                owner_user_id=str(rule.user_id),
+                sender_id=contact.phone_number,
+                metadata={
+                    "contact_name": contact.name or contact.profile_name or "",
+                    "contact_phone": contact.phone_number,
+                }
+            )
+
+            # ── Handle reset commands ──
+            if context_manager.is_reset_command(user_message):
+                await context_manager.clear_session(session)
+                return "Conversation reset! 🔄 How can I help you?"
+
+            # ── Add incoming user message to history ──
+            await context_manager.add_message(session, "user", user_message)
+
+            # ── Build context from business profile ──
             context_parts = []
-            
             if profile:
                 if profile.business_name:
                     context_parts.append(f"Business: {profile.business_name}")
@@ -251,13 +273,13 @@ class AutoReplyEngine:
                         for f in profile.faqs[:5]
                     ])
                     context_parts.append(f"FAQs:\n{faq_text}")
-            
+
             if rule.ai_context:
                 context_parts.append(f"Additional context: {rule.ai_context}")
-            
+
             context = "\n".join(context_parts)
-            
-            # Build the prompt
+
+            # ── Build system prompt ──
             system_prompt = f"""You are a helpful WhatsApp assistant for a business.
 {context}
 
@@ -269,24 +291,51 @@ Instructions:
 - Don't make up information not provided in the context
 - Respond in the same language as the customer message
 """
-            
-            user_message = message.content or ""
-            
-            # Use existing AI service (simplified - you can integrate with your chat service)
-            # For now, return a placeholder that would be replaced with actual AI call
+
+            # ── Get context-enriched messages WITH conversation history ──
+            messages = await context_manager.get_context_messages(
+                session,
+                system_prompt=system_prompt,
+                max_tokens=rule.ai_max_tokens or 1500,
+            )
+
+            # ── Call the LLM ──
             try:
-                from ..services.ai_service import generate_response
-                response = await generate_response(
-                    system_prompt=system_prompt,
-                    user_message=user_message,
-                    max_tokens=rule.ai_max_tokens or 150
+                from .llm_service import llm_service
+
+                response = await llm_service.chat_completion(
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=rule.ai_max_tokens or 150,
+                    use_background_model=True,
                 )
-                return response
+
+                if response and not response.error and response.content:
+                    # Persist AI response to conversation history
+                    await context_manager.add_message(
+                        session, "assistant", response.content
+                    )
+                    return response.content
+                else:
+                    logger.warning(f"[AUTO-REPLY] LLM returned error: {response.error if response else 'no response'}")
+                    return "Thanks for your message! Our team will respond shortly. 🙏"
+
             except ImportError:
-                # Fallback if AI service not available
-                logger.warning("[AUTO-REPLY] AI service not available, using fallback")
-                return f"Thanks for your message! Our team will respond shortly. 🙏"
-                
+                # Fallback: try the legacy ai_service
+                try:
+                    from ..services.ai_service import generate_response
+                    resp = await generate_response(
+                        system_prompt=system_prompt,
+                        user_message=user_message,
+                        max_tokens=rule.ai_max_tokens or 150
+                    )
+                    if resp:
+                        await context_manager.add_message(session, "assistant", resp)
+                    return resp or "Thanks for your message! Our team will respond shortly. 🙏"
+                except ImportError:
+                    logger.warning("[AUTO-REPLY] No AI service available, using fallback")
+                    return "Thanks for your message! Our team will respond shortly. 🙏"
+
         except Exception as e:
             logger.error(f"[AUTO-REPLY] AI generation error: {e}")
             return "Thanks for reaching out! We'll get back to you soon."

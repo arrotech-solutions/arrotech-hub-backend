@@ -1812,3 +1812,39 @@ class NewsletterSubscriber(Base):
     subscribed_at = Column(DateTime(timezone=True), server_default=func.now())
     unsubscribed_at = Column(DateTime(timezone=True), nullable=True)
 
+
+class MessagingConversation(Base):
+    """
+    Stores conversation history for stateless messaging platforms (WhatsApp, Telegram).
+
+    Each row represents a unique conversation session between a business owner's
+    agent and an end-user on a specific platform. The session_key format is:
+        ccm:{platform}:{owner_user_id}:{sender_id}
+
+    This provides complete multi-tenant data isolation — every query filters by
+    owner_user_id so Business A's customers can never see Business B's data.
+    """
+    __tablename__ = "messaging_conversations"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    owner_user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    platform = Column(String(20), nullable=False)          # "whatsapp" | "telegram"
+    sender_id = Column(String(100), nullable=False)         # phone number or chat_id
+    session_key = Column(String(255), unique=True, nullable=False, index=True)
+    messages = Column(JSON, default=list)                    # [{role, content, timestamp}]
+    summary = Column(Text, nullable=True)                   # Compressed summary of older messages
+    message_count = Column(Integer, default=0)
+    last_activity_at = Column(DateTime(timezone=True), server_default=func.now())
+    metadata_ = Column("metadata", JSON, default=dict)       # sender name, profile info, etc.
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    is_active = Column(Boolean, default=True, index=True)
+
+    # Relationship
+    owner = relationship("User", foreign_keys=[owner_user_id])
+
+    __table_args__ = (
+        Index('ix_messaging_conv_owner_platform', 'owner_user_id', 'platform'),
+        Index('ix_messaging_conv_sender', 'owner_user_id', 'sender_id'),
+        Index('ix_messaging_conv_activity', 'last_activity_at'),
+    )
+

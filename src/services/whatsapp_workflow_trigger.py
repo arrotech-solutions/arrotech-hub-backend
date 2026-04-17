@@ -99,6 +99,29 @@ class WhatsAppWorkflowTrigger:
                 re_intent = cls._detect_real_estate_intent(message.content)
                 re_event_type = f"whatsapp_{re_intent}" if re_intent else None
                 
+                # ── CCM: Persist incoming message to conversation session ──
+                session_key = ""
+                try:
+                    from .conversation_context_manager import context_manager
+
+                    session = await context_manager.get_or_create_session(
+                        platform="whatsapp",
+                        owner_user_id=str(user_id),
+                        sender_id=contact.phone_number,
+                        metadata={
+                            "contact_name": contact.name or contact.profile_name or "",
+                            "contact_phone": contact.phone_number,
+                        }
+                    )
+                    session_key = session.session_key
+
+                    # Add incoming message to history
+                    await context_manager.add_message(
+                        session, "user", message.content or ""
+                    )
+                except Exception as ccm_err:
+                    logger.warning(f"[WA_TRIGGER] CCM session init failed (non-blocking): {ccm_err}")
+                
                 # Find workflows with WhatsApp triggers
                 result = await db.execute(
                     select(Workflow).where(
@@ -147,7 +170,10 @@ class WhatsAppWorkflowTrigger:
                             "whatsapp_message_id": message.id,
                             "whatsapp_message_content": message.content or "",
                             "whatsapp_message_type": message.message_type,
-                            "timestamp": datetime.utcnow().isoformat()
+                            "timestamp": datetime.utcnow().isoformat(),
+                            # ── CCM: Inject session key for context-aware tools ──
+                            "session_key": session_key,
+                            "platform": "whatsapp",
                         }
                         
                         # Add real estate context if detected
