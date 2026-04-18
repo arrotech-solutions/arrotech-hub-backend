@@ -165,10 +165,10 @@ class WhatsAppWorkflowTrigger:
                     if should_trigger:
                         # Build input variables for workflow
                         input_vars = {
-                            "whatsapp_contact_id": contact.id,
+                            "whatsapp_contact_id": str(contact.id) if contact.id else None,
                             "whatsapp_contact_phone": contact.phone_number,
                             "whatsapp_contact_name": contact.name or contact.profile_name or "Customer",
-                            "whatsapp_message_id": message.id,
+                            "whatsapp_message_id": str(message.id) if message.id else None,
                             "whatsapp_message_content": message.content or "",
                             "whatsapp_message_type": message.message_type,
                             "timestamp": datetime.utcnow().isoformat(),
