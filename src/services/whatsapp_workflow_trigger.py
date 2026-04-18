@@ -192,7 +192,8 @@ class WhatsAppWorkflowTrigger:
                                 workflow_id=workflow.id,
                                 user_id=user_id,
                                 db=db,
-                                input_data=input_vars
+                                input_data=input_vars,
+                                trigger_type="whatsapp_message_received"
                             )
                         except Exception as e:
                             logger.error(f"[WA_TRIGGER] Failed to execute workflow {workflow.id}: {e}")
