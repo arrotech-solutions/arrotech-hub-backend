@@ -438,9 +438,10 @@ async def _count_broadcast_recipients(
 
 async def _execute_broadcast(broadcast_id: uuid.UUID, user_id: uuid.UUID):
     """Background task to execute broadcast sending."""
-    from ..database import AsyncSessionLocal
+    from ..database import get_session_maker
     
-    async with AsyncSessionLocal() as db:
+    session_maker = get_session_maker()
+    async with session_maker() as db:
         try:
             broadcast = await db.get(WhatsAppBroadcast, broadcast_id)
             if not broadcast:
