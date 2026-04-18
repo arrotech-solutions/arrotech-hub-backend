@@ -354,7 +354,7 @@ class WorkflowBuilderService:
         
         return steps
     
-    async def execute_workflow(self, workflow_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession, input_data: Dict[str, Any] = None) -> WorkflowExecution:
+    async def execute_workflow(self, workflow_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession, input_data: Dict[str, Any] = None, trigger_type: Union[str, Any] = "manual") -> WorkflowExecution:
         """
         Execute a workflow with enhanced conditional logic and variable substitution.
         """
@@ -391,8 +391,8 @@ class WorkflowBuilderService:
         execution = WorkflowExecution(
             workflow_id=workflow_id,
             user_id=user_id,
-            status=WorkflowExecutionStatus.RUNNING,
-            trigger_type=WorkflowTriggerType.MANUAL,
+            status=WorkflowExecutionStatus.RUNNING.value if hasattr(WorkflowExecutionStatus.RUNNING, 'value') else "running",
+            trigger_type=trigger_type.value if hasattr(trigger_type, 'value') else str(trigger_type),
             trigger_data={},
             input_data=input_data or {},
             output_data={},
@@ -457,17 +457,17 @@ class WorkflowBuilderService:
                     context[operation_name] = step_result
                 
                 # Check if step failed
-                if step_execution.status == WorkflowExecutionStatus.FAILED:
-                    execution.status = WorkflowExecutionStatus.FAILED
+                if step_execution.status == WorkflowExecutionStatus.FAILED or str(step_execution.status) == "failed":
+                    execution.status = WorkflowExecutionStatus.FAILED.value if hasattr(WorkflowExecutionStatus.FAILED, 'value') else "failed"
                     execution.error_message = f"Step {step.step_number} failed: {step_execution.error_message}"
                     break
             
-            if execution.status == WorkflowExecutionStatus.RUNNING:
-                execution.status = WorkflowExecutionStatus.COMPLETED
+            if execution.status == WorkflowExecutionStatus.RUNNING or str(execution.status) == "running":
+                execution.status = WorkflowExecutionStatus.COMPLETED.value if hasattr(WorkflowExecutionStatus.COMPLETED, 'value') else "completed"
                 execution.output_data = context["steps"]
             
         except Exception as e:
-            execution.status = WorkflowExecutionStatus.FAILED
+            execution.status = WorkflowExecutionStatus.FAILED.value if hasattr(WorkflowExecutionStatus.FAILED, 'value') else "failed"
             execution.error_message = str(e)
         
         execution.completed_at = datetime.utcnow()
@@ -549,7 +549,7 @@ class WorkflowBuilderService:
         step_execution = WorkflowStepExecution(
             workflow_execution_id=execution_id,
             step_id=step.id,
-            status=WorkflowExecutionStatus.PENDING,
+            status=WorkflowExecutionStatus.PENDING.value if hasattr(WorkflowExecutionStatus.PENDING, 'value') else "pending",
             input_data={},
             output_data={},
             started_at=datetime.utcnow()
@@ -576,7 +576,7 @@ class WorkflowBuilderService:
             
             # Update step execution with substituted parameters
             step_execution.input_data = substituted_params
-            step_execution.status = WorkflowExecutionStatus.RUNNING
+            step_execution.status = WorkflowExecutionStatus.RUNNING.value if hasattr(WorkflowExecutionStatus.RUNNING, 'value') else "running"
             await db.commit() # Commit to make RUNNING status visible
             
             # Notify clients that step started
@@ -609,10 +609,10 @@ class WorkflowBuilderService:
                 tool_result = await self._execute_tool_legacy(step.tool_name, substituted_params)
             
             step_execution.output_data = tool_result
-            step_execution.status = WorkflowExecutionStatus.COMPLETED
+            step_execution.status = WorkflowExecutionStatus.COMPLETED.value if hasattr(WorkflowExecutionStatus.COMPLETED, 'value') else "completed"
             
         except Exception as e:
-            step_execution.status = WorkflowExecutionStatus.FAILED
+            step_execution.status = WorkflowExecutionStatus.FAILED.value if hasattr(WorkflowExecutionStatus.FAILED, 'value') else "failed"
             step_execution.error_message = str(e)
             
             # Apply retry logic
@@ -717,7 +717,7 @@ class WorkflowBuilderService:
         await asyncio.sleep(retry_delay)
         
         step_execution.retry_count += 1
-        step_execution.status = WorkflowExecutionStatus.PENDING
+        step_execution.status = WorkflowExecutionStatus.PENDING.value if hasattr(WorkflowExecutionStatus.PENDING, 'value') else "pending"
         step_execution.error_message = None
         
         # Re-execute the step - need to get user_id from execution
