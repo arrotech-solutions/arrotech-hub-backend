@@ -53,6 +53,55 @@ class TelegramService:
                 logger.error(f"Unexpected error in Telegram send_message: {e}")
                 return {"success": False, "error": str(e)}
 
+    async def send_photo(
+        self,
+        chat_id: str,
+        photo_url: str,
+        caption: str = "",
+        config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Send a photo message to a Telegram chat.
+        Uses Telegram's sendPhoto API for native image display.
+        """
+        bot_token = config.get("bot_token") if config else self.bot_token
+
+        if not bot_token:
+            return {"success": False, "error": "Telegram Bot Token is not configured"}
+
+        url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+
+        payload = {
+            "chat_id": chat_id,
+            "photo": photo_url,
+        }
+
+        if caption:
+            # Format caption for Telegram Markdown
+            formatted_caption = self._format_markdown_for_telegram(caption)
+            payload["caption"] = formatted_caption
+            payload["parse_mode"] = "Markdown"
+
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(url, json=payload, timeout=15.0)
+                response.raise_for_status()
+                data = response.json()
+
+                if data.get("ok"):
+                    logger.info(f"Successfully sent Telegram photo to {chat_id}")
+                    return {"success": True, "result": "Photo sent successfully"}
+                else:
+                    logger.error(f"Telegram sendPhoto API returned error: {data}")
+                    return {"success": False, "error": data.get("description", "Unknown error")}
+
+            except httpx.HTTPError as e:
+                logger.error(f"HTTP Error sending Telegram photo: {e}")
+                return {"success": False, "error": str(e)}
+            except Exception as e:
+                logger.error(f"Unexpected error in Telegram send_photo: {e}")
+                return {"success": False, "error": str(e)}
+
     def _format_markdown_for_telegram(self, text: str) -> str:
         """
         Convert standard Markdown to Telegram's Markdown (Legacy) format.

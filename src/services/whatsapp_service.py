@@ -93,7 +93,7 @@ class WhatsAppService:
                 "type": "text",
                 "text": {
                     "body": message,
-                    "preview_url": False
+                    "preview_url": True
                 }
             }
 

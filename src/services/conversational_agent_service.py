@@ -19,6 +19,7 @@ Design decisions:
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -30,6 +31,43 @@ from .order_service import OrderService
 from .conversation_context_manager import context_manager
 
 logger = logging.getLogger(__name__)
+
+# ═══════════════════════════════════════════════════════════════
+# IMAGE URL EXTRACTION UTILITIES
+# ═══════════════════════════════════════════════════════════════
+
+# Pattern matches URLs ending in common image extensions
+_IMAGE_URL_PATTERN = re.compile(
+    r'https?://\S+\.(?:jpg|jpeg|png|webp|gif|bmp|svg)'
+    r'(?:\?\S*)?',          # optional query string
+    re.IGNORECASE
+)
+
+
+def extract_image_urls(text: str) -> List[str]:
+    """Extract image URLs from text, returning unique URLs in order."""
+    if not text:
+        return []
+    seen = set()
+    urls = []
+    for match in _IMAGE_URL_PATTERN.finditer(text):
+        url = match.group(0).rstrip('.,;:!?)"\'')
+        if url not in seen:
+            seen.add(url)
+            urls.append(url)
+    return urls
+
+
+def strip_image_urls(text: str, image_urls: List[str]) -> str:
+    """Remove image URLs from text and clean up leftover blank lines."""
+    if not image_urls:
+        return text
+    for url in image_urls:
+        text = text.replace(url, '')
+    # Collapse multiple blank lines into at most two
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -227,11 +265,16 @@ class ConversationalAgentService:
                 if not response.tools_called:
                     final_text = response.content or f"Thank you for contacting {business_name}! How can I help you?"
 
+                    # Extract image URLs from AI response
+                    image_urls = extract_image_urls(final_text)
+                    clean_text = strip_image_urls(final_text, image_urls)
+
                     # Save assistant response to CCM
                     await self._save_to_ccm(session_key, "assistant", final_text)
 
                     return {
-                        "response_text": final_text,
+                        "response_text": clean_text,
+                        "image_urls": image_urls,
                         "order_created": order_created,
                         "order_data": order_data,
                         "order_notification": order_notification,
@@ -298,10 +341,16 @@ class ConversationalAgentService:
 
             # If we exhausted iterations, return whatever we have
             final_text = response.content or f"Thank you for your patience! Our team at {business_name} will assist you shortly."
+
+            # Extract image URLs from AI response
+            image_urls = extract_image_urls(final_text)
+            clean_text = strip_image_urls(final_text, image_urls)
+
             await self._save_to_ccm(session_key, "assistant", final_text)
 
             return {
-                "response_text": final_text,
+                "response_text": clean_text,
+                "image_urls": image_urls,
                 "order_created": order_created,
                 "order_data": order_data,
                 "order_notification": order_notification,
@@ -381,6 +430,8 @@ class ConversationalAgentService:
 - If the customer's request is unclear, ask for clarification
 - Respond in the same language as the customer
 - Available delivery methods: {delivery_str}
+- When showing products that have images, ALWAYS include the full image URL on its own line so the customer can see the product photo
+- Never shorten or omit image URLs — include the complete URL exactly as provided in the catalog data
 """
 
         if custom_prompt:
@@ -668,6 +719,7 @@ class ConversationalAgentService:
                 f"Thank you for contacting {business_name}! "
                 "We're experiencing a brief issue. Our team will respond shortly. 🙏"
             ),
+            "image_urls": [],
             "order_created": False,
             "order_data": None,
             "order_notification": "",
