@@ -175,6 +175,8 @@ class WhatsAppWorkflowTrigger:
                             # ── CCM: Inject session key for context-aware tools ──
                             "session_key": session_key,
                             "platform": "whatsapp",
+                            # ── Inject workflow-level config for agent tools ──
+                            "config": (workflow.variables or {}).get("config", {}),
                         }
                         
                         # Add real estate context if detected

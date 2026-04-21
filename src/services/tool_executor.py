@@ -67,6 +67,7 @@ from .huggingface_service import HuggingFaceService
 from .order_service import OrderService
 from .inventory_service import InventoryService
 from .real_estate_service import RealEstateService
+from .conversational_agent_service import ConversationalAgentService
 
 logger = logging.getLogger(__name__)
 
@@ -278,6 +279,8 @@ class ToolExecutor:
                 return await self._execute_inventory_management_tool(arguments, user, db)
             elif tool_name == "real_estate_management":
                 return await self._execute_real_estate_tool(arguments, user, db)
+            elif tool_name == "conversational_agent":
+                return await self._execute_conversational_agent_tool(arguments, user, db)
             else:
                 return {
                     "success": False,
@@ -3199,8 +3202,8 @@ class ToolExecutor:
         whatsapp_service.phone_number_id = phone_number_id
         print(f"🔧 Initialized WhatsApp service with user credentials for user {user.id}")
 
-        if tool_name == "whatsapp_messaging":
-            action = arguments.get("action", "send_message")
+        if tool_name in ("whatsapp_messaging", "whatsapp_send_message"):
+            action = arguments.get("action", arguments.get("operation", "send_message"))
             to_number = arguments.get("to_number", "")
 
             if action == "send_message":
@@ -5262,6 +5265,9 @@ class ToolExecutor:
                     except Exception:
                         context = str(context)
 
+            # ── Extract session_key for CCM context (from trigger input_data) ──
+            session_key = arguments.get("session_key", "")
+
             # ── Build operation-specific system prompts (if user didn't provide one) ──
             system_prompt = arguments.get("system_prompt", "")
 
@@ -5302,9 +5308,6 @@ class ToolExecutor:
                         f"into {target_lang}. Maintain the original meaning, tone, and formatting. "
                         f"Provide ONLY the translation without explanations."
                     )
-
-            # ── Extract session_key for CCM context (from trigger input_data) ──
-            session_key = arguments.get("session_key", "")
 
             # ── Call the LLM ──
             max_tokens = int(arguments.get("max_tokens", 500))
@@ -6755,6 +6758,46 @@ Description: {payment.description or 'N/A'}"""
         if not operation:
             return {"success": False, "error": "Operation is required for real estate tools"}
         return await self.services["real_estate"].handle_operation(operation, **parameters)
+
+
+    async def _execute_conversational_agent_tool(self, parameters: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute the conversational agent tool for agentic AI workflows."""
+        try:
+            agent = ConversationalAgentService()
+
+            user_message = parameters.get("user_message", "")
+            session_key = parameters.get("session_key", "")
+            business_config = parameters.get("business_config", {})
+
+            if not user_message:
+                return {"success": False, "error": "No user message provided", "result": None}
+
+            result = await agent.execute(
+                user_message=user_message,
+                session_key=session_key,
+                business_config=business_config,
+                user=user,
+                db=db
+            )
+
+            return {
+                "success": True,
+                "result": result.get("response_text", ""),
+                "response_text": result.get("response_text", ""),
+                "order_created": result.get("order_created", False),
+                "order_data": result.get("order_data"),
+                "order_notification": result.get("order_notification", ""),
+                "actions_taken": result.get("actions_taken", []),
+                "data": result
+            }
+
+        except Exception as e:
+            logger.error(f"Conversational agent error: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": f"Agent error: {str(e)}",
+                "result": None
+            }
 
 
 # Global tool executor instance

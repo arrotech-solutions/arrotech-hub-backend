@@ -782,6 +782,48 @@ class DynamicToolRegistry:
                         "response": "inquiry"
                     }
                 ]
+            },
+            # Conversational Agent — Agentic AI for WhatsApp/Telegram
+            "conversational_agent": {
+                "name": "conversational_agent",
+                "description": "AI-powered conversational agent with inner tool-calling. Autonomously browses your Knowledge Base, captures customer details, creates orders, and notifies the business — all within a single workflow step. Perfect for WhatsApp/Telegram ordering bots.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "user_message": {
+                            "type": "string",
+                            "description": "The incoming customer message. Use {{whatsapp_message_content}} or {{telegram_message}} from trigger data."
+                        },
+                        "session_key": {
+                            "type": "string",
+                            "description": "Conversation session key for multi-turn context. Use {{session_key}} from trigger data."
+                        },
+                        "business_config": {
+                            "type": "object",
+                            "description": "Business-specific configuration",
+                            "properties": {
+                                "kb_id": {"type": "string", "description": "Knowledge Base ID for product/menu search"},
+                                "business_name": {"type": "string", "description": "Business name shown to customers"},
+                                "business_phone": {"type": "string", "description": "Business owner phone for notifications"},
+                                "business_email": {"type": "string", "description": "Business email for notifications"},
+                                "order_type": {"type": "string", "enum": ["food", "clothing", "retail", "general"]},
+                                "currency": {"type": "string", "default": "KES"},
+                                "delivery_methods": {"type": "array", "items": {"type": "string"}},
+                                "system_prompt": {"type": "string", "description": "Additional AI instructions"}
+                            }
+                        }
+                    },
+                    "required": ["user_message", "session_key", "business_config"]
+                },
+                "category": "ai",
+                "always_available": True,
+                "few_shot_examples": [
+                    {
+                        "user": "Deploy an ordering agent for a meat shop on WhatsApp",
+                        "tool_call": 'conversational_agent(user_message="{{whatsapp_message_content}}", session_key="{{session_key}}", business_config={"kb_id": "tians-menu-kb", "business_name": "Tians Meat & Grill", "order_type": "food", "currency": "KES"})',
+                        "response": "AI agent processes the message, searches menu, and handles ordering"
+                    }
+                ]
             }
         }
     
@@ -809,6 +851,8 @@ class DynamicToolRegistry:
         for connection in connections:
             if connection.platform == "slack":
                 tools.extend(self._get_slack_tools(connection))
+            elif connection.platform == "whatsapp":
+                tools.extend(self._get_whatsapp_tools(connection))
             elif connection.platform == "instagram":
                 tools.extend(self._get_instagram_tools(connection))
             elif connection.platform == "hubspot":
@@ -883,7 +927,9 @@ class DynamicToolRegistry:
                 "order_management",
                 "inventory_management",
                 "rag_ingest_content",
-                "rag_search"
+                "rag_search",
+                "conversational_agent",
+                "whatsapp_send_message"
             }
             
             if include_all:
@@ -915,6 +961,33 @@ class DynamicToolRegistry:
                 "platform": "instagram",
                 "status": "available",
                 "id": "instagram_send_dm"
+            }
+        ]
+
+    def _get_whatsapp_tools(self, connection: Connection) -> List[Dict[str, Any]]:
+        """Get WhatsApp tools for a connection."""
+        return [
+            {
+                "name": "whatsapp_send_message",
+                "description": "Send a text message or auto-reply to a WhatsApp contact.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "to_number": {
+                            "type": "string",
+                            "description": "The recipient's phone number (e.g. {{whatsapp_contact_phone}} from trigger variables)"
+                        },
+                        "message": {
+                            "type": "string",
+                            "description": "The text message content to send"
+                        }
+                    },
+                    "required": ["to_number", "message"]
+                },
+                "connection_id": connection.id,
+                "platform": "whatsapp",
+                "status": "available",
+                "id": "whatsapp_send_message"
             }
         ]
 

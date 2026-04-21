@@ -3,7 +3,7 @@ WhatsApp Webhook Handler for receiving incoming messages.
 This is the critical piece for enabling auto-reply and chatbot features.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, Query, BackgroundTasks
 from fastapi.responses import PlainTextResponse
 import logging
 from datetime import datetime
@@ -12,7 +12,7 @@ from sqlalchemy import select, update
 from typing import Optional
 import uuid
 
-from ..database import get_db
+from ..database import get_db, get_session_maker
 from ..models import (
     User, Connection, WhatsAppContact, WhatsAppMessage,
     WhatsAppMessageDirection, WhatsAppMessageStatus
@@ -58,6 +58,7 @@ async def verify_webhook(
 @router.post("/webhook")
 async def receive_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -81,7 +82,7 @@ async def receive_webhook(
                 # Handle different types of updates
                 if "messages" in value:
                     # Incoming message
-                    await process_incoming_messages(value, db)
+                    await process_incoming_messages(value, db, background_tasks)
                     
                 if "statuses" in value:
                     # Message status update (sent, delivered, read)
@@ -95,7 +96,7 @@ async def receive_webhook(
         return {"status": "error", "message": str(e)}
 
 
-async def process_incoming_messages(value: dict, db: AsyncSession):
+async def process_incoming_messages(value: dict, db: AsyncSession, background_tasks: BackgroundTasks):
     """Process incoming WhatsApp messages."""
     
     messages = value.get("messages", [])
@@ -111,6 +112,15 @@ async def process_incoming_messages(value: dict, db: AsyncSession):
         try:
             # Extract message details
             msg_id = msg.get("id")
+            
+            # Check if message already exists (prevent duplicate inserts on Meta retries)
+            existing_msg = await db.execute(
+                select(WhatsAppMessage).filter(WhatsAppMessage.whatsapp_message_id == msg_id)
+            )
+            if existing_msg.scalar_one_or_none():
+                logger.info(f"[WHATSAPP WEBHOOK] Message {msg_id} already exists, skipping duplicate.")
+                continue
+
             from_number = msg.get("from")  # Sender's phone number
             msg_type = msg.get("type", "text")
             timestamp = msg.get("timestamp")
@@ -207,30 +217,58 @@ async def process_incoming_messages(value: dict, db: AsyncSession):
                 contact.first_message_at = datetime.utcnow()
             
             await db.commit()
+            await db.refresh(message)
             
             logger.info(f"[WHATSAPP WEBHOOK] Saved message {msg_id} from {from_number}")
             
+            # Trigger background processing
+            background_tasks.add_task(
+                background_process_message,
+                owner_user_id,
+                contact.id,
+                message.id
+            )
+            
+        except Exception as e:
+            logger.error(f"[WHATSAPP WEBHOOK] Error processing message: {e}")
+            continue
+
+async def background_process_message(user_id: uuid.UUID, contact_id: uuid.UUID, message_id: uuid.UUID):
+    """Process auto-reply and workflow triggers in the background with a fresh DB session."""
+    session_maker = get_session_maker()
+    async with session_maker() as db:
+        try:
+            # Fetch contact and message freshly
+            contact_res = await db.execute(select(WhatsAppContact).filter(WhatsAppContact.id == contact_id))
+            contact = contact_res.scalar_one_or_none()
+            
+            message_res = await db.execute(select(WhatsAppMessage).filter(WhatsAppMessage.id == message_id))
+            message = message_res.scalar_one_or_none()
+            
+            if not contact or not message:
+                logger.error(f"[WHATSAPP WEBHOOK BG] Contact or message not found")
+                return
+
             # Trigger auto-reply processing
             try:
                 from ..services.whatsapp_auto_reply import auto_reply_engine
                 await auto_reply_engine.process_incoming_message(
-                    db, owner_user_id, contact, message
+                    db, user_id, contact, message
                 )
             except Exception as e:
-                logger.error(f"[WHATSAPP WEBHOOK] Auto-reply error: {e}")
+                logger.error(f"[WHATSAPP WEBHOOK BG] Auto-reply error: {e}")
             
             # Trigger workflow automation
             try:
                 from ..services.whatsapp_workflow_trigger import WhatsAppWorkflowTrigger
                 await WhatsAppWorkflowTrigger.on_message_received(
-                    owner_user_id, contact, message
+                    user_id, contact, message
                 )
             except Exception as e:
-                logger.error(f"[WHATSAPP WEBHOOK] Workflow trigger error: {e}")
-            
+                logger.error(f"[WHATSAPP WEBHOOK BG] Workflow trigger error: {e}")
+                
         except Exception as e:
-            logger.error(f"[WHATSAPP WEBHOOK] Error processing message: {e}")
-            continue
+            logger.error(f"[WHATSAPP WEBHOOK BG] Error in background processing: {e}")
 
 
 async def process_status_updates(value: dict, db: AsyncSession):
