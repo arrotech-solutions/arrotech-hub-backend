@@ -107,6 +107,52 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "description": "Additional instructions for the AI agent (e.g. business hours, special offers)",
                 "required": False,
                 "placeholder": "e.g. We are open Mon-Sat 8am-8pm. Free delivery for orders over KES 2000."
+            },
+            "storage_provider": {
+                "label": "Order Storage",
+                "type": "select",
+                "description": "Where to save orders and customer data for record-keeping",
+                "required": False,
+                "options": [
+                    {"value": "none",          "label": "📝 No Storage (notifications only)"},
+                    {"value": "google_sheets", "label": "📊 Google Sheets"},
+                    {"value": "airtable",      "label": "🔲 Airtable"}
+                ],
+                "default": "none"
+            },
+            "storage_spreadsheet_id": {
+                "label": "Google Sheets Spreadsheet ID",
+                "type": "text",
+                "description": "The spreadsheet ID from your Google Sheets URL",
+                "required": False,
+                "placeholder": "e.g. 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
+            "storage_airtable_base_id": {
+                "label": "Airtable Base ID",
+                "type": "text",
+                "description": "Your Airtable base ID (starts with 'app')",
+                "required": False,
+                "placeholder": "e.g. appXXXXXXXXXXXXXX",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
+            },
+            "storage_airtable_orders_table": {
+                "label": "Airtable Orders Table Name",
+                "type": "text",
+                "description": "Table name for storing orders",
+                "required": False,
+                "placeholder": "Orders",
+                "default": "Orders",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
+            },
+            "storage_airtable_customers_table": {
+                "label": "Airtable Customers Table Name",
+                "type": "text",
+                "description": "Table name for storing customers",
+                "required": False,
+                "placeholder": "Customers",
+                "default": "Customers",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
             }
         },
         "steps": [
@@ -124,7 +170,12 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                         "order_type": "{{config.order_type}}",
                         "currency": "{{config.currency}}",
                         "delivery_methods": "{{config.delivery_methods}}",
-                        "system_prompt": "{{config.system_prompt}}"
+                        "system_prompt": "{{config.system_prompt}}",
+                        "storage_provider": "{{config.storage_provider}}",
+                        "storage_spreadsheet_id": "{{config.storage_spreadsheet_id}}",
+                        "storage_airtable_base_id": "{{config.storage_airtable_base_id}}",
+                        "storage_airtable_orders_table": "{{config.storage_airtable_orders_table}}",
+                        "storage_airtable_customers_table": "{{config.storage_airtable_customers_table}}"
                     }
                 }
             },
@@ -236,6 +287,52 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "description": "Additional instructions for the AI agent",
                 "required": False,
                 "placeholder": "e.g. We deliver within Nakuru CBD only."
+            },
+            "storage_provider": {
+                "label": "Order Storage",
+                "type": "select",
+                "description": "Where to save orders and customer data for record-keeping",
+                "required": False,
+                "options": [
+                    {"value": "none",          "label": "📝 No Storage (notifications only)"},
+                    {"value": "google_sheets", "label": "📊 Google Sheets"},
+                    {"value": "airtable",      "label": "🔲 Airtable"}
+                ],
+                "default": "none"
+            },
+            "storage_spreadsheet_id": {
+                "label": "Google Sheets Spreadsheet ID",
+                "type": "text",
+                "description": "The spreadsheet ID from your Google Sheets URL",
+                "required": False,
+                "placeholder": "e.g. 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
+            "storage_airtable_base_id": {
+                "label": "Airtable Base ID",
+                "type": "text",
+                "description": "Your Airtable base ID (starts with 'app')",
+                "required": False,
+                "placeholder": "e.g. appXXXXXXXXXXXXXX",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
+            },
+            "storage_airtable_orders_table": {
+                "label": "Airtable Orders Table Name",
+                "type": "text",
+                "description": "Table name for storing orders",
+                "required": False,
+                "placeholder": "Orders",
+                "default": "Orders",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
+            },
+            "storage_airtable_customers_table": {
+                "label": "Airtable Customers Table Name",
+                "type": "text",
+                "description": "Table name for storing customers",
+                "required": False,
+                "placeholder": "Customers",
+                "default": "Customers",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
             }
         },
         "steps": [
@@ -253,7 +350,12 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                         "order_type": "{{config.order_type}}",
                         "currency": "{{config.currency}}",
                         "delivery_methods": "{{config.delivery_methods}}",
-                        "system_prompt": "{{config.system_prompt}}"
+                        "system_prompt": "{{config.system_prompt}}",
+                        "storage_provider": "{{config.storage_provider}}",
+                        "storage_spreadsheet_id": "{{config.storage_spreadsheet_id}}",
+                        "storage_airtable_base_id": "{{config.storage_airtable_base_id}}",
+                        "storage_airtable_orders_table": "{{config.storage_airtable_orders_table}}",
+                        "storage_airtable_customers_table": "{{config.storage_airtable_customers_table}}"
                     }
                 }
             },

@@ -292,6 +292,15 @@ class ConversationalAgentService:
             delivery_methods = business_config.get("delivery_methods", ["delivery", "pickup"])
             custom_system_prompt = business_config.get("system_prompt", "")
 
+            # Extract storage config
+            storage_config = {
+                "provider": business_config.get("storage_provider", "none"),
+                "spreadsheet_id": business_config.get("storage_spreadsheet_id", ""),
+                "airtable_base_id": business_config.get("storage_airtable_base_id", ""),
+                "airtable_orders_table": business_config.get("storage_airtable_orders_table", "Orders"),
+                "airtable_customers_table": business_config.get("storage_airtable_customers_table", "Customers"),
+            }
+
             # Build the system prompt
             system_prompt = self._build_system_prompt(
                 business_name=business_name,
@@ -386,6 +395,7 @@ class ConversationalAgentService:
                         order_type=order_type,
                         currency=currency,
                         business_name=business_name,
+                        storage_config=storage_config,
                         user=user,
                         db=db
                     )
@@ -568,6 +578,7 @@ class ConversationalAgentService:
         order_type: str,
         currency: str,
         business_name: str,
+        storage_config: Dict[str, Any],
         user: User,
         db: AsyncSession
     ) -> Dict[str, Any]:
@@ -587,7 +598,10 @@ class ConversationalAgentService:
                     arguments=arguments,
                     order_type=order_type,
                     currency=currency,
-                    business_name=business_name
+                    business_name=business_name,
+                    storage_config=storage_config,
+                    user=user,
+                    db=db
                 )
 
             elif tool_name == "calculate_total":
@@ -644,9 +658,12 @@ class ConversationalAgentService:
         arguments: Dict[str, Any],
         order_type: str,
         currency: str,
-        business_name: str
+        business_name: str,
+        storage_config: Dict[str, Any] = None,
+        user: User = None,
+        db: AsyncSession = None
     ) -> Dict[str, Any]:
-        """Create an order via OrderService."""
+        """Create an order via OrderService, then persist to connected storage."""
         try:
             order_result = await self.order_service.handle_operation(
                 operation="create_order",
@@ -663,7 +680,7 @@ class ConversationalAgentService:
             )
 
             if order_result.get("success"):
-                # Also generate a receipt
+                # Generate a receipt
                 receipt = await self.order_service.handle_operation(
                     operation="format_order_receipt",
                     order_data=order_result,
@@ -671,6 +688,16 @@ class ConversationalAgentService:
                     currency=currency
                 )
                 order_result["receipt"] = receipt.get("result", "")
+
+                # ── Persist to connected storage (non-fatal) ──
+                if storage_config and storage_config.get("provider") not in (None, "", "none"):
+                    await self._persist_to_storage(
+                        order_data=order_result.get("order", order_result),
+                        storage_config=storage_config,
+                        business_name=business_name,
+                        user=user,
+                        db=db
+                    )
 
             return {
                 "success": order_result.get("success", False),
@@ -699,6 +726,223 @@ class ConversationalAgentService:
             }
         except Exception as e:
             return {"success": False, "result": f"Calculation error: {str(e)}"}
+
+    # ═══════════════════════════════════════════════════════════
+    # ORDER STORAGE PERSISTENCE (Google Sheets / Airtable)
+    # ═══════════════════════════════════════════════════════════
+
+    async def _persist_to_storage(
+        self,
+        order_data: Dict[str, Any],
+        storage_config: Dict[str, Any],
+        business_name: str,
+        user: User,
+        db: AsyncSession
+    ):
+        """
+        Persist order + customer data to the business's connected storage.
+        Uses existing MCP tools (google_workspace_sheets / airtable_record_management).
+        Failures here are non-fatal — logged but never break the order flow.
+        """
+        provider = storage_config.get("provider", "none")
+        if provider in (None, "", "none"):
+            return
+
+        try:
+            from .tool_executor import ToolExecutor
+            executor = ToolExecutor()
+
+            # Extract order fields for storage
+            customer = order_data.get("customer", {})
+            items = order_data.get("items", [])
+            items_summary = "; ".join(
+                f"{it.get('name', '?')} x{it.get('quantity', 1)}"
+                for it in items
+            )
+            now = order_data.get("created_at", datetime.now().isoformat())
+
+            if provider == "google_sheets":
+                await self._persist_to_google_sheets(
+                    executor, order_data, customer, items_summary,
+                    now, storage_config, user, db
+                )
+
+            elif provider == "airtable":
+                await self._persist_to_airtable(
+                    executor, order_data, customer, items_summary,
+                    now, storage_config, user, db
+                )
+
+            else:
+                logger.warning(f"[CONV_AGENT] Unknown storage provider: {provider}")
+
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] Storage persistence failed (non-fatal): {e}")
+
+    async def _persist_to_google_sheets(
+        self,
+        executor,
+        order_data: Dict[str, Any],
+        customer: Dict[str, Any],
+        items_summary: str,
+        created_at: str,
+        storage_config: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ):
+        """Append order + customer rows to Google Sheets via existing MCP tool."""
+        spreadsheet_id = storage_config.get("spreadsheet_id", "")
+        if not spreadsheet_id:
+            logger.warning("[CONV_AGENT] Google Sheets storage: no spreadsheet_id configured")
+            return
+
+        # ── Append order row to "Orders" sheet ──
+        order_row = [
+            order_data.get("order_id", ""),
+            order_data.get("status", "pending"),
+            customer.get("name", ""),
+            customer.get("phone", ""),
+            customer.get("email", ""),
+            items_summary,
+            str(order_data.get("item_count", 0)),
+            str(order_data.get("subtotal", 0)),
+            order_data.get("currency", "KES"),
+            order_data.get("delivery_method", ""),
+            order_data.get("delivery_address", ""),
+            order_data.get("notes", ""),
+            order_data.get("order_type", ""),
+            created_at,
+        ]
+
+        try:
+            result = await executor.execute_tool(
+                "google_workspace_sheets",
+                {
+                    "operation": "append_rows",
+                    "spreadsheet_id": spreadsheet_id,
+                    "range_name": "Orders!A:N",
+                    "values": [order_row]
+                },
+                user, db
+            )
+            if result.get("success") or not result.get("error"):
+                logger.info(f"[CONV_AGENT] Order {order_data.get('order_id')} saved to Google Sheets")
+            else:
+                logger.warning(f"[CONV_AGENT] Sheets order save error: {result.get('error')}")
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] Sheets order save failed: {e}")
+
+        # ── Append customer row to "Customers" sheet ──
+        customer_row = [
+            customer.get("phone", ""),
+            customer.get("name", ""),
+            customer.get("email", ""),
+            order_data.get("order_id", ""),
+            created_at,
+            "whatsapp",
+        ]
+
+        try:
+            result = await executor.execute_tool(
+                "google_workspace_sheets",
+                {
+                    "operation": "append_rows",
+                    "spreadsheet_id": spreadsheet_id,
+                    "range_name": "Customers!A:F",
+                    "values": [customer_row]
+                },
+                user, db
+            )
+            if result.get("success") or not result.get("error"):
+                logger.info(f"[CONV_AGENT] Customer {customer.get('name')} saved to Google Sheets")
+            else:
+                logger.warning(f"[CONV_AGENT] Sheets customer save error: {result.get('error')}")
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] Sheets customer save failed: {e}")
+
+    async def _persist_to_airtable(
+        self,
+        executor,
+        order_data: Dict[str, Any],
+        customer: Dict[str, Any],
+        items_summary: str,
+        created_at: str,
+        storage_config: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ):
+        """Create order + customer records in Airtable via existing MCP tool."""
+        base_id = storage_config.get("airtable_base_id", "")
+        if not base_id:
+            logger.warning("[CONV_AGENT] Airtable storage: no base_id configured")
+            return
+
+        orders_table = storage_config.get("airtable_orders_table", "Orders")
+        customers_table = storage_config.get("airtable_customers_table", "Customers")
+
+        # ── Create order record ──
+        order_record = {
+            "Order ID": order_data.get("order_id", ""),
+            "Status": order_data.get("status", "pending"),
+            "Customer Name": customer.get("name", ""),
+            "Customer Phone": customer.get("phone", ""),
+            "Customer Email": customer.get("email", ""),
+            "Items": items_summary,
+            "Item Count": order_data.get("item_count", 0),
+            "Subtotal": order_data.get("subtotal", 0),
+            "Currency": order_data.get("currency", "KES"),
+            "Delivery Method": order_data.get("delivery_method", ""),
+            "Delivery Address": order_data.get("delivery_address", ""),
+            "Notes": order_data.get("notes", ""),
+            "Order Type": order_data.get("order_type", ""),
+            "Created At": created_at,
+        }
+
+        try:
+            result = await executor.execute_tool(
+                "airtable_record_management",
+                {
+                    "operation": "create_records",
+                    "base_id": base_id,
+                    "table_name": orders_table,
+                    "records_data": [order_record]
+                },
+                user, db
+            )
+            if not result.get("error"):
+                logger.info(f"[CONV_AGENT] Order {order_data.get('order_id')} saved to Airtable")
+            else:
+                logger.warning(f"[CONV_AGENT] Airtable order save error: {result.get('error')}")
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] Airtable order save failed: {e}")
+
+        # ── Create customer record ──
+        customer_record = {
+            "Phone": customer.get("phone", ""),
+            "Name": customer.get("name", ""),
+            "Email": customer.get("email", ""),
+            "Last Order": order_data.get("order_id", ""),
+            "Last Order Date": created_at,
+            "Platform": "whatsapp",
+        }
+
+        try:
+            result = await executor.execute_tool(
+                "airtable_record_management",
+                {
+                    "operation": "create_records",
+                    "base_id": base_id,
+                    "table_name": customers_table,
+                    "records_data": [customer_record]
+                },
+                user, db
+            )
+            if not result.get("error"):
+                logger.info(f"[CONV_AGENT] Customer {customer.get('name')} saved to Airtable")
+            else:
+                logger.warning(f"[CONV_AGENT] Airtable customer save error: {result.get('error')}")
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] Airtable customer save failed: {e}")
 
     # ═══════════════════════════════════════════════════════════
     # NOTIFICATION FORMATTING
