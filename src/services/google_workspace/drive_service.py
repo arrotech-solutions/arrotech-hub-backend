@@ -443,3 +443,35 @@ class DriveService:
                 'success': False,
                 'error': str(e)
             }
+
+    async def list_spreadsheets(self) -> Dict[str, Any]:
+        """
+        List all available spreadsheets in Google Drive for selection
+        """
+        try:
+            service = self.base_client.get_service(self.service_name, self.version)
+            
+            result = service.files().list(
+                q="mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false",
+                pageSize=100,
+                fields="files(id, name)"
+            ).execute()
+            
+            spreadsheets = result.get('files', [])
+            
+            # Format for dynamic options: list of {label, value}
+            options = [{'label': sheet['name'], 'value': sheet['id']} for sheet in spreadsheets]
+            
+            return {
+                'success': True,
+                'options': options,
+                'count': len(options)
+            }
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error listing Google Sheets: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }

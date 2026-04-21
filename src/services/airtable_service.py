@@ -142,7 +142,11 @@ class AirtableService:
 
     async def list_bases(self) -> Dict[str, Any]:
         """Fetch all bases the user has granted access to."""
-        return await self._request("GET", "/meta/bases")
+        result = await self._request("GET", "/meta/bases")
+        if isinstance(result, dict) and "bases" in result:
+            options = [{"label": base["name"], "value": base["id"]} for base in result["bases"]]
+            return {"success": True, "options": options}
+        return {"success": False, "error": "Failed to list bases", "raw": result}
 
     async def get_base_schema(self, base_id: str) -> Dict[str, Any]:
         """Fetch tables and fields for a specific base."""

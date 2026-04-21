@@ -1982,19 +1982,25 @@ WORKFLOW_TEMPLATES = [
             },
             "storage_spreadsheet_id": {
                 "type": "string",
-                "description": "Google Sheets Spreadsheet ID"
+                "description": "Google Sheets Spreadsheet ID",
+                "x-dynamic-ui": "google_workspace_drive.list_spreadsheets",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
             },
             "storage_airtable_base_id": {
                 "type": "string",
-                "description": "Airtable Base ID"
+                "description": "Airtable Base ID",
+                "x-dynamic-ui": "airtable_base_management.list_bases",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
             },
             "storage_airtable_orders_table": {
                 "type": "string",
-                "default": "Orders"
+                "default": "Orders",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
             },
             "storage_airtable_customers_table": {
                 "type": "string",
-                "default": "Customers"
+                "default": "Customers",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
             }
         }
     },
@@ -2073,19 +2079,25 @@ WORKFLOW_TEMPLATES = [
             },
             "storage_spreadsheet_id": {
                 "type": "string",
-                "description": "Google Sheets Spreadsheet ID"
+                "description": "Google Sheets Spreadsheet ID",
+                "x-dynamic-ui": "google_workspace_drive.list_spreadsheets",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
             },
             "storage_airtable_base_id": {
                 "type": "string",
-                "description": "Airtable Base ID"
+                "description": "Airtable Base ID",
+                "x-dynamic-ui": "airtable_base_management.list_bases",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
             },
             "storage_airtable_orders_table": {
                 "type": "string",
-                "default": "Orders"
+                "default": "Orders",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
             },
             "storage_airtable_customers_table": {
                 "type": "string",
-                "default": "Customers"
+                "default": "Customers",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
             }
         }
     }
