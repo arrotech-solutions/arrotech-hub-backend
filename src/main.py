@@ -1,5 +1,5 @@
 """
-Main application entry point for Mini-Hub MCP Server.
+Main application entry point for Mini-Hub MCP Server
 """
 
 import asyncio
