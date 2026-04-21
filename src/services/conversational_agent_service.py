@@ -36,34 +36,104 @@ logger = logging.getLogger(__name__)
 # IMAGE URL EXTRACTION UTILITIES
 # ═══════════════════════════════════════════════════════════════
 
-# Pattern matches URLs ending in common image extensions
-_IMAGE_URL_PATTERN = re.compile(
-    r'https?://\S+\.(?:jpg|jpeg|png|webp|gif|bmp|svg)'
-    r'(?:\?\S*)?',          # optional query string
+# 1) Markdown image syntax: ![alt text](url)
+_MARKDOWN_IMAGE_PATTERN = re.compile(
+    r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)',
+    re.IGNORECASE
+)
+
+# 2) URLs ending in common image extensions
+_IMAGE_EXT_PATTERN = re.compile(
+    r'https?://\S+\.(?:jpg|jpeg|png|webp|gif|bmp|svg|tiff)'
+    r'(?:\?\S*)?',
+    re.IGNORECASE
+)
+
+# 3) Known image hosting domains (URLs that serve images without extensions)
+_IMAGE_HOST_DOMAINS = [
+    'images.unsplash.com',
+    'unsplash.com/photos',
+    'i.imgur.com',
+    'imgur.com',
+    'res.cloudinary.com',
+    'cloudinary.com',
+    'lh3.googleusercontent.com',
+    'drive.google.com/uc',
+    'pbs.twimg.com',
+    'scontent.cdninstagram.com',
+    'img.freepik.com',
+    'media.istockphoto.com',
+    'cdn.pixabay.com',
+    'images.pexels.com',
+    'storage.googleapis.com',
+    'firebasestorage.googleapis.com',
+    's3.amazonaws.com',
+]
+
+# Build a regex that matches URLs from known image hosts
+_IMAGE_HOST_PATTERN = re.compile(
+    r'https?://(?:' +
+    '|'.join(re.escape(d) for d in _IMAGE_HOST_DOMAINS) +
+    r')[^\s\)\]]*',
     re.IGNORECASE
 )
 
 
 def extract_image_urls(text: str) -> List[str]:
-    """Extract image URLs from text, returning unique URLs in order."""
+    """
+    Extract image URLs from text, returning unique URLs in order.
+
+    Handles three source patterns:
+    1. Markdown image syntax: ![Men's Shirt](https://images.unsplash.com/photo-xxx)
+    2. URLs with image file extensions: https://cdn.store.com/shirt.jpg
+    3. URLs from known image hosting domains (no extension needed)
+    """
     if not text:
         return []
+
     seen = set()
     urls = []
-    for match in _IMAGE_URL_PATTERN.finditer(text):
-        url = match.group(0).rstrip('.,;:!?)"\'')
-        if url not in seen:
+
+    def _add(url: str):
+        # Clean trailing punctuation that may stick to URLs
+        url = url.rstrip('.,;:!?)"\'>]')
+        if url and url not in seen:
             seen.add(url)
             urls.append(url)
+
+    # Priority 1: Markdown images — most reliable signal
+    for match in _MARKDOWN_IMAGE_PATTERN.finditer(text):
+        _add(match.group(2))
+
+    # Priority 2: URLs with image file extensions
+    for match in _IMAGE_EXT_PATTERN.finditer(text):
+        _add(match.group(0))
+
+    # Priority 3: Known image host domains
+    for match in _IMAGE_HOST_PATTERN.finditer(text):
+        _add(match.group(0))
+
     return urls
 
 
 def strip_image_urls(text: str, image_urls: List[str]) -> str:
-    """Remove image URLs from text and clean up leftover blank lines."""
+    """
+    Remove image URLs and Markdown image tags from text.
+    Cleans up leftover blank lines and orphaned bullet points.
+    """
     if not image_urls:
         return text
+
+    # First: strip full Markdown image syntax ![alt](url)
+    text = _MARKDOWN_IMAGE_PATTERN.sub('', text)
+
+    # Then: strip any remaining bare image URLs
     for url in image_urls:
         text = text.replace(url, '')
+
+    # Clean up orphaned list markers (e.g. "- " on a now-empty line)
+    text = re.sub(r'^[\s]*[-*•]\s*$', '', text, flags=re.MULTILINE)
+
     # Collapse multiple blank lines into at most two
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
