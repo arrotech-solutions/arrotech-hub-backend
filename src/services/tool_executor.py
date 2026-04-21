@@ -3903,6 +3903,8 @@ class ToolExecutor:
                     )
                 elif operation == "list_folders":
                     return await service.list_folders()
+                elif operation == "list_spreadsheets":
+                    return await service.list_spreadsheets()
             
             elif tool_name == "google_workspace_sheets":
                 service = SheetsService(base_client)
