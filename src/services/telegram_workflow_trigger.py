@@ -99,6 +99,8 @@ class TelegramWorkflowTrigger:
                             # ── CCM: Inject session key for context-aware tools ──
                             "session_key": session_key,
                             "platform": "telegram",
+                            # ── Inject workflow-level config for agent tools ──
+                            "config": (workflow.variables or {}).get("config", {}),
                         }
                         
                         logger.info(f"[TG_TRIGGER] Firing workflow '{workflow.name}' for user {workflow.user_id}")

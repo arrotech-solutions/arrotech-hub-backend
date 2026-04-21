@@ -411,12 +411,18 @@ class WorkflowBuilderService:
             )
         
         try:
-            # Initialize execution context with variables
             context = {
                 "input": input_data or {},
                 "workflow": workflow.workflow_metadata or {},
-                "steps": {}
+                "steps": {},
+                "variables": workflow.variables or {}
             }
+            
+            # Merge workflow variables into root context (e.g. for {{config.kb_id}})
+            if workflow.variables:
+                for key, value in workflow.variables.items():
+                    if key not in context:
+                        context[key] = value
             
             # GAP 1 FIX: Merge input_data keys to top-level context
             # so Jinja2 can resolve {{Trigger.id}} directly (not {{input.Trigger.id}})

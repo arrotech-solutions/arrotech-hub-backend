@@ -125,6 +125,12 @@ class VariableSubstitutionResponse(BaseModel):
     substitutions_made: List[str]
 
 
+class CreateFromTemplate(BaseModel):
+    template_id: str = Field(..., description="ID of the agent template to deploy")
+    config: Dict[str, Any] = Field(..., description="Business-specific configuration values")
+    workflow_name: Optional[str] = Field(None, description="Custom name for the workflow")
+
+
 @router.post("/create", response_model=WorkflowResponse)
 async def create_workflow(
     data: WorkflowCreate,
@@ -666,100 +672,6 @@ async def test_variable_substitution(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to test variable substitution: {str(e)}"
         )
-
-
-@router.get("/templates")
-async def get_workflow_templates():
-    """Get available workflow templates."""
-    templates = [
-        {
-            "name": "Lead Qualification",
-            "description": "Automated lead qualification workflow",
-            "steps": [
-                {
-                    "step_number": 1,
-                    "tool_name": "hubspot_contact_create",
-                    "parameters": {
-                        "email": "{{input.email}}",
-                        "first_name": "{{input.first_name}}",
-                        "last_name": "{{input.last_name}}"
-                    },
-                    "description": "Create contact in HubSpot",
-                    "condition": None,
-                    "retry_config": {"max_retries": 3, "retry_delay": 5},
-                    "timeout": 30
-                },
-                {
-                    "step_number": 2,
-                    "tool_name": "slack_notification",
-                    "parameters": {
-                        "channel": "{{input.slack_channel}}",
-                        "message": "New lead created: {{input.first_name}} {{input.last_name}}"
-                    },
-                    "description": "Send Slack notification",
-                    "condition": {
-                        "type": "if",
-                        "field": "input.notify_slack",
-                        "operator": "equals",
-                        "value": True
-                    },
-                    "retry_config": {"max_retries": 3, "retry_delay": 5},
-                    "timeout": 30
-                }
-            ]
-        },
-        {
-            "name": "Customer Onboarding",
-            "description": "Automated customer onboarding process",
-            "steps": [
-                {
-                    "step_number": 1,
-                    "tool_name": "hubspot_contact_create",
-                    "parameters": {
-                        "email": "{{input.customer_email}}",
-                        "first_name": "{{input.customer_name}}",
-                        "company": "{{input.company_name}}"
-                    },
-                    "description": "Create customer contact",
-                    "condition": None,
-                    "retry_config": {"max_retries": 3, "retry_delay": 5},
-                    "timeout": 30
-                },
-                {
-                    "step_number": 2,
-                    "tool_name": "email_sender",
-                    "parameters": {
-                        "to": "{{input.customer_email}}",
-                        "subject": "Welcome to our platform!",
-                        "body": "Hi {{input.customer_name}}, welcome aboard!"
-                    },
-                    "description": "Send welcome email",
-                    "condition": None,
-                    "retry_config": {"max_retries": 3, "retry_delay": 5},
-                    "timeout": 30
-                },
-                {
-                    "step_number": 3,
-                    "tool_name": "slack_notification",
-                    "parameters": {
-                        "channel": "onboarding",
-                        "message": "New customer onboarded: {{input.customer_name}} from {{input.company_name}}"
-                    },
-                    "description": "Notify team",
-                    "condition": {
-                        "type": "if",
-                        "field": "input.customer_type",
-                        "operator": "equals",
-                        "value": "enterprise"
-                    },
-                    "retry_config": {"max_retries": 3, "retry_delay": 5},
-                    "timeout": 30
-                }
-            ]
-        }
-    ]
-    
-    return {"templates": templates}
 
 
 @router.post("/chat-agent")

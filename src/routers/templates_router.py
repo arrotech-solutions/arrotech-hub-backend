@@ -1894,6 +1894,146 @@ WORKFLOW_TEMPLATES = [
             "kb_id": {"type": "string", "required": True, "description": "Knowledge Base ID (use a dedicated research KB)", "default": "research", "placeholder": "e.g. research, default", "connection_for": "rag_pipeline"},
             "output_channel": {"type": "string", "default": "#research", "description": "Slack channel for the research report", "connection_for": "slack"}
         }
+    },
+    {
+        "id": "whatsapp_ordering_agent",
+        "name": "WhatsApp Ordering Agent",
+        "description": "AI-powered WhatsApp ordering agent with menu browsing, conversational order capture, and automatic business notifications.",
+        "category": "Sales",
+        "icon": "🛒",
+        "difficulty": "intermediate",
+        "estimated_time": "5 mins",
+        "tags": ["whatsapp", "agent", "food", "retail", "ordering"],
+        "required_connections": ["whatsapp", "rag_pipeline"],
+        "trigger_type": WorkflowTriggerType.EVENT,
+        "trigger_config": {
+            "platform": "whatsapp",
+            "event_type": "whatsapp_message_received"
+        },
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "conversational_agent",
+                "tool_parameters": {
+                    "session_key": "{{session_key}}",
+                    "user_message": "{{whatsapp_message_content}}",
+                    "business_config": {
+                        "kb_id": "{{variables.kb_id}}",
+                        "business_name": "{{variables.business_name}}",
+                        "business_phone": "{{variables.business_phone}}",
+                        "order_type": "{{variables.order_type}}",
+                        "currency": "{{variables.currency}}",
+                        "delivery_methods": "{{variables.delivery_methods}}"
+                    }
+                },
+                "description": "AI agent handles conversation and order creation"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "whatsapp_send_message",
+                "tool_parameters": {
+                    "operation": "send_message",
+                    "to_number": "{{whatsapp_contact_phone}}",
+                    "message": "{{step_1.response_text}}"
+                },
+                "description": "Send AI response back to customer"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "whatsapp_send_message",
+                "tool_parameters": {
+                    "operation": "send_message",
+                    "to_number": "{{variables.business_phone}}",
+                    "message": "{{step_1.order_notification}}"
+                },
+                "description": "Notify business owner of new order",
+                "condition": {"if": "step_1.order_created == True"}
+            }
+        ],
+        "variables": {
+            "kb_id": {
+                "type": "string", "required": True, "description": "Knowledge Base ID containing your menu/products", "connection_for": "rag_pipeline"
+            },
+            "business_name": {
+                "type": "string", "required": True, "description": "Your business name (shown to customers)"
+            },
+            "business_phone": {
+                "type": "string", "required": True, "description": "Phone number to receive order notifications", "connection_for": "whatsapp"
+            },
+            "order_type": {
+                "type": "string", "enum": ["food", "clothing", "retail", "general"], "default": "food"
+            },
+            "currency": {
+                "type": "string", "default": "KES"
+            },
+            "delivery_methods": {
+                "type": "array", "items": {"type": "string"}, "default": ["delivery", "pickup"]
+            }
+        }
+    },
+    {
+        "id": "telegram_ordering_agent",
+        "name": "Telegram Ordering Agent",
+        "description": "AI-powered Telegram ordering agent with product browsing, conversational order capture, and automatic notifications.",
+        "category": "Sales",
+        "icon": "🤖",
+        "difficulty": "intermediate",
+        "estimated_time": "5 mins",
+        "tags": ["telegram", "agent", "food", "retail", "ordering"],
+        "required_connections": ["telegram", "rag_pipeline"],
+        "trigger_type": WorkflowTriggerType.EVENT,
+        "trigger_config": {
+            "platform": "telegram",
+            "event_type": "telegram_message_received"
+        },
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "conversational_agent",
+                "tool_parameters": {
+                    "session_key": "{{session_key}}",
+                    "user_message": "{{telegram_message}}",
+                    "business_config": {
+                        "kb_id": "{{variables.kb_id}}",
+                        "business_name": "{{variables.business_name}}",
+                        "business_phone": "{{variables.business_phone}}",
+                        "order_type": "{{variables.order_type}}",
+                        "currency": "{{variables.currency}}",
+                        "delivery_methods": "{{variables.delivery_methods}}"
+                    }
+                },
+                "description": "AI agent handles conversation and order creation"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "telegram_send_message",
+                "tool_parameters": {
+                    "chat_id": "{{chat_id}}",
+                    "message": "{{step_1.response_text}}"
+                },
+                "description": "Send AI response back to customer"
+            }
+        ],
+        "variables": {
+            "kb_id": {
+                "type": "string", "required": True, "description": "Knowledge Base ID containing your menu/products", "connection_for": "rag_pipeline"
+            },
+            "business_name": {
+                "type": "string", "required": True, "description": "Your business name (shown to customers)"
+            },
+            "business_phone": {
+                "type": "string", "required": False, "description": "Phone number for notifications (optional)"
+            },
+            "order_type": {
+                "type": "string", "enum": ["food", "clothing", "retail", "general"], "default": "food"
+            },
+            "currency": {
+                "type": "string", "default": "KES"
+            },
+            "delivery_methods": {
+                "type": "array", "items": {"type": "string"}, "default": ["delivery", "pickup"]
+            }
+        }
     }
 ]
 
@@ -2084,7 +2224,8 @@ async def use_template(
         user_id=current_user.id,
         steps=[WorkflowStep(**step) for step in template["steps"]],
         variables=template.get("variables"),
-        trigger_type=WorkflowTriggerType.MANUAL,
+        trigger_type=template.get("trigger_type", WorkflowTriggerType.MANUAL),
+        trigger_config=template.get("trigger_config", {}),
         status=WorkflowStatus.ACTIVE,
         category=template["category"],
         tags=template.get("tags", []),
