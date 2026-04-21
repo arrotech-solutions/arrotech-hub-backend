@@ -628,9 +628,53 @@ class ToolExecutor:
         
         if tool_name == "telegram_send_message":
             chat_id = arguments.get("chat_id")
-            message = arguments.get("message")
-            result = await tg_service.send_message(chat_id=chat_id, message=message)
-            return {"success": result.get("success"), "error": result.get("error"), "result": result}
+            message = arguments.get("message", "")
+
+            # ── Smart Image Dispatcher (Telegram) ──────────────
+            # Detect image URLs and send them as native Telegram photos.
+            from .conversational_agent_service import extract_image_urls, strip_image_urls
+
+            image_urls = arguments.get("image_urls", [])
+            if not image_urls:
+                image_urls = extract_image_urls(message)
+
+            clean_message = strip_image_urls(message, image_urls) if image_urls else message
+
+            # 1) Send text message first (if any text remains)
+            text_result = None
+            if clean_message.strip():
+                text_result = await tg_service.send_message(chat_id=chat_id, message=clean_message)
+
+            # 2) Send each image as a native Telegram photo
+            media_results = []
+            for img_url in image_urls:
+                try:
+                    photo_res = await tg_service.send_photo(
+                        chat_id=chat_id,
+                        photo_url=img_url,
+                        caption=""
+                    )
+                    media_results.append({"url": img_url, "result": photo_res})
+                    logger.info(f"[TG_SMART_DISPATCH] Sent photo to {chat_id}: {img_url[:80]}")
+                except Exception as img_err:
+                    logger.warning(f"[TG_SMART_DISPATCH] Failed to send photo {img_url[:80]}: {img_err}")
+                    media_results.append({"url": img_url, "error": str(img_err)})
+
+            images_sent = len([r for r in media_results if "result" in r])
+            result_data = text_result or {"success": True}
+
+            result_summary = "Message sent"
+            if images_sent:
+                result_summary += f" + {images_sent} photo(s) sent"
+
+            return {
+                "success": result_data.get("success", True),
+                "error": result_data.get("error"),
+                "result": result_summary,
+                "images_sent": images_sent,
+                "media_results": media_results,
+                "data": result_data
+            }
             
         return {"success": False, "error": f"Unknown Telegram tool: {tool_name}"}
 
@@ -3215,16 +3259,57 @@ class ToolExecutor:
                         "result": None
                     }
 
-                result = await whatsapp_service.send_message(
-                    to_number, message
-                )
+                # ── Smart Image Dispatcher ──────────────────────────
+                # Detect image URLs in the message text and send them
+                # as native WhatsApp image messages for full previews.
+                from .conversational_agent_service import extract_image_urls, strip_image_urls
+
+                # Prefer explicit image_urls from upstream (e.g. conversational agent)
+                image_urls = arguments.get("image_urls", [])
+                if not image_urls:
+                    image_urls = extract_image_urls(message)
+
+                # Strip image URLs from text so the text message is clean
+                clean_message = strip_image_urls(message, image_urls) if image_urls else message
+
+                # 1) Send text message first (if any text remains after stripping)
+                text_result = None
+                if clean_message.strip():
+                    text_result = await whatsapp_service.send_message(
+                        to_number, clean_message
+                    )
+
+                # 2) Send each image as a native WhatsApp image message
+                media_results = []
+                for img_url in image_urls:
+                    try:
+                        media_res = await whatsapp_service.send_media_message(
+                            to_number=to_number,
+                            media_url=img_url,
+                            media_type="image",
+                            caption=""
+                        )
+                        media_results.append({"url": img_url, "result": media_res})
+                        logger.info(f"[WA_SMART_DISPATCH] Sent image to {to_number}: {img_url[:80]}")
+                    except Exception as img_err:
+                        logger.warning(f"[WA_SMART_DISPATCH] Failed to send image {img_url[:80]}: {img_err}")
+                        media_results.append({"url": img_url, "error": str(img_err)})
+
+                images_sent = len([r for r in media_results if "result" in r])
+                result_summary = f"Message sent to {to_number}"
+                if images_sent:
+                    result_summary += f" + {images_sent} image(s) sent as media"
+
                 return {
                     "success": True,
-                    "result": f"Message sent to {to_number}: {message}",
-                    "data": result,
+                    "result": result_summary,
+                    "data": text_result,
+                    "images_sent": images_sent,
+                    "media_results": media_results,
                     "processed_arguments": {
                         "to_number": to_number,
-                        "message": message
+                        "message": clean_message,
+                        "image_urls": image_urls
                     }
                 }
             elif action == "send_media":
@@ -6784,6 +6869,7 @@ Description: {payment.description or 'N/A'}"""
                 "success": True,
                 "result": result.get("response_text", ""),
                 "response_text": result.get("response_text", ""),
+                "image_urls": result.get("image_urls", []),
                 "order_created": result.get("order_created", False),
                 "order_data": result.get("order_data"),
                 "order_notification": result.get("order_notification", ""),

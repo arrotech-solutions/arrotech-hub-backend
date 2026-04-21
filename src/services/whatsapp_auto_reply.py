@@ -365,17 +365,39 @@ Instructions:
                 return None
             
             config = connection.config or {}
-            
-            # Send message
+
+            # ── Smart Image Dispatcher ──────────────────────────
+            # Extract image URLs from the AI response and send them
+            # as native WhatsApp image messages for full previews.
+            from .conversational_agent_service import extract_image_urls, strip_image_urls
+
+            image_urls = extract_image_urls(text)
+            clean_text = strip_image_urls(text, image_urls) if image_urls else text
+
+            # 1) Send text message (with image URLs stripped out)
             result = await self.whatsapp_service.send_message(
                 to_number=contact.phone_number,
-                message=text,
+                message=clean_text,
                 config=config
             )
             
             if not result.get("success"):
                 logger.error(f"[AUTO-REPLY] Failed to send: {result.get('error')}")
                 return None
+
+            # 2) Send each image as a native WhatsApp image message
+            for img_url in image_urls:
+                try:
+                    await self.whatsapp_service.send_media_message(
+                        to_number=contact.phone_number,
+                        media_url=img_url,
+                        media_type="image",
+                        caption="",
+                        config=config
+                    )
+                    logger.info(f"[AUTO-REPLY] Sent image to {contact.phone_number}: {img_url[:80]}")
+                except Exception as img_err:
+                    logger.warning(f"[AUTO-REPLY] Failed to send image {img_url[:80]}: {img_err}")
             
             # Save outgoing message
             reply_message = WhatsAppMessage(
@@ -398,7 +420,8 @@ Instructions:
             await db.commit()
             await db.refresh(reply_message)
             
-            logger.info(f"[AUTO-REPLY] Sent reply to {contact.phone_number}: {text[:50]}...")
+            images_info = f" + {len(image_urls)} image(s)" if image_urls else ""
+            logger.info(f"[AUTO-REPLY] Sent reply to {contact.phone_number}: {clean_text[:50]}...{images_info}")
             
             return reply_message
             
