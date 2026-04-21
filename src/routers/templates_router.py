@@ -1923,7 +1923,12 @@ WORKFLOW_TEMPLATES = [
                         "business_phone": "{{variables.business_phone}}",
                         "order_type": "{{variables.order_type}}",
                         "currency": "{{variables.currency}}",
-                        "delivery_methods": "{{variables.delivery_methods}}"
+                        "delivery_methods": "{{variables.delivery_methods}}",
+                        "storage_provider": "{{variables.storage_provider}}",
+                        "storage_spreadsheet_id": "{{variables.storage_spreadsheet_id}}",
+                        "storage_airtable_base_id": "{{variables.storage_airtable_base_id}}",
+                        "storage_airtable_orders_table": "{{variables.storage_airtable_orders_table}}",
+                        "storage_airtable_customers_table": "{{variables.storage_airtable_customers_table}}"
                     }
                 },
                 "description": "AI agent handles conversation and order creation"
@@ -1968,6 +1973,28 @@ WORKFLOW_TEMPLATES = [
             },
             "delivery_methods": {
                 "type": "array", "items": {"type": "string"}, "default": ["delivery", "pickup"]
+            },
+            "storage_provider": {
+                "type": "string",
+                "description": "Where to save orders (none, google_sheets, airtable)",
+                "enum": ["none", "google_sheets", "airtable"],
+                "default": "none"
+            },
+            "storage_spreadsheet_id": {
+                "type": "string",
+                "description": "Google Sheets Spreadsheet ID"
+            },
+            "storage_airtable_base_id": {
+                "type": "string",
+                "description": "Airtable Base ID"
+            },
+            "storage_airtable_orders_table": {
+                "type": "string",
+                "default": "Orders"
+            },
+            "storage_airtable_customers_table": {
+                "type": "string",
+                "default": "Customers"
             }
         }
     },
@@ -1999,7 +2026,12 @@ WORKFLOW_TEMPLATES = [
                         "business_phone": "{{variables.business_phone}}",
                         "order_type": "{{variables.order_type}}",
                         "currency": "{{variables.currency}}",
-                        "delivery_methods": "{{variables.delivery_methods}}"
+                        "delivery_methods": "{{variables.delivery_methods}}",
+                        "storage_provider": "{{variables.storage_provider}}",
+                        "storage_spreadsheet_id": "{{variables.storage_spreadsheet_id}}",
+                        "storage_airtable_base_id": "{{variables.storage_airtable_base_id}}",
+                        "storage_airtable_orders_table": "{{variables.storage_airtable_orders_table}}",
+                        "storage_airtable_customers_table": "{{variables.storage_airtable_customers_table}}"
                     }
                 },
                 "description": "AI agent handles conversation and order creation"
@@ -2032,6 +2064,28 @@ WORKFLOW_TEMPLATES = [
             },
             "delivery_methods": {
                 "type": "array", "items": {"type": "string"}, "default": ["delivery", "pickup"]
+            },
+            "storage_provider": {
+                "type": "string",
+                "description": "Where to save orders (none, google_sheets, airtable)",
+                "enum": ["none", "google_sheets", "airtable"],
+                "default": "none"
+            },
+            "storage_spreadsheet_id": {
+                "type": "string",
+                "description": "Google Sheets Spreadsheet ID"
+            },
+            "storage_airtable_base_id": {
+                "type": "string",
+                "description": "Airtable Base ID"
+            },
+            "storage_airtable_orders_table": {
+                "type": "string",
+                "default": "Orders"
+            },
+            "storage_airtable_customers_table": {
+                "type": "string",
+                "default": "Customers"
             }
         }
     }
