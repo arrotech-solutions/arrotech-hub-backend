@@ -335,15 +335,17 @@ class ConversationalAgentService:
                 if not response.tools_called:
                     final_text = response.content or f"Thank you for contacting {business_name}! How can I help you?"
 
-                    # Extract image URLs from AI response
+                    # Extract image URLs from AI response (for metadata)
+                    # NOTE: Do NOT strip URLs from response_text here.
+                    # The smart dispatcher in tool_executor.py handles
+                    # extraction + native media sending at send-time.
                     image_urls = extract_image_urls(final_text)
-                    clean_text = strip_image_urls(final_text, image_urls)
 
                     # Save assistant response to CCM
                     await self._save_to_ccm(session_key, "assistant", final_text)
 
                     return {
-                        "response_text": clean_text,
+                        "response_text": final_text,
                         "image_urls": image_urls,
                         "order_created": order_created,
                         "order_data": order_data,
@@ -412,14 +414,13 @@ class ConversationalAgentService:
             # If we exhausted iterations, return whatever we have
             final_text = response.content or f"Thank you for your patience! Our team at {business_name} will assist you shortly."
 
-            # Extract image URLs from AI response
+            # Extract image URLs from AI response (for metadata)
             image_urls = extract_image_urls(final_text)
-            clean_text = strip_image_urls(final_text, image_urls)
 
             await self._save_to_ccm(session_key, "assistant", final_text)
 
             return {
-                "response_text": clean_text,
+                "response_text": final_text,
                 "image_urls": image_urls,
                 "order_created": order_created,
                 "order_data": order_data,
