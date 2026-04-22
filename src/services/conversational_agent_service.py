@@ -147,6 +147,25 @@ def _dedupe_keep_order(values: List[str]) -> List[str]:
             out.append(v)
     return out
 
+def _col_idx_to_a1(idx0: int) -> str:
+    """0-based column index → A1 column letters."""
+    if idx0 < 0:
+        return "A"
+    n = idx0 + 1
+    letters = ""
+    while n:
+        n, rem = divmod(n - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+def _normalize_header(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+def _safe_str(v: Any) -> str:
+    if v is None:
+        return ""
+    return str(v)
+
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -891,84 +910,329 @@ class ConversationalAgentService:
         user: User,
         db: AsyncSession
     ):
-        """Append order + customer rows to Google Sheets via existing MCP tool."""
+        """Append order + customer rows to Google Sheets via existing MCP tool.
+
+        This is schema-aware:
+        - Ensures required header columns exist (creates/repairs header row)
+        - Appends by matching values to column names (not by raw index)
+        - Prevents duplicates by checking Order ID / Customer Phone
+        """
         spreadsheet_id = storage_config.get("spreadsheet_id", "")
         if not spreadsheet_id:
             logger.warning("[CONV_AGENT] Google Sheets storage: no spreadsheet_id configured")
             return
 
-        orders_sheet = storage_config.get("orders_sheet_name", "Orders") or "Orders"
-        customers_sheet = storage_config.get("customers_sheet_name", "Customers") or "Customers"
+        orders_sheet = (storage_config.get("orders_sheet_name") or "Orders").strip() or "Orders"
+        customers_sheet = (storage_config.get("customers_sheet_name") or "Customers").strip() or "Customers"
 
-        # ── Append order row ──
-        order_row = [
-            order_data.get("order_id", ""),
-            order_data.get("status", "pending"),
-            customer.get("name", ""),
-            customer.get("phone", ""),
-            customer.get("email", ""),
-            items_summary,
-            str(order_data.get("item_count", 0)),
-            str(order_data.get("subtotal", 0)),
-            order_data.get("currency", "KES"),
-            order_data.get("delivery_method", ""),
-            order_data.get("delivery_address", ""),
-            order_data.get("notes", ""),
-            order_data.get("order_type", ""),
-            created_at,
+        order_id = _safe_str(order_data.get("order_id", "")).strip()
+        customer_phone = _safe_str(customer.get("phone", "")).strip()
+
+        orders_headers_required = [
+            "Order ID",
+            "Status",
+            "Customer Name",
+            "Customer Phone",
+            "Customer Email",
+            "Items",
+            "Item Count",
+            "Subtotal",
+            "Currency",
+            "Delivery Method",
+            "Delivery Address",
+            "Notes",
+            "Order Type",
+            "Created At",
         ]
 
-        try:
-            order_append = await self._append_row_with_fallback_ranges(
-                executor=executor,
-                spreadsheet_id=spreadsheet_id,
-                candidate_ranges=[
-                    f"{orders_sheet}!A:N",
-                    "Orders!A:N",
-                    "Sheet1!A:N",
-                    "A:N",
-                ],
-                row=order_row,
-                user=user,
-                db=db
-            )
-            if order_append.get("success"):
-                logger.info(f"[CONV_AGENT] Order {order_data.get('order_id')} saved to Google Sheets")
-            else:
-                logger.warning(f"[CONV_AGENT] Sheets order save error: {order_append.get('error')}")
-        except Exception as e:
-            logger.warning(f"[CONV_AGENT] Sheets order save failed: {e}")
-
-        # ── Append customer row ──
-        customer_row = [
-            customer.get("phone", ""),
-            customer.get("name", ""),
-            customer.get("email", ""),
-            order_data.get("order_id", ""),
-            created_at,
-            "whatsapp",
+        customers_headers_required = [
+            "Customer Phone",
+            "Customer Name",
+            "Customer Email",
+            "Last Order ID",
+            "Last Order Date",
+            "Source",
         ]
 
-        try:
-            customer_append = await self._append_row_with_fallback_ranges(
+        # Ensure tabs + headers exist (best-effort with fallbacks)
+        orders_headers = await self._ensure_sheet_headers_with_fallback(
+            executor=executor,
+            spreadsheet_id=spreadsheet_id,
+            preferred_sheet=orders_sheet,
+            fallback_sheets=["Orders", "Sheet1"],
+            required_headers=orders_headers_required,
+            user=user,
+            db=db,
+        )
+        customers_headers = await self._ensure_sheet_headers_with_fallback(
+            executor=executor,
+            spreadsheet_id=spreadsheet_id,
+            preferred_sheet=customers_sheet,
+            fallback_sheets=["Customers", "Sheet1"],
+            required_headers=customers_headers_required,
+            user=user,
+            db=db,
+        )
+
+        # If we couldn't validate headers, don't write blindly.
+        if not orders_headers or not customers_headers:
+            logger.warning("[CONV_AGENT] Sheets schema validation failed; skipping append to avoid misplaced rows.")
+            return
+
+        # Dedup: don't append same Order ID more than once.
+        if order_id:
+            exists = await self._sheet_value_exists(
                 executor=executor,
                 spreadsheet_id=spreadsheet_id,
-                candidate_ranges=[
-                    f"{customers_sheet}!A:F",
-                    "Customers!A:F",
-                    "Sheet1!A:F",
-                    "A:F",
-                ],
-                row=customer_row,
+                sheet_name=orders_headers["sheet_name"],
+                headers=orders_headers["headers"],
+                header_name="Order ID",
+                value=order_id,
                 user=user,
-                db=db
+                db=db,
             )
-            if customer_append.get("success"):
-                logger.info(f"[CONV_AGENT] Customer {customer.get('name')} saved to Google Sheets")
+            if exists:
+                logger.info(f"[CONV_AGENT] Order {order_id} already exists in Sheets; skipping duplicate append.")
             else:
-                logger.warning(f"[CONV_AGENT] Sheets customer save error: {customer_append.get('error')}")
-        except Exception as e:
-            logger.warning(f"[CONV_AGENT] Sheets customer save failed: {e}")
+                order_record = {
+                    "Order ID": order_id,
+                    "Status": _safe_str(order_data.get("status", "pending")),
+                    "Customer Name": _safe_str(customer.get("name", "")),
+                    "Customer Phone": customer_phone,
+                    "Customer Email": _safe_str(customer.get("email", "")),
+                    "Items": _safe_str(items_summary),
+                    "Item Count": _safe_str(order_data.get("item_count", 0)),
+                    "Subtotal": _safe_str(order_data.get("subtotal", 0)),
+                    "Currency": _safe_str(order_data.get("currency", "KES")),
+                    "Delivery Method": _safe_str(order_data.get("delivery_method", "")),
+                    "Delivery Address": _safe_str(order_data.get("delivery_address", "")),
+                    "Notes": _safe_str(order_data.get("notes", "")),
+                    "Order Type": _safe_str(order_data.get("order_type", "")),
+                    "Created At": _safe_str(created_at),
+                }
+                await self._append_record_by_headers(
+                    executor=executor,
+                    spreadsheet_id=spreadsheet_id,
+                    sheet_name=orders_headers["sheet_name"],
+                    headers=orders_headers["headers"],
+                    record=order_record,
+                    user=user,
+                    db=db,
+                )
+
+        # Dedup: don't append same customer phone more than once.
+        if customer_phone:
+            cust_exists = await self._sheet_value_exists(
+                executor=executor,
+                spreadsheet_id=spreadsheet_id,
+                sheet_name=customers_headers["sheet_name"],
+                headers=customers_headers["headers"],
+                header_name="Customer Phone",
+                value=customer_phone,
+                user=user,
+                db=db,
+            )
+            if cust_exists:
+                logger.info(f"[CONV_AGENT] Customer {customer_phone} already exists in Sheets; not duplicating row.")
+            else:
+                customer_record = {
+                    "Customer Phone": customer_phone,
+                    "Customer Name": _safe_str(customer.get("name", "")),
+                    "Customer Email": _safe_str(customer.get("email", "")),
+                    "Last Order ID": order_id,
+                    "Last Order Date": _safe_str(created_at),
+                    "Source": "whatsapp",
+                }
+                await self._append_record_by_headers(
+                    executor=executor,
+                    spreadsheet_id=spreadsheet_id,
+                    sheet_name=customers_headers["sheet_name"],
+                    headers=customers_headers["headers"],
+                    record=customer_record,
+                    user=user,
+                    db=db,
+                )
+
+    async def _ensure_sheet_headers_with_fallback(
+        self,
+        executor,
+        spreadsheet_id: str,
+        preferred_sheet: str,
+        fallback_sheets: List[str],
+        required_headers: List[str],
+        user: User,
+        db: AsyncSession,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Ensure the header row exists for a sheet tab. If the preferred tab doesn't exist,
+        tries fallbacks. Returns {"sheet_name": str, "headers": List[str]} or None.
+        """
+        candidate_sheets = _dedupe_keep_order([preferred_sheet] + (fallback_sheets or []))
+        last_error = ""
+        for sheet_name in candidate_sheets:
+            try:
+                headers = await self._ensure_sheet_headers(
+                    executor=executor,
+                    spreadsheet_id=spreadsheet_id,
+                    sheet_name=sheet_name,
+                    required_headers=required_headers,
+                    user=user,
+                    db=db,
+                )
+                if headers:
+                    return {"sheet_name": sheet_name, "headers": headers}
+            except Exception as e:
+                last_error = str(e)
+        logger.warning(f"[CONV_AGENT] Failed to ensure sheet headers for any candidate tabs: {candidate_sheets}. Last error: {last_error}")
+        return None
+
+    async def _ensure_sheet_headers(
+        self,
+        executor,
+        spreadsheet_id: str,
+        sheet_name: str,
+        required_headers: List[str],
+        user: User,
+        db: AsyncSession,
+    ) -> Optional[List[str]]:
+        """
+        Read row 1, ensure required headers exist, and write updated header row if needed.
+        Returns the final header list.
+        """
+        # Read existing header row (A1:ZZ1)
+        read_res = await executor.execute_tool(
+            "google_workspace_sheets",
+            {
+                "operation": "read_range",
+                "spreadsheet_id": spreadsheet_id,
+                "range_name": f"{sheet_name}!A1:ZZ1",
+            },
+            user,
+            db,
+        )
+        if not read_res.get("success"):
+            raise Exception(read_res.get("error", "Failed to read header row"))
+
+        values = (read_res.get("values") or [])
+        existing_row = values[0] if values and isinstance(values[0], list) else []
+        existing_headers = [h for h in (existing_row or []) if _safe_str(h).strip() != ""]
+
+        if not existing_headers:
+            # Sheet is empty — create header row.
+            write_res = await executor.execute_tool(
+                "google_workspace_sheets",
+                {
+                    "operation": "write_range",
+                    "spreadsheet_id": spreadsheet_id,
+                    "range_name": f"{sheet_name}!A1",
+                    "values": [required_headers],
+                },
+                user,
+                db,
+            )
+            if not write_res.get("success"):
+                raise Exception(write_res.get("error", "Failed to write header row"))
+            return required_headers
+
+        existing_norm = [_normalize_header(h) for h in existing_headers]
+        required_norm = [_normalize_header(h) for h in required_headers]
+
+        missing = [required_headers[i] for i, rn in enumerate(required_norm) if rn not in existing_norm]
+        if not missing:
+            # Use existing header list as canonical
+            return existing_headers
+
+        # Extend existing header list with missing required headers.
+        merged = existing_headers + missing
+        write_res = await executor.execute_tool(
+            "google_workspace_sheets",
+            {
+                "operation": "write_range",
+                "spreadsheet_id": spreadsheet_id,
+                "range_name": f"{sheet_name}!A1",
+                "values": [merged],
+            },
+            user,
+            db,
+        )
+        if not write_res.get("success"):
+            raise Exception(write_res.get("error", "Failed to update header row"))
+        return merged
+
+    async def _append_record_by_headers(
+        self,
+        executor,
+        spreadsheet_id: str,
+        sheet_name: str,
+        headers: List[str],
+        record: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Append a record aligned to the given header columns."""
+        header_norm_to_idx = {_normalize_header(h): i for i, h in enumerate(headers)}
+        row = [""] * len(headers)
+        for k, v in (record or {}).items():
+            idx = header_norm_to_idx.get(_normalize_header(k))
+            if idx is None:
+                continue
+            row[idx] = _safe_str(v)
+
+        # Append to full-width range; Google will place values starting at first column.
+        res = await executor.execute_tool(
+            "google_workspace_sheets",
+            {
+                "operation": "append_rows",
+                "spreadsheet_id": spreadsheet_id,
+                "range_name": f"{sheet_name}!A:ZZ",
+                "values": [row],
+            },
+            user,
+            db,
+        )
+        if not res.get("success"):
+            logger.warning(f"[CONV_AGENT] Append row failed for {sheet_name}: {res.get('error')}")
+        return res
+
+    async def _sheet_value_exists(
+        self,
+        executor,
+        spreadsheet_id: str,
+        sheet_name: str,
+        headers: List[str],
+        header_name: str,
+        value: str,
+        user: User,
+        db: AsyncSession,
+    ) -> bool:
+        """Check if a given value already exists in a named header column."""
+        if not value:
+            return False
+        header_norms = [_normalize_header(h) for h in headers]
+        target_norm = _normalize_header(header_name)
+        if target_norm not in header_norms:
+            return False
+        idx = header_norms.index(target_norm)
+        col = _col_idx_to_a1(idx)
+
+        read_res = await executor.execute_tool(
+            "google_workspace_sheets",
+            {
+                "operation": "read_range",
+                "spreadsheet_id": spreadsheet_id,
+                "range_name": f"{sheet_name}!{col}2:{col}",
+            },
+            user,
+            db,
+        )
+        if not read_res.get("success"):
+            # If we can't read, don't block writes completely.
+            return False
+
+        values = read_res.get("values") or []
+        # values is list of [cell] rows
+        existing = {(_safe_str(r[0]).strip()) for r in values if isinstance(r, list) and r}
+        return value.strip() in existing
 
     async def _append_row_with_fallback_ranges(
         self,
