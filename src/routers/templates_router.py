@@ -1939,7 +1939,8 @@ WORKFLOW_TEMPLATES = [
                 "tool_parameters": {
                     "operation": "send_message",
                     "to_number": "{{whatsapp_contact_phone}}",
-                    "message": "{{step_1.response_text}}"
+                    "message": "{{step_1.response_text}}",
+                    "image_urls": "{{step_1.image_urls}}"
                 },
                 "description": "Send AI response back to customer"
             },
@@ -1984,6 +1985,18 @@ WORKFLOW_TEMPLATES = [
                 "type": "string",
                 "description": "Google Sheets Spreadsheet ID",
                 "x-dynamic-ui": "google_workspace_drive.list_spreadsheets",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
+            "storage_orders_sheet_name": {
+                "type": "string",
+                "description": "Orders sheet/tab name in selected spreadsheet",
+                "default": "Orders",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
+            "storage_customers_sheet_name": {
+                "type": "string",
+                "description": "Customers sheet/tab name in selected spreadsheet",
+                "default": "Customers",
                 "show_if": {"field": "storage_provider", "value": "google_sheets"}
             },
             "storage_airtable_base_id": {
@@ -2035,6 +2048,8 @@ WORKFLOW_TEMPLATES = [
                         "delivery_methods": "{{variables.delivery_methods}}",
                         "storage_provider": "{{variables.storage_provider}}",
                         "storage_spreadsheet_id": "{{variables.storage_spreadsheet_id}}",
+                        "storage_orders_sheet_name": "{{variables.storage_orders_sheet_name}}",
+                        "storage_customers_sheet_name": "{{variables.storage_customers_sheet_name}}",
                         "storage_airtable_base_id": "{{variables.storage_airtable_base_id}}",
                         "storage_airtable_orders_table": "{{variables.storage_airtable_orders_table}}",
                         "storage_airtable_customers_table": "{{variables.storage_airtable_customers_table}}"
@@ -2047,7 +2062,8 @@ WORKFLOW_TEMPLATES = [
                 "tool_name": "telegram_send_message",
                 "tool_parameters": {
                     "chat_id": "{{chat_id}}",
-                    "message": "{{step_1.response_text}}"
+                    "message": "{{step_1.response_text}}",
+                    "image_urls": "{{step_1.image_urls}}"
                 },
                 "description": "Send AI response back to customer"
             }
@@ -2081,6 +2097,18 @@ WORKFLOW_TEMPLATES = [
                 "type": "string",
                 "description": "Google Sheets Spreadsheet ID",
                 "x-dynamic-ui": "google_workspace_drive.list_spreadsheets",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
+            "storage_orders_sheet_name": {
+                "type": "string",
+                "description": "Orders sheet/tab name in selected spreadsheet",
+                "default": "Orders",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
+            "storage_customers_sheet_name": {
+                "type": "string",
+                "description": "Customers sheet/tab name in selected spreadsheet",
+                "default": "Customers",
                 "show_if": {"field": "storage_provider", "value": "google_sheets"}
             },
             "storage_airtable_base_id": {

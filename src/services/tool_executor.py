@@ -4,6 +4,7 @@ Tool Executor Service for executing MCP tools based on LLM decisions.
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from slack_sdk import WebClient
@@ -434,6 +435,29 @@ class ToolExecutor:
         
         return None
 
+    def _sanitize_chat_message_for_channel(self, message: str, channel: str) -> str:
+        """
+        Normalize outbound message formatting for chat channels.
+        Keeps formatting simple so WhatsApp/Telegram render consistently.
+        """
+        if not message:
+            return message
+
+        # Remove fenced code blocks and markdown headers
+        message = re.sub(r"```[\s\S]*?```", "", message)
+        message = re.sub(r"^\s*#{1,6}\s*", "", message, flags=re.MULTILINE)
+
+        # Normalize list markers
+        message = re.sub(r"^\s*[-*]\s+", "• ", message, flags=re.MULTILINE)
+
+        # Convert markdown bold/underline variants to simple bold markers
+        message = re.sub(r"\*\*(.+?)\*\*", r"*\1*", message)
+        message = re.sub(r"__(.+?)__", r"*\1*", message)
+
+        # Collapse excessive blank lines
+        message = re.sub(r"\n{3,}", "\n\n", message).strip()
+        return message
+
     async def _execute_llamaparse_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
         from .llamaparse_service import LlamaParseService
         service = LlamaParseService()
@@ -639,6 +663,7 @@ class ToolExecutor:
                 image_urls = extract_image_urls(message)
 
             clean_message = strip_image_urls(message, image_urls) if image_urls else message
+            clean_message = self._sanitize_chat_message_for_channel(clean_message, "telegram")
 
             # 1) Send text message first (if any text remains)
             text_result = None
@@ -3271,6 +3296,7 @@ class ToolExecutor:
 
                 # Strip image URLs from text so the text message is clean
                 clean_message = strip_image_urls(message, image_urls) if image_urls else message
+                clean_message = self._sanitize_chat_message_for_channel(clean_message, "whatsapp")
 
                 # 1) Send text message first (if any text remains after stripping)
                 text_result = None
