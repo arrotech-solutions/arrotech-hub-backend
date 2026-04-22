@@ -128,6 +128,24 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "placeholder": "e.g. 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms",
                 "show_if": {"field": "storage_provider", "value": "google_sheets"}
             },
+            "storage_orders_sheet_name": {
+                "label": "Orders Sheet Name",
+                "type": "text",
+                "description": "Tab name for saving orders in Google Sheets",
+                "required": False,
+                "placeholder": "Orders",
+                "default": "Orders",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
+            "storage_customers_sheet_name": {
+                "label": "Customers Sheet Name",
+                "type": "text",
+                "description": "Tab name for saving customers in Google Sheets",
+                "required": False,
+                "placeholder": "Customers",
+                "default": "Customers",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
             "storage_airtable_base_id": {
                 "label": "Airtable Base ID",
                 "type": "text",
@@ -173,6 +191,8 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                         "system_prompt": "{{config.system_prompt}}",
                         "storage_provider": "{{config.storage_provider}}",
                         "storage_spreadsheet_id": "{{config.storage_spreadsheet_id}}",
+                        "storage_orders_sheet_name": "{{config.storage_orders_sheet_name}}",
+                        "storage_customers_sheet_name": "{{config.storage_customers_sheet_name}}",
                         "storage_airtable_base_id": "{{config.storage_airtable_base_id}}",
                         "storage_airtable_orders_table": "{{config.storage_airtable_orders_table}}",
                         "storage_airtable_customers_table": "{{config.storage_airtable_customers_table}}"
@@ -185,7 +205,8 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "parameters": {
                     "operation": "send_message",
                     "to_number": "{{whatsapp_contact_phone}}",
-                    "message": "{{step_1.response_text}}"
+                    "message": "{{step_1.response_text}}",
+                    "image_urls": "{{step_1.image_urls}}"
                 }
             },
             {
@@ -308,6 +329,24 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "placeholder": "e.g. 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms",
                 "show_if": {"field": "storage_provider", "value": "google_sheets"}
             },
+            "storage_orders_sheet_name": {
+                "label": "Orders Sheet Name",
+                "type": "text",
+                "description": "Tab name for saving orders in Google Sheets",
+                "required": False,
+                "placeholder": "Orders",
+                "default": "Orders",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
+            "storage_customers_sheet_name": {
+                "label": "Customers Sheet Name",
+                "type": "text",
+                "description": "Tab name for saving customers in Google Sheets",
+                "required": False,
+                "placeholder": "Customers",
+                "default": "Customers",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
             "storage_airtable_base_id": {
                 "label": "Airtable Base ID",
                 "type": "text",
@@ -353,6 +392,8 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                         "system_prompt": "{{config.system_prompt}}",
                         "storage_provider": "{{config.storage_provider}}",
                         "storage_spreadsheet_id": "{{config.storage_spreadsheet_id}}",
+                        "storage_orders_sheet_name": "{{config.storage_orders_sheet_name}}",
+                        "storage_customers_sheet_name": "{{config.storage_customers_sheet_name}}",
                         "storage_airtable_base_id": "{{config.storage_airtable_base_id}}",
                         "storage_airtable_orders_table": "{{config.storage_airtable_orders_table}}",
                         "storage_airtable_customers_table": "{{config.storage_airtable_customers_table}}"
@@ -364,7 +405,8 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "description": "Send AI response back to customer",
                 "parameters": {
                     "chat_id": "{{chat_id}}",
-                    "message": "{{step_1.response_text}}"
+                    "message": "{{step_1.response_text}}",
+                    "image_urls": "{{step_1.image_urls}}"
                 }
             }
         ]

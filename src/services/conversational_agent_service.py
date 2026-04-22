@@ -138,6 +138,15 @@ def strip_image_urls(text: str, image_urls: List[str]) -> str:
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
+def _dedupe_keep_order(values: List[str]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for v in values:
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -291,11 +300,17 @@ class ConversationalAgentService:
             currency = business_config.get("currency", "KES")
             delivery_methods = business_config.get("delivery_methods", ["delivery", "pickup"])
             custom_system_prompt = business_config.get("system_prompt", "")
+            platform = self._detect_channel_platform(
+                explicit_platform=business_config.get("platform"),
+                session_key=session_key
+            )
 
             # Extract storage config
             storage_config = {
                 "provider": business_config.get("storage_provider", "none"),
                 "spreadsheet_id": business_config.get("storage_spreadsheet_id", ""),
+                "orders_sheet_name": business_config.get("storage_orders_sheet_name", "Orders"),
+                "customers_sheet_name": business_config.get("storage_customers_sheet_name", "Customers"),
                 "airtable_base_id": business_config.get("storage_airtable_base_id", ""),
                 "airtable_orders_table": business_config.get("storage_airtable_orders_table", "Orders"),
                 "airtable_customers_table": business_config.get("storage_airtable_customers_table", "Customers"),
@@ -324,6 +339,7 @@ class ConversationalAgentService:
             order_created = False
             order_data = None
             order_notification = ""
+            collected_image_urls: List[str] = []
             max_iterations = 3
 
             for iteration in range(max_iterations):
@@ -348,7 +364,11 @@ class ConversationalAgentService:
                     # NOTE: Do NOT strip URLs from response_text here.
                     # The smart dispatcher in tool_executor.py handles
                     # extraction + native media sending at send-time.
-                    image_urls = extract_image_urls(final_text)
+                    image_urls = _dedupe_keep_order(
+                        extract_image_urls(final_text) + collected_image_urls
+                    )
+                    final_text = self._ensure_image_urls_in_text(final_text, image_urls)
+                    final_text = self._format_for_channel(final_text, platform)
 
                     # Save assistant response to CCM
                     await self._save_to_ccm(session_key, "assistant", final_text)
@@ -406,6 +426,13 @@ class ConversationalAgentService:
                         "result_summary": str(tool_result.get("result", ""))[:200]
                     })
 
+                    # Capture image URLs from product search payloads even when
+                    # the model summary omits raw links in final text.
+                    if tool_name == "search_products":
+                        tool_images = self._extract_image_urls_from_search_result(tool_result)
+                        if tool_images:
+                            collected_image_urls = _dedupe_keep_order(collected_image_urls + tool_images)
+
                     # Check if an order was created
                     if tool_name == "create_order" and tool_result.get("success"):
                         order_created = True
@@ -425,7 +452,11 @@ class ConversationalAgentService:
             final_text = response.content or f"Thank you for your patience! Our team at {business_name} will assist you shortly."
 
             # Extract image URLs from AI response (for metadata)
-            image_urls = extract_image_urls(final_text)
+            image_urls = _dedupe_keep_order(
+                extract_image_urls(final_text) + collected_image_urls
+            )
+            final_text = self._ensure_image_urls_in_text(final_text, image_urls)
+            final_text = self._format_for_channel(final_text, platform)
 
             await self._save_to_ccm(session_key, "assistant", final_text)
 
@@ -443,6 +474,76 @@ class ConversationalAgentService:
             return self._fallback_response(
                 business_config.get("business_name", "Our Business")
             )
+
+    def _detect_channel_platform(self, explicit_platform: Optional[str], session_key: str) -> str:
+        """Resolve channel platform for formatting rules."""
+        if explicit_platform in {"whatsapp", "telegram"}:
+            return explicit_platform
+        if session_key.startswith("ccm:whatsapp:"):
+            return "whatsapp"
+        if session_key.startswith("ccm:telegram:"):
+            return "telegram"
+        return "whatsapp"
+
+    def _format_for_channel(self, text: str, platform: str) -> str:
+        """
+        Normalize assistant text for WhatsApp/Telegram rendering.
+        Keeps emphasis simple and avoids markdown patterns that degrade on chat clients.
+        """
+        if not text:
+            return text
+
+        # Strip fenced code blocks and markdown headers.
+        text = re.sub(r"```[\s\S]*?```", "", text)
+        text = re.sub(r"^\s*#{1,6}\s*", "", text, flags=re.MULTILINE)
+
+        # Replace markdown bullets with a chat-friendly symbol.
+        text = re.sub(r"^\s*[-*]\s+", "• ", text, flags=re.MULTILINE)
+
+        # Keep bold/italic patterns broadly compatible:
+        # - Convert markdown __bold__ to WhatsApp/Telegram *bold*.
+        text = re.sub(r"__(.+?)__", r"*\1*", text)
+
+        # Normalize excessive whitespace while preserving paragraph breaks.
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+
+        return text
+
+    def _ensure_image_urls_in_text(self, text: str, image_urls: List[str]) -> str:
+        """
+        Ensure image URLs are present in response text for backward compatibility.
+        Older workflows may not map `step_1.image_urls` into send-message steps.
+        """
+        if not image_urls:
+            return text
+        existing = set(extract_image_urls(text))
+        missing = [u for u in image_urls if u not in existing]
+        if not missing:
+            return text
+        return f"{text}\n\nProduct images:\n" + "\n".join(missing)
+
+    def _extract_image_urls_from_search_result(self, tool_result: Dict[str, Any]) -> List[str]:
+        """
+        Pull image URLs from search_products response payloads.
+        Handles both synthesized text and raw RAG chunk data.
+        """
+        urls: List[str] = []
+        urls.extend(extract_image_urls(str(tool_result.get("result", ""))))
+
+        data = tool_result.get("data", {})
+        results = data.get("results", []) if isinstance(data, dict) else []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            urls.extend(extract_image_urls(str(item.get("text", ""))))
+            urls.extend(extract_image_urls(str(item.get("source", ""))))
+            urls.extend(extract_image_urls(str(item.get("file", ""))))
+            # Some KB ingestion pipelines preserve extra metadata.
+            for key in ("image_url", "image", "thumbnail", "photo_url", "media_url"):
+                if item.get(key):
+                    urls.extend(extract_image_urls(str(item.get(key))))
+
+        return _dedupe_keep_order(urls)
 
     # ═══════════════════════════════════════════════════════════
     # SYSTEM PROMPT BUILDER
@@ -796,7 +897,10 @@ class ConversationalAgentService:
             logger.warning("[CONV_AGENT] Google Sheets storage: no spreadsheet_id configured")
             return
 
-        # ── Append order row to "Orders" sheet ──
+        orders_sheet = storage_config.get("orders_sheet_name", "Orders") or "Orders"
+        customers_sheet = storage_config.get("customers_sheet_name", "Customers") or "Customers"
+
+        # ── Append order row ──
         order_row = [
             order_data.get("order_id", ""),
             order_data.get("status", "pending"),
@@ -815,24 +919,27 @@ class ConversationalAgentService:
         ]
 
         try:
-            result = await executor.execute_tool(
-                "google_workspace_sheets",
-                {
-                    "operation": "append_rows",
-                    "spreadsheet_id": spreadsheet_id,
-                    "range_name": "Orders!A:N",
-                    "values": [order_row]
-                },
-                user, db
+            order_append = await self._append_row_with_fallback_ranges(
+                executor=executor,
+                spreadsheet_id=spreadsheet_id,
+                candidate_ranges=[
+                    f"{orders_sheet}!A:N",
+                    "Orders!A:N",
+                    "Sheet1!A:N",
+                    "A:N",
+                ],
+                row=order_row,
+                user=user,
+                db=db
             )
-            if result.get("success") or not result.get("error"):
+            if order_append.get("success"):
                 logger.info(f"[CONV_AGENT] Order {order_data.get('order_id')} saved to Google Sheets")
             else:
-                logger.warning(f"[CONV_AGENT] Sheets order save error: {result.get('error')}")
+                logger.warning(f"[CONV_AGENT] Sheets order save error: {order_append.get('error')}")
         except Exception as e:
             logger.warning(f"[CONV_AGENT] Sheets order save failed: {e}")
 
-        # ── Append customer row to "Customers" sheet ──
+        # ── Append customer row ──
         customer_row = [
             customer.get("phone", ""),
             customer.get("name", ""),
@@ -843,22 +950,59 @@ class ConversationalAgentService:
         ]
 
         try:
-            result = await executor.execute_tool(
-                "google_workspace_sheets",
-                {
-                    "operation": "append_rows",
-                    "spreadsheet_id": spreadsheet_id,
-                    "range_name": "Customers!A:F",
-                    "values": [customer_row]
-                },
-                user, db
+            customer_append = await self._append_row_with_fallback_ranges(
+                executor=executor,
+                spreadsheet_id=spreadsheet_id,
+                candidate_ranges=[
+                    f"{customers_sheet}!A:F",
+                    "Customers!A:F",
+                    "Sheet1!A:F",
+                    "A:F",
+                ],
+                row=customer_row,
+                user=user,
+                db=db
             )
-            if result.get("success") or not result.get("error"):
+            if customer_append.get("success"):
                 logger.info(f"[CONV_AGENT] Customer {customer.get('name')} saved to Google Sheets")
             else:
-                logger.warning(f"[CONV_AGENT] Sheets customer save error: {result.get('error')}")
+                logger.warning(f"[CONV_AGENT] Sheets customer save error: {customer_append.get('error')}")
         except Exception as e:
             logger.warning(f"[CONV_AGENT] Sheets customer save failed: {e}")
+
+    async def _append_row_with_fallback_ranges(
+        self,
+        executor,
+        spreadsheet_id: str,
+        candidate_ranges: List[str],
+        row: List[Any],
+        user: User,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """
+        Append a row to Google Sheets with resilient range fallback.
+        This prevents silent failure when a configured tab doesn't exist.
+        """
+        last_error = "Unknown Sheets append failure"
+        for range_name in _dedupe_keep_order(candidate_ranges):
+            try:
+                result = await executor.execute_tool(
+                    "google_workspace_sheets",
+                    {
+                        "operation": "append_rows",
+                        "spreadsheet_id": spreadsheet_id,
+                        "range_name": range_name,
+                        "values": [row],
+                    },
+                    user,
+                    db,
+                )
+                if result.get("success"):
+                    return {"success": True, "range_name": range_name, "result": result}
+                last_error = result.get("error", last_error)
+            except Exception as e:
+                last_error = str(e)
+        return {"success": False, "error": last_error}
 
     async def _persist_to_airtable(
         self,
