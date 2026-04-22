@@ -961,23 +961,34 @@ class ConversationalAgentService:
 
         order_id = order_data.get("order_id", "")
 
-        # Ensure header rows exist and include required columns
-        orders_headers = await self._ensure_sheet_headers(
-            executor=executor,
-            spreadsheet_id=spreadsheet_id,
-            sheet_name=orders_sheet,
-            required_headers=required_order_headers,
-            user=user,
-            db=db,
-        )
-        customers_headers = await self._ensure_sheet_headers(
-            executor=executor,
-            spreadsheet_id=spreadsheet_id,
-            sheet_name=customers_sheet,
-            required_headers=required_customer_headers,
-            user=user,
-            db=db,
-        )
+        # Ensure header rows exist and include required columns (best-effort, never blocks order flow)
+        try:
+            orders_headers = await self._ensure_sheet_headers(
+                executor=executor,
+                spreadsheet_id=spreadsheet_id,
+                sheet_name=orders_sheet,
+                required_headers=required_order_headers,
+                user=user,
+                db=db,
+                max_header_cols=max(40, len(required_order_headers) + 10),
+            )
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] Sheets orders header ensure failed (non-fatal): {e}")
+            orders_headers = required_order_headers[:]
+
+        try:
+            customers_headers = await self._ensure_sheet_headers(
+                executor=executor,
+                spreadsheet_id=spreadsheet_id,
+                sheet_name=customers_sheet,
+                required_headers=required_customer_headers,
+                user=user,
+                db=db,
+                max_header_cols=max(30, len(required_customer_headers) + 10),
+            )
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] Sheets customers header ensure failed (non-fatal): {e}")
+            customers_headers = required_customer_headers[:]
 
         try:
             # Idempotency: if order already exists in Orders tab, do not append again.
@@ -990,6 +1001,7 @@ class ConversationalAgentService:
                 value=order_id,
                 user=user,
                 db=db,
+                search_limit_rows=500,
             ):
                 logger.info(f"[CONV_AGENT] Order {order_id} already exists in Sheets — skipping duplicate append")
             else:
@@ -1014,10 +1026,10 @@ class ConversationalAgentService:
                     executor=executor,
                     spreadsheet_id=spreadsheet_id,
                     candidate_ranges=[
-                        f"{orders_sheet}!A:ZZ",
-                        "Orders!A:ZZ",
-                        "Sheet1!A:ZZ",
-                        "A:ZZ",
+                        f"{orders_sheet}!A1:ZZ",
+                        "Orders!A1:ZZ",
+                        "Sheet1!A1:ZZ",
+                        "A1:ZZ",
                     ],
                     row=order_row,
                     user=user,
@@ -1055,6 +1067,7 @@ class ConversationalAgentService:
                     values_by_header=customer_values,
                     user=user,
                     db=db,
+                    search_limit_rows=500,
                 )
 
             if not updated:
@@ -1063,10 +1076,10 @@ class ConversationalAgentService:
                     executor=executor,
                     spreadsheet_id=spreadsheet_id,
                     candidate_ranges=[
-                        f"{customers_sheet}!A:ZZ",
-                        "Customers!A:ZZ",
-                        "Sheet1!A:ZZ",
-                        "A:ZZ",
+                        f"{customers_sheet}!A1:ZZ",
+                        "Customers!A1:ZZ",
+                        "Sheet1!A1:ZZ",
+                        "A1:ZZ",
                     ],
                     row=customer_row,
                     user=user,
