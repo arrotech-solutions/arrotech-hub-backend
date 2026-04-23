@@ -125,11 +125,25 @@ def strip_image_urls(text: str, image_urls: List[str]) -> str:
     if not image_urls:
         return text
 
+    # Safety guard: image_urls MUST be a list of strings.  If Jinja2
+    # stringified a Python list, iterating over the resulting string
+    # would iterate character-by-character and destroy the message text.
+    if not isinstance(image_urls, list):
+        logger.warning(
+            "[strip_image_urls] image_urls is %s, not list — skipping strip "
+            "to prevent garbled text. Value: %s",
+            type(image_urls).__name__,
+            str(image_urls)[:120],
+        )
+        return text
+
     # First: strip full Markdown image syntax ![alt](url)
     text = _MARKDOWN_IMAGE_PATTERN.sub('', text)
 
     # Then: strip any remaining bare image URLs
     for url in image_urls:
+        if not isinstance(url, str) or len(url) < 10:
+            continue  # skip non-URL items
         text = text.replace(url, '')
 
     # Clean up orphaned list markers (e.g. "- " on a now-empty line)

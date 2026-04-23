@@ -458,6 +458,48 @@ class ToolExecutor:
         message = re.sub(r"\n{3,}", "\n\n", message).strip()
         return message
 
+    @staticmethod
+    def _parse_image_urls(raw) -> list:
+        """
+        Safely coerce an image_urls argument into a Python list of URL strings.
+
+        Jinja2 variable substitution stringifies Python lists, so the value
+        may arrive as:
+          - A proper list:  ['https://...', 'https://...']
+          - A stringified list: "['https://...', 'https://...']"
+          - An empty string / "[]" / None
+
+        Without this helper, iterating over a stringified list iterates
+        character-by-character, causing strip_image_urls to remove every
+        letter in the URL from the message text (the garbled-text bug).
+        """
+        if isinstance(raw, list):
+            return [u for u in raw if isinstance(u, str) and u.startswith("http")]
+
+        if not raw or not isinstance(raw, str):
+            return []
+
+        raw = raw.strip()
+        if not raw or raw == "[]":
+            return []
+
+        # Try JSON parse first (handles both '["url"]' and "['url']" after
+        # replacing single quotes)
+        import json as _json
+        for attempt in (raw, raw.replace("'", '"')):
+            try:
+                parsed = _json.loads(attempt)
+                if isinstance(parsed, list):
+                    return [u for u in parsed if isinstance(u, str) and u.startswith("http")]
+            except (ValueError, TypeError):
+                continue
+
+        # Last resort: if it looks like a bare URL, wrap it
+        if raw.startswith("http"):
+            return [raw]
+
+        return []
+
     async def _execute_llamaparse_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
         from .llamaparse_service import LlamaParseService
         service = LlamaParseService()
@@ -658,7 +700,7 @@ class ToolExecutor:
             # Detect image URLs and send them as native Telegram photos.
             from .conversational_agent_service import extract_image_urls, strip_image_urls
 
-            image_urls = arguments.get("image_urls", [])
+            image_urls = self._parse_image_urls(arguments.get("image_urls"))
             if not image_urls:
                 image_urls = extract_image_urls(message)
 
@@ -3290,7 +3332,9 @@ class ToolExecutor:
                 from .conversational_agent_service import extract_image_urls, strip_image_urls
 
                 # Prefer explicit image_urls from upstream (e.g. conversational agent)
-                image_urls = arguments.get("image_urls", [])
+                # _parse_image_urls safely coerces Jinja2-stringified lists
+                # into proper Python lists to prevent character-by-character iteration.
+                image_urls = self._parse_image_urls(arguments.get("image_urls"))
                 if not image_urls:
                     image_urls = extract_image_urls(message)
 
