@@ -146,6 +146,15 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "default": "Customers",
                 "show_if": {"field": "storage_provider", "value": "google_sheets"}
             },
+            "storage_transactions_sheet_name": {
+                "label": "Transactions Sheet Name",
+                "type": "text",
+                "description": "Tab name for saving successful payment transactions in Google Sheets",
+                "required": False,
+                "placeholder": "Transactions",
+                "default": "Transactions",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
             "storage_airtable_base_id": {
                 "label": "Airtable Base ID",
                 "type": "text",
@@ -171,6 +180,15 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "placeholder": "Customers",
                 "default": "Customers",
                 "show_if": {"field": "storage_provider", "value": "airtable"}
+            },
+            "storage_airtable_transactions_table": {
+                "label": "Airtable Transactions Table Name",
+                "type": "text",
+                "description": "Table name for storing successful payment transactions",
+                "required": False,
+                "placeholder": "Transactions",
+                "default": "Transactions",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
             }
         },
         "steps": [
@@ -193,9 +211,11 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                         "storage_spreadsheet_id": "{{config.storage_spreadsheet_id}}",
                         "storage_orders_sheet_name": "{{config.storage_orders_sheet_name}}",
                         "storage_customers_sheet_name": "{{config.storage_customers_sheet_name}}",
+                        "storage_transactions_sheet_name": "{{config.storage_transactions_sheet_name}}",
                         "storage_airtable_base_id": "{{config.storage_airtable_base_id}}",
                         "storage_airtable_orders_table": "{{config.storage_airtable_orders_table}}",
-                        "storage_airtable_customers_table": "{{config.storage_airtable_customers_table}}"
+                        "storage_airtable_customers_table": "{{config.storage_airtable_customers_table}}",
+                        "storage_airtable_transactions_table": "{{config.storage_airtable_transactions_table}}"
                     }
                 }
             },
@@ -347,6 +367,15 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "default": "Customers",
                 "show_if": {"field": "storage_provider", "value": "google_sheets"}
             },
+            "storage_transactions_sheet_name": {
+                "label": "Transactions Sheet Name",
+                "type": "text",
+                "description": "Tab name for saving successful payment transactions in Google Sheets",
+                "required": False,
+                "placeholder": "Transactions",
+                "default": "Transactions",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
             "storage_airtable_base_id": {
                 "label": "Airtable Base ID",
                 "type": "text",
@@ -372,6 +401,15 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "placeholder": "Customers",
                 "default": "Customers",
                 "show_if": {"field": "storage_provider", "value": "airtable"}
+            },
+            "storage_airtable_transactions_table": {
+                "label": "Airtable Transactions Table Name",
+                "type": "text",
+                "description": "Table name for storing successful payment transactions",
+                "required": False,
+                "placeholder": "Transactions",
+                "default": "Transactions",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
             }
         },
         "steps": [
@@ -394,9 +432,11 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                         "storage_spreadsheet_id": "{{config.storage_spreadsheet_id}}",
                         "storage_orders_sheet_name": "{{config.storage_orders_sheet_name}}",
                         "storage_customers_sheet_name": "{{config.storage_customers_sheet_name}}",
+                        "storage_transactions_sheet_name": "{{config.storage_transactions_sheet_name}}",
                         "storage_airtable_base_id": "{{config.storage_airtable_base_id}}",
                         "storage_airtable_orders_table": "{{config.storage_airtable_orders_table}}",
-                        "storage_airtable_customers_table": "{{config.storage_airtable_customers_table}}"
+                        "storage_airtable_customers_table": "{{config.storage_airtable_customers_table}}",
+                        "storage_airtable_transactions_table": "{{config.storage_airtable_transactions_table}}"
                     }
                 }
             },
