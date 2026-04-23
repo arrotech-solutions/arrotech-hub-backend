@@ -45,6 +45,15 @@ class WorkflowSchedulerService:
             id='tiktok_schedule_job',
             replace_existing=True
         )
+
+        # Add WhatsApp Token Refresh Checker (Every 24h)
+        self.scheduler.add_job(
+            self.refresh_whatsapp_tokens,
+            'interval',
+            hours=24,
+            id='whatsapp_token_refresh_job',
+            replace_existing=True
+        )
         
         self.scheduler.start()
         logger.info("Workflow Scheduler Service started. Syncing initial workflows...")
@@ -206,3 +215,86 @@ class WorkflowSchedulerService:
                 
             except Exception as e:
                 logger.error(f"Error checking TikTok schedules: {e}")
+
+    async def refresh_whatsapp_tokens(self):
+        """
+        Check for WhatsApp tokens expiring within 7 days and refresh them.
+        """
+        logger.info("Checking for expiring WhatsApp tokens...")
+        
+        session_maker = get_session_maker()
+        async with session_maker() as db:
+            try:
+                from ..models import Connection, ConnectionStatus
+                from ..config import settings
+                import httpx
+                from datetime import datetime, timedelta
+                
+                # We need to find active WhatsApp connections
+                stmt = select(Connection).where(
+                    Connection.platform == "whatsapp",
+                    Connection.status == ConnectionStatus.ACTIVE
+                )
+                result = await db.execute(stmt)
+                connections = result.scalars().all()
+                
+                refreshed_count = 0
+                now = datetime.utcnow()
+                threshold = now + timedelta(days=7)
+                
+                async with httpx.AsyncClient() as client:
+                    for conn in connections:
+                        config = conn.config or {}
+                        expires_at_str = config.get("token_expires_at")
+                        
+                        # If no expiry date is set, or if it's within 7 days, refresh it
+                        needs_refresh = True
+                        if expires_at_str:
+                            try:
+                                expires_at = datetime.fromisoformat(expires_at_str)
+                                if expires_at > threshold:
+                                    needs_refresh = False
+                            except ValueError:
+                                pass
+                                
+                        if not needs_refresh:
+                            continue
+                            
+                        access_token = config.get("access_token")
+                        if not access_token:
+                            continue
+                            
+                        logger.info(f"Refreshing WhatsApp token for connection {conn.id}")
+                        
+                        exchange_params = {
+                            "grant_type": "fb_exchange_token",
+                            "client_id": settings.WHATSAPP_APP_ID,
+                            "client_secret": settings.WHATSAPP_APP_SECRET,
+                            "fb_exchange_token": access_token
+                        }
+                        
+                        # Use the Graph URL from config if available, otherwise default
+                        graph_url = config.get("base_url", "https://graph.facebook.com/v22.0")
+                        
+                        resp = await client.get(f"{graph_url}/oauth/access_token", params=exchange_params)
+                        
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            new_token = data.get("access_token")
+                            if new_token:
+                                config["access_token"] = new_token
+                                config["token_refreshed_at"] = now.isoformat()
+                                config["token_expires_at"] = (now + timedelta(days=60)).isoformat()
+                                conn.config = config
+                                refreshed_count += 1
+                                logger.info(f"Successfully refreshed token for connection {conn.id}")
+                        else:
+                            logger.error(f"Failed to refresh token for {conn.id}: {resp.text}")
+                            
+                if refreshed_count > 0:
+                    await db.commit()
+                
+                logger.info(f"Finished refreshing {refreshed_count} WhatsApp tokens.")
+                
+            except Exception as e:
+                logger.error(f"Error refreshing WhatsApp tokens: {e}")

@@ -142,13 +142,7 @@ class BaseConfig(BaseSettings):
     XERO_CLIENT_SECRET: Optional[str] = None
     XERO_REDIRECT_URI: Optional[str] = None
 
-    # WhatsApp Business Configuration
-    WHATSAPP_VERIFY_TOKEN: Optional[str] = None
-    WHATSAPP_TOKEN: Optional[str] = None
-    WHATSAPP_PHONE_NUMBER_ID: Optional[str] = None
-    WHATSAPP_BUSINESS_ACCOUNT_ID: Optional[str] = None
-    WHATSAPP_APP_ID: Optional[str] = None
-    WHATSAPP_APP_SECRET: Optional[str] = None
+    # WhatsApp Business Configuration — defined above in lines 50-57
 
     # LLM & RAG API Keys
     OPENAI_API_KEY: Optional[str] = None

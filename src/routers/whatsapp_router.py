@@ -15,6 +15,8 @@ from pydantic import BaseModel
 
 class WhatsAppOauthRequest(BaseModel):
     code: str
+    waba_id: Optional[str] = None
+    phone_number_id: Optional[str] = None
 
 router = APIRouter(
     prefix="/api/whatsapp",
@@ -67,140 +69,48 @@ async def oauth_callback(
     state: str,
     db: AsyncSession = Depends(get_db)
 ):
-    """Exchange authorization code and set up WhatsApp Business API connection via redirect."""
+    """Exchange authorization code and set up WhatsApp Business API connection via redirect (fallback path)."""
     
     # State string contains the user id passed during the get_auth_url phase
     try:
         import uuid
         user_id = uuid.UUID(state)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid state parameter")
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?error=invalid_state")
     
     try:
-        redirect_uri = f"{settings.API_BASE_URL.rstrip('/')}/api/whatsapp/callback" # Must match redirect_uri used to get code if using standard flow, or omit/pass required for JS SDK
+        redirect_uri = f"{settings.API_BASE_URL.rstrip('/')}/api/whatsapp/callback"
         
+        access_token, waba_id, phone_number_id, display_phone_number, business_id = await _exchange_code_and_discover(
+            code=code,
+            redirect_uri=redirect_uri
+        )
+        
+        # Subscribe to webhook events
         async with httpx.AsyncClient() as client:
-            # 1. Exchange code for access token using Meta OAuth endpoint
-            token_url = f"{FACEBOOK_GRAPH_URL}/oauth/access_token"
-            params = {
-                "client_id": settings.WHATSAPP_APP_ID,
-                "client_secret": settings.WHATSAPP_APP_SECRET,
-                "redirect_uri": redirect_uri,
-                "code": code
-            }
-            
-            response = await client.get(token_url, params=params)
-            data = response.json()
-            
-            if response.status_code != 200:
-                logger.error(f"Failed to exchange code: {data}")
-                raise HTTPException(status_code=400, detail="Failed to exchange authorization code")
-                
-            short_lived_token = data.get("access_token")
-            
-            # Exchange for long-lived token
-            exchange_url = f"{FACEBOOK_GRAPH_URL}/oauth/access_token"
-            exchange_params = {
-                "grant_type": "fb_exchange_token",
-                "client_id": settings.WHATSAPP_APP_ID,
-                "client_secret": settings.WHATSAPP_APP_SECRET,
-                "fb_exchange_token": short_lived_token
-            }
-            
-            exchange_resp = await client.get(exchange_url, params=exchange_params)
-            exchange_data = exchange_resp.json()
-            
-            access_token = exchange_data.get("access_token", short_lived_token)
-            
-            # 2. Fetch WhatsApp Business Data
-            
-            # GET /me?fields=businesses
-            me_resp = await client.get(
-                f"{FACEBOOK_GRAPH_URL}/me", 
-                params={"fields": "businesses", "access_token": access_token}
-            )
-            me_data = me_resp.json()
-            
-            businesses = me_data.get("businesses", {}).get("data", [])
-            if not businesses:
-                raise HTTPException(status_code=400, detail="No Meta Business Account found for this user.")
-            
-            business_id = businesses[0].get("id")
-            
-            # GET /{business_id}/owned_whatsapp_business_accounts
-            waba_resp = await client.get(
-                f"{FACEBOOK_GRAPH_URL}/{business_id}/owned_whatsapp_business_accounts",
-                params={"access_token": access_token}
-            )
-            waba_data = waba_resp.json()
-            
-            wabas = waba_data.get("data", [])
-            if not wabas:
-                raise HTTPException(status_code=400, detail="No WhatsApp Business Account found.")
-                
-            waba_id = wabas[0].get("id")
-            
-            # GET /{waba_id}/phone_numbers
-            phones_resp = await client.get(
-                f"{FACEBOOK_GRAPH_URL}/{waba_id}/phone_numbers",
-                params={"access_token": access_token}
-            )
-            phones_data = phones_resp.json()
-            
-            phones = phones_data.get("data", [])
-            if not phones:
-                raise HTTPException(status_code=400, detail="No Phone Numbers found in this WhatsApp Business Account.")
-            
-            phone = phones[0]
-            phone_number_id = phone.get("id")
-            display_phone_number = phone.get("display_phone_number")
-            
-            # 3. Subscribe to webhook events
             sub_resp = await client.post(
                 f"{FACEBOOK_GRAPH_URL}/{waba_id}/subscribed_apps",
                 params={"access_token": access_token}
             )
             if sub_resp.status_code != 200:
                 logger.warning(f"Failed to subscribe to webhooks: {sub_resp.json()}")
-            
-            # 4. Finalize Connection
-            result = await db.execute(
-                select(Connection).filter(
-                    Connection.user_id == user_id,
-                    Connection.platform == "whatsapp"
-                )
-            )
-            connection = result.scalar_one_or_none()
-            
-            config_data = {
-                "access_token": access_token,
-                "auth_type": "embedded_signup",
-                "business_id": business_id,
-                "waba_id": waba_id,
-                "phone_number_id": phone_number_id,
-                "display_phone_number": display_phone_number,
-                "setup_needed": False
-            }
-
-            if connection:
-                connection.status = ConnectionStatus.ACTIVE
-                connection.config = {**connection.config, **config_data}
-            else:
-                connection = Connection(
-                    user_id=user_id,
-                    platform="whatsapp",
-                    name="WhatsApp Business API",
-                    status=ConnectionStatus.ACTIVE,
-                    config=config_data
-                )
-                db.add(connection)
-            
-            await db.commit()
-            
-            return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?success=whatsapp_connected")
+        
+        # Finalize Connection
+        await _upsert_whatsapp_connection(
+            db=db,
+            user_id=user_id,
+            access_token=access_token,
+            business_id=business_id,
+            waba_id=waba_id,
+            phone_number_id=phone_number_id,
+            display_phone_number=display_phone_number,
+            auth_type="oauth_redirect"
+        )
+        
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?success=whatsapp_connected")
 
     except HTTPException:
-        raise
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?error=whatsapp_setup_failed")
     except Exception as e:
         logger.error(f"Error in WhatsApp callback: {e}")
         return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?error=internal_error")
@@ -211,57 +121,134 @@ async def embedded_oauth_callback(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Exchange authorization code from embedded signup for long-lived access token."""
+    """Exchange authorization code from embedded signup for long-lived access token.
+    
+    The Embedded Signup popup may return waba_id and phone_number_id directly
+    when using a config_id. If provided, we skip the discovery step and use them.
+    """
     code = request_data.code
     user_id = user.id
     
     try:
+        access_token, waba_id, phone_number_id, display_phone_number, business_id = await _exchange_code_and_discover(
+            code=code,
+            redirect_uri="",  # Empty for JS SDK
+            hint_waba_id=request_data.waba_id,
+            hint_phone_number_id=request_data.phone_number_id
+        )
+        
+        # Subscribe to webhook events
         async with httpx.AsyncClient() as client:
-            # 1. Exchange code for access token. For JS SDK, redirect_uri is usually omitted or empty
-            token_url = f"{FACEBOOK_GRAPH_URL}/oauth/access_token"
-            params = {
-                "client_id": settings.WHATSAPP_APP_ID,
-                "client_secret": settings.WHATSAPP_APP_SECRET,
-                "redirect_uri": "",  # Empty for JS SDK
-                "code": code
-            }
-            
-            response = await client.get(token_url, params=params)
-            data = response.json()
-            
-            if response.status_code != 200:
-                logger.error(f"Failed to exchange code: {data}")
-                raise HTTPException(status_code=400, detail="Failed to exchange authorization code")
-                
-            short_lived_token = data.get("access_token")
-            
-            # Exchange for long-lived token
-            exchange_url = f"{FACEBOOK_GRAPH_URL}/oauth/access_token"
-            exchange_params = {
-                "grant_type": "fb_exchange_token",
-                "client_id": settings.WHATSAPP_APP_ID,
-                "client_secret": settings.WHATSAPP_APP_SECRET,
-                "fb_exchange_token": short_lived_token
-            }
-            
-            exchange_resp = await client.get(exchange_url, params=exchange_params)
-            exchange_data = exchange_resp.json()
-            
-            access_token = exchange_data.get("access_token", short_lived_token)
-            
-            # 2. Fetch WhatsApp Business Data
-            me_resp = await client.get(
-                f"{FACEBOOK_GRAPH_URL}/me", 
-                params={"fields": "businesses", "access_token": access_token}
+            sub_resp = await client.post(
+                f"{FACEBOOK_GRAPH_URL}/{waba_id}/subscribed_apps",
+                params={"access_token": access_token}
             )
-            me_data = me_resp.json()
+            if sub_resp.status_code != 200:
+                logger.warning(f"Failed to subscribe to webhooks: {sub_resp.json()}")
+        
+        # Finalize Connection
+        await _upsert_whatsapp_connection(
+            db=db,
+            user_id=user_id,
+            access_token=access_token,
+            business_id=business_id,
+            waba_id=waba_id,
+            phone_number_id=phone_number_id,
+            display_phone_number=display_phone_number,
+            auth_type="embedded_signup"
+        )
+        
+        return {"success": True, "message": "WhatsApp Business connected successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in WhatsApp embedded callback: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error linking WhatsApp")
+
+
+# ── Shared helpers ────────────────────────────────────────────────────────────
+
+async def _exchange_code_and_discover(
+    code: str,
+    redirect_uri: str,
+    hint_waba_id: Optional[str] = None,
+    hint_phone_number_id: Optional[str] = None
+) -> tuple:
+    """Exchange an auth code for a long-lived token and discover WABA/phone data.
+    
+    If hint_waba_id and hint_phone_number_id are provided (from Embedded Signup
+    with config_id), they are used directly instead of blindly taking [0].
+    
+    Returns: (access_token, waba_id, phone_number_id, display_phone_number, business_id)
+    """
+    async with httpx.AsyncClient() as client:
+        # 1. Exchange code for short-lived access token
+        token_url = f"{FACEBOOK_GRAPH_URL}/oauth/access_token"
+        params = {
+            "client_id": settings.WHATSAPP_APP_ID,
+            "client_secret": settings.WHATSAPP_APP_SECRET,
+            "redirect_uri": redirect_uri,
+            "code": code
+        }
+        
+        response = await client.get(token_url, params=params)
+        data = response.json()
+        
+        if response.status_code != 200:
+            logger.error(f"Failed to exchange code: {data}")
+            raise HTTPException(status_code=400, detail="Failed to exchange authorization code. Please try again.")
+        
+        short_lived_token = data.get("access_token")
+        
+        # 2. Exchange for long-lived token (lasts ~60 days)
+        exchange_params = {
+            "grant_type": "fb_exchange_token",
+            "client_id": settings.WHATSAPP_APP_ID,
+            "client_secret": settings.WHATSAPP_APP_SECRET,
+            "fb_exchange_token": short_lived_token
+        }
+        
+        exchange_resp = await client.get(f"{FACEBOOK_GRAPH_URL}/oauth/access_token", params=exchange_params)
+        exchange_data = exchange_resp.json()
+        
+        access_token = exchange_data.get("access_token", short_lived_token)
+        token_expires_in = exchange_data.get("expires_in")  # seconds until expiry
+        
+        # 3. Discover WhatsApp Business data
+        # Fetch the user's Meta Business Account
+        me_resp = await client.get(
+            f"{FACEBOOK_GRAPH_URL}/me",
+            params={"fields": "businesses", "access_token": access_token}
+        )
+        me_data = me_resp.json()
+        
+        businesses = me_data.get("businesses", {}).get("data", [])
+        if not businesses:
+            raise HTTPException(
+                status_code=400,
+                detail="No Meta Business Account found. Please ensure your Facebook account is linked to a Business account."
+            )
+        
+        business_id = businesses[0].get("id")
+        
+        # If we already have hints from Embedded Signup, use them
+        if hint_waba_id and hint_phone_number_id:
+            waba_id = hint_waba_id
+            phone_number_id = hint_phone_number_id
             
-            businesses = me_data.get("businesses", {}).get("data", [])
-            if not businesses:
-                raise HTTPException(status_code=400, detail="No Meta Business Account found for this user.")
-            
-            business_id = businesses[0].get("id")
-            
+            # Fetch the display phone number for the hinted phone_number_id
+            phone_resp = await client.get(
+                f"{FACEBOOK_GRAPH_URL}/{phone_number_id}",
+                params={
+                    "access_token": access_token,
+                    "fields": "id,display_phone_number,quality_rating,name_status,status"
+                }
+            )
+            phone_data = phone_resp.json()
+            display_phone_number = phone_data.get("display_phone_number", "Unknown")
+        else:
+            # Fallback: discover WABAs and phone numbers
             waba_resp = await client.get(
                 f"{FACEBOOK_GRAPH_URL}/{business_id}/owned_whatsapp_business_accounts",
                 params={"access_token": access_token}
@@ -270,8 +257,11 @@ async def embedded_oauth_callback(
             
             wabas = waba_data.get("data", [])
             if not wabas:
-                raise HTTPException(status_code=400, detail="No WhatsApp Business Account found.")
-                
+                raise HTTPException(
+                    status_code=400,
+                    detail="No WhatsApp Business Account found. Please create one in your Meta Business Suite first."
+                )
+            
             waba_id = wabas[0].get("id")
             
             phones_resp = await client.get(
@@ -285,61 +275,69 @@ async def embedded_oauth_callback(
             
             phones = phones_data.get("data", [])
             if not phones:
-                raise HTTPException(status_code=400, detail="No Phone Numbers found in this WhatsApp Business Account.")
+                raise HTTPException(
+                    status_code=400,
+                    detail="No phone numbers found in your WhatsApp Business Account. Please add one in Meta Business Suite."
+                )
             
             phone = phones[0]
             phone_number_id = phone.get("id")
             display_phone_number = phone.get("display_phone_number")
-            
-            # 3. Subscribe to webhook events
-            sub_resp = await client.post(
-                f"{FACEBOOK_GRAPH_URL}/{waba_id}/subscribed_apps",
-                params={"access_token": access_token}
-            )
-            if sub_resp.status_code != 200:
-                logger.warning(f"Failed to subscribe to webhooks: {sub_resp.json()}")
-            
-            # 4. Finalize Connection
-            result = await db.execute(
-                select(Connection).filter(
-                    Connection.user_id == user_id,
-                    Connection.platform == "whatsapp"
-                )
-            )
-            connection = result.scalar_one_or_none()
-            
-            config_data = {
-                "access_token": access_token,
-                "auth_type": "embedded_signup",
-                "business_id": business_id,
-                "waba_id": waba_id,
-                "phone_number_id": phone_number_id,
-                "display_phone_number": display_phone_number,
-                "setup_needed": False
-            }
+        
+        logger.info(f"WhatsApp OAuth complete: waba={waba_id}, phone={phone_number_id}, display={display_phone_number}")
+        
+        return access_token, waba_id, phone_number_id, display_phone_number, business_id
 
-            if connection:
-                connection.status = ConnectionStatus.ACTIVE
-                connection.config = {**connection.config, **config_data}
-            else:
-                connection = Connection(
-                    user_id=user_id,
-                    platform="whatsapp",
-                    name="WhatsApp Business API",
-                    status=ConnectionStatus.ACTIVE,
-                    config=config_data
-                )
-                db.add(connection)
-            
-            await db.commit()
-            
-            return {"success": True, "message": "WhatsApp Business connected successfully"}
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in WhatsApp embedded callback: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error linking WhatsApp")
+async def _upsert_whatsapp_connection(
+    db: AsyncSession,
+    user_id,
+    access_token: str,
+    business_id: str,
+    waba_id: str,
+    phone_number_id: str,
+    display_phone_number: str,
+    auth_type: str = "embedded_signup"
+):
+    """Create or update the WhatsApp connection for a user."""
+    from datetime import datetime, timedelta
+    
+    result = await db.execute(
+        select(Connection).filter(
+            Connection.user_id == user_id,
+            Connection.platform == "whatsapp"
+        )
+    )
+    connection = result.scalar_one_or_none()
+    
+    config_data = {
+        "access_token": access_token,
+        "auth_type": auth_type,
+        "business_id": business_id,
+        "waba_id": waba_id,
+        "phone_number_id": phone_number_id,
+        "display_phone_number": display_phone_number,
+        "base_url": FACEBOOK_GRAPH_URL,
+        "token_refreshed_at": datetime.utcnow().isoformat(),
+        "token_expires_at": (datetime.utcnow() + timedelta(days=60)).isoformat(),
+        "setup_needed": False
+    }
+    
+    if connection:
+        connection.status = ConnectionStatus.ACTIVE
+        connection.config = {**connection.config, **config_data}
+        connection.error_message = None
+    else:
+        connection = Connection(
+            user_id=user_id,
+            platform="whatsapp",
+            name=f"WhatsApp ({display_phone_number})",
+            status=ConnectionStatus.ACTIVE,
+            config=config_data
+        )
+        db.add(connection)
+    
+    await db.commit()
 
 @router.get("/phone-numbers")
 async def get_whatsapp_phone_numbers(

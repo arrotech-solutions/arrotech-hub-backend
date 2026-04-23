@@ -181,14 +181,12 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                     owner_user_id = conn.user_id
                     break
             
-            # Fallback: use the first active WhatsApp connection
-            # (In production, you'd want proper phone_number_id matching)
-            if not owner_user_id and connections:
-                owner_user_id = connections[0].user_id
-                logger.warning(f"[WHATSAPP WEBHOOK] Using fallback user_id: {owner_user_id}")
-            
             if not owner_user_id:
-                logger.error("[WHATSAPP WEBHOOK] No user found for this phone number ID")
+                logger.error(
+                    f"[WHATSAPP WEBHOOK] No connection found for phone_number_id={phone_number_id}. "
+                    f"Checked {len(connections)} active connection(s). Message from {from_number} will be skipped. "
+                    f"Ensure the customer's connection config has the correct phone_number_id."
+                )
                 continue
             
             # Find or create contact

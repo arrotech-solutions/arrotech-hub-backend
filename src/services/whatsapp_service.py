@@ -213,21 +213,31 @@ class WhatsAppService:
                 "error": str(e)
             }
 
-    async def get_phone_number_info(self) -> Dict[str, Any]:
+    async def get_phone_number_info(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Get information about the WhatsApp phone number."""
         try:
             # Get fresh credentials
             credentials = self._get_credentials()
 
-            if not credentials["phone_number_id"] or not credentials["access_token"]:
+            # Use provided config or fresh credentials
+            if config:
+                phone_number_id = config.get("phone_number_id")
+                access_token = config.get("access_token")
+                base_url = config.get("base_url", credentials["base_url"])
+            else:
+                phone_number_id = credentials["phone_number_id"]
+                access_token = credentials["access_token"]
+                base_url = credentials["base_url"]
+
+            if not phone_number_id or not access_token:
                 return {
                     "success": False,
                     "error": "WhatsApp credentials not configured"
                 }
 
-            url = f"{credentials['base_url']}/{credentials['phone_number_id']}"
+            url = f"{base_url}/{phone_number_id}"
             headers = {
-                "Authorization": f"Bearer {credentials['access_token']}"
+                "Authorization": f"Bearer {access_token}"
             }
 
             async with aiohttp.ClientSession() as session:
