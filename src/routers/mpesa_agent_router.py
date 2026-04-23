@@ -19,6 +19,7 @@ from ..models import User, MpesaAgentConfig, MpesaPayment
 from ..routers.auth_router import get_current_user
 from ..services.mpesa_reconciliation_service import MpesaReconciliationService
 from ..services.daraja_service import daraja_service, DarajaService
+from ..services.cache_service import cache_service
 from ..config import settings
 from ..utils.encryption import mask_value, decrypt_value
 
@@ -429,8 +430,97 @@ async def _handle_mpesa_callback_background(webhook_secret: str, body: bytes):
 
             logger.info(f"Daraja callback matched to user_id={config.user_id}")
 
-            # 3. Process the payment
             service = MpesaReconciliationService()
+
+            # 3a. STK push callbacks (ordering payments) — map via CheckoutRequestID
+            if isinstance(payload, dict) and payload.get("Body", {}).get("stkCallback"):
+                parsed = service._parse_stk_callback(payload)  # returns dict or None
+                checkout_request_id = (parsed or {}).get("checkout_request_id")
+                merchant_request_id = (parsed or {}).get("merchant_request_id")
+                map_key_checkout = f"mpesa:stk:checkout:{checkout_request_id}" if checkout_request_id else ""
+                map_key_merchant = f"mpesa:stk:merchant:{merchant_request_id}" if merchant_request_id else ""
+                ctx = cache_service.get(map_key_checkout) if map_key_checkout else None
+                if not ctx and map_key_merchant:
+                    ctx = cache_service.get(map_key_merchant)
+
+                # Persist payment record (with order reference if we have it)
+                reference_override = (ctx or {}).get("order_id")
+                description_override = f"Order payment {reference_override}" if reference_override else "Order payment"
+                payment = await service.process_stk_callback(
+                    config.user_id,
+                    payload,
+                    db,
+                    reference_override=reference_override,
+                    description_override=description_override,
+                )
+
+                # Notify + persist transaction into connected storage (best effort)
+                if ctx:
+                    is_paid = (parsed or {}).get("result_code") in (None, "0")
+                    order_id = (ctx or {}).get("order_id")
+                    sender_id = (ctx or {}).get("sender_id")
+                    platform = (ctx or {}).get("platform")
+                    storage_config = (ctx or {}).get("storage_config") or {}
+                    customer_phone = (ctx or {}).get("customer_phone")
+
+                    try:
+                        from ..services.whatsapp_service import WhatsAppService
+                        from ..services.telegram_service import TelegramService
+                        from ..services.conversational_agent_service import ConversationalAgentService
+
+                        msg_ok = (
+                            f"✅ Payment received for order {order_id}. "
+                            f"Receipt: {(parsed or {}).get('transaction_id') or 'pending'}"
+                            if is_paid
+                            else f"⚠️ Payment failed for order {order_id}. {(parsed or {}).get('result_desc') or ''}".strip()
+                        )
+
+                        if platform == "whatsapp":
+                            wa = WhatsAppService()
+                            await wa.send_message(to_number=sender_id, message=msg_ok)
+                        elif platform == "telegram":
+                            tg = TelegramService()
+                            await tg.send_message(chat_id=sender_id, message=msg_ok)
+
+                        # Only record successful transaction rows
+                        if is_paid and payment:
+                            user_stmt = select(User).where(User.id == config.user_id)
+                            user_res = await db.execute(user_stmt)
+                            owner_user = user_res.scalar_one_or_none()
+                            if owner_user and storage_config and storage_config.get("provider") not in (None, "", "none"):
+                                tx_data = {
+                                    "order_id": order_id,
+                                    "transaction_id": (parsed or {}).get("transaction_id"),
+                                    "checkout_request_id": (parsed or {}).get("checkout_request_id"),
+                                    "merchant_request_id": (parsed or {}).get("merchant_request_id"),
+                                    "amount": float((parsed or {}).get("amount") or 0),
+                                    "currency": "KES",
+                                    "customer_phone": customer_phone,
+                                    "status": "paid",
+                                    "result_code": (parsed or {}).get("result_code"),
+                                    "result_desc": (parsed or {}).get("result_desc"),
+                                    "paid_at": ((parsed or {}).get("transaction_time") or datetime.utcnow()).isoformat(),
+                                }
+                                conv_service = ConversationalAgentService()
+                                await conv_service.persist_payment_transaction_to_storage(
+                                    transaction_data=tx_data,
+                                    storage_config=storage_config,
+                                    user=owner_user,
+                                    db=db,
+                                )
+
+                        # cleanup ephemeral mapping key after callback processing
+                        if map_key_checkout:
+                            cache_service.delete(map_key_checkout)
+                        if map_key_merchant:
+                            cache_service.delete(map_key_merchant)
+                    except Exception as notify_err:
+                        logger.warning(f"Failed to notify customer for STK callback: {notify_err}")
+
+                logger.info(f"Successfully processed STK callback for user {config.user_id}")
+                return
+
+            # 3b. C2B confirmation callbacks (reconciliation)
             await service.process_payment_notification(config.user_id, payload, db)
 
             logger.info(f"Successfully processed M-Pesa callback for user {config.user_id}")

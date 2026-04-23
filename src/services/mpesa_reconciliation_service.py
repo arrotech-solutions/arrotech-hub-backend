@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 import uuid
+import re
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -238,6 +239,115 @@ class MpesaReconciliationService:
             except Exception as e:
                 logger.error(f"Alert failed for payment {transaction_id}: {e}", exc_info=True)
 
+        await db.refresh(payment)
+        return payment
+
+    @staticmethod
+    def _parse_stk_callback(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Parse Daraja STK callback payload:
+        {
+          "Body": {
+            "stkCallback": {
+              "MerchantRequestID": "...",
+              "CheckoutRequestID": "...",
+              "ResultCode": 0,
+              "ResultDesc": "...",
+              "CallbackMetadata": {
+                "Item": [{"Name":"Amount","Value":1}, ...]
+              }
+            }
+          }
+        }
+        """
+        body = payload.get("Body") or {}
+        stk = body.get("stkCallback") or {}
+        if not stk:
+            return None
+
+        result_code = stk.get("ResultCode")
+        result_desc = stk.get("ResultDesc")
+        checkout_request_id = stk.get("CheckoutRequestID")
+        merchant_request_id = stk.get("MerchantRequestID")
+
+        meta_items = (stk.get("CallbackMetadata") or {}).get("Item") or []
+        meta = {}
+        for it in meta_items:
+            if not isinstance(it, dict):
+                continue
+            name = it.get("Name")
+            if not name:
+                continue
+            meta[name] = it.get("Value")
+
+        receipt = meta.get("MpesaReceiptNumber") or meta.get("M-PesaReceiptNumber")
+        amount = meta.get("Amount")
+        phone = meta.get("PhoneNumber")
+        tx_date = meta.get("TransactionDate")
+
+        # Daraja sometimes returns phone as int; normalize to string digits
+        phone_str = re.sub(r"\D", "", str(phone or ""))
+
+        tx_time = datetime.utcnow()
+        if tx_date:
+            # Expected format: YYYYMMDDHHmmss
+            try:
+                tx_time = datetime.strptime(str(tx_date), "%Y%m%d%H%M%S")
+            except Exception:
+                tx_time = datetime.utcnow()
+
+        return {
+            "result_code": str(result_code) if result_code is not None else None,
+            "result_desc": str(result_desc) if result_desc is not None else None,
+            "checkout_request_id": checkout_request_id,
+            "merchant_request_id": merchant_request_id,
+            "transaction_id": receipt or checkout_request_id,  # fallback if receipt missing
+            "amount": Decimal(str(amount or "0")),
+            "phone_number": phone_str,
+            "transaction_time": tx_time,
+        }
+
+    async def process_stk_callback(
+        self,
+        user_id: uuid.UUID,
+        payload: Dict[str, Any],
+        db: AsyncSession,
+        *,
+        reference_override: Optional[str] = None,
+        description_override: Optional[str] = None,
+    ) -> Optional[MpesaPayment]:
+        """
+        Record an STK Push result as an MpesaPayment (success/failure).
+        """
+        parsed = self._parse_stk_callback(payload)
+        if not parsed:
+            return None
+
+        transaction_id = parsed.get("transaction_id")
+        if not transaction_id:
+            raise ValueError("STK callback missing transaction identifier")
+
+        # Deduplicate
+        existing = await db.execute(select(MpesaPayment).where(MpesaPayment.transaction_id == transaction_id))
+        existing_payment = existing.scalar_one_or_none()
+        if existing_payment:
+            return existing_payment
+
+        status = "pending" if parsed.get("result_code") in (None, "0") else "failed"
+        payment = MpesaPayment(
+            user_id=user_id,
+            transaction_id=transaction_id,
+            amount=parsed.get("amount") or Decimal("0"),
+            phone_number=parsed.get("phone_number") or "",
+            reference=reference_override or parsed.get("checkout_request_id") or "",
+            description=description_override or parsed.get("result_desc") or "STK payment",
+            transaction_time=parsed.get("transaction_time") or datetime.utcnow(),
+            status=status,
+            channel="stk",
+        )
+
+        db.add(payment)
+        await db.commit()
         await db.refresh(payment)
         return payment
 

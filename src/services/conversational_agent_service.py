@@ -29,6 +29,7 @@ from ..models import User
 from .llm_service import LLMService, LLMResponse
 from .order_service import OrderService
 from .conversation_context_manager import context_manager
+from .cache_service import cache_service
 
 logger = logging.getLogger(__name__)
 
@@ -240,6 +241,28 @@ AGENT_SUB_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "initiate_mpesa_payment",
+            "description": (
+                "Initiate an M-Pesa STK push so the customer can pay for their order. "
+                "Only call this AFTER an order has been created (you must have an order_id and amount). "
+                "Use the customer's phone number for the STK prompt. "
+                "If the customer hasn't confirmed they want to pay now, ask first."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {"type": "string", "description": "Order ID to use as AccountReference"},
+                    "phone_number": {"type": "string", "description": "Customer phone number to prompt via STK"},
+                    "amount": {"type": "number", "description": "Amount in KES to charge (usually order subtotal)"},
+                    "description": {"type": "string", "description": "Payment description shown on STK prompt"}
+                },
+                "required": ["order_id", "phone_number", "amount"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "calculate_total",
             "description": (
                 "Calculate the total cost for a list of items before confirming "
@@ -330,9 +353,11 @@ class ConversationalAgentService:
                 "spreadsheet_id": business_config.get("storage_spreadsheet_id", ""),
                 "orders_sheet_name": business_config.get("storage_orders_sheet_name", "Orders"),
                 "customers_sheet_name": business_config.get("storage_customers_sheet_name", "Customers"),
+                "transactions_sheet_name": business_config.get("storage_transactions_sheet_name", "Transactions"),
                 "airtable_base_id": business_config.get("storage_airtable_base_id", ""),
                 "airtable_orders_table": business_config.get("storage_airtable_orders_table", "Orders"),
                 "airtable_customers_table": business_config.get("storage_airtable_customers_table", "Customers"),
+                "airtable_transactions_table": business_config.get("storage_airtable_transactions_table", "Transactions"),
             }
 
             # Build the system prompt
@@ -435,6 +460,7 @@ class ConversationalAgentService:
                         currency=currency,
                         business_name=business_name,
                         storage_config=storage_config,
+                        session_key=session_key,
                         user=user,
                         db=db
                     )
@@ -621,6 +647,7 @@ class ConversationalAgentService:
 4. If delivery, collect the delivery address
 5. Confirm the order summary with total price
 6. Create the order
+7. After order is created, offer payment. If they want to pay now via M-Pesa, initiate an STK push to their phone using initiate_mpesa_payment(order_id, phone_number, amount).
 
 ## Rules
 - Keep responses brief and friendly (WhatsApp style, under 200 words)
@@ -699,6 +726,7 @@ class ConversationalAgentService:
         currency: str,
         business_name: str,
         storage_config: Dict[str, Any],
+        session_key: str,
         user: User,
         db: AsyncSession
     ) -> Dict[str, Any]:
@@ -728,6 +756,19 @@ class ConversationalAgentService:
                 return await self._sub_calculate_total(
                     items=arguments.get("items", []),
                     currency=currency
+                )
+
+            elif tool_name == "initiate_mpesa_payment":
+                return await self._sub_initiate_mpesa_payment(
+                    order_id=arguments.get("order_id", ""),
+                    phone_number=arguments.get("phone_number", ""),
+                    amount=arguments.get("amount", 0),
+                    description=arguments.get("description", f"Payment to {business_name}"),
+                    session_key=session_key,
+                    storage_config=storage_config,
+                    business_name=business_name,
+                    user=user,
+                    db=db,
                 )
 
             else:
@@ -847,6 +888,132 @@ class ConversationalAgentService:
         except Exception as e:
             return {"success": False, "result": f"Calculation error: {str(e)}"}
 
+    async def _sub_initiate_mpesa_payment(
+        self,
+        *,
+        order_id: str,
+        phone_number: str,
+        amount: Any,
+        description: str,
+        session_key: Optional[str],
+        storage_config: Dict[str, Any],
+        business_name: str,
+        user: User,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """
+        Initiate an STK push using tenant Daraja credentials from MpesaAgentConfig.
+        Stores callback mapping in Redis with TTL (ephemeral, no long-term DB row).
+        """
+        try:
+            if not order_id:
+                return {"success": False, "error": "order_id is required"}
+            if not phone_number:
+                return {"success": False, "error": "phone_number is required"}
+
+            # Coerce amount to int KES
+            try:
+                amount_int = int(float(amount))
+            except Exception:
+                amount_int = 0
+            if amount_int < 1:
+                return {"success": False, "error": "amount must be at least 1 KES"}
+
+            from sqlalchemy import select
+            from ..models import MpesaAgentConfig
+            from ..services.mpesa_reconciliation_service import MpesaReconciliationService
+            from ..services.daraja_service import DarajaService
+            from ..config import settings
+
+            # Load tenant Daraja config (stored per business owner)
+            res = await db.execute(select(MpesaAgentConfig).where(MpesaAgentConfig.user_id == user.id))
+            cfg = res.scalar_one_or_none()
+            if not cfg or not cfg.webhook_secret:
+                return {
+                    "success": False,
+                    "error": "M-Pesa is not configured for this business. Ask the business to set Daraja credentials in Settings → Mpesa Webhooks.",
+                }
+
+            # Decrypt credentials
+            recon = MpesaReconciliationService()
+            decrypted = recon.decrypt_config_credentials(cfg)
+            if not decrypted.get("daraja_consumer_key") or not decrypted.get("daraja_consumer_secret"):
+                return {"success": False, "error": "Daraja Consumer Key/Secret missing in business settings"}
+            if not cfg.daraja_passkey or not cfg.daraja_shortcode:
+                return {"success": False, "error": "Daraja passkey/shortcode missing in business settings"}
+
+            # Build callback URL (tenant-scoped)
+            base_url = (cfg.callback_url_override or settings.API_BASE_URL).rstrip("/")
+            callback_url = f"{base_url}/api/agents/daraja/callback/{cfg.webhook_secret}"
+
+            # Build callback routing metadata
+            platform = "whatsapp"
+            sender_id = phone_number
+            if session_key and session_key.startswith("ccm:"):
+                # session_key format: ccm:{platform}:{owner_user_id}:{sender_id}
+                parts = session_key.split(":")
+                if len(parts) >= 4:
+                    platform = parts[1] or "whatsapp"
+                    sender_id = parts[3] or sender_id
+            else:
+                # Derive from phone; WhatsApp default
+                platform = "whatsapp"
+                sender_id = phone_number
+
+            tenant_env = (cfg.daraja_environment or "sandbox").lower()
+            daraja = DarajaService(environment=tenant_env)
+            stk_res = await daraja.stk_push(
+                phone_number=phone_number,
+                amount=amount_int,
+                account_reference=order_id,
+                transaction_desc=description[:80] if description else f"Order {order_id}",
+                callback_url=callback_url,
+                consumer_key=decrypted["daraja_consumer_key"],
+                consumer_secret=decrypted["daraja_consumer_secret"],
+                short_code=cfg.daraja_shortcode,
+                passkey=decrypted.get("daraja_passkey"),
+            )
+
+            if not stk_res.get("success"):
+                return {"success": False, "error": stk_res.get("error", "Failed to initiate STK push")}
+
+            merchant_request_id = stk_res.get("merchant_request_id")
+            checkout_request_id = stk_res.get("checkout_request_id")
+
+            # Ephemeral callback mapping (24h TTL)
+            payload = {
+                "user_id": str(user.id),
+                "session_key": session_key or "",
+                "platform": platform,
+                "sender_id": sender_id,
+                "customer_phone": phone_number,
+                "order_id": order_id,
+                "amount": amount_int,
+                "currency": "KES",
+                "business_name": business_name,
+                "storage_config": storage_config or {},
+                "created_at": datetime.utcnow().isoformat(),
+            }
+            if checkout_request_id:
+                cache_service.set(f"mpesa:stk:checkout:{checkout_request_id}", payload, expire_seconds=86400)
+            if merchant_request_id:
+                cache_service.set(f"mpesa:stk:merchant:{merchant_request_id}", payload, expire_seconds=86400)
+
+            return {
+                "success": True,
+                "result": "M-Pesa payment initiated. Customer should check phone to complete payment.",
+                "checkout_request_id": checkout_request_id,
+                "merchant_request_id": merchant_request_id,
+                "order_id": order_id,
+                "amount": amount_int,
+                "currency": "KES",
+                "customer_message": stk_res.get("customer_message"),
+            }
+
+        except Exception as e:
+            logger.error(f"[CONV_AGENT] initiate_mpesa_payment error: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
     # ═══════════════════════════════════════════════════════════
     # ORDER STORAGE PERSISTENCE (Google Sheets / Airtable)
     # ═══════════════════════════════════════════════════════════
@@ -898,6 +1065,41 @@ class ConversationalAgentService:
 
         except Exception as e:
             logger.warning(f"[CONV_AGENT] Storage persistence failed (non-fatal): {e}")
+
+    async def persist_payment_transaction_to_storage(
+        self,
+        transaction_data: Dict[str, Any],
+        storage_config: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+    ):
+        """
+        Persist successful payment transaction data to connected storage.
+        """
+        provider = (storage_config or {}).get("provider", "none")
+        if provider in (None, "", "none"):
+            return
+        try:
+            from .tool_executor import ToolExecutor
+            executor = ToolExecutor()
+            if provider == "google_sheets":
+                await self._persist_transaction_to_google_sheets(
+                    executor=executor,
+                    transaction_data=transaction_data,
+                    storage_config=storage_config,
+                    user=user,
+                    db=db,
+                )
+            elif provider == "airtable":
+                await self._persist_transaction_to_airtable(
+                    executor=executor,
+                    transaction_data=transaction_data,
+                    storage_config=storage_config,
+                    user=user,
+                    db=db,
+                )
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] Transaction persistence failed (non-fatal): {e}")
 
     async def _persist_to_google_sheets(
         self,
@@ -1019,6 +1221,86 @@ class ConversationalAgentService:
                     user=user,
                     db=db,
                 )
+
+    async def _persist_transaction_to_google_sheets(
+        self,
+        executor,
+        transaction_data: Dict[str, Any],
+        storage_config: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+    ):
+        spreadsheet_id = storage_config.get("spreadsheet_id", "")
+        if not spreadsheet_id:
+            logger.warning("[CONV_AGENT] Google Sheets transaction storage: no spreadsheet_id configured")
+            return
+
+        tx_sheet = (storage_config.get("transactions_sheet_name") or "Transactions").strip() or "Transactions"
+        tx_headers_required = [
+            "Order ID",
+            "Transaction ID",
+            "Checkout Request ID",
+            "Merchant Request ID",
+            "Amount",
+            "Currency",
+            "Customer Phone",
+            "Status",
+            "Result Code",
+            "Result Desc",
+            "Paid At",
+            "Source",
+        ]
+        tx_headers = await self._ensure_sheet_headers_with_fallback(
+            executor=executor,
+            spreadsheet_id=spreadsheet_id,
+            preferred_sheet=tx_sheet,
+            fallback_sheets=["Transactions", "Sheet1"],
+            required_headers=tx_headers_required,
+            user=user,
+            db=db,
+        )
+        if not tx_headers:
+            return
+
+        transaction_id = _safe_str(transaction_data.get("transaction_id", "")).strip()
+        if transaction_id:
+            exists = await self._sheet_value_exists(
+                executor=executor,
+                spreadsheet_id=spreadsheet_id,
+                sheet_name=tx_headers["sheet_name"],
+                headers=tx_headers["headers"],
+                header_name="Transaction ID",
+                value=transaction_id,
+                user=user,
+                db=db,
+            )
+            if exists:
+                logger.info(f"[CONV_AGENT] Transaction {transaction_id} already exists in Sheets; skipping")
+                return
+
+        record = {
+            "Order ID": _safe_str(transaction_data.get("order_id", "")),
+            "Transaction ID": transaction_id,
+            "Checkout Request ID": _safe_str(transaction_data.get("checkout_request_id", "")),
+            "Merchant Request ID": _safe_str(transaction_data.get("merchant_request_id", "")),
+            "Amount": _safe_str(transaction_data.get("amount", 0)),
+            "Currency": _safe_str(transaction_data.get("currency", "KES")),
+            "Customer Phone": _safe_str(transaction_data.get("customer_phone", "")),
+            "Status": _safe_str(transaction_data.get("status", "paid")),
+            "Result Code": _safe_str(transaction_data.get("result_code", "")),
+            "Result Desc": _safe_str(transaction_data.get("result_desc", "")),
+            "Paid At": _safe_str(transaction_data.get("paid_at", datetime.utcnow().isoformat())),
+            "Source": "mpesa_stk",
+        }
+        await self._append_record_by_headers(
+            executor=executor,
+            spreadsheet_id=spreadsheet_id,
+            sheet_name=tx_headers["sheet_name"],
+            headers=tx_headers["headers"],
+            record=record,
+            user=user,
+            db=db,
+        )
 
         # Dedup: don't append same customer phone more than once.
         if customer_phone:
@@ -1351,6 +1633,51 @@ class ConversationalAgentService:
                 logger.warning(f"[CONV_AGENT] Airtable customer save error: {result.get('error')}")
         except Exception as e:
             logger.warning(f"[CONV_AGENT] Airtable customer save failed: {e}")
+
+    async def _persist_transaction_to_airtable(
+        self,
+        executor,
+        transaction_data: Dict[str, Any],
+        storage_config: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+    ):
+        base_id = storage_config.get("airtable_base_id", "")
+        if not base_id:
+            logger.warning("[CONV_AGENT] Airtable transaction storage: no base_id configured")
+            return
+
+        table = storage_config.get("airtable_transactions_table", "Transactions")
+        record = {
+            "Order ID": transaction_data.get("order_id", ""),
+            "Transaction ID": transaction_data.get("transaction_id", ""),
+            "Checkout Request ID": transaction_data.get("checkout_request_id", ""),
+            "Merchant Request ID": transaction_data.get("merchant_request_id", ""),
+            "Amount": transaction_data.get("amount", 0),
+            "Currency": transaction_data.get("currency", "KES"),
+            "Customer Phone": transaction_data.get("customer_phone", ""),
+            "Status": transaction_data.get("status", "paid"),
+            "Result Code": transaction_data.get("result_code", ""),
+            "Result Desc": transaction_data.get("result_desc", ""),
+            "Paid At": transaction_data.get("paid_at", datetime.utcnow().isoformat()),
+            "Source": "mpesa_stk",
+        }
+        try:
+            result = await executor.execute_tool(
+                "airtable_record_management",
+                {
+                    "operation": "create_records",
+                    "base_id": base_id,
+                    "table_name": table,
+                    "records_data": [record],
+                },
+                user,
+                db,
+            )
+            if result.get("error"):
+                logger.warning(f"[CONV_AGENT] Airtable transaction save error: {result.get('error')}")
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] Airtable transaction save failed: {e}")
 
     # ═══════════════════════════════════════════════════════════
     # NOTIFICATION FORMATTING

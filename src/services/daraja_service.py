@@ -5,6 +5,7 @@ Handles authentication and transaction status queries.
 
 import base64
 import logging
+import re
 import time
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -42,6 +43,93 @@ class DarajaService:
 
         self._access_token: Optional[str] = None
         self._token_expiry: float = 0
+
+    @staticmethod
+    def _format_msisdn(phone_number: str) -> str:
+        """
+        Format Kenyan phone number to Daraja MSISDN format (2547XXXXXXXX).
+        Accepts: 07..., 7..., +254..., 254...
+        """
+        if not phone_number:
+            raise ValueError("Phone number is required")
+        cleaned = re.sub(r"\D", "", phone_number)
+        if cleaned.startswith("254") and len(cleaned) >= 12:
+            return cleaned
+        if cleaned.startswith("0") and len(cleaned) >= 10:
+            return "254" + cleaned[1:]
+        if cleaned.startswith("7") and len(cleaned) >= 9:
+            return "254" + cleaned
+        if cleaned.startswith("1") and len(cleaned) >= 9:
+            return "254" + cleaned
+        raise ValueError(f"Invalid phone number format: {phone_number}")
+
+    async def stk_push(
+        self,
+        *,
+        phone_number: str,
+        amount: int,
+        account_reference: str,
+        transaction_desc: str,
+        callback_url: str,
+        consumer_key: Optional[str] = None,
+        consumer_secret: Optional[str] = None,
+        short_code: Optional[str] = None,
+        passkey: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Initiate an STK Push (Lipa Na M-Pesa Online).
+
+        Returns Daraja response fields including CheckoutRequestID and MerchantRequestID.
+        """
+        if amount < 1:
+            return {"success": False, "error": "Amount must be at least 1"}
+        if not callback_url:
+            return {"success": False, "error": "Callback URL is required"}
+        bsc = short_code or self.business_short_code
+        pk = passkey or self.passkey
+        if not bsc or not pk:
+            return {"success": False, "error": "Shortcode or passkey not configured"}
+
+        msisdn = self._format_msisdn(phone_number)
+        token = await self._get_access_token(consumer_key, consumer_secret)
+
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        password_str = f"{bsc}{pk}{timestamp}"
+        password = base64.b64encode(password_str.encode()).decode()
+
+        url = f"{self.base_url}/mpesa/stkpush/v1/processrequest"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        payload = {
+            "BusinessShortCode": bsc,
+            "Password": password,
+            "Timestamp": timestamp,
+            "TransactionType": "CustomerPayBillOnline",
+            "Amount": int(amount),
+            "PartyA": msisdn,
+            "PartyB": bsc,
+            "PhoneNumber": msisdn,
+            "CallBackURL": callback_url,
+            "AccountReference": account_reference,
+            "TransactionDesc": transaction_desc,
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=payload) as resp:
+                data = await resp.json(content_type=None)
+                if resp.status != 200:
+                    return {"success": False, "error": f"Daraja STK error {resp.status}: {data}"}
+
+        if str(data.get("ResponseCode")) == "0":
+            return {
+                "success": True,
+                "merchant_request_id": data.get("MerchantRequestID"),
+                "checkout_request_id": data.get("CheckoutRequestID"),
+                "customer_message": data.get("CustomerMessage"),
+                "response_description": data.get("ResponseDescription"),
+                "raw": data,
+            }
+
+        return {"success": False, "error": data.get("ResponseDescription") or "STK push failed", "raw": data}
 
     async def _get_access_token(self, consumer_key: Optional[str] = None, consumer_secret: Optional[str] = None) -> str:
         """Get or refresh OAuth access token."""
