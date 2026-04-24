@@ -66,7 +66,7 @@ class TestLLMServiceExtended:
     def test_has_generate_method(self):
         from src.services.llm_service import LLMService
         svc = LLMService()
-        assert hasattr(svc, "generate") or hasattr(svc, "chat")
+        assert hasattr(svc, 'chat_completion')
 
 
 # ── Rate Limit Service ───────────────────────────────────────────────────────

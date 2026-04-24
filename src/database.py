@@ -55,16 +55,20 @@ def get_engine() -> AsyncEngine:
     if _engine is None:
         db_url = get_database_url()
         is_dev = os.getenv("ENVIRONMENT", "development") == "development"
-        _engine = create_async_engine(
-            db_url,
-            echo=is_dev,
-            # Connection pool settings (conservative for free tier DB)
-            pool_size=5 if not is_dev else 10,     # Base pool size
-            max_overflow=10 if not is_dev else 20, # Extra connections under load
-            pool_timeout=30,                       # Seconds to wait for connection
-            pool_recycle=1800,                     # Recycle connections after 30 min
-            pool_pre_ping=True,                    # Test connections before use
-        )
+        
+        kwargs = {"echo": is_dev}
+        
+        # SQLite does not support these pool parameters
+        if not db_url.startswith("sqlite"):
+            kwargs.update({
+                "pool_size": 5 if not is_dev else 10,
+                "max_overflow": 10 if not is_dev else 20,
+                "pool_timeout": 30,
+                "pool_recycle": 1800,
+                "pool_pre_ping": True,
+            })
+            
+        _engine = create_async_engine(db_url, **kwargs)
     return _engine
 
 

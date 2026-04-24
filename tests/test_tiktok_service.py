@@ -4,5 +4,6 @@ import pytest
 class TestTikTokService:
     def test_import(self):
         from src.services.tiktok_service import TikTokService
-        svc = TikTokService()
+        from unittest.mock import MagicMock
+        svc = TikTokService(db=MagicMock())
         assert svc is not None
