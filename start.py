@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Startup script for Mini-Hub MCP Server.
+Startup script for Mini-Hub MCP Server
 """
 
 import uvicorn
