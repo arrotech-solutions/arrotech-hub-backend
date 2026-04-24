@@ -13,5 +13,5 @@ class TestCacheService:
         from src.services.cache_service import CacheService
         service = CacheService()
         if hasattr(service, 'get'):
-            result = await service.get("test_key")
+            result = service.get("test_key")
             assert result is None or isinstance(result, (dict, list, str))

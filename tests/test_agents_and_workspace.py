@@ -16,8 +16,8 @@ class TestBaseAgent:
 
 class TestMpesaAgent:
     def test_import(self):
-        from src.services.agents.mpesa_agent import MpesaAgent
-        assert MpesaAgent is not None
+        from src.services.agents.mpesa_agent import MpesaReconciliationAgent
+        assert MpesaReconciliationAgent is not None
 
 
 # ── Follow-Up Agent ──────────────────────────────────────────────────────────
@@ -64,8 +64,8 @@ class TestWeeklyDigestAgent:
 
 class TestGoogleBaseClient:
     def test_import(self):
-        from src.services.google_workspace.base_client import GoogleBaseClient
-        assert GoogleBaseClient is not None
+        from src.services.google_workspace.base_client import GoogleWorkspaceBaseClient
+        assert GoogleWorkspaceBaseClient is not None
 
 
 # ── Google Workspace: Gmail Service ──────────────────────────────────────────
