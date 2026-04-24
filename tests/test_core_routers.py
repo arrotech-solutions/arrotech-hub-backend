@@ -48,7 +48,7 @@ class TestBlogRouter:
 
     @pytest.mark.asyncio
     async def test_create_blog_post_unauthorized(self, client: AsyncClient):
-        response = await client.post("/api/blog/admin/posts", json={
+        response = await client.post("/api/blog/posts", json={
             "title": "Test", "content": "Body", "description": "Desc",
             "slug": "test-post", "author_name": "Admin"
         })
