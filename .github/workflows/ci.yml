@@ -75,16 +75,11 @@ jobs:
     uses: arrotech-solutions/arrotech-solutions-actions/.github/workflows/cd-deploy.yml@main
     with:
       environment: "staging"
-      platform: "flyio"
-      flyio-app-name: "mini-hub"  # Existing Fly.io app
-      flyio-region: "lhr"
-      flyio-vm-size: "shared-cpu-1x"
-      flyio-vm-memory: 256
-      flyio-min-machines: 1
-      flyio-max-machines: 2
+      platform: "railway"
+      railway-service: "mini-hub"
       wait-for-rollout: true
     secrets:
-      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
       DEPLOY_ENV_VARS: ${{ secrets.STAGING_ENV_VARS }}
 
   deploy-production:
@@ -94,17 +89,11 @@ jobs:
     uses: arrotech-solutions/arrotech-solutions-actions/.github/workflows/cd-deploy.yml@main
     with:
       environment: "production"
-      platform: "flyio"
-      flyio-app-name: "mini-hub"  # Existing Fly.io app
-      flyio-region: "lhr"
-      flyio-vm-size: "shared-cpu-1x"
-      flyio-vm-memory: 512
-      flyio-min-machines: 2
-      flyio-max-machines: 5
-      flyio-ha: true
+      platform: "railway"
+      railway-service: "mini-hub"
       wait-for-rollout: true
     secrets:
-      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
       DEPLOY_ENV_VARS: ${{ secrets.PRODUCTION_ENV_VARS }}
 
   # ===========================================================================
