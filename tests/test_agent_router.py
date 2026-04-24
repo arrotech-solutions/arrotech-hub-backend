@@ -31,7 +31,7 @@ async def test_create_agent(
         headers=auth_headers,
         json={
             "name": "Test Agent",
-            "workflow_id": test_workflow.id,
+            "workflow_id": str(test_workflow.id),
             "config": {"max_iterations": 10}
         }
     )

@@ -30,7 +30,7 @@ async def test_track_event(
         "/analytics/track",
         headers=auth_headers,
         json={
-            "workflow_id": test_workflow.id,
+            "workflow_id": str(test_workflow.id),
             "event_type": "view"
         }
     )

@@ -4,10 +4,10 @@ import pytest
 class TestIntentProcessor:
     def test_import(self):
         from src.services.intent_processor import IntentProcessor
-        svc = IntentProcessor()
-        assert svc is not None
+        assert IntentProcessor is not None
 
     def test_instantiate(self):
         from src.services.intent_processor import IntentProcessor
-        svc = IntentProcessor()
+        from unittest.mock import MagicMock
+        svc = IntentProcessor(user=MagicMock(), db=MagicMock())
         assert hasattr(svc, '__class__')

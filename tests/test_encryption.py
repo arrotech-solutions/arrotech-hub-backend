@@ -144,7 +144,7 @@ class TestMaskValue:
         from src.utils.encryption import mask_value
         result = mask_value("abc123xyz789", visible_chars=4)
         assert result.startswith("abc1")
-        assert result.endswith("x789")
+        assert result.endswith("z789")
         assert "••" in result
 
     def test_mask_custom_visible_chars(self):

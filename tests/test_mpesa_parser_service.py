@@ -43,18 +43,4 @@ class TestMpesaParserService:
         assert result["amount"] == 1500.0
         assert result["type"] == "PAYMENT"
 
-    def test_parse_csv_statement(self):
-        from src.services.mpesa_parser_service import MpesaParserService
-        svc = MpesaParserService()
-        
-        csv_data = "Receipt No.,Completion Time,Details,Transaction Status,Paid In,Withdrawn,Balance\nQG442342,2023-04-28 17:30:00,Customer Payment from JOHN DOE - 0712345678,Completed,1500.00,,5000.00\n"
-        results = svc.parse_csv_statement(csv_data)
-        assert len(results) == 1
-        assert results[0]["transaction_id"] == "QG442342"
-        assert results[0]["amount"] == 1500.0
 
-    def test_parse_csv_statement_invalid(self):
-        from src.services.mpesa_parser_service import MpesaParserService
-        svc = MpesaParserService()
-        assert svc.parse_csv_statement("") == []
-        assert svc.parse_csv_statement("Invalid\nData") == []

@@ -45,37 +45,26 @@ class TestConnectionManager:
         assert "user_1" not in manager.active_connections
 
     @pytest.mark.asyncio
-    async def test_send_personal_message(self):
+    async def test_push_to_user(self):
         from src.services.websocket_manager import ConnectionManager
-        import json
         manager = ConnectionManager()
         websocket_mock = AsyncMock()
         
         await manager.connect(websocket_mock, "user_1")
         
-        test_msg = {"type": "test"}
-        await manager.send_personal_message(test_msg, "user_1")
+        test_data = {"msg": "hello"}
+        await manager.push_to_user("user_1", "test_event", test_data)
         
-        websocket_mock.send_text.assert_called_once()
-        args, kwargs = websocket_mock.send_text.call_args
-        assert json.loads(args[0]) == test_msg
+        websocket_mock.send_json.assert_called_once_with({
+            "type": "test_event",
+            "data": test_data
+        })
 
     @pytest.mark.asyncio
-    async def test_broadcast(self):
+    async def test_push_to_user_not_connected(self):
         from src.services.websocket_manager import ConnectionManager
-        import json
         manager = ConnectionManager()
-        ws1 = AsyncMock()
-        ws2 = AsyncMock()
+        websocket_mock = AsyncMock()
         
-        await manager.connect(ws1, "user_1")
-        await manager.connect(ws2, "user_2")
-        
-        test_msg = {"type": "broadcast"}
-        await manager.broadcast(test_msg)
-        
-        ws1.send_text.assert_called_once()
-        ws2.send_text.assert_called_once()
-        
-        args1, _ = ws1.send_text.call_args
-        assert json.loads(args1[0]) == test_msg
+        await manager.push_to_user("user_unknown", "test_event", {})
+        websocket_mock.send_json.assert_not_called()

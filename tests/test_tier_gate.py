@@ -10,5 +10,5 @@ class TestTierGate:
     @pytest.mark.asyncio
     async def test_check_tier_access(self):
         # Using the actual implementation names to ensure the file runs
-        from src.services.tier_gate import get_platform_limit
-        assert callable(get_platform_limit)
+        from src.services.tier_gate import check_connection_access
+        assert callable(check_connection_access)
