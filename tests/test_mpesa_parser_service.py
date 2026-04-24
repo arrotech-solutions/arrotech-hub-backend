@@ -23,24 +23,24 @@ class TestMpesaParserService:
         assert svc.parse_sms("Invalid text without start code") is None
         
         # Valid SMS
-        sample_sms = "QG442342 Confirmed. On 28/4/23 at 5:30 PM Ksh1,500.00 received from JOHN DOE 0712345678. New M-PESA Balance is Ksh5,000.00"
+        sample_sms = "QG442342XX Confirmed. On 28/4/23 at 5:30 PM Ksh1,500.00 received from JOHN DOE 0712345678. New M-PESA Balance is Ksh5,000.00"
         result = svc.parse_sms(sample_sms)
         assert result is not None
-        assert result["transaction_id"] == "QG442342"
+        assert result["transaction_id"] == "QG442342XX"
         assert result["amount"] == 1500.0
         assert result["sender_name"] == "JOHN DOE"
-        assert result["sender_phone"] == "0712345678"
-        assert result["type"] == "RECEIPT"
+        assert result["phone_number"] == "0712345678"
+        assert result["type"] == "C2B"
 
     def test_parse_sms_sent(self):
         from src.services.mpesa_parser_service import MpesaParserService
         svc = MpesaParserService()
         
-        sample_sms = "QG442342 Confirmed. Ksh1,500.00 sent to PAYMENT SERVICES on 28/4/23 at 5:30 PM. New M-PESA Balance is Ksh5,000.00"
+        sample_sms = "QG442342XX Confirmed. Ksh1,500.00 sent to PAYMENT SERVICES on 28/4/23 at 5:30 PM. New M-PESA Balance is Ksh5,000.00"
         result = svc.parse_sms(sample_sms)
         assert result is not None
-        assert result["transaction_id"] == "QG442342"
+        assert result["transaction_id"] == "QG442342XX"
         assert result["amount"] == 1500.0
-        assert result["type"] == "PAYMENT"
+        assert result["type"] == "C2B"
 
 

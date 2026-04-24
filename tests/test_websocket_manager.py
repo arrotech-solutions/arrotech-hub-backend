@@ -34,14 +34,14 @@ class TestConnectionManager:
         await manager.connect(websocket_mock1, "user_1")
         await manager.connect(websocket_mock2, "user_1")
         
-        manager.disconnect(websocket_mock1, "user_1")
+        await manager.disconnect(websocket_mock1, "user_1")
         
         assert "user_1" in manager.active_connections
         assert websocket_mock1 not in manager.active_connections["user_1"]
         assert websocket_mock2 in manager.active_connections["user_1"]
         
         # Disconnect last connection for user
-        manager.disconnect(websocket_mock2, "user_1")
+        await manager.disconnect(websocket_mock2, "user_1")
         assert "user_1" not in manager.active_connections
 
     @pytest.mark.asyncio

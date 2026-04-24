@@ -291,14 +291,14 @@ class TestViralCardGenerator:
 
 class TestWebsocketManager:
     def test_import(self):
-        from src.services.websocket_manager import WebSocketManager
-        mgr = WebSocketManager()
+        from src.services.websocket_manager import ConnectionManager
+        mgr = ConnectionManager()
         assert mgr is not None
 
     def test_has_connect_disconnect(self):
-        from src.services.websocket_manager import WebSocketManager
-        mgr = WebSocketManager()
-        assert hasattr(mgr, "connect") or hasattr(mgr, "disconnect") or hasattr(mgr, "broadcast")
+        from src.services.websocket_manager import ConnectionManager
+        mgr = ConnectionManager()
+        assert hasattr(mgr, "connect") or hasattr(mgr, "disconnect") or hasattr(mgr, "push_to_user")
 
 
 # ── HubSpot Service ──────────────────────────────────────────────────────────
