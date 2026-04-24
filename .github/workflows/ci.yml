@@ -76,7 +76,6 @@ jobs:
     with:
       environment: "staging"
       platform: "railway"
-      railway-service: "mini-hub"
       wait-for-rollout: true
     secrets:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
@@ -90,7 +89,6 @@ jobs:
     with:
       environment: "production"
       platform: "railway"
-      railway-service: "mini-hub"
       wait-for-rollout: true
     secrets:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
