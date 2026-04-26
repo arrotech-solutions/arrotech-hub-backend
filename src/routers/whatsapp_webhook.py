@@ -247,6 +247,34 @@ async def background_process_message(user_id: uuid.UUID, contact_id: uuid.UUID, 
                 logger.error(f"[WHATSAPP WEBHOOK BG] Contact or message not found")
                 return
 
+            # Mark message as read and show typing indicator
+            try:
+                from ..models import Connection
+                from sqlalchemy import and_
+                conn_res = await db.execute(
+                    select(Connection).where(
+                        and_(
+                            Connection.user_id == user_id,
+                            Connection.platform == "whatsapp",
+                            Connection.status == "active"
+                        )
+                    )
+                )
+                connection = conn_res.scalar_one_or_none()
+                wa_config = connection.config if connection else None
+
+                if message.whatsapp_message_id:
+                    from ..services.whatsapp_service import WhatsAppService
+                    wa_svc = WhatsAppService()
+                    await wa_svc.mark_message_read(
+                        message.whatsapp_message_id,
+                        show_typing=True,
+                        config=wa_config
+                    )
+            except Exception as e:
+                logger.error(f"[WHATSAPP WEBHOOK BG] Failed to send typing indicator: {e}")
+
+
             # Trigger auto-reply processing
             try:
                 from ..services.whatsapp_auto_reply import auto_reply_engine
