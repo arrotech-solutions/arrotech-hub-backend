@@ -65,11 +65,28 @@ async def get_auth_url(user: User = Depends(get_current_user)):
 
 @router.get("/callback")
 async def oauth_callback(
-    code: str,
-    state: str,
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+    error_reason: Optional[str] = None,
+    error_description: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
     """Exchange authorization code and set up WhatsApp Business API connection via redirect (fallback path)."""
+    
+    print(f"[WHATSAPP CALLBACK] Hit! code={'YES' if code else 'NO'}, state={state}, error={error}, error_reason={error_reason}")
+    logger.info(f"[WHATSAPP CALLBACK] code={'present' if code else 'missing'}, state={state}, error={error}")
+    
+    # Handle Facebook error redirects (denied permissions, cancelled, etc.)
+    if error:
+        detail = error_description or error_reason or error
+        print(f"[WHATSAPP CALLBACK] Facebook returned error: {detail}")
+        encoded_error = urllib.parse.quote(f"Facebook authorization failed: {detail}")
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?error=whatsapp_auth_failed&detail={encoded_error}")
+    
+    if not code or not state:
+        print(f"[WHATSAPP CALLBACK] Missing code or state!")
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?error=whatsapp_setup_failed&detail=Missing+authorization+code+or+state")
     
     # State string contains the user id passed during the get_auth_url phase
     try:
