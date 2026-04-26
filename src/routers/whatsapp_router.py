@@ -269,30 +269,36 @@ async def _exchange_code_and_discover(
             phone_data = phone_resp.json()
             display_phone_number = phone_data.get("display_phone_number", "Unknown")
         else:
-            # Fallback: discover WABAs and phone numbers
-            waba_resp = await client.get(
-                f"{FACEBOOK_GRAPH_URL}/{business_id}/owned_whatsapp_business_accounts",
-                params={"access_token": access_token}
-            )
-            waba_data = waba_resp.json()
+            # Fallback: discover WABAs and phone numbers across ALL user businesses
+            wabas = []
             
-            wabas = waba_data.get("data", [])
-            
-            # If not found, try client_whatsapp_business_accounts
-            if not wabas:
-                client_waba_resp = await client.get(
-                    f"{FACEBOOK_GRAPH_URL}/{business_id}/client_whatsapp_business_accounts",
+            for b in businesses:
+                b_id = b.get("id")
+                # Try owned WABAs
+                waba_resp = await client.get(
+                    f"{FACEBOOK_GRAPH_URL}/{b_id}/owned_whatsapp_business_accounts",
                     params={"access_token": access_token}
                 )
-                client_waba_data = client_waba_resp.json()
-                wabas = client_waba_data.get("data", [])
-                
-                if not wabas:
-                    logger.error(f"Failed to find WABAs. Owned resp: {waba_data}, Client resp: {client_waba_data}")
-                    raise HTTPException(
-                        status_code=400,
-                        detail="No WhatsApp Business Account found. Please create one in your Meta Business Suite first."
-                    )
+                wabas = waba_resp.json().get("data", [])
+                if wabas:
+                    break
+                    
+                # Try client WABAs
+                client_waba_resp = await client.get(
+                    f"{FACEBOOK_GRAPH_URL}/{b_id}/client_whatsapp_business_accounts",
+                    params={"access_token": access_token}
+                )
+                wabas = client_waba_resp.json().get("data", [])
+                if wabas:
+                    break
+            
+            if not wabas:
+                # Log the final attempt's responses to help debug
+                logger.error(f"Failed to find WABAs in any business. Last owned resp: {waba_resp.json() if 'waba_resp' in locals() else 'None'}, Last client resp: {client_waba_resp.json() if 'client_waba_resp' in locals() else 'None'}")
+                raise HTTPException(
+                    status_code=400,
+                    detail="No WhatsApp Business Account found. Please create one in your Meta Business Suite first."
+                )
             
             waba_id = wabas[0].get("id")
             
