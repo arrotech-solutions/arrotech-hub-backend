@@ -109,11 +109,15 @@ async def oauth_callback(
         
         return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?success=whatsapp_connected")
 
-    except HTTPException:
-        return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?error=whatsapp_setup_failed")
+    except HTTPException as he:
+        detail_msg = he.detail if isinstance(he.detail, str) else str(he.detail)
+        logger.error(f"WhatsApp callback HTTPException: {detail_msg}")
+        encoded_error = urllib.parse.quote(detail_msg)
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?error=whatsapp_setup_failed&detail={encoded_error}")
     except Exception as e:
-        logger.error(f"Error in WhatsApp callback: {e}")
-        return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?error=internal_error")
+        logger.error(f"Error in WhatsApp callback: {e}", exc_info=True)
+        encoded_error = urllib.parse.quote(str(e))
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?error=internal_error&detail={encoded_error}")
 
 @router.post("/embedded-callback")
 async def embedded_oauth_callback(
