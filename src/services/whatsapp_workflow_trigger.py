@@ -275,10 +275,27 @@ async def execute_whatsapp_action(
     """
     from ..services import WhatsAppService
     from ..config import settings
+    from ..models import Connection
     
     session_maker = get_session_maker()
     async with session_maker() as db:
         try:
+            # Get user's WhatsApp connection config
+            conn_result = await db.execute(
+                select(Connection).where(
+                    and_(
+                        Connection.user_id == user_id,
+                        Connection.platform == "whatsapp",
+                        Connection.status == "active"
+                    )
+                )
+            )
+            connection = conn_result.scalar_one_or_none()
+            wa_config = connection.config if connection and connection.config else {
+                "access_token": settings.WHATSAPP_TOKEN,
+                "phone_number_id": settings.WHATSAPP_PHONE_NUMBER_ID
+            }
+
             if action_name == "whatsapp_send_message":
                 contact_id = parameters.get("contact_id")
                 message_content = parameters.get("message")
@@ -303,7 +320,7 @@ async def execute_whatsapp_action(
                     to_number=contact.phone_number,
                     message=message_content,
                     message_type="text",
-                    config={"access_token": settings.WHATSAPP_TOKEN, "phone_number_id": settings.WHATSAPP_PHONE_NUMBER_ID}
+                    config=wa_config
                 )
                 
                 return {"success": True, "message_id": result.get("message_id")}
@@ -367,7 +384,7 @@ async def execute_whatsapp_action(
                     to_number=contact.phone_number,
                     message=formatted["message"],
                     message_type="text",
-                    config={"access_token": settings.WHATSAPP_TOKEN, "phone_number_id": settings.WHATSAPP_PHONE_NUMBER_ID}
+                    config=wa_config
                 )
                 
                 return {"success": True, "message_id": send_result.get("message_id"), "formatted_message": formatted["message"]}
@@ -401,7 +418,7 @@ async def execute_whatsapp_action(
                     to_number=contact.phone_number,
                     message=formatted["message"],
                     message_type="text",
-                    config={"access_token": settings.WHATSAPP_TOKEN, "phone_number_id": settings.WHATSAPP_PHONE_NUMBER_ID}
+                    config=wa_config
                 )
                 
                 return {"success": True, "message_id": send_result.get("message_id"), "ticket_id": formatted.get("ticket_id")}
@@ -436,7 +453,7 @@ async def execute_whatsapp_action(
                     to_number=contact.phone_number,
                     message=formatted["message"],
                     message_type="text",
-                    config={"access_token": settings.WHATSAPP_TOKEN, "phone_number_id": settings.WHATSAPP_PHONE_NUMBER_ID}
+                    config=wa_config
                 )
                 
                 return {"success": True, "message_id": send_result.get("message_id"), "slots": formatted.get("available_slots")}
