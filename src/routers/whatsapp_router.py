@@ -277,11 +277,22 @@ async def _exchange_code_and_discover(
             waba_data = waba_resp.json()
             
             wabas = waba_data.get("data", [])
+            
+            # If not found, try client_whatsapp_business_accounts
             if not wabas:
-                raise HTTPException(
-                    status_code=400,
-                    detail="No WhatsApp Business Account found. Please create one in your Meta Business Suite first."
+                client_waba_resp = await client.get(
+                    f"{FACEBOOK_GRAPH_URL}/{business_id}/client_whatsapp_business_accounts",
+                    params={"access_token": access_token}
                 )
+                client_waba_data = client_waba_resp.json()
+                wabas = client_waba_data.get("data", [])
+                
+                if not wabas:
+                    logger.error(f"Failed to find WABAs. Owned resp: {waba_data}, Client resp: {client_waba_data}")
+                    raise HTTPException(
+                        status_code=400,
+                        detail="No WhatsApp Business Account found. Please create one in your Meta Business Suite first."
+                    )
             
             waba_id = wabas[0].get("id")
             
