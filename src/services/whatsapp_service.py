@@ -135,6 +135,60 @@ class WhatsAppService:
                 "error": str(e)
             }
 
+    async def mark_message_read(
+        self,
+        message_id: str,
+        show_typing: bool = False,
+        config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Mark a message as read and optionally show a typing indicator."""
+        try:
+            credentials = self._get_credentials()
+            
+            if config:
+                phone_number_id = config.get("phone_number_id")
+                access_token = config.get("access_token")
+                base_url = config.get("base_url", credentials["base_url"])
+            else:
+                phone_number_id = credentials["phone_number_id"]
+                access_token = credentials["access_token"]
+                base_url = credentials["base_url"]
+                
+            if not phone_number_id or not access_token:
+                return {"success": False, "error": "WhatsApp credentials not configured"}
+                
+            url = f"{base_url}/{phone_number_id}/messages"
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "messaging_product": "whatsapp",
+                "status": "read",
+                "message_id": message_id
+            }
+            
+            # Note: WhatsApp Cloud API may require typing indicator to be sent in a separate request
+            # or in combination, depending on the exact API version. Currently, we try to append it.
+            if show_typing:
+                payload["typing_indicator"] = {
+                    "type": "text"
+                }
+                
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=headers) as response:
+                    result = await response.json()
+                    if response.status == 200:
+                        return {"success": True, "result": result}
+                    else:
+                        logger.warning(f"Failed to mark as read/typing: {result}")
+                        return {"success": False, "error": result}
+                        
+        except Exception as e:
+            logger.error(f"Error marking message read: {e}")
+            return {"success": False, "error": str(e)}
+
     async def send_template_message(
         self,
         to_number: str,
