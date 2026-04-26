@@ -104,7 +104,7 @@ async def oauth_callback(
         )
         
         # Subscribe to webhook events
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             sub_resp = await client.post(
                 f"{FACEBOOK_GRAPH_URL}/{waba_id}/subscribed_apps",
                 params={"access_token": access_token}
@@ -203,7 +203,7 @@ async def _exchange_code_and_discover(
     
     Returns: (access_token, waba_id, phone_number_id, display_phone_number, business_id)
     """
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         # 1. Exchange code for short-lived access token
         token_url = f"{FACEBOOK_GRAPH_URL}/oauth/access_token"
         params = {
