@@ -3350,6 +3350,26 @@ class ToolExecutor:
                         config={"access_token": access_token, "phone_number_id": phone_number_id}
                     )
 
+                # 2) Send product cards if present in arguments
+                cards = arguments.get("cards", [])
+                card_results = []
+                for card in cards:
+                    try:
+                        card_res = await whatsapp_service.send_product_card(
+                            to_number=to_number,
+                            name=card.get("name", "Product"),
+                            price=card.get("price", 0),
+                            description=card.get("description", ""),
+                            image_url=card.get("image_url", ""),
+                            product_id=card.get("id", ""),
+                            config={"access_token": access_token, "phone_number_id": phone_number_id}
+                        )
+                        card_results.append({"id": card.get("id"), "result": card_res})
+                        logger.info(f"[WA_SMART_DISPATCH] Sent product card to {to_number}: {card.get('name')}")
+                    except Exception as card_err:
+                        logger.warning(f"[WA_SMART_DISPATCH] Failed to send product card {card.get('name')}: {card_err}")
+                        card_results.append({"id": card.get("id"), "error": str(card_err)})
+
                 # 2) Send each image as a native WhatsApp image message
                 media_results = []
                 for img_url in image_urls:
@@ -3368,20 +3388,26 @@ class ToolExecutor:
                         media_results.append({"url": img_url, "error": str(img_err)})
 
                 images_sent = len([r for r in media_results if "result" in r])
+                cards_sent = len([r for r in card_results if "result" in r])
                 result_summary = f"Message sent to {to_number}"
                 if images_sent:
                     result_summary += f" + {images_sent} image(s) sent as media"
+                if cards_sent:
+                    result_summary += f" + {cards_sent} interactive card(s) sent"
 
                 return {
                     "success": True,
                     "result": result_summary,
                     "data": text_result,
                     "images_sent": images_sent,
+                    "cards_sent": cards_sent,
                     "media_results": media_results,
+                    "card_results": card_results,
                     "processed_arguments": {
                         "to_number": to_number,
                         "message": clean_message,
-                        "image_urls": image_urls
+                        "image_urls": image_urls,
+                        "cards": cards
                     }
                 }
             elif action == "send_media":

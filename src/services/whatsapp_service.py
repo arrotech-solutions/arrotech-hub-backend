@@ -189,6 +189,94 @@ class WhatsAppService:
             logger.error(f"Error marking message read: {e}")
             return {"success": False, "error": str(e)}
 
+    async def send_product_card(
+        self,
+        to_number: str,
+        name: str,
+        price: float,
+        description: str,
+        image_url: str,
+        product_id: str,
+        config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Send a product card with interactive buttons."""
+        try:
+            credentials = self._get_credentials()
+            
+            if config:
+                phone_number_id = config.get("phone_number_id")
+                access_token = config.get("access_token")
+                base_url = config.get("base_url", credentials["base_url"])
+            else:
+                phone_number_id = credentials["phone_number_id"]
+                access_token = credentials["access_token"]
+                base_url = credentials["base_url"]
+                
+            if not phone_number_id or not access_token:
+                return {"success": False, "error": "WhatsApp credentials not configured"}
+                
+            formatted_number = self._format_phone_number(to_number)
+            url = f"{base_url}/{phone_number_id}/messages"
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
+            
+            body_text = f"*{name}*\nPrice: KES {price}\n\n{description}"
+            # Meta body text limit is 1024 characters
+            if len(body_text) > 1024:
+                body_text = body_text[:1021] + "..."
+                
+            payload = {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": formatted_number,
+                "type": "interactive",
+                "interactive": {
+                    "type": "button",
+                    "header": {
+                        "type": "image",
+                        "image": {
+                            "link": image_url
+                        }
+                    },
+                    "body": {
+                        "text": body_text
+                    },
+                    "action": {
+                        "buttons": [
+                            {
+                                "type": "reply",
+                                "reply": {
+                                    "id": f"add_to_cart_{product_id}",
+                                    "title": "Add to Cart"
+                                }
+                            },
+                            {
+                                "type": "reply",
+                                "reply": {
+                                    "id": f"view_details_{product_id}",
+                                    "title": "View Details"
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=headers) as response:
+                    result = await response.json()
+                    if response.status == 200:
+                        return {"success": True, "message_id": result.get("messages", [{}])[0].get("id")}
+                    else:
+                        logger.warning(f"Failed to send product card: {result}")
+                        return {"success": False, "error": result}
+                        
+        except Exception as e:
+            logger.error(f"Error sending product card: {e}")
+            return {"success": False, "error": str(e)}
+
     async def send_template_message(
         self,
         to_number: str,

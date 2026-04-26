@@ -154,9 +154,13 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
             elif msg_type == "interactive":
                 interactive = msg.get("interactive", {})
                 if interactive.get("type") == "button_reply":
-                    content = interactive.get("button_reply", {}).get("title", "")
+                    title = interactive.get("button_reply", {}).get("title", "")
+                    btn_id = interactive.get("button_reply", {}).get("id", "")
+                    content = f"{title} (ID: {btn_id})" if btn_id else title
                 elif interactive.get("type") == "list_reply":
-                    content = interactive.get("list_reply", {}).get("title", "")
+                    title = interactive.get("list_reply", {}).get("title", "")
+                    list_id = interactive.get("list_reply", {}).get("id", "")
+                    content = f"{title} (ID: {list_id})" if list_id else title
             
             logger.info(f"[WHATSAPP WEBHOOK] Message from {from_number}: {content[:50]}...")
             

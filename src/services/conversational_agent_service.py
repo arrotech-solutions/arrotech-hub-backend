@@ -301,6 +301,37 @@ AGENT_SUB_TOOLS = [
                 "required": ["items"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "display_product_cards",
+            "description": (
+                "Format and display products to the customer as interactive WhatsApp cards with Add to Cart / View Details buttons. "
+                "Use this WHENEVER you are showing specific products or catalog items to the customer. "
+                "Do NOT just list the products in plain text if you have their image URLs and prices."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "products": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string", "description": "Unique product ID"},
+                                "name": {"type": "string", "description": "Product name"},
+                                "price": {"type": "number", "description": "Product price in numeric format"},
+                                "description": {"type": "string", "description": "Short product description"},
+                                "image_url": {"type": "string", "description": "Publicly accessible image URL for the product"}
+                            },
+                            "required": ["id", "name", "price", "description", "image_url"]
+                        }
+                    }
+                },
+                "required": ["products"]
+            }
+        }
     }
 ]
 
@@ -398,6 +429,7 @@ class ConversationalAgentService:
             order_data = None
             order_notification = ""
             collected_image_urls: List[str] = []
+            collected_product_cards: List[Dict[str, Any]] = []
             max_iterations = 3
 
             for iteration in range(max_iterations):
@@ -434,6 +466,7 @@ class ConversationalAgentService:
                     return {
                         "response_text": final_text,
                         "image_urls": image_urls,
+                        "cards": collected_product_cards,
                         "order_created": order_created,
                         "order_data": order_data,
                         "order_notification": order_notification,
@@ -491,6 +524,11 @@ class ConversationalAgentService:
                         tool_images = self._extract_image_urls_from_search_result(tool_result)
                         if tool_images:
                             collected_image_urls = _dedupe_keep_order(collected_image_urls + tool_images)
+                            
+                    if tool_name == "display_product_cards":
+                        tool_cards = tool_result.get("cards", [])
+                        if tool_cards:
+                            collected_product_cards.extend(tool_cards)
 
                     # Check if an order was created
                     if tool_name == "create_order" and tool_result.get("success"):
@@ -522,6 +560,7 @@ class ConversationalAgentService:
             return {
                 "response_text": final_text,
                 "image_urls": image_urls,
+                "cards": collected_product_cards,
                 "order_created": order_created,
                 "order_data": order_data,
                 "order_notification": order_notification,
@@ -672,8 +711,7 @@ class ConversationalAgentService:
 - If the customer's request is unclear, ask for clarification
 - Respond in the same language as the customer
 - Available delivery methods: {delivery_str}
-- When showing products that have images, ALWAYS include the full image URL on its own line so the customer can see the product photo
-- Never shorten or omit image URLs — include the complete URL exactly as provided in the catalog data
+- IMPORTANT: When showing specific products that have images and prices, ALWAYS use the `display_product_cards` tool to present them beautifully to the customer. DO NOT list them as plain text if you can use the tool.
 """
 
         if custom_prompt:
@@ -784,6 +822,14 @@ class ConversationalAgentService:
                     user=user,
                     db=db,
                 )
+                
+            elif tool_name == "display_product_cards":
+                products = arguments.get("products", [])
+                return {
+                    "success": True, 
+                    "result": f"Successfully formatted {len(products)} products as interactive cards.",
+                    "cards": products
+                }
 
             else:
                 return {"success": False, "error": f"Unknown sub-tool: {tool_name}"}
