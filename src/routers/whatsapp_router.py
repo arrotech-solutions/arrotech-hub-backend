@@ -159,7 +159,7 @@ async def embedded_oauth_callback(
         )
         
         # Subscribe to webhook events
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             sub_resp = await client.post(
                 f"{FACEBOOK_GRAPH_URL}/{waba_id}/subscribed_apps",
                 params={"access_token": access_token}
@@ -382,7 +382,7 @@ async def get_whatsapp_phone_numbers(
     access_token = connection.config["access_token"]
     
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(
                 f"{FACEBOOK_GRAPH_URL}/{waba_id}/phone_numbers",
                 params={
@@ -408,3 +408,64 @@ async def sync_whatsapp_phone_numbers(
     """Force re-fetch of phone numbers for the WA connection."""
     result = await get_whatsapp_phone_numbers(user, db)
     return result
+
+
+class ManualConnectRequest(BaseModel):
+    access_token: str
+    waba_id: str
+    phone_number_id: str
+    display_phone_number: str = "Unknown"
+    business_id: str = ""
+
+
+@router.post("/manual-connect")
+async def manual_connect(
+    request_data: ManualConnectRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Manually connect a WhatsApp Business Account (admin/testing endpoint).
+    
+    Use this when OAuth flow is unavailable. Provide the access token,
+    WABA ID, and phone number ID from the Meta App Dashboard.
+    """
+    try:
+        # Verify the token works by calling the Graph API
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            verify_resp = await client.get(
+                f"{FACEBOOK_GRAPH_URL}/{request_data.phone_number_id}",
+                params={
+                    "access_token": request_data.access_token,
+                    "fields": "id,display_phone_number"
+                }
+            )
+            if verify_resp.status_code == 200:
+                verify_data = verify_resp.json()
+                display_phone = verify_data.get("display_phone_number", request_data.display_phone_number)
+            else:
+                logger.warning(f"Token verification returned {verify_resp.status_code}: {verify_resp.text}")
+                display_phone = request_data.display_phone_number
+            
+            # Subscribe to webhooks
+            sub_resp = await client.post(
+                f"{FACEBOOK_GRAPH_URL}/{request_data.waba_id}/subscribed_apps",
+                params={"access_token": request_data.access_token}
+            )
+            if sub_resp.status_code != 200:
+                logger.warning(f"Webhook subscription warning: {sub_resp.json()}")
+        
+        await _upsert_whatsapp_connection(
+            db=db,
+            user_id=user.id,
+            access_token=request_data.access_token,
+            business_id=request_data.business_id,
+            waba_id=request_data.waba_id,
+            phone_number_id=request_data.phone_number_id,
+            display_phone_number=display_phone,
+            auth_type="manual"
+        )
+        
+        return {"success": True, "message": "WhatsApp Business connected successfully"}
+    except Exception as e:
+        logger.error(f"Manual connect error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
