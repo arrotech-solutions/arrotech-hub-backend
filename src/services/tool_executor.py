@@ -3346,7 +3346,8 @@ class ToolExecutor:
                 text_result = None
                 if clean_message.strip():
                     text_result = await whatsapp_service.send_message(
-                        to_number, clean_message
+                        to_number, clean_message,
+                        config={"access_token": access_token, "phone_number_id": phone_number_id}
                     )
 
                 # 2) Send each image as a native WhatsApp image message
@@ -3357,7 +3358,8 @@ class ToolExecutor:
                             to_number=to_number,
                             media_url=img_url,
                             media_type="image",
-                            caption=""
+                            caption="",
+                            config={"access_token": access_token, "phone_number_id": phone_number_id}
                         )
                         media_results.append({"url": img_url, "result": media_res})
                         logger.info(f"[WA_SMART_DISPATCH] Sent image to {to_number}: {img_url[:80]}")
@@ -3395,7 +3397,8 @@ class ToolExecutor:
                     }
 
                 result = await whatsapp_service.send_media_message(
-                    to_number, media_url, media_type, caption
+                    to_number, media_url, media_type, caption,
+                    config={"access_token": access_token, "phone_number_id": phone_number_id}
                 )
                 return {
                     "success": True,
