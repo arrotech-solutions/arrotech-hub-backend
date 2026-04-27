@@ -356,7 +356,8 @@ class ConversationalAgentService:
         session_key: str,
         business_config: Dict[str, Any],
         user: User,
-        db: AsyncSession
+        db: AsyncSession,
+        background_tasks: Optional['BackgroundTasks'] = None
     ) -> Dict[str, Any]:
         """
         Run the conversational agent for one turn.
@@ -387,6 +388,24 @@ class ConversationalAgentService:
             currency = business_config.get("currency", "KES")
             delivery_methods = business_config.get("delivery_methods", ["delivery", "pickup"])
             custom_system_prompt = business_config.get("system_prompt", "")
+            
+            enabled_mcp_tool_names = business_config.get("enabled_mcp_tools", [])
+            if isinstance(enabled_mcp_tool_names, str):
+                try:
+                    import ast
+                    parsed = ast.literal_eval(enabled_mcp_tool_names)
+                    if isinstance(parsed, list):
+                        enabled_mcp_tool_names = parsed
+                    else:
+                        enabled_mcp_tool_names = [t.strip() for t in enabled_mcp_tool_names.split(",") if t.strip()]
+                except Exception:
+                    enabled_mcp_tool_names = [t.strip() for t in enabled_mcp_tool_names.split(",") if t.strip()]
+            elif not isinstance(enabled_mcp_tool_names, list):
+                enabled_mcp_tool_names = []
+                
+            if enabled_mcp_tool_names:
+                custom_system_prompt += f"\n\n[HARNESS INSTRUCTIONS]\nYou have access to external enterprise tools: {', '.join(enabled_mcp_tool_names)}. Use them autonomously when the customer's request requires them."
+
             platform = self._detect_channel_platform(
                 explicit_platform=business_config.get("platform"),
                 session_key=session_key
@@ -432,11 +451,19 @@ class ConversationalAgentService:
             collected_product_cards: List[Dict[str, Any]] = []
             max_iterations = 3
 
+            # Assemble dynamic tools
+            from .dynamic_tool_registry import dynamic_tool_registry
+            dynamic_tools = list(AGENT_SUB_TOOLS)
+            for t_name in enabled_mcp_tool_names:
+                schema = dynamic_tool_registry.get_tool(t_name)
+                if schema:
+                    dynamic_tools.append(dynamic_tool_registry.convert_tools_to_openai_format([schema])[0])
+
             for iteration in range(max_iterations):
                 # Call LLM with sub-tools
                 response = await self.llm_service.chat_completion(
                     messages=messages,
-                    tools=AGENT_SUB_TOOLS,
+                    tools=dynamic_tools,
                     temperature=0.3,
                     max_tokens=800,
                     provider="openai"
@@ -509,7 +536,8 @@ class ConversationalAgentService:
                         storage_config=storage_config,
                         session_key=session_key,
                         user=user,
-                        db=db
+                        db=db,
+                        background_tasks=background_tasks
                     )
 
                     actions_taken.append({
@@ -780,7 +808,8 @@ class ConversationalAgentService:
         storage_config: Dict[str, Any],
         session_key: str,
         user: User,
-        db: AsyncSession
+        db: AsyncSession,
+        background_tasks: Optional['BackgroundTasks'] = None
     ) -> Dict[str, Any]:
         """Execute one of the agent's sub-tools."""
 
@@ -801,7 +830,8 @@ class ConversationalAgentService:
                     business_name=business_name,
                     storage_config=storage_config,
                     user=user,
-                    db=db
+                    db=db,
+                    background_tasks=background_tasks
                 )
 
             elif tool_name == "calculate_total":
@@ -832,7 +862,10 @@ class ConversationalAgentService:
                 }
 
             else:
-                return {"success": False, "error": f"Unknown sub-tool: {tool_name}"}
+                # Dynamic MCP Tool execution (Harness delegation)
+                from .tool_executor import ToolExecutor
+                executor = ToolExecutor()
+                return await executor.execute_tool(tool_name, arguments, user, db, background_tasks=background_tasks)
 
         except Exception as e:
             logger.error(f"[CONV_AGENT] Sub-tool {tool_name} error: {e}")
@@ -882,7 +915,8 @@ class ConversationalAgentService:
         business_name: str,
         storage_config: Dict[str, Any] = None,
         user: User = None,
-        db: AsyncSession = None
+        db: AsyncSession = None,
+        background_tasks: Optional['BackgroundTasks'] = None
     ) -> Dict[str, Any]:
         """Create an order via OrderService, then persist to connected storage."""
         try:
@@ -917,7 +951,8 @@ class ConversationalAgentService:
                         storage_config=storage_config,
                         business_name=business_name,
                         user=user,
-                        db=db
+                        db=db,
+                        background_tasks=background_tasks
                     )
 
             return {
@@ -1078,13 +1113,45 @@ class ConversationalAgentService:
     # ORDER STORAGE PERSISTENCE (Google Sheets / Airtable)
     # ═══════════════════════════════════════════════════════════
 
+    async def _run_persist_task(
+        self,
+        provider: str,
+        order_data: Dict[str, Any],
+        customer: Dict[str, Any],
+        items_summary: str,
+        now: str,
+        storage_config: Dict[str, Any],
+        user: User
+    ):
+        """Background worker for persisting to external storage using a fresh DB session."""
+        try:
+            from ..database import get_session_maker
+            from .tool_executor import ToolExecutor
+            executor = ToolExecutor()
+            session_maker = get_session_maker()
+            
+            async with session_maker() as new_db:
+                if provider == "google_sheets":
+                    await self._persist_to_google_sheets(
+                        executor, order_data, customer, items_summary,
+                        now, storage_config, user, new_db
+                    )
+                elif provider == "airtable":
+                    await self._persist_to_airtable(
+                        executor, order_data, customer, items_summary,
+                        now, storage_config, user, new_db
+                    )
+        except Exception as e:
+            logger.error(f"[CONV_AGENT] Background persistence failed (non-fatal): {e}")
+
     async def _persist_to_storage(
         self,
         order_data: Dict[str, Any],
         storage_config: Dict[str, Any],
         business_name: str,
         user: User,
-        db: AsyncSession
+        db: AsyncSession,
+        background_tasks: Optional['BackgroundTasks'] = None
     ):
         """
         Persist order + customer data to the business's connected storage.
@@ -1096,9 +1163,6 @@ class ConversationalAgentService:
             return
 
         try:
-            from .tool_executor import ToolExecutor
-            executor = ToolExecutor()
-
             # Extract order fields for storage
             customer = order_data.get("customer", {})
             items = order_data.get("items", [])
@@ -1108,23 +1172,29 @@ class ConversationalAgentService:
             )
             now = order_data.get("created_at", datetime.now().isoformat())
 
-            if provider == "google_sheets":
-                await self._persist_to_google_sheets(
-                    executor, order_data, customer, items_summary,
-                    now, storage_config, user, db
+            if background_tasks:
+                background_tasks.add_task(
+                    self._run_persist_task,
+                    provider, order_data, customer, items_summary, now, storage_config, user
                 )
-
-            elif provider == "airtable":
-                await self._persist_to_airtable(
-                    executor, order_data, customer, items_summary,
-                    now, storage_config, user, db
-                )
-
             else:
-                logger.warning(f"[CONV_AGENT] Unknown storage provider: {provider}")
+                from .tool_executor import ToolExecutor
+                executor = ToolExecutor()
+                if provider == "google_sheets":
+                    await self._persist_to_google_sheets(
+                        executor, order_data, customer, items_summary,
+                        now, storage_config, user, db
+                    )
+                elif provider == "airtable":
+                    await self._persist_to_airtable(
+                        executor, order_data, customer, items_summary,
+                        now, storage_config, user, db
+                    )
+                else:
+                    logger.warning(f"[CONV_AGENT] Unknown storage provider: {provider}")
 
         except Exception as e:
-            logger.warning(f"[CONV_AGENT] Storage persistence failed (non-fatal): {e}")
+            logger.warning(f"[CONV_AGENT] Storage persistence setup failed (non-fatal): {e}")
 
     async def persist_payment_transaction_to_storage(
         self,
