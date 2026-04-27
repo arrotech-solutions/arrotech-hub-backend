@@ -189,6 +189,14 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "placeholder": "Transactions",
                 "default": "Transactions",
                 "show_if": {"field": "storage_provider", "value": "airtable"}
+            },
+            "enabled_mcp_tools": {
+                "label": "Enabled MCP Tools",
+                "type": "multi_select",
+                "description": "Select additional MCP tools the agent can use",
+                "required": False,
+                "options": [],
+                "default": []
             }
         },
         "steps": [
@@ -215,7 +223,8 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                         "storage_airtable_base_id": "{{config.storage_airtable_base_id}}",
                         "storage_airtable_orders_table": "{{config.storage_airtable_orders_table}}",
                         "storage_airtable_customers_table": "{{config.storage_airtable_customers_table}}",
-                        "storage_airtable_transactions_table": "{{config.storage_airtable_transactions_table}}"
+                        "storage_airtable_transactions_table": "{{config.storage_airtable_transactions_table}}",
+                        "enabled_mcp_tools": "{{config.enabled_mcp_tools}}"
                     }
                 }
             },
@@ -410,6 +419,14 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "placeholder": "Transactions",
                 "default": "Transactions",
                 "show_if": {"field": "storage_provider", "value": "airtable"}
+            },
+            "enabled_mcp_tools": {
+                "label": "Enabled MCP Tools",
+                "type": "multi_select",
+                "description": "Select additional MCP tools the agent can use",
+                "required": False,
+                "options": [],
+                "default": []
             }
         },
         "steps": [
@@ -436,7 +453,8 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                         "storage_airtable_base_id": "{{config.storage_airtable_base_id}}",
                         "storage_airtable_orders_table": "{{config.storage_airtable_orders_table}}",
                         "storage_airtable_customers_table": "{{config.storage_airtable_customers_table}}",
-                        "storage_airtable_transactions_table": "{{config.storage_airtable_transactions_table}}"
+                        "storage_airtable_transactions_table": "{{config.storage_airtable_transactions_table}}",
+                        "enabled_mcp_tools": "{{config.enabled_mcp_tools}}"
                     }
                 }
             },

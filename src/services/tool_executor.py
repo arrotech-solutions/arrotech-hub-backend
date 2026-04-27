@@ -144,7 +144,8 @@ class ToolExecutor:
         arguments: Dict[str, Any],
         user: User,
         db: AsyncSession,
-        tools_called: List[Dict[str, Any]] = None
+        tools_called: List[Dict[str, Any]] = None,
+        background_tasks: Optional['BackgroundTasks'] = None
     ) -> Dict[str, Any]:
         """Execute a specific tool with given arguments."""
         try:
@@ -281,7 +282,7 @@ class ToolExecutor:
             elif tool_name == "real_estate_management":
                 return await self._execute_real_estate_tool(arguments, user, db)
             elif tool_name == "conversational_agent":
-                return await self._execute_conversational_agent_tool(arguments, user, db)
+                return await self._execute_conversational_agent_tool(arguments, user, db, background_tasks)
             else:
                 return {
                     "success": False,
@@ -6946,7 +6947,7 @@ Description: {payment.description or 'N/A'}"""
         return await self.services["real_estate"].handle_operation(operation, **parameters)
 
 
-    async def _execute_conversational_agent_tool(self, parameters: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+    async def _execute_conversational_agent_tool(self, parameters: Dict[str, Any], user: User, db: AsyncSession, background_tasks: Optional['BackgroundTasks'] = None) -> Dict[str, Any]:
         """Execute the conversational agent tool for agentic AI workflows."""
         try:
             agent = ConversationalAgentService()
@@ -6963,7 +6964,8 @@ Description: {payment.description or 'N/A'}"""
                 session_key=session_key,
                 business_config=business_config,
                 user=user,
-                db=db
+                db=db,
+                background_tasks=background_tasks
             )
 
             return {

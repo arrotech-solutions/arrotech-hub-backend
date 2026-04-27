@@ -1,247 +1,257 @@
 # Arrotech Hub Backend
 
-Production backend for Arrotech Hub: a multi-tenant AI operations platform that combines:
+> **A multi-tenant AI operations platform backend.**
 
-- conversational AI (`/chat`) with tool execution and streaming responses,
-- workflow creation/execution (`/workflows`, `/agents`, templates, scheduling),
-- business integrations (CRM, social, productivity, communication, accounting),
-- payments and reconciliation (M-Pesa, Stripe, Paystack),
-- creator/marketplace primitives for reusable automations,
-- organization onboarding and team access control,
-- public web forms, support routing, and blog APIs.
+Arrotech Hub Backend serves as the robust orchestration layer powering the Arrotech Hub. It elegantly bridges conversational AI capabilities with enterprise workflow execution, business integrations, and automated operational routing.
 
-The service runs as a FastAPI app and can also run in MCP stdio mode for tool-serving workflows.
+---
 
-## What This Service Is
+## 📑 Table of Contents
 
-Arrotech Hub backend is the orchestration layer between:
+- [Overview](#-overview)
+- [System Architecture](#-system-architecture)
+- [Core Domain Modules](#-core-domain-modules)
+- [Prerequisites](#-prerequisites)
+- [Getting Started](#-getting-started)
+- [Configuration & Environment](#-configuration--environment)
+- [Data Model & Persistence](#-data-model--persistence)
+- [API Surface](#-api-surface)
+- [MCP Mode](#-mcp-mode)
+- [Security & Authentication](#-security--authentication)
+- [Testing & Quality](#-testing--quality)
+- [Deployment](#-deployment)
 
-- identity and tenant context,
-- integrations and credentials,
-- LLM provider abstraction,
-- automation execution engines,
-- analytics/monitoring and billing.
+---
 
-It exposes HTTP APIs consumed by the frontend and provides MCP tools when launched in MCP mode.
+## 🎯 Overview
 
-## System Architecture
+The service functions as the central nervous system for Arrotech Hub, handling:
+- **Conversational AI (`/chat`)**: Supports tool execution and real-time streaming responses.
+- **Workflow Orchestration (`/workflows`, `/agents`)**: Features template management, node-based execution tracking, and scheduling.
+- **Business Integrations**: Native hooks for CRM (HubSpot, Salesforce), productivity (Slack, Google Workspace), and social channels.
+- **Financial Reconciliation**: Payment gateways (M-Pesa, Stripe, Paystack) with fraud signaling.
+- **Identity & Organization**: Multi-tenant RBAC, onboarding, and secure access flows.
 
-### Runtime Composition
+Built on **FastAPI**, it operates asynchronously and seamlessly integrates with **PostgreSQL** (via asyncpg) and **Redis** for stateful operations.
 
-- **API runtime**: FastAPI with async routing and lifecycle startup/shutdown hooks.
-- **Persistence**: PostgreSQL via SQLAlchemy async engine (`asyncpg`) and Alembic migrations.
-- **Cache + ephemeral state**: Redis (used by cache/session context paths such as messaging memory).
-- **Schedulers/orchestrators**: workflow scheduler + execution orchestration services.
-- **Observability stack (local compose)**: Prometheus, Grafana, Elasticsearch, Logstash, Kibana, Node Exporter.
+---
 
-### Request Lifecycle (high-level)
+## 🏗 System Architecture
 
-1. Request enters FastAPI app.
-2. Middleware chain applies GZip, in-memory rate limiting, cache-control headers, CORS, proxy header adaptation.
-3. Auth context and org/user context are resolved in route-level dependencies.
-4. Router delegates to domain service(s) and persistence layer.
-5. Response is returned; selected GET endpoints receive cache-control headers.
+The application follows a modular, service-oriented monolithic architecture with strict separation of concerns.
 
-### MCP Mode
+```mermaid
+graph TD
+    Client[Client Apps / Frontend] --> Proxy[Nginx Edge Proxy]
+    Proxy --> API[FastAPI Application]
+    
+    subgraph Core Runtime
+        API --> AuthMiddleware[Auth & RBAC Middleware]
+        AuthMiddleware --> Routers[Domain Routers]
+        Routers --> Services[Service Orchestration Layer]
+    end
 
-When `RUN_MODE=mcp`, the server runs an MCP stdio server and exposes tools such as:
+    subgraph Persistence
+        Services --> DB[(PostgreSQL)]
+        Services --> Cache[(Redis Cache & Session)]
+    end
 
-- HubSpot operations,
-- Slack messaging/reporting,
-- file management utilities,
-- web tools/scraping helpers,
-- content creation operations.
+    subgraph External Dependencies
+        Services -.-> LLMs[LLM Providers: OpenAI/Gemini/Ollama]
+        Services -.-> Integrations[SaaS Integrations: HubSpot/Slack/WhatsApp]
+        Services -.-> Payments[Payment Gateways: M-Pesa/Stripe]
+    end
+    
+    subgraph Observability
+        API -.-> Logs[Logstash/Elasticsearch]
+        API -.-> Metrics[Prometheus/Grafana]
+    end
+```
 
-## Domain Modules
+### Request Lifecycle
 
-The backend is broad and modularized into routers + services.
+1. **Ingress**: Request enters the FastAPI application.
+2. **Middleware Pipeline**: Applies GZip, in-memory rate limiting, Cache-Control, CORS, and proxy header adaptation.
+3. **Context Resolution**: Authorization, tenant mapping, and user identity are resolved via route-level dependencies.
+4. **Service Delegation**: The router parses the request and delegates business logic to specific domain services.
+5. **Persistence/External Calls**: The service interacts with PostgreSQL via SQLAlchemy, Redis, or external third-party REST/GraphQL APIs.
+6. **Egress**: The response is returned to the client.
 
-### Core platform modules
+---
 
-- Authentication, authorization, user lifecycle
-- User settings and preferences
-- Security controls (2FA/OTP/passkey related flows)
-- Connection registry and integration configuration
-- Chat conversations, message history, provider/tool discovery
-- Workflow design, versioning, execution tracking, retries
-- Agent lifecycle and scheduling abstractions
+## 🧩 Core Domain Modules
 
-### Business and vertical modules
+The codebase is logically grouped into discrete domain modules located under `src/routers/` and `src/services/`.
 
-- Marketplace + creator profiles + favorites + followers + activity
-- Notification center and analytics feeds
-- Public forms (contact/newsletter) and support ticket routing
-- Blog API (public/admin paths)
-- Organization onboarding and membership management
-- M-Pesa reconciliation, invoice matching, fraud signal tracking
-- TikTok creator utilities, premium links, fan commerce records
-- Productivity dashboards and unified-workspace support endpoints
-- RAG knowledge base/data source/sync pipeline modules
+| Module Category | Responsibilities |
+|-----------------|------------------|
+| **Core Platform** | Auth (JWT/Passkeys), user lifecycle, RBAC, settings, integration registry (`/connections`). |
+| **Conversational** | Chat history memory, provider agnostic abstraction (OpenAI, Anthropic, Gemini), RAG tooling. |
+| **Automation** | Visual workflow design, execution engine, retries, agent scheduling. |
+| **Business/Vertical** | Creator marketplace, support ticketing, public forms, blog API, notifications. |
+| **Finance** | M-Pesa reconciliation, Stripe/Paystack subscriptions, invoicing, fraud detection. |
 
-### Integrations surfaced in routers/services
+---
 
-- CRM/accounting: HubSpot, Salesforce, Zoho, QuickBooks, Xero, Airtable
-- Communication: Slack, WhatsApp, Telegram, Teams, Zoom, Outlook, Gmail webhooks
-- Social: Facebook, Instagram, LinkedIn, Twitter/X, TikTok
-- Productivity/work: Notion, Trello, Jira, ClickUp, Asana, Google Workspace
-- Payments: M-Pesa, Stripe, Paystack
-- AI providers and vector/data tooling services (OpenAI, Anthropic, Gemini, Ollama, and related helper services)
+## 🛠 Prerequisites
 
-## API Surface (grouped)
+Before setting up the project locally, ensure you have the following installed:
 
-The app includes many router groups. Primary path families include:
+- **Python**: `3.11+`
+- **Docker**: Desktop or Engine + Docker Compose
+- **Git**: For version control
 
-- `/auth` - registration, login, social auth, account management, password reset
-- `/chat` - conversations, message streaming, provider/tool capability discovery
-- `/connections` - integration CRUD, validation, platform discovery
-- `/workflows` - create/update/list/execute/test/execution history
-- `/agents` - create/manage/execute/schedule automation agents
-- `/payments` - M-Pesa/Stripe/Paystack pricing/payment/subscription/history flows
-- `/api/v1` - status/pricing/usage and additional API namespace features
-- `/api/v1/security` - security endpoints
-- `/api/v1/organizations` - org/team lifecycle endpoints
-- marketplace/creator/analytics/notifications/favorites/preferences namespaces
-- integration-specific OAuth/webhook namespaces (e.g. WhatsApp, Slack, Google Workspace, etc.)
-- public endpoints for forms/blog/support where applicable
+---
 
-For precise operations and schemas, use generated docs:
+## 🚀 Getting Started
 
-- local: `http://localhost:8000/docs`
-- alternate: `http://localhost:8000/redoc`
+We utilize Docker Compose to provide a production-mirrored development environment. 
 
-## Data Model Overview
+### 1. Repository Setup
 
-`src/models.py` contains an extensive model graph. Key entities:
+```bash
+git clone <repository-url>
+cd arrotech-hub-backend
+```
 
-- **Identity + access**: `User`, roles, passkeys, settings, preferences
-- **Messaging + AI**: `Conversation`, `Message`, messaging conversation memory
-- **Automation**: `Workflow`, `WorkflowStep`, `WorkflowExecution`, `WorkflowStepExecution`, versions/templates
-- **Marketplace/social**: creator profiles, reviews, downloads, favorites, followers, notifications, activity feed
-- **Payments/finance**: `Payment`, `Subscription`, M-Pesa payment records, invoice, fraud signals
-- **Integrations**: `Connection` plus platform-specific data models
-- **Organizations**: orgs, members, invites, departments, audit log
-- **Content/public**: blog categories/posts, contact submissions, newsletter subscribers
-- **RAG**: knowledge bases, data sources, sync logs
+### 2. Environment Configuration
 
-This schema indicates the platform currently supports both SMB workflows and larger multi-team operations.
+Copy the template environment file to create your local `.env`.
 
-## Configuration and Environments
+```bash
+cp env.example .env
+```
 
-Configuration is managed via `src/config.py` with environment-specific classes:
+> [!IMPORTANT]
+> You **must** populate the `.env` file with functional keys for external services (e.g., `OPENAI_API_KEY`, `DATABASE_URL`) before running the application. Review the `env.example` file for instructions.
 
-- development
-- testing
-- staging
-- production
-- release
-
-Important environment categories:
-
-- app/runtime (`ENVIRONMENT`, `LOG_LEVEL`, `SECRET_KEY`)
-- database and redis
-- auth/security keys
-- payment providers
-- LLM/provider keys
-- integration credentials and OAuth callback settings
-- feature flags
-- email/smtp routing
-
-Use `env.example` as the baseline template.
-
-## Local Development
-
-### Prerequisites
-
-- Python 3.11+
-- Docker + Docker Compose
-- PostgreSQL/Redis (if not using compose-managed versions)
-
-### Quick start (recommended)
+### 3. Local Virtual Environment (Optional but recommended for IDEs)
 
 ```bash
 python -m venv venv
-venv\Scripts\activate
+source venv/bin/activate  # On Windows use: venv\Scripts\activate
 pip install -r requirements.txt
-copy env.example .env
+```
+
+### 4. Bootstrapping the Infrastructure
+
+Run the full stack (Database, Redis, FastAPI, and Observability stack) via Docker Compose:
+
+```bash
 docker-compose up -d
 ```
 
-App endpoints:
+### 5. Accessing the Application
 
-- API root: `http://localhost:8000`
-- Swagger: `http://localhost:8000/docs`
-- Health: `http://localhost:8000/health`
+- **API Root**: `http://localhost:8000`
+- **Health Check**: `http://localhost:8000/health`
+- **Swagger Documentation**: `http://localhost:8000/docs`
+- **ReDoc Documentation**: `http://localhost:8000/redoc`
 
-### Direct run (without full compose)
+---
+
+## ⚙️ Configuration & Environment
+
+Configuration is governed by `src/config.py` utilizing `pydantic-settings`. 
+
+### Key Environment Variables
+
+- **`ENVIRONMENT`**: Defines the runtime context (`development`, `staging`, `production`).
+- **`DATABASE_URL`**: Async PostgreSQL connection string (`postgresql://user:pass@host:port/db`).
+- **`REDIS_URL`**: Redis instance URI for caching and session state.
+- **`SECRET_KEY`**: Cryptographic key used for signing JWTs and encrypting sensitive fields.
+- **`DEFAULT_LLM_PROVIDER`**: Fallback LLM provider (`openai`, `anthropic`, `gemini`, `ollama`).
+- **`ENABLE_*`**: Feature flags controlling the activation of integrations (e.g., `ENABLE_WHATSAPP=true`).
+
+---
+
+## 🗄 Data Model & Persistence
+
+The application uses **SQLAlchemy 2.0** with **asyncpg** for non-blocking database interactions. Schema evolution is tightly controlled via **Alembic**.
+
+> [!NOTE]
+> See `src/models.py` for the complete entity graph.
+
+### Core Entities
+- **Identity**: `User`, `Role`, `Organization`, `Department`.
+- **AI & Memory**: `Conversation`, `Message`.
+- **Automation Engine**: `Workflow`, `WorkflowStep`, `WorkflowExecution`.
+- **Finance**: `Payment`, `Subscription`, `Invoice`.
+
+### Migrations
+Database migrations are executed automatically on startup by the `migrator` service in Docker Compose. To manually generate a new migration:
 
 ```bash
-python -m src.main
+alembic revision --autogenerate -m "description of changes"
+alembic upgrade head
 ```
 
-Set dependencies (DB/Redis) and environment variables before running directly.
+---
 
-## Docker Compose Topology
+## 🌐 API Surface
 
-`docker-compose.yml` provisions:
+The API utilizes FastAPI's robust routing mechanism. Key namespaces include:
 
-- `app` (FastAPI)
-- `migrator` (Alembic migrations)
-- `postgres`
-- `redis`
-- observability: `elasticsearch`, `logstash`, `kibana`, `prometheus`, `grafana`, `node-exporter`
-- `nginx` (local edge proxy)
+- **`/auth`**: Registration, authentication, OAuth callbacks, password resets, passkey setup.
+- **`/chat`**: LLM interaction, tool capabilities discovery, message history retrieval.
+- **`/workflows`**: CRUD for automation templates, execution triggers, history.
+- **`/agents`**: Lifecycle management for autonomous scheduling agents.
+- **`/connections`**: Third-party integration configurations and OAuth state management.
+- **`/payments`**: M-Pesa callbacks, Stripe webhooks, checkout sessions.
+- **`/api/v1/*`**: System status, platform usage, organization team management.
 
-This mirrors a production-like developer environment and allows full-stack diagnostics.
+---
 
-## Security Model
+## 🤖 MCP Mode (Model Context Protocol)
 
-- JWT-based auth flows with additional security endpoints
-- support for OTP/TOTP/passkey-style login paths in the auth/security layer
-- route-level protection and role/permission checks
-- CORS allow-list control
-- middleware rate limiting for auth/API path classes
-- secret-driven provider credentials (no hardcoded secret usage in deployment)
+The backend natively supports running as an **MCP stdio server**. When initiated with `RUN_MODE=mcp`, it exposes a suite of tools directly to compatible clients.
 
-## Repository Structure
+Available tools in MCP mode include:
+- HubSpot data manipulation
+- Slack messaging / report generation
+- Web scraping utilities
+- Local file management
 
-```text
-arrotech-hub-backend/
-├── src/
-│   ├── main.py                  # App bootstrap, middleware, router registration, MCP mode
-│   ├── config.py                # Environment-backed settings
-│   ├── database.py              # SQLAlchemy async engine/session setup
-│   ├── models.py                # Platform data model graph
-│   ├── routers/                 # Feature and integration API routers
-│   └── services/                # Domain/service orchestration layer
-├── alembic/                     # DB migrations
-├── docker-compose.yml           # Local full-stack runtime
-├── requirements.txt             # Python dependencies
-├── env.example                  # Environment variable template
-└── README.md
+---
+
+## 🔐 Security & Authentication
+
+Security is treated as a first-class citizen:
+
+1. **Authentication**: Stateless JWT-based sessions.
+2. **MFA Support**: Integrated support for OTP, TOTP, and Passkeys (WebAuthn).
+3. **RBAC**: Route-level dependency injection for rigorous permission verification.
+4. **Secret Management**: External integration credentials (like HubSpot or Slack tokens) are dynamically resolved and never hardcoded.
+5. **Rate Limiting**: In-memory and Redis-backed throttling for critical paths (e.g., `/auth`).
+
+---
+
+## 🧪 Testing & Quality
+
+We maintain a rigorous testing standard utilizing `pytest` and `pytest-asyncio`.
+
+To run the test suite locally:
+
+```bash
+pytest tests/ -v
 ```
 
-## Operational Notes
+To generate a coverage report:
 
-- Startup performs DB init hooks, service initialization, cache init, and workflow scheduler start.
-- In production mode, logging is emitted in structured JSON format.
-- Health endpoint reports dependency and pool state, not just process liveness.
-- Alembic controls schema evolution; the runtime does not auto-create all tables.
+```bash
+pytest tests/ --cov=src --cov-report=term-missing
+```
 
-## Platform Scope (Current State)
+---
 
-This backend is not a minimal API service. It is currently a broad platform backend that supports:
+## 🚢 Deployment
 
-- customer-facing web app APIs,
-- operations automation engines,
-- creator marketplace and monetization primitives,
-- team/organization access patterns,
-- messaging and social channel automations,
-- RAG-ready knowledge base building blocks,
-- observability and deployment pathways for production operation.
+The production application is containerized and designed to run in environments like Kubernetes, Fly.io, or Railway. 
 
-If you are onboarding engineers, start with:
+### CI/CD Pipeline
+Deployment flows are orchestrated via GitHub Actions (`.github/workflows/ci.yml`). 
+- **PR Checks**: Linting (`flake8`/`black`), formatting, and automated tests.
+- **Main Branch Push**: Triggers a production build, Docker image packaging, and deployment rollout.
 
-1. `src/main.py` (runtime and API composition)
-2. `src/models.py` (domain mental model)
-3. `src/routers/` + `src/services/` (feature implementation paths)
-4. `docker-compose.yml` (operational topology)
+### Observability
+The Docker Compose stack natively provisions ELK (`elasticsearch`, `logstash`, `kibana`) and Prometheus/Grafana. In production, logs are emitted in JSON format for optimized ingestion by centralized logging tools.
