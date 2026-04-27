@@ -1060,8 +1060,8 @@ class ConversationalAgentService:
             stk_res = await daraja.stk_push(
                 phone_number=phone_number,
                 amount=amount_int,
-                account_reference=order_id,
-                transaction_desc=description[:80] if description else f"Order {order_id}",
+                account_reference=order_id[:12],
+                transaction_desc=description[:13] if description else f"Order {order_id}"[:13],
                 callback_url=callback_url,
                 consumer_key=decrypted["daraja_consumer_key"],
                 consumer_secret=decrypted["daraja_consumer_secret"],
