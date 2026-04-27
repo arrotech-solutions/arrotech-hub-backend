@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from sqlalchemy import select, and_
 from ..database import get_session_maker
-from ..models import Workflow, WorkflowStatus, WorkflowTriggerType
+from ..models import Workflow, WorkflowStatus, WorkflowTriggerType, Connection
 from ..services.workflow_builder_service import WorkflowBuilderService
 
 logger = logging.getLogger(__name__)
@@ -67,6 +67,29 @@ class TelegramWorkflowTrigger:
                     
                     if should_trigger:
                         workflows_triggered += 1
+                        
+                        # Fetch Telegram connection to get the correct bot token
+                        try:
+                            conn_stmt = select(Connection).where(
+                                and_(
+                                    Connection.user_id == workflow.user_id,
+                                    Connection.platform == "telegram",
+                                    Connection.status == "active"
+                                )
+                            )
+                            conn_res = await db.execute(conn_stmt)
+                            connection = conn_res.scalar_one_or_none()
+                            
+                            if connection:
+                                from ..services.telegram_service import TelegramService
+                                tg_svc = TelegramService()
+                                await tg_svc.send_chat_action(
+                                    chat_id=chat_id,
+                                    action="typing",
+                                    config=connection.config
+                                )
+                        except Exception as e:
+                            logger.error(f"[TG_TRIGGER] Failed to send typing indicator: {e}")
                         
                         # ── CCM: Persist incoming message to conversation session ──
                         session_key = ""

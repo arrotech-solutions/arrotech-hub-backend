@@ -42,15 +42,6 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             if message_text and chat_id:
                 logger.info(f"[TELEGRAM_WEBHOOK] Received message from user {sender_id} in chat {chat_id}: {message_text[:50]}")
                 
-                # Send typing indicator immediately in background
-                from ..services.telegram_service import TelegramService
-                tg_svc = TelegramService()
-                background_tasks.add_task(
-                    tg_svc.send_chat_action,
-                    chat_id=chat_id,
-                    action="typing"
-                )
-                
                 # Process the trigger asynchronously
                 background_tasks.add_task(
                     TelegramWorkflowTrigger.on_message_received,
