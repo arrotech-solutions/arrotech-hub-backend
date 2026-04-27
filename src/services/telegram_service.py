@@ -53,6 +53,38 @@ class TelegramService:
                 logger.error(f"Unexpected error in Telegram send_message: {e}")
                 return {"success": False, "error": str(e)}
 
+    async def send_chat_action(self, chat_id: str, action: str = "typing", config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Send a chat action (like typing) to a Telegram chat.
+        Valid actions: typing, upload_photo, record_video, etc.
+        """
+        bot_token = config.get("bot_token") if config else self.bot_token
+        
+        if not bot_token:
+            return {"success": False, "error": "Telegram Bot Token is not configured"}
+
+        url = f"https://api.telegram.org/bot{bot_token}/sendChatAction"
+        
+        payload = {
+            "chat_id": chat_id,
+            "action": action
+        }
+
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(url, json=payload, timeout=5.0)
+                response.raise_for_status()
+                data = response.json()
+                
+                if data.get("ok"):
+                    return {"success": True, "result": f"Action '{action}' sent successfully"}
+                else:
+                    return {"success": False, "error": data.get("description", "Unknown error")}
+                    
+            except Exception as e:
+                logger.error(f"Unexpected error in Telegram send_chat_action: {e}")
+                return {"success": False, "error": str(e)}
+
     async def send_photo(
         self,
         chat_id: str,
