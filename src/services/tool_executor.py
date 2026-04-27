@@ -283,6 +283,8 @@ class ToolExecutor:
                 return await self._execute_real_estate_tool(arguments, user, db)
             elif tool_name == "conversational_agent":
                 return await self._execute_conversational_agent_tool(arguments, user, db, background_tasks)
+            elif tool_name == "execute_python_code":
+                return await self._execute_python_code_tool(arguments, user, db, background_tasks)
             else:
                 return {
                     "success": False,
@@ -297,6 +299,40 @@ class ToolExecutor:
                 "error": str(e),
                 "result": None
             }
+
+    async def _execute_python_code_tool(
+        self,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+        background_tasks: Optional['BackgroundTasks'] = None
+    ) -> Dict[str, Any]:
+        """Executes LLM generated python scripts in the Code Mode sandbox."""
+        from .sandbox_service import CodeSandboxService
+        
+        code = arguments.get("code")
+        if not code:
+            return {"success": False, "error": "Missing 'code' argument", "result": None}
+
+        # The callable we inject into the sandbox to allow it to call other tools
+        async def call_tool(tool_name: str, params: Dict[str, Any] = None):
+            if params is None:
+                params = {}
+            # Prevent recursive loop by blocking execute_python_code from calling itself
+            if tool_name == "execute_python_code":
+                raise ValueError("Nested code execution is not permitted.")
+                
+            return await self.execute_tool(
+                tool_name=tool_name,
+                arguments=params,
+                user=user,
+                db=db,
+                background_tasks=background_tasks
+            )
+
+        sandbox = CodeSandboxService()
+        return await sandbox.execute_script(code, call_tool)
+
 
     async def _check_connection_access(self, tool_name: str, user: User, db: AsyncSession) -> bool:
         """Check if the user has access to the connection required by the tool."""

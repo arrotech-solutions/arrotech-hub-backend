@@ -27,6 +27,20 @@ class DynamicToolRegistry:
     def _initialize_base_tools(self):
         """Initialize base tools that are always available."""
         self.base_tools = {
+            # Code Mode Execution
+            "execute_python_code": {
+                "name": "execute_python_code",
+                "description": "Execute a Python script to perform complex logic, data transformation, or orchestrate multiple tool calls. DO NOT return raw python code to the user, execute it and return the result. Use this when you need to combine multiple tools, iterate over data, or run custom logic. The environment includes a 'call_tool(tool_name: str, params: dict)' function, and standard libraries (json, math, datetime, re, hashlib, uuid). IMPORTANT: You must assign your final output to a variable named `result` for it to be captured and returned. You can also use print() for intermediate logging.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "code": {"type": "string", "description": "The python code to execute. Use 'await call_tool(name, params)' to invoke tools. Assign final output to `result`. Wrap code in standard python syntax."}
+                    },
+                    "required": ["code"]
+                },
+                "category": "system",
+                "always_available": True
+            },
             # Marketing Campaign Automation - Always available
             "marketing_campaign_automation": {
                 "name": "marketing_campaign_automation",
