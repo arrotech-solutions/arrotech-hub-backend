@@ -33,34 +33,14 @@ from .services import (BillingService, ContentCreationService,
                        RateLimitService, SlackService, SocialMediaService, TelegramService,
                        WebToolsService, WorkflowSchedulerService,
                        cache_service)
+from .observability.logger import setup_observability_logging, db_log_worker, log_cleanup_job
+from .observability.middleware import ObservabilityMiddleware
+from .routers.internal_router import router as internal_router
 
 
-# ─── Structured Logging ──────────────────────────────────────────────────────
-class JSONFormatter(logging.Formatter):
-    """JSON log formatter for production observability."""
-    def format(self, record):
-        log_data = {
-            "timestamp": self.formatTime(record),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-        }
-        if record.exc_info and record.exc_info[0]:
-            log_data["exception"] = self.formatException(record.exc_info)
-        return json.dumps(log_data)
+# setup_observability_logging replaces the old manual logging setup below
 
-
-is_production = os.getenv("ENVIRONMENT", "development") == "production"
-
-if is_production:
-    handler = logging.StreamHandler()
-    handler.setFormatter(JSONFormatter())
-    logging.root.handlers = [handler]
-    logging.root.setLevel(logging.INFO)
-else:
-    logging.basicConfig(level=logging.INFO)
-
-logger = logging.getLogger(__name__)
+logger = setup_observability_logging()
 
 # Global services
 hubspot_service = HubSpotService()
@@ -80,6 +60,10 @@ telegram_service = TelegramService()
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     # Startup
+    # Start background workers
+    asyncio.create_task(db_log_worker())
+    asyncio.create_task(log_cleanup_job(retention_days=14))
+    
     logger.info("Starting Mini-Hub MCP Server...")
     
     # Initialize database with timeout
@@ -236,8 +220,12 @@ app.add_middleware(
 # Add ProxyHeaders middleware for secure redirects behind proxy (Fly.io)
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 
+# Add Observability Middleware (at the end to wrap everything)
+app.add_middleware(ObservabilityMiddleware)
+
 # Include routers
 app.include_router(access_router.router)
+app.include_router(internal_router)
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(payment_router, prefix="/payments", tags=["payments"])
 app.include_router(connection_router, prefix="/connections",

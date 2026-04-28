@@ -129,7 +129,9 @@ async def init_db():
     # We no longer run Base.metadata.create_all here. Tables are managed by Alembic.
     
     # Import models to ensure they're registered with SQLAlchemy
-    from .models import Subscription, UsageLog, User, Organization, OrganizationMember, OrganizationInvitation, Department, AuditLogEntry, MessagingConversation  # noqa: F401
+    from .models import (Subscription, UsageLog, User, Organization, OrganizationMember, 
+                          OrganizationInvitation, Department, AuditLogEntry, MessagingConversation,
+                          ObservabilityLog, ObservabilityTrace, FailedEvent)  # noqa: F401
 
     # Seed admin user AFTER migrator has created tables
     try:
