@@ -41,6 +41,230 @@ class DynamicToolRegistry:
                 "category": "system",
                 "always_available": True
             },
+            # Maps Capability Layer - Always available
+            "maps.geocode": {
+                "name": "maps.geocode",
+                "description": "Convert address into coordinates (latitude/longitude)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "address": {"type": "string", "description": "Address to geocode"}
+                    },
+                    "required": ["address"]
+                },
+                "category": "maps",
+                "always_available": True
+            },
+            "maps.reverse_geocode": {
+                "name": "maps.reverse_geocode",
+                "description": "Convert coordinates into address and landmark",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "lat": {"type": "number"},
+                        "lng": {"type": "number"}
+                    },
+                    "required": ["lat", "lng"]
+                },
+                "category": "maps",
+                "always_available": True
+            },
+            "maps.distance_matrix": {
+                "name": "maps.distance_matrix",
+                "description": "Calculate distance and ETA between origin and destinations",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "origin": {
+                            "type": "object",
+                            "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}},
+                            "required": ["lat", "lng"]
+                        },
+                        "destinations": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}}
+                            }
+                        }
+                    },
+                    "required": ["origin", "destinations"]
+                },
+                "category": "maps",
+                "always_available": True
+            },
+            "maps.route": {
+                "name": "maps.route",
+                "description": "Generate route and navigation data",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "origin": {
+                            "type": "object",
+                            "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}},
+                            "required": ["lat", "lng"]
+                        },
+                        "destination": {
+                            "type": "object",
+                            "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}},
+                            "required": ["lat", "lng"]
+                        }
+                    },
+                    "required": ["origin", "destination"]
+                },
+                "category": "maps",
+                "always_available": True
+            },
+            "maps.track_location": {
+                "name": "maps.track_location",
+                "description": "Fetch live entity location from external source statelessly",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "entity_id": {"type": "string"},
+                        "source": {
+                            "type": "object",
+                            "properties": {
+                                "type": {"type": "string", "enum": ["webhook", "api", "sheet", "airtable", "custom"]},
+                                "config": {"type": "object"}
+                            },
+                            "required": ["type", "config"]
+                        }
+                    },
+                    "required": ["entity_id", "source"]
+                },
+                "category": "maps",
+                "always_available": True
+            },
+            "maps.geofence_check": {
+                "name": "maps.geofence_check",
+                "description": "Check if a point is inside a delivery zone",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "point": {
+                            "type": "object",
+                            "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}},
+                            "required": ["lat", "lng"]
+                        },
+                        "zone": {
+                            "type": "object",
+                            "properties": {
+                                "type": {"type": "string", "enum": ["circle", "polygon"]},
+                                "radius_km": {"type": "number"},
+                                "center": {
+                                    "type": "object",
+                                    "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}}
+                                }
+                            },
+                            "required": ["type"]
+                        }
+                    },
+                    "required": ["point", "zone"]
+                },
+                "category": "maps",
+                "always_available": True
+            },
+            "maps.static_map": {
+                "name": "maps.static_map",
+                "description": "Generate map preview image URL",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "markers": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "lat": {"type": "number"}, "lng": {"type": "number"}, "label": {"type": "string"}
+                                },
+                                "required": ["lat", "lng"]
+                            }
+                        }
+                    },
+                    "required": ["markers"]
+                },
+                "category": "maps",
+                "always_available": True
+            },
+            # MCP Operations (Workflows)
+            "maps.assign_nearest_rider": {
+                "name": "maps.assign_nearest_rider",
+                "description": "Find and assign nearest rider based on external config list",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "order_location": {
+                            "type": "object",
+                            "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}},
+                            "required": ["lat", "lng"]
+                        },
+                        "riders_source": {"type": "object", "description": "External source config for riders"}
+                    },
+                    "required": ["order_location", "riders_source"]
+                },
+                "category": "maps",
+                "always_available": True
+            },
+            "maps.estimate_delivery_time": {
+                "name": "maps.estimate_delivery_time",
+                "description": "Estimate ETA via route calculation",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "origin": {
+                            "type": "object",
+                            "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}},
+                            "required": ["lat", "lng"]
+                        },
+                        "destination": {
+                            "type": "object",
+                            "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}},
+                            "required": ["lat", "lng"]
+                        }
+                    },
+                    "required": ["origin", "destination"]
+                },
+                "category": "maps",
+                "always_available": True
+            },
+            "maps.track_order_live": {
+                "name": "maps.track_order_live",
+                "description": "Fetch rider location and compute ETA dynamically to user destination",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "entity_id": {"type": "string"},
+                        "source": {"type": "object"},
+                        "destination": {
+                            "type": "object",
+                            "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}},
+                            "required": ["lat", "lng"]
+                        }
+                    },
+                    "required": ["entity_id", "source", "destination"]
+                },
+                "category": "maps",
+                "always_available": True
+            },
+            "maps.validate_delivery_zone": {
+                "name": "maps.validate_delivery_zone",
+                "description": "Check if user address is within business delivery zone",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "customer_location": {
+                            "type": "object",
+                            "properties": {"lat": {"type": "number"}, "lng": {"type": "number"}},
+                            "required": ["lat", "lng"]
+                        },
+                        "zone": {"type": "object"}
+                    },
+                    "required": ["customer_location", "zone"]
+                },
+                "category": "maps",
+                "always_available": True
+            },
             # Marketing Campaign Automation - Always available
             "marketing_campaign_automation": {
                 "name": "marketing_campaign_automation",

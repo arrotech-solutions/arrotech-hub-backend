@@ -69,6 +69,7 @@ from .order_service import OrderService
 from .inventory_service import InventoryService
 from .real_estate_service import RealEstateService
 from .conversational_agent_service import ConversationalAgentService
+from .maps_service import MapsService
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,7 @@ class ToolExecutor:
             "xero": XeroService(),
             "airtable": AirtableService(),
             "rag": RAGPipelineService(),
+            "maps": MapsService(),
         }
         # Initialize services
         self._initialized = False
@@ -249,6 +251,8 @@ class ToolExecutor:
                 return await self._execute_firecrawl_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("pinecone_"):
                 return await self._execute_pinecone_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("maps."):
+                return await self._execute_maps_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("qdrant_"):
                 return await self._execute_qdrant_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("weaviate_"):
@@ -6982,6 +6986,139 @@ Description: {payment.description or 'N/A'}"""
             return {"success": False, "error": "Operation is required for real estate tools"}
         return await self.services["real_estate"].handle_operation(operation, **parameters)
 
+
+    async def _execute_maps_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute a maps capability layer tool."""
+        maps_service = self.services["maps"]
+        
+        try:
+            if tool_name == "maps.geocode":
+                result = await maps_service.geocode(arguments.get("address"))
+            elif tool_name == "maps.reverse_geocode":
+                result = await maps_service.reverse_geocode(arguments.get("lat"), arguments.get("lng"))
+            elif tool_name == "maps.distance_matrix":
+                result = await maps_service.distance_matrix(arguments.get("origin"), arguments.get("destinations", []))
+            elif tool_name == "maps.route":
+                result = await maps_service.route(arguments.get("origin"), arguments.get("destination"))
+            elif tool_name == "maps.track_location":
+                result = await maps_service.track_location(arguments.get("entity_id"), arguments.get("source"))
+            elif tool_name == "maps.geofence_check":
+                result = await maps_service.geofence_check(arguments.get("point"), arguments.get("zone"))
+            elif tool_name == "maps.static_map":
+                result = await maps_service.static_map(arguments.get("markers", []))
+            
+            # Workflow Operations
+            elif tool_name == "maps.assign_nearest_rider":
+                order_loc = arguments.get("order_location")
+                source = arguments.get("riders_source")
+                
+                adapter = maps_service.adapters.get(source.get("type", "api"))
+                if not adapter:
+                    return {"success": False, "error": f"Unknown adapter {source.get('type')}"}
+                    
+                riders_res = await adapter.fetch_data(source.get("config", {}))
+                
+                if not riders_res.get("success"):
+                    return {"success": False, "error": riders_res.get("error")}
+                    
+                riders = riders_res.get("data", {}).get("records", [])
+                
+                destinations = []
+                for r in riders:
+                    fields = r.get("fields", {})
+                    destinations.append({"lat": fields.get("lat"), "lng": fields.get("lng"), "id": fields.get("id")})
+                    
+                if not destinations:
+                    return {"success": False, "error": "No riders found via external source"}
+                    
+                dist_matrix = await maps_service.distance_matrix(order_loc, destinations)
+                
+                if "error" in dist_matrix:
+                    return {"success": False, "error": dist_matrix["error"]}
+                
+                min_dist = float('inf')
+                nearest_rider = None
+                
+                results = dist_matrix.get("results", [])
+                for idx, r in enumerate(results):
+                    d = r.get("distance_km", float('inf'))
+                    if d < min_dist:
+                        min_dist = d
+                        nearest_rider = {
+                            "rider_id": destinations[idx].get("id"),
+                            "distance_km": d,
+                            "eta_minutes": r.get("duration_minutes")
+                        }
+                        
+                if nearest_rider:
+                    result = nearest_rider
+                    result["message"] = f"Assigned nearest rider {nearest_rider['rider_id']} who is {min_dist}km away."
+                else:
+                    return {"success": False, "error": "Failed to calculate distances"}
+                
+            elif tool_name == "maps.estimate_delivery_time":
+                origin = arguments.get("origin")
+                dest = arguments.get("destination")
+                route_res = await maps_service.route(origin, dest)
+                if "error" in route_res:
+                    return {"success": False, "error": route_res["error"]}
+                    
+                eta = route_res.get("duration_minutes", 0)
+                result = {
+                    "eta_minutes": eta,
+                    "message": f"Estimated delivery time is {eta} minutes."
+                }
+                
+            elif tool_name == "maps.track_order_live":
+                entity_id = arguments.get("entity_id")
+                source = arguments.get("source")
+                destination = arguments.get("destination")
+                
+                loc_res = await maps_service.track_location(entity_id, source)
+                if "error" in loc_res:
+                    return {"success": False, "error": loc_res["error"]}
+                    
+                origin = {"lat": loc_res["lat"], "lng": loc_res["lng"]}
+                
+                rev_geo = await maps_service.reverse_geocode(origin["lat"], origin["lng"])
+                route_res = await maps_service.route(origin, destination)
+                
+                dist = route_res.get("distance_km", 0)
+                eta = route_res.get("duration_minutes", 0)
+                loc_name = rev_geo.get("formatted_address", "Unknown Location")
+                
+                result = {
+                    "current_location": loc_name,
+                    "distance_km": dist,
+                    "eta_minutes": eta,
+                    "message": f"Your order is currently at {loc_name}, {dist}km away. ETA is {eta} minutes."
+                }
+                
+            elif tool_name == "maps.validate_delivery_zone":
+                cust_loc = arguments.get("customer_location")
+                zone = arguments.get("zone")
+                geo_check = await maps_service.geofence_check(cust_loc, zone)
+                
+                if "error" in geo_check:
+                    return {"success": False, "error": geo_check["error"]}
+                    
+                is_allowed = geo_check.get("inside", False)
+                result = {
+                    "allowed": is_allowed,
+                    "distance_from_center_km": geo_check.get("distance_from_center_km"),
+                    "message": "Delivery is available to your location." if is_allowed else "Sorry, your location is outside our delivery zone."
+                }
+            else:
+                return {"success": False, "error": f"Unknown map tool: {tool_name}"}
+
+            if "error" in result:
+                return {"success": False, "error": result["error"]}
+                
+            return {"success": True, "result": result}
+            
+        except Exception as e:
+            logger.error(f"[ToolExecutor] Error executing {tool_name}: {e}")
+            return {"success": False, "error": str(e)}
 
     async def _execute_conversational_agent_tool(self, parameters: Dict[str, Any], user: User, db: AsyncSession, background_tasks: Optional['BackgroundTasks'] = None) -> Dict[str, Any]:
         """Execute the conversational agent tool for agentic AI workflows."""
