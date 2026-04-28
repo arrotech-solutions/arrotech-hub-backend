@@ -71,6 +71,9 @@ from .real_estate_service import RealEstateService
 from .conversational_agent_service import ConversationalAgentService
 from .maps_service import MapsService
 
+from ..observability.tool_wrapper import execute_tool as observability_execute_tool
+from ..observability.tracer import set_customer_id
+
 logger = logging.getLogger(__name__)
 
 
@@ -149,7 +152,38 @@ class ToolExecutor:
         tools_called: List[Dict[str, Any]] = None,
         background_tasks: Optional['BackgroundTasks'] = None
     ) -> Dict[str, Any]:
-        """Execute a specific tool with given arguments."""
+        """Execute a specific tool with full observability, tracing, and retries."""
+        
+        # Set customer context for tracing
+        set_customer_id(str(user.id))
+
+        async def _run_core(**args):
+            return await self._execute_tool_logic(
+                tool_name=tool_name,
+                arguments=args,
+                user=user,
+                db=db,
+                tools_called=tools_called,
+                background_tasks=background_tasks
+            )
+
+        return await observability_execute_tool(
+            tool_name=tool_name,
+            fn=_run_core,
+            arguments=arguments,
+            customer_id=str(user.id)
+        )
+
+    async def _execute_tool_logic(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+        tools_called: List[Dict[str, Any]] = None,
+        background_tasks: Optional['BackgroundTasks'] = None
+    ) -> Dict[str, Any]:
+        """Internal logic for tool routing and execution."""
         try:
             logger.info(
                 f"Executing tool: {tool_name} with arguments: {arguments}")
