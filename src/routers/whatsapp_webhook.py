@@ -157,15 +157,31 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                     title = interactive.get("button_reply", {}).get("title", "")
                     btn_id = interactive.get("button_reply", {}).get("id", "")
 
-                    # Parse product card button clicks into actionable messages
-                    # Look up product details from Redis cache (stored when card was sent)
-                    if btn_id.startswith("add_to_cart_") or btn_id.startswith("view_details_"):
+                    # ── Parse product card button clicks ──
+                    # New format: "cart:Chicken Stew:400" or "details:Chicken Stew:400"
+                    # Old format: "add_to_cart_TG-0218" or "view_details_TG-0218"
+                    product_name = None
+                    product_price = ""
+                    is_add_to_cart = False
+
+                    if btn_id.startswith("cart:") or btn_id.startswith("details:"):
+                        # New self-contained format — name:price embedded in ID
+                        is_add_to_cart = btn_id.startswith("cart:")
+                        parts = btn_id.split(":", 2)  # ["cart", "Chicken Stew", "400"]
+                        if len(parts) >= 2:
+                            product_name = parts[1]
+                        if len(parts) >= 3:
+                            try:
+                                price_val = float(parts[2])
+                                product_price = f" (KES {price_val:,.0f})"
+                            except (ValueError, TypeError):
+                                pass
+
+                    elif btn_id.startswith("add_to_cart_") or btn_id.startswith("view_details_"):
+                        # Old format — try Redis cache for product name
                         is_add_to_cart = btn_id.startswith("add_to_cart_")
                         product_id = btn_id.replace("add_to_cart_", "").replace("view_details_", "")
-
-                        # Resolve product name from cache
-                        product_name = product_id  # fallback
-                        product_price = ""
+                        product_name = product_id  # fallback to opaque ID
                         try:
                             from ..services.cache_service import cache_service
                             cached = cache_service.get(f"product_card:{phone_number_id}:{product_id}")
@@ -178,6 +194,7 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                         except Exception as cache_err:
                             logger.warning(f"[WHATSAPP WEBHOOK] Product cache lookup failed: {cache_err}")
 
+                    if product_name:
                         if is_add_to_cart:
                             content = (
                                 f"I want to add {product_name}{product_price} to my cart. "
@@ -188,7 +205,7 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                                 f"I want to see more details about {product_name}{product_price}. "
                                 f"Please show me the full description, availability, and options."
                             )
-                        msg_type = "text"  # Treat as text so workflows process it normally
+                        msg_type = "text"
                     else:
                         # Generic interactive button
                         content = f"{title}" if title else f"Button clicked: {btn_id}"

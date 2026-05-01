@@ -248,14 +248,14 @@ class WhatsAppService:
                             {
                                 "type": "reply",
                                 "reply": {
-                                    "id": f"add_to_cart_{product_id}",
+                                    "id": f"cart:{name[:100]}:{price}",
                                     "title": "Add to Cart"
                                 }
                             },
                             {
                                 "type": "reply",
                                 "reply": {
-                                    "id": f"view_details_{product_id}",
+                                    "id": f"details:{name[:100]}:{price}",
                                     "title": "View Details"
                                 }
                             }

@@ -3483,22 +3483,16 @@ class ToolExecutor:
                     }
 
                 # ── Smart Image Dispatcher ──────────────────────────
-                # Detect image URLs in the message text and send them
-                # as native WhatsApp image messages for full previews.
+                # Strip image URLs from message text so the text message is clean.
+                # Product images are sent exclusively via interactive product cards
+                # by the ConversationalAgentService — NOT as bare media messages.
                 from .conversational_agent_service import extract_image_urls, strip_image_urls
 
-                # Prefer explicit image_urls from upstream (e.g. conversational agent)
-                # _parse_image_urls safely coerces Jinja2-stringified lists
-                # into proper Python lists to prevent character-by-character iteration.
-                image_urls = self._parse_image_urls(arguments.get("image_urls"))
-                if not image_urls:
-                    image_urls = extract_image_urls(message)
-
-                # Strip image URLs from text so the text message is clean
+                image_urls = extract_image_urls(message)
                 clean_message = strip_image_urls(message, image_urls) if image_urls else message
                 clean_message = self._sanitize_chat_message_for_channel(clean_message, "whatsapp")
 
-                # 1) Send text message first (if any text remains after stripping)
+                # Send text message only (no bare image sends)
                 text_result = None
                 if clean_message.strip():
                     text_result = await whatsapp_service.send_message(
@@ -3506,64 +3500,17 @@ class ToolExecutor:
                         config={"access_token": access_token, "phone_number_id": phone_number_id}
                     )
 
-                # 2) Send product cards if present in arguments
-                cards = arguments.get("cards", [])
-                card_results = []
-                for card in cards:
-                    try:
-                        card_res = await whatsapp_service.send_product_card(
-                            to_number=to_number,
-                            name=card.get("name", "Product"),
-                            price=card.get("price", 0),
-                            description=card.get("description", ""),
-                            image_url=card.get("image_url", ""),
-                            product_id=card.get("id", ""),
-                            config={"access_token": access_token, "phone_number_id": phone_number_id}
-                        )
-                        card_results.append({"id": card.get("id"), "result": card_res})
-                        logger.info(f"[WA_SMART_DISPATCH] Sent product card to {to_number}: {card.get('name')}")
-                    except Exception as card_err:
-                        logger.warning(f"[WA_SMART_DISPATCH] Failed to send product card {card.get('name')}: {card_err}")
-                        card_results.append({"id": card.get("id"), "error": str(card_err)})
-
-                # 2) Send each image as a native WhatsApp image message
-                media_results = []
-                for img_url in image_urls:
-                    try:
-                        media_res = await whatsapp_service.send_media_message(
-                            to_number=to_number,
-                            media_url=img_url,
-                            media_type="image",
-                            caption="",
-                            config={"access_token": access_token, "phone_number_id": phone_number_id}
-                        )
-                        media_results.append({"url": img_url, "result": media_res})
-                        logger.info(f"[WA_SMART_DISPATCH] Sent image to {to_number}: {img_url[:80]}")
-                    except Exception as img_err:
-                        logger.warning(f"[WA_SMART_DISPATCH] Failed to send image {img_url[:80]}: {img_err}")
-                        media_results.append({"url": img_url, "error": str(img_err)})
-
-                images_sent = len([r for r in media_results if "result" in r])
-                cards_sent = len([r for r in card_results if "result" in r])
                 result_summary = f"Message sent to {to_number}"
-                if images_sent:
-                    result_summary += f" + {images_sent} image(s) sent as media"
-                if cards_sent:
-                    result_summary += f" + {cards_sent} interactive card(s) sent"
 
                 return {
                     "success": True,
                     "result": result_summary,
                     "data": text_result,
-                    "images_sent": images_sent,
-                    "cards_sent": cards_sent,
-                    "media_results": media_results,
-                    "card_results": card_results,
+                    "images_sent": 0,
+                    "cards_sent": 0,
                     "processed_arguments": {
                         "to_number": to_number,
                         "message": clean_message,
-                        "image_urls": image_urls,
-                        "cards": cards
                     }
                 }
             elif action == "send_media":
