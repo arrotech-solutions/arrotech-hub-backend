@@ -665,6 +665,13 @@ class ConversationalAgentService:
                         tool_cards = tool_result.get("cards", [])
                         if tool_cards:
                             collected_product_cards.extend(tool_cards)
+                        # Remove images that were already sent as part of product cards
+                        # to prevent duplicate bare image sends
+                        sent_card_images = set(tool_result.get("sent_image_urls", []))
+                        if sent_card_images:
+                            collected_image_urls = [
+                                u for u in collected_image_urls if u not in sent_card_images
+                            ]
 
                     # Check if an order was created
                     if tool_name == "create_order" and tool_result.get("success"):
@@ -962,12 +969,13 @@ class ConversationalAgentService:
                 )
                 
             elif tool_name == "display_product_cards":
-                products = arguments.get("products", [])
-                return {
-                    "success": True, 
-                    "result": f"Successfully formatted {len(products)} products as interactive cards.",
-                    "cards": products
-                }
+                return await self._sub_display_product_cards(
+                    products=arguments.get("products", []),
+                    session_key=session_key,
+                    currency=currency,
+                    user=user,
+                    db=db,
+                )
 
             else:
                 # Dynamic MCP Tool execution (Harness delegation)
@@ -1216,6 +1224,320 @@ class ConversationalAgentService:
         except Exception as e:
             logger.error(f"[CONV_AGENT] initiate_mpesa_payment error: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
+
+    async def _sub_display_product_cards(
+        self,
+        products: List[Dict[str, Any]],
+        session_key: str,
+        currency: str,
+        user: User,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """
+        Send product cards as native interactive messages on WhatsApp/Telegram.
+
+        Instead of just collecting card data and hoping the workflow maps it,
+        this method sends each product as a native WhatsApp interactive button
+        message with:
+        - Image header (product photo)
+        - Body: *Product Name*\nPrice: KES 1,500\n\nDescription
+        - Buttons: "Add to Cart" | "View Details"
+
+        This is what real e-commerce bots (Jumia, Glovo, etc.) do.
+
+        Falls back to passive card collection if:
+        - Platform is not WhatsApp
+        - WhatsApp credentials are not available
+        - Any send failure (cards still returned in response data)
+        """
+        if not products:
+            return {
+                "success": True,
+                "result": "No products to display.",
+                "cards": []
+            }
+
+        # Detect platform and extract recipient phone
+        platform = "whatsapp"
+        recipient = ""
+        if session_key:
+            if session_key.startswith("ccm:whatsapp:"):
+                platform = "whatsapp"
+                # session_key format: ccm:whatsapp:{owner_user_id}:{sender_phone}
+                parts = session_key.split(":")
+                if len(parts) >= 4:
+                    recipient = parts[3]
+                elif len(parts) >= 3:
+                    recipient = parts[2]
+            elif session_key.startswith("ccm:telegram:"):
+                platform = "telegram"
+                parts = session_key.split(":")
+                if len(parts) >= 4:
+                    recipient = parts[3]
+                elif len(parts) >= 3:
+                    recipient = parts[2]
+
+        # If we can't determine the recipient, fall back to passive collection
+        if not recipient:
+            logger.warning("[CONV_AGENT] Cannot extract recipient from session_key — falling back to passive cards")
+            return {
+                "success": True,
+                "result": f"Formatted {len(products)} products as cards.",
+                "cards": products
+            }
+
+        # WhatsApp: send native interactive cards
+        if platform == "whatsapp":
+            return await self._send_whatsapp_product_cards(
+                products=products,
+                recipient=recipient,
+                currency=currency,
+                user=user,
+                db=db,
+            )
+
+        # Telegram: send photo + caption cards
+        if platform == "telegram":
+            return await self._send_telegram_product_cards(
+                products=products,
+                chat_id=recipient,
+                currency=currency,
+                user=user,
+                db=db,
+            )
+
+        # Unknown platform — passive fallback
+        return {
+            "success": True,
+            "result": f"Formatted {len(products)} products as cards.",
+            "cards": products
+        }
+
+    async def _send_whatsapp_product_cards(
+        self,
+        products: List[Dict[str, Any]],
+        recipient: str,
+        currency: str,
+        user: User,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Send each product as a native WhatsApp interactive button message."""
+        try:
+            from sqlalchemy import select
+            from ..models import Connection, ConnectionStatus
+            from .whatsapp_service import WhatsAppService
+
+            # Get user's WhatsApp connection credentials
+            result = await db.execute(
+                select(Connection).filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == "whatsapp",
+                    Connection.status == ConnectionStatus.ACTIVE
+                )
+            )
+            connection = result.scalar_one_or_none()
+
+            if not connection:
+                logger.warning("[CONV_AGENT] No WhatsApp connection — falling back to passive cards")
+                return {
+                    "success": True,
+                    "result": f"Formatted {len(products)} products (WhatsApp not connected).",
+                    "cards": products
+                }
+
+            config = connection.config or {}
+            access_token = config.get("access_token")
+            phone_number_id = config.get("phone_number_id")
+
+            if not access_token or not phone_number_id:
+                logger.warning("[CONV_AGENT] WhatsApp credentials incomplete — falling back to passive cards")
+                return {
+                    "success": True,
+                    "result": f"Formatted {len(products)} products (WhatsApp credentials missing).",
+                    "cards": products
+                }
+
+            whatsapp = WhatsAppService()
+            wa_config = {"access_token": access_token, "phone_number_id": phone_number_id}
+
+            sent = 0
+            failed = 0
+            sent_image_urls = []
+
+            for product in products[:10]:  # WhatsApp limit: don't spam too many
+                name = product.get("name", "Product")
+                price = product.get("price", 0)
+                description = product.get("description", "")
+                image_url = product.get("image_url", "")
+                product_id = product.get("id", str(sent + 1))
+
+                # Send as interactive button message with image header
+                if image_url:
+                    try:
+                        card_result = await whatsapp.send_product_card(
+                            to_number=recipient,
+                            name=name,
+                            price=price,
+                            description=description,
+                            image_url=image_url,
+                            product_id=product_id,
+                            config=wa_config,
+                        )
+                        if card_result.get("success"):
+                            sent += 1
+                            sent_image_urls.append(image_url)
+                            logger.info(f"[CONV_AGENT] ✅ Sent product card: {name} → {recipient}")
+                        else:
+                            # If interactive message fails (e.g., image URL invalid),
+                            # fall back to media + caption
+                            caption = f"*{name}*\n💰 {currency} {price:,.0f}\n\n{description}"
+                            if len(caption) > 1024:
+                                caption = caption[:1021] + "..."
+                            await whatsapp.send_media_message(
+                                to_number=recipient,
+                                media_url=image_url,
+                                media_type="image",
+                                caption=caption,
+                                config=wa_config,
+                            )
+                            sent += 1
+                            sent_image_urls.append(image_url)
+                            logger.info(f"[CONV_AGENT] ✅ Sent product as image+caption: {name} → {recipient}")
+                    except Exception as card_err:
+                        logger.warning(f"[CONV_AGENT] ❌ Failed to send card for {name}: {card_err}")
+                        failed += 1
+                else:
+                    # No image — send as text message with product details
+                    text = f"*{name}*\n💰 {currency} {price:,.0f}\n\n{description}"
+                    try:
+                        await whatsapp.send_message(
+                            to_number=recipient,
+                            message=text,
+                            config=wa_config,
+                        )
+                        sent += 1
+                        logger.info(f"[CONV_AGENT] ✅ Sent product as text: {name} → {recipient}")
+                    except Exception as text_err:
+                        logger.warning(f"[CONV_AGENT] ❌ Failed to send text for {name}: {text_err}")
+                        failed += 1
+
+            summary = f"Sent {sent} product card(s) to the customer"
+            if failed:
+                summary += f" ({failed} failed)"
+
+            return {
+                "success": sent > 0,
+                "result": summary,
+                "cards": products,  # Still return for compatibility
+                "cards_sent": sent,
+                "cards_failed": failed,
+                "sent_image_urls": sent_image_urls,  # Used to dedupe images later
+            }
+
+        except Exception as e:
+            logger.error(f"[CONV_AGENT] _send_whatsapp_product_cards error: {e}", exc_info=True)
+            return {
+                "success": True,  # Don't fail the whole turn
+                "result": f"Formatted {len(products)} products (card send failed: {e})",
+                "cards": products
+            }
+
+    async def _send_telegram_product_cards(
+        self,
+        products: List[Dict[str, Any]],
+        chat_id: str,
+        currency: str,
+        user: User,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Send each product as a Telegram photo + caption message."""
+        try:
+            from sqlalchemy import select
+            from ..models import Connection, ConnectionStatus
+
+            result = await db.execute(
+                select(Connection).filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == "telegram",
+                    Connection.status == ConnectionStatus.ACTIVE
+                )
+            )
+            connection = result.scalar_one_or_none()
+
+            if not connection:
+                return {
+                    "success": True,
+                    "result": f"Formatted {len(products)} products (Telegram not connected).",
+                    "cards": products
+                }
+
+            import aiohttp
+            bot_token = (connection.config or {}).get("bot_token", "")
+            if not bot_token:
+                return {
+                    "success": True,
+                    "result": f"Formatted {len(products)} products (Telegram token missing).",
+                    "cards": products
+                }
+
+            sent = 0
+            sent_image_urls = []
+
+            for product in products[:10]:
+                name = product.get("name", "Product")
+                price = product.get("price", 0)
+                description = product.get("description", "")
+                image_url = product.get("image_url", "")
+
+                caption = f"*{name}*\n💰 {currency} {price:,.0f}\n\n{description}"
+                if len(caption) > 1024:
+                    caption = caption[:1021] + "..."
+
+                try:
+                    if image_url:
+                        url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+                        payload = {
+                            "chat_id": chat_id,
+                            "photo": image_url,
+                            "caption": caption,
+                            "parse_mode": "Markdown",
+                        }
+                    else:
+                        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                        payload = {
+                            "chat_id": chat_id,
+                            "text": caption,
+                            "parse_mode": "Markdown",
+                        }
+
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(url, json=payload) as resp:
+                            if resp.status == 200:
+                                sent += 1
+                                if image_url:
+                                    sent_image_urls.append(image_url)
+                                logger.info(f"[CONV_AGENT] ✅ Sent Telegram card: {name} → {chat_id}")
+                            else:
+                                resp_text = await resp.text()
+                                logger.warning(f"[CONV_AGENT] ❌ Telegram send failed: {resp_text[:200]}")
+                except Exception as tg_err:
+                    logger.warning(f"[CONV_AGENT] ❌ Telegram card error for {name}: {tg_err}")
+
+            return {
+                "success": sent > 0,
+                "result": f"Sent {sent} product card(s) via Telegram",
+                "cards": products,
+                "cards_sent": sent,
+                "sent_image_urls": sent_image_urls,
+            }
+
+        except Exception as e:
+            logger.error(f"[CONV_AGENT] _send_telegram_product_cards error: {e}", exc_info=True)
+            return {
+                "success": True,
+                "result": f"Formatted {len(products)} products (Telegram send failed: {e})",
+                "cards": products
+            }
 
     # ═══════════════════════════════════════════════════════════
     # ORDER STORAGE PERSISTENCE (Google Sheets / Airtable)

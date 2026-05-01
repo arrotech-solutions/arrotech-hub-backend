@@ -7261,6 +7261,7 @@ Description: {payment.description or 'N/A'}"""
                 "result": result.get("response_text", ""),
                 "response_text": result.get("response_text", ""),
                 "image_urls": result.get("image_urls", []),
+                "cards": result.get("cards", []),
                 "order_created": result.get("order_created", False),
                 "order_data": result.get("order_data"),
                 "order_notification": result.get("order_notification", ""),
