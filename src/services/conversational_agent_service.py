@@ -308,9 +308,12 @@ AGENT_SUB_TOOLS = [
         "function": {
             "name": "display_product_cards",
             "description": (
-                "Format and display products to the customer as interactive WhatsApp cards with Add to Cart / View Details buttons. "
-                "Use this WHENEVER you are showing specific products or catalog items to the customer. "
-                "Do NOT just list the products in plain text if you have their image URLs and prices."
+                "REQUIRED: Send products to the customer as interactive WhatsApp/Telegram cards. "
+                "Each card shows the product image, name, price, description, and 'Add to Cart' / 'View Details' buttons. "
+                "You MUST call this tool whenever you have products to show. "
+                "NEVER list products as numbered text — always send them as cards. "
+                "After this tool succeeds, respond with a brief message like 'Here are our options! Tap to add to cart.' "
+                "Do NOT repeat product details in your text response."
             ),
             "parameters": {
                 "type": "object",
@@ -320,11 +323,11 @@ AGENT_SUB_TOOLS = [
                         "items": {
                             "type": "object",
                             "properties": {
-                                "id": {"type": "string", "description": "Unique product ID"},
-                                "name": {"type": "string", "description": "Product name"},
-                                "price": {"type": "number", "description": "Product price in numeric format"},
-                                "description": {"type": "string", "description": "Short product description"},
-                                "image_url": {"type": "string", "description": "Publicly accessible image URL for the product"}
+                                "id": {"type": "string", "description": "Unique product identifier from the catalog"},
+                                "name": {"type": "string", "description": "Product name exactly as shown in catalog"},
+                                "price": {"type": "number", "description": "Product price as a number (no currency symbol)"},
+                                "description": {"type": "string", "description": "Short product description (1-2 sentences)"},
+                                "image_url": {"type": "string", "description": "Full image URL from the catalog. Pass empty string if no image."}
                             },
                             "required": ["id", "name", "price", "description", "image_url"]
                         }
@@ -515,12 +518,15 @@ class ConversationalAgentService:
 
             for iteration in range(max_iterations):
                 # Call LLM with sub-tools
+                # Use gpt-4o-mini for speed — 3x faster than gpt-4o with
+                # equivalent tool-calling accuracy for commerce conversations
                 response = await self.llm_service.chat_completion(
                     messages=messages,
                     tools=dynamic_tools,
                     temperature=0.3,
-                    max_tokens=800,
-                    provider="openai"
+                    max_tokens=500,
+                    provider="openai",
+                    use_background_model=True
                 )
 
                 if response.error:
@@ -531,21 +537,20 @@ class ConversationalAgentService:
                 if not response.tools_called:
                     final_text = response.content or f"Thank you for contacting {business_name}! How can I help you?"
 
-                    # Extract image URLs from AI response (for metadata)
-                    # NOTE: Do NOT strip URLs from response_text here.
-                    # The smart dispatcher in tool_executor.py handles
-                    # extraction + native media sending at send-time.
-                    image_urls = _dedupe_keep_order(
-                        extract_image_urls(final_text) + collected_image_urls
-                    )
+                    # ── PRODUCTION IMAGE HANDLING ──
+                    # Strip ALL image URLs from the LLM's text response.
+                    # Images ONLY go through product cards — never as bare URLs.
+                    text_image_urls = extract_image_urls(final_text)
+                    if text_image_urls:
+                        final_text = strip_image_urls(final_text, text_image_urls)
 
-                    # If product cards were sent directly, skip appending their images
-                    # as bare "Product images:" text — they're already delivered
+                    # If product cards were sent, clear image_urls entirely
+                    # to prevent downstream bare media sends via tool_executor
                     if collected_product_cards:
-                        card_image_set = {c.get("image_url", "") for c in collected_product_cards if c.get("image_url")}
-                        image_urls = [u for u in image_urls if u not in card_image_set]
+                        image_urls = []  # Cards already delivered images
+                    else:
+                        image_urls = _dedupe_keep_order(collected_image_urls)
 
-                    final_text = self._ensure_image_urls_in_text(final_text, image_urls)
                     final_text = self._format_for_channel(final_text, platform)
 
                     # Harness: post-execution quality gate
@@ -715,17 +720,17 @@ class ConversationalAgentService:
             # If we exhausted iterations, return whatever we have
             final_text = response.content or f"Thank you for your patience! Our team at {business_name} will assist you shortly."
 
-            # Extract image URLs from AI response (for metadata)
-            image_urls = _dedupe_keep_order(
-                extract_image_urls(final_text) + collected_image_urls
-            )
+            # Strip bare image URLs from text — images only go through cards
+            text_image_urls = extract_image_urls(final_text)
+            if text_image_urls:
+                final_text = strip_image_urls(final_text, text_image_urls)
 
-            # If product cards were sent directly, skip appending their images
+            # If product cards were sent, clear image_urls
             if collected_product_cards:
-                card_image_set = {c.get("image_url", "") for c in collected_product_cards if c.get("image_url")}
-                image_urls = [u for u in image_urls if u not in card_image_set]
+                image_urls = []
+            else:
+                image_urls = _dedupe_keep_order(collected_image_urls)
 
-            final_text = self._ensure_image_urls_in_text(final_text, image_urls)
             final_text = self._format_for_channel(final_text, platform)
 
             await self._save_to_ccm(session_key, "assistant", final_text)
@@ -862,29 +867,42 @@ class ConversationalAgentService:
 
 ## Your Capabilities
 - Search the product catalog/menu to answer customer questions
+- Display products as interactive cards with images and "Add to Cart" buttons
 - Collect customer details (name, phone, delivery address)
 - Create orders when the customer is ready
 - Calculate order totals
+- Initiate M-Pesa payments
 
 ## Order Flow
-1. Greet the customer and help them browse products/menu
-2. When they want to order, collect: name, phone number, items with quantities
-3. Ask about delivery method ({delivery_str})
-4. If delivery, collect the delivery address
-5. Confirm the order summary with total price
-6. Create the order
-7. After order is created, offer payment. If they want to pay now via M-Pesa, initiate an STK push to their phone using initiate_mpesa_payment(order_id, phone_number, amount).
+1. Greet the customer warmly and ask how you can help
+2. When they browse: search the catalog, then ALWAYS use `display_product_cards` to show results
+3. When they want to order: collect name, phone number, items with quantities
+4. Ask about delivery method ({delivery_str})
+5. If delivery, collect the delivery address
+6. Confirm the order summary with total price using `calculate_total`
+7. Create the order using `create_order`
+8. After order is created, offer M-Pesa payment using `initiate_mpesa_payment`
 
-## Rules
-- Keep responses brief and friendly (WhatsApp style, under 200 words)
+## CRITICAL Product Display Rules
+- ALWAYS use `display_product_cards` when showing products with images/prices
+- NEVER list products as plain text with numbered lists — customers can't interact with text
+- NEVER include raw image URLs (https://...) in your text responses
+- After `display_product_cards` succeeds, just say something brief like "Here's what we have! 🛒 Tap a product to add it to your cart."
+- Do NOT repeat product names, prices, or descriptions in text after cards are sent
+- If `display_product_cards` fails, describe products briefly in text WITHOUT image URLs
+
+## Response Style Rules
+- Keep responses brief and friendly (WhatsApp chat style, under 150 words)
 - Always use {currency} for prices
-- Use emojis naturally but don't overdo it
-- If you don't know a price, search the catalog first
-- Never make up product information — always search first
-- If the customer's request is unclear, ask for clarification
-- Respond in the same language as the customer
+- Use emojis naturally but sparingly (1-3 per message)
+- Respond in the same language the customer uses
+- Never make up product information — always search the catalog first
+- If the customer's request is unclear, ask a simple clarifying question
+- Be conversational, not robotic. Sound like a helpful shop assistant, not a machine.
+
+## Delivery & Payment
 - Available delivery methods: {delivery_str}
-- IMPORTANT: When showing specific products that have images and prices, ALWAYS use the `display_product_cards` tool to present them beautifully to the customer. DO NOT list them as plain text if you can use the tool.
+- For M-Pesa: only initiate after order is confirmed and customer agrees to pay now
 """
 
         if custom_prompt:
@@ -1041,9 +1059,15 @@ class ConversationalAgentService:
             )
 
             if result.get("success"):
+                search_text = result.get("result", "No results found")
                 return {
                     "success": True,
-                    "result": result.get("result", "No results found"),
+                    "result": (
+                        f"{search_text}\n\n"
+                        "INSTRUCTION: You MUST now call `display_product_cards` with the products found above. "
+                        "Extract each product's id, name, price, description, and image_url from the search results "
+                        "and pass them to `display_product_cards`. Do NOT list products in plain text."
+                    ),
                     "data": result.get("data", {})
                 }
             else:
@@ -1390,36 +1414,39 @@ class ConversationalAgentService:
             whatsapp = WhatsAppService()
             wa_config = {"access_token": access_token, "phone_number_id": phone_number_id}
 
+            import asyncio
+
             sent = 0
             failed = 0
             sent_image_urls = []
 
-            for product in products[:10]:  # WhatsApp limit: don't spam too many
-                name = product.get("name", "Product")
-                price = product.get("price", 0)
-                description = product.get("description", "")
-                image_url = product.get("image_url", "")
-                product_id = product.get("id", str(sent + 1))
-
-                # Cache product details for button click lookups
-                # When customer clicks "Add to Cart" or "View Details", the webhook
-                # looks up this cache to resolve product_id → actual product name/price
+            # Pre-cache all product details for button click resolution
+            card_products = products[:5]  # Cap at 5 cards for speed + UX
+            for idx, product in enumerate(card_products):
+                product_id = product.get("id", str(idx + 1))
                 try:
                     cache_service.set(
                         f"product_card:{phone_number_id}:{product_id}",
                         {
-                            "name": name,
-                            "price": price,
-                            "description": description[:200],
-                            "image_url": image_url,
+                            "name": product.get("name", "Product"),
+                            "price": product.get("price", 0),
+                            "description": (product.get("description", ""))[:200],
+                            "image_url": product.get("image_url", ""),
                             "currency": currency,
                         },
-                        expire_seconds=86400  # 24h — enough for any shopping session
+                        expire_seconds=86400
                     )
                 except Exception as cache_err:
                     logger.warning(f"[CONV_AGENT] Failed to cache product card: {cache_err}")
 
-                # Send as interactive button message with image header
+            # Send all cards concurrently for speed
+            async def _send_one_card(product, idx):
+                name = product.get("name", "Product")
+                price = product.get("price", 0)
+                description = product.get("description", "")
+                image_url = product.get("image_url", "")
+                product_id = product.get("id", str(idx + 1))
+
                 if image_url:
                     try:
                         card_result = await whatsapp.send_product_card(
@@ -1432,12 +1459,10 @@ class ConversationalAgentService:
                             config=wa_config,
                         )
                         if card_result.get("success"):
-                            sent += 1
-                            sent_image_urls.append(image_url)
                             logger.info(f"[CONV_AGENT] ✅ Sent product card: {name} → {recipient}")
+                            return {"sent": True, "image_url": image_url}
                         else:
-                            # If interactive message fails (e.g., image URL invalid),
-                            # fall back to media + caption
+                            # Fallback to image + caption
                             caption = f"*{name}*\n💰 {currency} {price:,.0f}\n\n{description}"
                             if len(caption) > 1024:
                                 caption = caption[:1021] + "..."
@@ -1448,14 +1473,13 @@ class ConversationalAgentService:
                                 caption=caption,
                                 config=wa_config,
                             )
-                            sent += 1
-                            sent_image_urls.append(image_url)
                             logger.info(f"[CONV_AGENT] ✅ Sent product as image+caption: {name} → {recipient}")
+                            return {"sent": True, "image_url": image_url}
                     except Exception as card_err:
                         logger.warning(f"[CONV_AGENT] ❌ Failed to send card for {name}: {card_err}")
-                        failed += 1
+                        return {"sent": False}
                 else:
-                    # No image — send as text message with product details
+                    # No image — send as text
                     text = f"*{name}*\n💰 {currency} {price:,.0f}\n\n{description}"
                     try:
                         await whatsapp.send_message(
@@ -1463,11 +1487,25 @@ class ConversationalAgentService:
                             message=text,
                             config=wa_config,
                         )
-                        sent += 1
                         logger.info(f"[CONV_AGENT] ✅ Sent product as text: {name} → {recipient}")
+                        return {"sent": True}
                     except Exception as text_err:
                         logger.warning(f"[CONV_AGENT] ❌ Failed to send text for {name}: {text_err}")
-                        failed += 1
+                        return {"sent": False}
+
+            # Fire all card sends in parallel
+            results = await asyncio.gather(
+                *[_send_one_card(p, i) for i, p in enumerate(card_products)],
+                return_exceptions=True
+            )
+
+            for r in results:
+                if isinstance(r, dict) and r.get("sent"):
+                    sent += 1
+                    if r.get("image_url"):
+                        sent_image_urls.append(r["image_url"])
+                else:
+                    failed += 1
 
             summary = f"Sent {sent} product card(s) to the customer"
             if failed:
@@ -1476,10 +1514,10 @@ class ConversationalAgentService:
             return {
                 "success": sent > 0,
                 "result": summary,
-                "cards": products,  # Still return for compatibility
+                "cards": products,
                 "cards_sent": sent,
                 "cards_failed": failed,
-                "sent_image_urls": sent_image_urls,  # Used to dedupe images later
+                "sent_image_urls": sent_image_urls,
             }
 
         except Exception as e:
