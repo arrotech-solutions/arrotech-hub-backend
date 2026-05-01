@@ -41,6 +41,44 @@ class DynamicToolRegistry:
                 "category": "system",
                 "always_available": True
             },
+            # Code Mode Discovery Meta-Tools
+            "search_tools": {
+                "name": "search_tools",
+                "description": "Search for available tools by keyword. Returns matching tool names and descriptions. Use this to discover what tools are available before writing code.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query (e.g., 'send message', 'create contact', 'payment')"},
+                        "category": {"type": "string", "description": "Optional category filter (e.g., 'messaging', 'crm', 'finance')"}
+                    },
+                    "required": ["query"]
+                },
+                "category": "system",
+                "always_available": True
+            },
+            "get_tool_schema": {
+                "name": "get_tool_schema",
+                "description": "Get the full parameter schema for a specific tool. Use this to inspect what parameters a tool accepts before writing code to call it.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "tool_name": {"type": "string", "description": "Exact tool name (e.g., 'slack_send_message')"}
+                    },
+                    "required": ["tool_name"]
+                },
+                "category": "system",
+                "always_available": True
+            },
+            "list_tool_categories": {
+                "name": "list_tool_categories",
+                "description": "List all available tool categories with tool counts. Use this to understand what capabilities are available.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                },
+                "category": "system",
+                "always_available": True
+            },
             # Maps Capability Layer - Always available
             "maps.geocode": {
                 "name": "maps.geocode",
@@ -2807,6 +2845,56 @@ class DynamicToolRegistry:
                 
         return examples_text
 
+    # ===== Code Mode v2 Helper Methods =====
+
+    def search_tools_by_query(self, query: str, category: str = None, limit: int = 20) -> List[Dict[str, str]]:
+        """
+        Search for tools matching a query string (for Code Mode discovery).
+        
+        Uses keyword matching across tool names and descriptions.
+        Returns compact results (name + description only).
+        """
+        from .tool_discovery_service import tool_discovery_service
+        
+        # Build cache from all known tools
+        all_tools = list(self.base_tools.values())
+        try:
+            all_tools.extend(platform_registry.get_all_tools())
+        except Exception:
+            pass
+        
+        tool_discovery_service.update_cache(all_tools)
+        return tool_discovery_service.search_tools(query, category, limit)
+
+    def get_tool_schema_by_name(self, tool_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the full schema for a specific tool (for Code Mode discovery).
+        """
+        tool = self.get_tool(tool_name)
+        if not tool:
+            return None
+        return {
+            "name": tool.get("name"),
+            "description": tool.get("description", ""),
+            "category": tool.get("category", "general"),
+            "inputSchema": tool.get("inputSchema", {}),
+        }
+
+    def list_tool_categories(self) -> List[Dict[str, Any]]:
+        """
+        List all available tool categories with tool counts (for Code Mode discovery).
+        """
+        from .tool_discovery_service import tool_discovery_service
+        
+        all_tools = list(self.base_tools.values())
+        try:
+            all_tools.extend(platform_registry.get_all_tools())
+        except Exception:
+            pass
+        
+        tool_discovery_service.update_cache(all_tools)
+        return tool_discovery_service.list_categories()
+
 
 # Global dynamic tool registry instance
-dynamic_tool_registry = DynamicToolRegistry() 
+dynamic_tool_registry = DynamicToolRegistry() 

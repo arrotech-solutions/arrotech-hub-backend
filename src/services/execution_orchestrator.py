@@ -1,9 +1,13 @@
 """
 Execution Orchestrator Service for coordinating intent processing, tool selection, and execution.
+
+Integrates Harness Engineering (guardrails, feedback loops, quality gates)
+and Code Mode v2 (sandboxed code execution with typed tool API).
 """
 
 import json
 import logging
+import time
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 import uuid
 
@@ -16,6 +20,8 @@ from .tool_executor import ToolExecutor, tool_executor
 from .tool_validator import ToolArgumentValidator
 from .tool_selector import ToolRouter
 from .feature_flags import FeatureGate
+# Harness Engineering components (lazy-loaded to avoid circular imports)
+# from .harness import AgentGuardrails, FeedbackLoop, QualityGate, AgentContext
 # Note: get_or_create_usage_record imported lazily inside process_message() to avoid circular import
 try:
     import tiktoken
@@ -26,7 +32,13 @@ logger = logging.getLogger(__name__)
 
 
 class ExecutionOrchestrator:
-    """Orchestrates the end-to-end execution of user requests with precision."""
+    """Orchestrates the end-to-end execution of user requests with precision.
+    
+    Integrates three Harness Engineering pillars:
+    1. Guardrails — Pre-execution validation (injection detection, access control)
+    2. Feedback Loops — Automated error correction and retry logic
+    3. Quality Gates — Post-execution response evaluation and scoring
+    """
     
     def __init__(self, db: AsyncSession, user: User, conversation_id: uuid.UUID):
         self.db = db
@@ -34,6 +46,22 @@ class ExecutionOrchestrator:
         self.conversation_id = conversation_id
         self.tool_router = ToolRouter(user, db)
         self.intent_processor = IntentProcessor(user, db)
+        
+        # Initialize Harness Engineering components
+        try:
+            from .harness import AgentGuardrails, FeedbackLoop, QualityGate, AgentContext
+            self.guardrails = AgentGuardrails()
+            self.feedback_loop = FeedbackLoop(max_retries=3)
+            self.quality_gate = QualityGate()
+            self.agent_context = AgentContext()
+            self._harness_enabled = True
+        except Exception as e:
+            logger.warning(f"Harness components failed to load: {e}")
+            self.guardrails = None
+            self.feedback_loop = None
+            self.quality_gate = None
+            self.agent_context = None
+            self._harness_enabled = False
 
     @staticmethod
     async def get_daily_message_count(db: AsyncSession, user_id: uuid.UUID) -> int:
@@ -109,6 +137,15 @@ class ExecutionOrchestrator:
                 return await self._generate_direct_response(content, provider)
             
             print(f"🔧 Found {len(relevant_tools)} relevant tools")
+
+            # Step 3.5 (NEW): Check if Code Mode should be used
+            if self._should_use_code_mode(relevant_tools, content):
+                print(f"⚡ Code Mode activated ({len(relevant_tools)} tools, multi-step detected)")
+                code_result = await self._execute_code_mode(content, provider, relevant_tools)
+                if code_result is not None:
+                    return code_result
+                # If Code Mode returned None, fall through to standard function calling
+                print(f"⚠️ Code Mode unavailable, falling back to function calling")
             
             # Step 4: Execute with function calling loop
             # Convert tools to OpenAI format
@@ -136,6 +173,40 @@ class ExecutionOrchestrator:
             
               # Execute function calling loop
             response_content, tools_called, output_tokens = await self._execute_function_calling_loop(provider, messages, openai_tools)
+
+            # ===== HARNESS: Post-Execution Quality Gate =====
+            if self._harness_enabled and self.quality_gate:
+                try:
+                    exec_time_ms = int((time.time() - time.time()) * 1000)  # approximate
+                    quality_score = await self.quality_gate.evaluate_response(
+                        response=response_content,
+                        user_intent=content,
+                        tools_used=tools_called,
+                        iterations=len(tools_called),
+                        tokens_used=output_tokens,
+                    )
+                    if not quality_score.passed:
+                        logger.warning(
+                            f"Quality gate FAILED for user {self.user.id}: "
+                            f"score={quality_score.overall_score:.2f}, "
+                            f"warnings={quality_score.warnings}"
+                        )
+                    # Log to observability
+                    try:
+                        from ..observability.logger import log_event
+                        log_event(
+                            level=logging.INFO,
+                            event_type="QUALITY_GATE_PASS" if quality_score.passed else "QUALITY_GATE_FAIL",
+                            message=f"Quality score: {quality_score.overall_score:.2f}",
+                            status="success" if quality_score.passed else "failed",
+                            customer_id=str(self.user.id),
+                            payload=quality_score.to_dict(),
+                        )
+                    except Exception:
+                        pass
+                except Exception as qg_err:
+                    logger.warning(f"Quality gate evaluation failed: {qg_err}")
+            # ===== END QUALITY GATE =====
 
             # ===== AI ACTION USAGE TRACKING =====
             # Increment AI action counter for this chat message
@@ -535,10 +606,19 @@ class ExecutionOrchestrator:
                         
                         if not is_valid:
                             print(f"❌ Validation failed for {function_name}: {error_msg}")
-                            # Self-Correction: Feed error back to LLM
+                            # HARNESS: Feed validation error through feedback loop
+                            corrective_msg = f"Error: Invalid arguments. {error_msg} Please fix the arguments and retry."
+                            if self._harness_enabled and self.feedback_loop:
+                                try:
+                                    feedback = await self.feedback_loop.handle_tool_error(
+                                        function_name, error_msg, arguments
+                                    )
+                                    corrective_msg = feedback.corrective_message or corrective_msg
+                                except Exception:
+                                    pass
                             messages.append({
                                 "role": "tool",
-                                "content": f"Error: Invalid arguments. {error_msg} Please fix the arguments and retry.",
+                                "content": corrective_msg,
                                 "tool_call_id": tool_call_id
                             })
                             # Add to tools_called for tracking attempts
@@ -597,6 +677,177 @@ class ExecutionOrchestrator:
                 return last_assistant.get("content", ""), tools_called, total_output_tokens
         
         return "I apologize, but I encountered an issue processing your request. Please try again.", tools_called, total_output_tokens
+    
+    def _should_use_code_mode(self, relevant_tools: List[Dict[str, Any]], content: str) -> bool:
+        """
+        Determine if Code Mode should be used instead of standard function calling.
+        
+        Code Mode activation heuristics:
+        1. High tool count (>15 relevant tools → context window pressure)
+        2. Multi-step intent detected (keywords suggesting chained operations)
+        3. User explicit request ("write code", "script this", "automate")
+        4. Pro/Enterprise tier required
+        """
+        # Only Pro/Enterprise can use Code Mode
+        tier = getattr(self.user, 'subscription_tier', 'free')
+        if hasattr(tier, 'value'):
+            tier = tier.value
+        if tier not in ('pro', 'enterprise', 'PRO', 'ENTERPRISE'):
+            return False
+        
+        content_lower = content.lower()
+        
+        # Explicit Code Mode request
+        code_keywords = [
+            "write code", "write a script", "script this", "automate this",
+            "use code mode", "execute code", "run a script",
+            "combine", "chain", "batch", "loop through", "iterate",
+            "for each", "aggregate", "summarize all", "process all",
+        ]
+        if any(kw in content_lower for kw in code_keywords):
+            return True
+        
+        # High tool count (context window pressure)
+        if len(relevant_tools) > 15:
+            return True
+        
+        # Multi-step operation detection
+        multi_step_patterns = [
+            " then ",        # "search contacts then send email"
+            " and then ",    # explicit sequential
+            " after that ",  # sequential
+            " followed by ", # sequential
+            " across ",      # cross-platform
+            " for each ",    # iteration
+            " all my ",      # bulk operations
+        ]
+        step_count = sum(1 for p in multi_step_patterns if p in content_lower)
+        if step_count >= 2:
+            return True
+        
+        return False
+    
+    async def _execute_code_mode(
+        self, content: str, provider: str, relevant_tools: List[Dict[str, Any]]
+    ) -> Optional[Tuple[str, List[Dict[str, Any]], int]]:
+        """
+        Execute a user request via Code Mode.
+        
+        Instead of the standard function-calling loop, Code Mode:
+        1. Presents the LLM with a compact tool API reference
+        2. Asks the LLM to write Python code to accomplish the task
+        3. Executes the code in the sandbox with typed tool APIs
+        4. Returns the result to the user
+        
+        Returns None if Code Mode couldn't be used (fallback to standard).
+        """
+        try:
+            from .tool_api_generator import tool_api_generator
+            
+            # Generate compact API reference for the system prompt
+            api_reference = tool_api_generator.generate_api_reference(relevant_tools)
+            
+            # Build Code Mode system prompt
+            code_mode_system = f"""You are an AI assistant with access to a Python sandbox for executing code.
+When the user asks you to perform actions, write Python code using the available tool API.
+
+{api_reference}
+
+## How to Write Code
+- Use `await _call("tool_name", {{"param": "value"}})` to invoke any tool
+- Assign your final output to `result`  
+- Use `print()` for intermediate logging
+- Available libraries: json, math, datetime, re, hashlib, uuid
+- All tool calls are async: use `await`
+- Handle errors with try/except
+
+## Important
+- Execute the code via the execute_python_code tool
+- Do NOT return raw code to the user — execute it
+- Summarize the results in natural language after execution
+"""
+            
+            # Get conversation context
+            from ..routers.chat_router import get_optimized_context
+            context_messages = await get_optimized_context(self.conversation_id, self.db, user_message=content)
+            
+            messages = [{"role": "system", "content": code_mode_system}]
+            for msg in context_messages:
+                if msg.role == MessageRole.USER:
+                    messages.append({"role": "user", "content": msg.content})
+                elif msg.role == MessageRole.ASSISTANT:
+                    messages.append({"role": "assistant", "content": msg.content})
+            
+            messages.append({"role": "user", "content": content})
+            
+            # Only provide execute_python_code + discovery tools in Code Mode
+            code_mode_tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "execute_python_code",
+                        "description": "Execute Python code in the sandbox. Use await _call('tool_name', params) to invoke tools. Assign final output to `result`.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "code": {"type": "string", "description": "Python code to execute"}
+                            },
+                            "required": ["code"]
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "search_tools",
+                        "description": "Search for available tools by keyword.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string", "description": "Search query"}
+                            },
+                            "required": ["query"]
+                        }
+                    }
+                },
+            ]
+            
+            # Execute the Code Mode function calling loop (max 3 iterations)
+            response_content, tools_called, output_tokens = await self._execute_function_calling_loop(
+                provider, messages, code_mode_tools, max_iterations=3
+            )
+            
+            # Quality gate for Code Mode
+            if self._harness_enabled and self.quality_gate:
+                try:
+                    code_results = [t for t in tools_called if t.get("name") == "execute_python_code"]
+                    if code_results:
+                        last_result = code_results[-1].get("result", {})
+                        quality = await self.quality_gate.evaluate_code_mode_execution(
+                            code=code_results[-1].get("arguments", {}).get("code", ""),
+                            result=last_result if isinstance(last_result, dict) else {"success": True, "result": last_result},
+                            user_intent=content,
+                        )
+                        try:
+                            from ..observability.logger import log_event
+                            log_event(
+                                level=logging.INFO,
+                                event_type="QUALITY_GATE_PASS" if quality.passed else "QUALITY_GATE_FAIL",
+                                message=f"Code Mode quality: {quality.overall_score:.2f}",
+                                status="success" if quality.passed else "failed",
+                                customer_id=str(self.user.id),
+                                payload=quality.to_dict(),
+                            )
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            
+            return response_content, tools_called, output_tokens
+            
+        except Exception as e:
+            logger.error(f"Code Mode execution failed: {e}")
+            return None
     
     async def _call_ollama_direct(self, messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """Call Ollama for direct response without function calling."""

@@ -323,6 +323,26 @@ class ToolExecutor:
                 return await self._execute_conversational_agent_tool(arguments, user, db, background_tasks)
             elif tool_name == "execute_python_code":
                 return await self._execute_python_code_tool(arguments, user, db, background_tasks)
+            # Code Mode Discovery Meta-Tools
+            elif tool_name == "search_tools":
+                from .dynamic_tool_registry import dynamic_tool_registry
+                results = dynamic_tool_registry.search_tools_by_query(
+                    query=arguments.get("query", ""),
+                    category=arguments.get("category"),
+                )
+                return {"success": True, "tools": results}
+            elif tool_name == "get_tool_schema":
+                from .dynamic_tool_registry import dynamic_tool_registry
+                schema = dynamic_tool_registry.get_tool_schema_by_name(
+                    arguments.get("tool_name", "")
+                )
+                if schema:
+                    return {"success": True, "tool": schema}
+                return {"success": False, "error": f"Tool '{arguments.get('tool_name')}' not found"}
+            elif tool_name == "list_tool_categories":
+                from .dynamic_tool_registry import dynamic_tool_registry
+                categories = dynamic_tool_registry.list_tool_categories()
+                return {"success": True, "categories": categories}
             else:
                 return {
                     "success": False,
@@ -345,12 +365,45 @@ class ToolExecutor:
         db: AsyncSession,
         background_tasks: Optional['BackgroundTasks'] = None
     ) -> Dict[str, Any]:
-        """Executes LLM generated python scripts in the Code Mode sandbox."""
+        """Executes LLM generated python scripts in the Code Mode v2 sandbox.
+        
+        Enhanced with:
+        - Typed Python API injection (from ToolAPIGenerator)
+        - Pre-execution guardrail validation
+        - Observability logging for Code Mode metrics
+        - Structured result capture with tool invocation tracking
+        """
         from .sandbox_service import CodeSandboxService
+        from .tool_api_generator import tool_api_generator
+        from .harness import AgentGuardrails
+        import time
         
         code = arguments.get("code")
         if not code:
             return {"success": False, "error": "Missing 'code' argument", "result": None}
+
+        # Pre-execution guardrail: validate code safety
+        try:
+            guardrails = AgentGuardrails()
+            code_check = await guardrails.validate_code_output(code)
+            if not code_check.passed:
+                return {
+                    "success": False, 
+                    "error": f"Guardrail blocked: {code_check.reason}", 
+                    "result": None,
+                    "error_type": "GUARDRAIL_BLOCKED",
+                }
+        except Exception as e:
+            logger.warning(f"Guardrail check failed (proceeding): {e}")
+
+        # Generate typed Python API for the user's available tools
+        api_context = ""
+        try:
+            from .dynamic_tool_registry import dynamic_tool_registry
+            user_tools = await dynamic_tool_registry.get_user_tools(user.id, db)
+            api_context = tool_api_generator.generate_api(user_tools, compact=True)
+        except Exception as e:
+            logger.warning(f"Failed to generate Code Mode API (proceeding without): {e}")
 
         # The callable we inject into the sandbox to allow it to call other tools
         async def call_tool(tool_name: str, params: Dict[str, Any] = None):
@@ -369,7 +422,35 @@ class ToolExecutor:
             )
 
         sandbox = CodeSandboxService()
-        return await sandbox.execute_script(code, call_tool)
+        start_time = time.time()
+        result = await sandbox.execute_script(
+            code, 
+            call_tool, 
+            api_context=api_context,
+            metadata={"user_id": str(user.id)}
+        )
+
+        # Log Code Mode execution to observability
+        try:
+            from ..observability.logger import log_event
+            import logging as _logging
+            log_event(
+                level=_logging.INFO,
+                event_type="CODE_MODE_EXECUTION",
+                message=f"Code Mode execution {'succeeded' if result.get('success') else 'failed'}",
+                status="success" if result.get("success") else "failed",
+                duration_ms=result.get("execution_time_ms", 0),
+                customer_id=str(user.id),
+                payload={
+                    "tools_invoked_count": len(result.get("tools_invoked", [])),
+                    "error_type": result.get("error_type"),
+                    "code_length": len(code),
+                }
+            )
+        except Exception:
+            pass
+
+        return result
 
 
     async def _check_connection_access(self, tool_name: str, user: User, db: AsyncSession) -> bool:

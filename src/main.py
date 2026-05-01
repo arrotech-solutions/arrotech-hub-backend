@@ -287,6 +287,13 @@ app.include_router(assistant_router.router)  # AI Assistant widget (KB + Tool Di
 app.include_router(public_forms_router.router)  # Public contact forms & newsletter
 # We already included linkedin_router above
 
+# Harness Engineering internal monitoring API
+try:
+    from .routers.harness_router import router as harness_router
+    app.include_router(harness_router)  # Internal: /_internal/harness/*
+except ImportError as e:
+    logging.warning(f"Harness router not available: {e}")
+
 
 
 @app.get("/")

@@ -69,6 +69,7 @@ _IMAGE_HOST_DOMAINS = [
     'storage.googleapis.com',
     'firebasestorage.googleapis.com',
     's3.amazonaws.com',
+    'maps.googleapis.com',
 ]
 
 # Build a regex that matches URLs from known image hosts
@@ -340,15 +341,56 @@ class ConversationalAgentService:
     """
     Agentic AI that can call sub-tools within a single workflow step.
 
+    Integrates Harness Engineering via HarnessedExecutionMixin for:
+    - Pre-execution guardrails on every tool call
+    - Automated error feedback loops with corrective instructions
+    - Post-execution quality gates with safety-critical blocking
+    - Living agent context injected into system prompts
+
     Sub-tools available to the AI:
     - search_products(query) → RAG search against business KB
     - create_order(...) → OrderService.create_order
     - calculate_total(items) → OrderService.calculate_order_total
+    - initiate_mpesa_payment(...) → M-Pesa STK push
+    - display_product_cards(products) → WhatsApp interactive cards
     """
 
     def __init__(self):
         self.llm_service = LLMService()
         self.order_service = OrderService()
+        # Initialize harness components
+        self._init_harness_components()
+
+    def _init_harness_components(self):
+        """Initialize harness engineering components."""
+        try:
+            from .harness.mixin import HarnessedExecutionMixin
+            # Dynamically bind mixin methods to this instance
+            mixin = HarnessedExecutionMixin()
+            mixin._init_harness("conversational_agent")
+            self._harness_guardrails = mixin._harness_guardrails
+            self._harness_feedback = mixin._harness_feedback
+            self._harness_quality = mixin._harness_quality
+            self._harness_context = mixin._harness_context
+            self._harness_agent_type = mixin._harness_agent_type
+            self._harness_turn_start = 0.0
+            self._harness_tools_used = []
+            # Bind methods
+            self._harness_validate_tool_call = mixin._harness_validate_tool_call.__func__.__get__(self)
+            self._harness_handle_tool_error = mixin._harness_handle_tool_error.__func__.__get__(self)
+            self._harness_handle_guardrail_failure = mixin._harness_handle_guardrail_failure.__func__.__get__(self)
+            self._harness_evaluate_response = mixin._harness_evaluate_response.__func__.__get__(self)
+            self._harness_build_context = mixin._harness_build_context.__func__.__get__(self)
+            self._harness_track_tool_call = mixin._harness_track_tool_call.__func__.__get__(self)
+            self._harness_should_block_response = mixin._harness_should_block_response.__func__.__get__(self)
+            self._harness_get_safe_fallback = mixin._harness_get_safe_fallback.__func__.__get__(self)
+            self._harness_reset_turn = mixin._harness_reset_turn.__func__.__get__(self)
+            self._harness_log_event = mixin._harness_log_event.__func__.__get__(self)
+            self._harness_enabled = True
+            logger.info("[CONV_AGENT] Harness Engineering initialized")
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] Harness init failed (running without): {e}")
+            self._harness_enabled = False
 
     async def execute(
         self,
@@ -433,6 +475,18 @@ class ConversationalAgentService:
                 custom_prompt=custom_system_prompt
             )
 
+            # Harness: inject agent context into system prompt
+            if self._harness_enabled:
+                try:
+                    self._harness_reset_turn()
+                    harness_context = await self._harness_build_context(
+                        user, "conversational_agent", db
+                    )
+                    if harness_context:
+                        system_prompt += f"\n\n# Agent Context (Auto-Generated)\n{harness_context}"
+                except Exception as e:
+                    logger.warning(f"[CONV_AGENT] Harness context injection failed: {e}")
+
             # Load conversation history from CCM
             messages = await self._load_conversation_history(
                 session_key=session_key,
@@ -487,6 +541,19 @@ class ConversationalAgentService:
                     final_text = self._ensure_image_urls_in_text(final_text, image_urls)
                     final_text = self._format_for_channel(final_text, platform)
 
+                    # Harness: post-execution quality gate
+                    if self._harness_enabled:
+                        try:
+                            quality = await self._harness_evaluate_response(
+                                final_text, user_message, iterations=iteration + 1
+                            )
+                            # Block only for critical safety issues
+                            if self._harness_should_block_response(quality):
+                                logger.warning(f"[CONV_AGENT] Response blocked by safety gate (score={quality.safety:.2f})")
+                                final_text = self._harness_get_safe_fallback(business_name)
+                        except Exception as e:
+                            logger.warning(f"[CONV_AGENT] Quality gate failed: {e}")
+
                     # Save assistant response to CCM
                     await self._save_to_ccm(session_key, "assistant", final_text)
 
@@ -525,6 +592,32 @@ class ConversationalAgentService:
 
                     logger.info(f"[CONV_AGENT] Sub-tool call: {tool_name}({json.dumps(tool_args)[:200]})")
 
+                    # Harness: pre-execution guardrail validation
+                    if self._harness_enabled:
+                        try:
+                            available = [t.get("function", t).get("name", "") for t in dynamic_tools]
+                            guardrail_result = await self._harness_validate_tool_call(
+                                tool_name, tool_args, user, available
+                            )
+                            if not guardrail_result.passed:
+                                corrective = await self._harness_handle_guardrail_failure(
+                                    guardrail_result, tool_name, tool_args
+                                )
+                                # Inject corrective message as tool result
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": call_id,
+                                    "content": json.dumps({"error": corrective})
+                                })
+                                actions_taken.append({
+                                    "tool": tool_name,
+                                    "args": tool_args,
+                                    "result_summary": f"BLOCKED: {guardrail_result.reason}"
+                                })
+                                continue
+                        except Exception as e:
+                            logger.warning(f"[CONV_AGENT] Guardrail check failed: {e}")
+
                     # Execute the sub-tool
                     tool_result = await self._execute_sub_tool(
                         tool_name=tool_name,
@@ -539,6 +632,21 @@ class ConversationalAgentService:
                         db=db,
                         background_tasks=background_tasks
                     )
+
+                    # Harness: track tool call for quality evaluation
+                    if self._harness_enabled:
+                        self._harness_track_tool_call(tool_name, tool_args, tool_result)
+
+                    # Harness: handle tool errors with feedback loop
+                    if not tool_result.get("success") and tool_result.get("error") and self._harness_enabled:
+                        try:
+                            feedback = await self._harness_handle_tool_error(
+                                tool_name, str(tool_result.get("error", "")), tool_args
+                            )
+                            if feedback.corrective_message:
+                                tool_result["harness_correction"] = feedback.corrective_message
+                        except Exception as e:
+                            logger.warning(f"[CONV_AGENT] Feedback loop failed: {e}")
 
                     actions_taken.append({
                         "tool": tool_name,
