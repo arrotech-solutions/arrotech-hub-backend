@@ -1401,6 +1401,24 @@ class ConversationalAgentService:
                 image_url = product.get("image_url", "")
                 product_id = product.get("id", str(sent + 1))
 
+                # Cache product details for button click lookups
+                # When customer clicks "Add to Cart" or "View Details", the webhook
+                # looks up this cache to resolve product_id → actual product name/price
+                try:
+                    cache_service.set(
+                        f"product_card:{phone_number_id}:{product_id}",
+                        {
+                            "name": name,
+                            "price": price,
+                            "description": description[:200],
+                            "image_url": image_url,
+                            "currency": currency,
+                        },
+                        expire_seconds=86400  # 24h — enough for any shopping session
+                    )
+                except Exception as cache_err:
+                    logger.warning(f"[CONV_AGENT] Failed to cache product card: {cache_err}")
+
                 # Send as interactive button message with image header
                 if image_url:
                     try:
