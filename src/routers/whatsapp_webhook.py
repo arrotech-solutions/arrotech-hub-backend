@@ -156,11 +156,32 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                 if interactive.get("type") == "button_reply":
                     title = interactive.get("button_reply", {}).get("title", "")
                     btn_id = interactive.get("button_reply", {}).get("id", "")
-                    content = f"{title} (ID: {btn_id})" if btn_id else title
+
+                    # Parse product card button clicks into actionable messages
+                    if btn_id.startswith("add_to_cart_"):
+                        product_id = btn_id.replace("add_to_cart_", "")
+                        content = (
+                            f"I want to add product {product_id} to my cart. "
+                            f"Please look up this product and help me place an order."
+                        )
+                        msg_type = "text"  # Treat as text so workflows process it normally
+                    elif btn_id.startswith("view_details_"):
+                        product_id = btn_id.replace("view_details_", "")
+                        content = (
+                            f"I want to see more details about product {product_id}. "
+                            f"Please show me the full description, availability, and options."
+                        )
+                        msg_type = "text"
+                    else:
+                        # Generic interactive button
+                        content = f"{title}" if title else f"Button clicked: {btn_id}"
+                        msg_type = "text"
+
                 elif interactive.get("type") == "list_reply":
                     title = interactive.get("list_reply", {}).get("title", "")
                     list_id = interactive.get("list_reply", {}).get("id", "")
-                    content = f"{title} (ID: {list_id})" if list_id else title
+                    content = f"{title}" if title else f"Selected: {list_id}"
+                    msg_type = "text"
             
             logger.info(f"[WHATSAPP WEBHOOK] Message from {from_number}: {content[:50]}...")
             

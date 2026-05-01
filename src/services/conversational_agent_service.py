@@ -538,6 +538,13 @@ class ConversationalAgentService:
                     image_urls = _dedupe_keep_order(
                         extract_image_urls(final_text) + collected_image_urls
                     )
+
+                    # If product cards were sent directly, skip appending their images
+                    # as bare "Product images:" text — they're already delivered
+                    if collected_product_cards:
+                        card_image_set = {c.get("image_url", "") for c in collected_product_cards if c.get("image_url")}
+                        image_urls = [u for u in image_urls if u not in card_image_set]
+
                     final_text = self._ensure_image_urls_in_text(final_text, image_urls)
                     final_text = self._format_for_channel(final_text, platform)
 
@@ -681,11 +688,28 @@ class ConversationalAgentService:
                             order_data, business_name, currency
                         )
 
+                    # Build the tool result message for the LLM
+                    # For display_product_cards: tell the LLM cards were already sent
+                    # so it doesn't repeat product details in its text response
+                    if tool_name == "display_product_cards" and tool_result.get("cards_sent", 0) > 0:
+                        cards_sent_count = tool_result.get("cards_sent", 0)
+                        llm_tool_msg = (
+                            f"SUCCESS: {cards_sent_count} interactive product card(s) have been sent "
+                            f"directly to the customer's chat as rich media messages. "
+                            f"Each card shows the product image, name, price, and action buttons. "
+                            f"DO NOT list these products again in your text response — "
+                            f"the customer has already received them visually. "
+                            f"Instead, briefly acknowledge that you've shared the products "
+                            f"and ask if they'd like to order or see more."
+                        )
+                    else:
+                        llm_tool_msg = json.dumps(tool_result, default=str)
+
                     # Add tool result to conversation
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call_id,
-                        "content": json.dumps(tool_result, default=str)
+                        "content": llm_tool_msg
                     })
 
             # If we exhausted iterations, return whatever we have
@@ -695,6 +719,12 @@ class ConversationalAgentService:
             image_urls = _dedupe_keep_order(
                 extract_image_urls(final_text) + collected_image_urls
             )
+
+            # If product cards were sent directly, skip appending their images
+            if collected_product_cards:
+                card_image_set = {c.get("image_url", "") for c in collected_product_cards if c.get("image_url")}
+                image_urls = [u for u in image_urls if u not in card_image_set]
+
             final_text = self._ensure_image_urls_in_text(final_text, image_urls)
             final_text = self._format_for_channel(final_text, platform)
 
