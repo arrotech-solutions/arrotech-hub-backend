@@ -39,61 +39,73 @@ class JSONFormatter(logging.Formatter):
 # Global queue for async DB logging
 log_queue = asyncio.Queue()
 
-async def db_log_worker():
-    """Background worker to persist logs from queue to database."""
+async def flush_all_logs_async():
+    """Flush all currently queued logs to the database immediately."""
     from ..database import get_session_maker
     from ..models import ObservabilityLog
     
+    if log_queue.empty():
+        return 0
+        
     session_maker = get_session_maker()
+    logs_to_persist = []
     
-    while True:
-        # Get a batch of logs
-        logs_to_persist = []
+    # Try to get logs quickly (up to 100 or until queue empty)
+    for _ in range(100):
         try:
-            # Wait for at least one log
-            first_log = await log_queue.get()
-            logs_to_persist.append(first_log)
+            logs_to_persist.append(log_queue.get_nowait())
+        except asyncio.QueueEmpty:
+            break
             
-            # Try to get more logs quickly (up to 50 or until queue empty)
-            for _ in range(49):
-                try:
-                    next_log = log_queue.get_nowait()
-                    logs_to_persist.append(next_log)
-                except asyncio.QueueEmpty:
-                    break
+    if not logs_to_persist:
+        return 0
+        
+    # Persist batch
+    try:
+        async with session_maker() as session:
+            for log_data in logs_to_persist:
+                db_log = ObservabilityLog(
+                    level=log_data.get("level", "INFO"),
+                    trace_id=log_data.get("trace_id"),
+                    span_id=log_data.get("span_id"),
+                    event_type=log_data.get("event_type", "GENERIC"),
+                    customer_id=log_data.get("customer_id"),
+                    agent_id=log_data.get("agent_id"),
+                    workflow_id=log_data.get("workflow_id"),
+                    tool_name=log_data.get("tool_name"),
+                    step_name=log_data.get("step_name"),
+                    status=log_data.get("status"),
+                    duration_ms=log_data.get("duration_ms"),
+                    retry_count=log_data.get("retry_count", 0),
+                    payload=log_data.get("payload"),
+                    error_type=log_data.get("error_type"),
+                    error_message=log_data.get("error_message"),
+                    stack_trace=log_data.get("stack_trace")
+                )
+                session.add(db_log)
+            await session.commit()
             
-            # Persist batch
-            async with session_maker() as session:
-                for log_data in logs_to_persist:
-                    db_log = ObservabilityLog(
-                        level=log_data.get("level", "INFO"),
-                        trace_id=log_data.get("trace_id"),
-                        span_id=log_data.get("span_id"),
-                        event_type=log_data.get("event_type", "GENERIC"),
-                        customer_id=log_data.get("customer_id"),
-                        agent_id=log_data.get("agent_id"),
-                        workflow_id=log_data.get("workflow_id"),
-                        tool_name=log_data.get("tool_name"),
-                        step_name=log_data.get("step_name"),
-                        status=log_data.get("status"),
-                        duration_ms=log_data.get("duration_ms"),
-                        retry_count=log_data.get("retry_count", 0),
-                        payload=log_data.get("payload"),
-                        error_type=log_data.get("error_type"),
-                        error_message=log_data.get("error_message"),
-                        stack_trace=log_data.get("stack_trace")
-                    )
-                    session.add(db_log)
-                await session.commit()
-                
-            # Mark tasks as done
-            for _ in range(len(logs_to_persist)):
-                log_queue.task_done()
-                
-        except Exception as e:
-            # Fallback to stderr if DB logging fails to avoid losing logs entirely
-            print(f"CRITICAL: Failed to persist logs to DB: {e}", file=sys.stderr)
-            await asyncio.sleep(5) # Backoff
+        # Mark tasks as done
+        for _ in range(len(logs_to_persist)):
+            log_queue.task_done()
+            
+        return len(logs_to_persist)
+        
+    except Exception as e:
+        print(f"CRITICAL: Failed to persist logs to DB: {e}", file=sys.stderr)
+        return 0
+
+async def db_log_worker():
+    """Background worker to persist logs from queue to database (FastAPI only)."""
+    while True:
+        # Wait until there is at least one item
+        await log_queue.get()
+        # Put it back so flush_all_logs_async can grab it in its batch
+        log_queue.put_nowait(log_queue.get_nowait())
+        log_queue.task_done()
+        
+        await flush_all_logs_async()
+        await asyncio.sleep(0.5)  # Small backoff before checking again
 
 async def log_cleanup_job(retention_days: int = 14):
     """Periodically delete logs older than the retention period."""

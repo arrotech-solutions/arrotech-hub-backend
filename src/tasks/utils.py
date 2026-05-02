@@ -13,4 +13,9 @@ def run_async(coro):
         _worker_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(_worker_loop)
     
-    return _worker_loop.run_until_complete(coro)
+    try:
+        return _worker_loop.run_until_complete(coro)
+    finally:
+        # Guarantee all generated observability logs are saved to the DB
+        from src.observability.logger import flush_all_logs_async
+        _worker_loop.run_until_complete(flush_all_logs_async())
