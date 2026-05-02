@@ -100,6 +100,8 @@ class TestExecutionOrchestrator:
         
         mock_intent = MagicMock()
         mock_intent.requires_tools = False
+        mock_intent.intent_type = "chat"
+        mock_intent.confidence = 0.99
         orchestrator.intent_processor.classify_intent.return_value = mock_intent
         
         with patch.object(orchestrator, '_generate_direct_response', new_callable=AsyncMock) as mock_direct:
@@ -118,6 +120,8 @@ class TestExecutionOrchestrator:
         
         mock_intent = MagicMock()
         mock_intent.requires_tools = True
+        mock_intent.intent_type = "chat"
+        mock_intent.confidence = 0.99
         orchestrator.intent_processor.classify_intent.return_value = mock_intent
         
         orchestrator.tool_router.get_relevant_tools.return_value = []
@@ -169,7 +173,7 @@ class TestExecutionOrchestrator:
         with patch.object(orchestrator, '_call_llm_fallback', new_callable=AsyncMock) as mock_llm:
             # First call (openai) returns error, second call (anthropic fallback) succeeds
             mock_llm.side_effect = [
-                {"error": True, "error_message": "OpenAI is down"},
+                None,
                 {
                     "choices": [{"message": {"content": "Fallback success"}}],
                     "usage": {"total_tokens": 42}
@@ -198,6 +202,8 @@ class TestExecutionOrchestrator:
         
         mock_intent = MagicMock()
         mock_intent.requires_tools = True
+        mock_intent.intent_type = "task"
+        mock_intent.confidence = 0.99
         orchestrator.intent_processor.classify_intent.return_value = mock_intent
         
         orchestrator.tool_router.get_relevant_tools.return_value = [{"name": "fake_tool"}]
