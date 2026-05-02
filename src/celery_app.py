@@ -128,10 +128,44 @@ app.conf.beat_schedule = {
         "options": {"queue": "low"},
     },
 
-    # ── DB Log Flush (every 30s) ──
-    "flush-db-logs-every-30s": {
-        "task": "src.tasks.maintenance_tasks.db_log_flush_task",
-        "schedule": 30.0,
-        "options": {"queue": "low"},
-    },
 }
+
+# ── Observability Signals ────────────────────────────────────────────────────
+
+from celery.signals import task_prerun, task_success, task_failure
+import logging
+
+@task_prerun.connect
+def log_task_start(sender=None, task_id=None, task=None, **kwargs):
+    from src.observability.logger import log_event
+    log_event(
+        level=logging.INFO,
+        event_type="CELERY_TASK_START",
+        message=f"Starting background task: {sender.name}",
+        tool_name=sender.name
+    )
+
+@task_success.connect
+def log_task_success(sender=None, result=None, **kwargs):
+    from src.observability.logger import log_event
+    log_event(
+        level=logging.INFO,
+        event_type="CELERY_TASK_SUCCESS",
+        message=f"Task {sender.name} completed successfully.",
+        status="success",
+        tool_name=sender.name
+    )
+
+@task_failure.connect
+def log_task_failure(sender=None, task_id=None, exception=None, traceback=None, **kwargs):
+    from src.observability.logger import log_event
+    log_event(
+        level=logging.ERROR,
+        event_type="CELERY_TASK_FAILED",
+        message=f"Task {sender.name} crashed: {str(exception)}",
+        status="failed",
+        error_message=str(exception),
+        stack_trace=str(traceback),
+        tool_name=sender.name
+    )
+
