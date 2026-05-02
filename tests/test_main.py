@@ -44,8 +44,8 @@ class TestJSONFormatter:
         )
         output = fmt.format(record)
         data = json.loads(output)
-        assert "exception" in data
-        assert "ValueError" in data["exception"]
+        assert "error_type" in data
+        assert "ValueError" in data["error_message"]
 
     def test_format_without_exception(self):
         from src.observability.logger import JSONFormatter
@@ -56,7 +56,7 @@ class TestJSONFormatter:
         )
         output = fmt.format(record)
         data = json.loads(output)
-        assert "exception" not in data
+        assert "error_type" not in data
 
     def test_format_warning_level(self):
         from src.observability.logger import JSONFormatter

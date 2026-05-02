@@ -12,6 +12,6 @@ class TestBroadcastTasks:
         from src.tasks.broadcast_tasks import execute_broadcast_campaign_task
         mock_run_async.return_value = {"status": "completed", "messages_sent": 100}
         
-        result = execute_broadcast_campaign_task("campaign_123")
+        result = execute_broadcast_campaign_task("campaign_123", "user_123", ["contact_1", "contact_2"])
         assert result == {"status": "completed", "messages_sent": 100}
         mock_run_async.assert_called_once()
