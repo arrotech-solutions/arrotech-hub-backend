@@ -58,6 +58,9 @@ app.config_from_object({
     # ── Result Expiry ──
     "result_expires": 3600,  # Results expire after 1 hour
 
+    # ── Beat Settings ──
+    "beat_schedule_filename": "/tmp/celerybeat-schedule",  # Write to /tmp to avoid permission errors
+
     # ── Queue Routing ──
     "task_default_queue": "default",
     "task_routes": {
