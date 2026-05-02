@@ -17,7 +17,7 @@ class TestJSONFormatter:
     """Tests for the JSONFormatter log formatter."""
 
     def test_format_basic_message(self):
-        from src.main import JSONFormatter
+        from src.observability.logger import JSONFormatter
         fmt = JSONFormatter()
         record = logging.LogRecord(
             name="test", level=logging.INFO, pathname="", lineno=0,
@@ -31,7 +31,7 @@ class TestJSONFormatter:
         assert "logger" in data
 
     def test_format_with_exception(self):
-        from src.main import JSONFormatter
+        from src.observability.logger import JSONFormatter
         fmt = JSONFormatter()
         try:
             raise ValueError("test error")
@@ -48,7 +48,7 @@ class TestJSONFormatter:
         assert "ValueError" in data["exception"]
 
     def test_format_without_exception(self):
-        from src.main import JSONFormatter
+        from src.observability.logger import JSONFormatter
         fmt = JSONFormatter()
         record = logging.LogRecord(
             name="test", level=logging.DEBUG, pathname="", lineno=0,
@@ -59,7 +59,7 @@ class TestJSONFormatter:
         assert "exception" not in data
 
     def test_format_warning_level(self):
-        from src.main import JSONFormatter
+        from src.observability.logger import JSONFormatter
         fmt = JSONFormatter()
         record = logging.LogRecord(
             name="test.module", level=logging.WARNING, pathname="", lineno=0,
@@ -71,7 +71,7 @@ class TestJSONFormatter:
         assert data["logger"] == "test.module"
 
     def test_format_with_args(self):
-        from src.main import JSONFormatter
+        from src.observability.logger import JSONFormatter
         fmt = JSONFormatter()
         record = logging.LogRecord(
             name="test", level=logging.INFO, pathname="", lineno=0,
@@ -82,7 +82,7 @@ class TestJSONFormatter:
         assert data["message"] == "Count: 42"
 
     def test_output_is_valid_json(self):
-        from src.main import JSONFormatter
+        from src.observability.logger import JSONFormatter
         fmt = JSONFormatter()
         record = logging.LogRecord(
             name="test", level=logging.INFO, pathname="", lineno=0,
@@ -94,7 +94,7 @@ class TestJSONFormatter:
         assert isinstance(parsed, dict)
 
     def test_format_critical_level(self):
-        from src.main import JSONFormatter
+        from src.observability.logger import JSONFormatter
         fmt = JSONFormatter()
         record = logging.LogRecord(
             name="test", level=logging.CRITICAL, pathname="", lineno=0,
