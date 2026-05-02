@@ -158,7 +158,7 @@ class TestConversationalAgentService:
                 await svc.execute(
                     user_message="Do it",
                     session_key="test_session",
-                    business_config={},
+                    business_config={"enabled_mcp_tools": ["some_tool"]},
                     user=mock_user,
                     db=mock_db
                 )
