@@ -81,8 +81,9 @@ async def receive_webhook(
                 
                 # Handle different types of updates
                 if "messages" in value:
-                    # Incoming message
-                    await process_incoming_messages(value, db, background_tasks)
+                    # Incoming message - dispatch to Celery
+                    from ..tasks.webhook_tasks import process_whatsapp_message_task
+                    process_whatsapp_message_task.delay(value)
                     
                 if "statuses" in value:
                     # Message status update (sent, delivered, read)
@@ -96,7 +97,7 @@ async def receive_webhook(
         return {"status": "error", "message": str(e)}
 
 
-async def process_incoming_messages(value: dict, db: AsyncSession, background_tasks: BackgroundTasks):
+async def process_incoming_messages(value: dict, db: AsyncSession, background_tasks: Optional[BackgroundTasks] = None):
     """Process incoming WhatsApp messages."""
     
     messages = value.get("messages", [])
@@ -278,13 +279,17 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
             
             logger.info(f"[WHATSAPP WEBHOOK] Saved message {msg_id} from {from_number}")
             
-            # Trigger background processing
-            background_tasks.add_task(
-                background_process_message,
-                owner_user_id,
-                contact.id,
-                message.id
-            )
+            # Trigger processing
+            if background_tasks:
+                background_tasks.add_task(
+                    background_process_message,
+                    owner_user_id,
+                    contact.id,
+                    message.id
+                )
+            else:
+                # If no background_tasks (e.g. running inside Celery), await directly
+                await background_process_message(owner_user_id, contact.id, message.id)
             
         except Exception as e:
             logger.error(f"[WHATSAPP WEBHOOK] Error processing message: {e}")

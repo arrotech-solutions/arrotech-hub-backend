@@ -60,9 +60,8 @@ telegram_service = TelegramService()
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     # Startup
-    # Start background workers
-    asyncio.create_task(db_log_worker())
-    asyncio.create_task(log_cleanup_job(retention_days=14))
+    # NOTE: Background workers (db_log_worker, log_cleanup_job) are now
+    # handled by Celery Beat periodic tasks. See src/tasks/maintenance_tasks.py.
     
     logger.info("Starting Mini-Hub MCP Server...")
     
@@ -105,11 +104,10 @@ async def lifespan(app: FastAPI):
     app.state.hubspot_service = hubspot_service
     app.state.cache_service = cache_service
 
-    # Start Workflow Scheduler
-    try:
-        await workflow_scheduler_service.start()
-    except Exception as e:
-        logger.error(f"Failed to start Workflow Scheduler: {e}")
+    # NOTE: Workflow scheduling is now handled by Celery Beat.
+    # See src/tasks/workflow_tasks.py and src/celery_app.py beat_schedule.
+    # APScheduler (workflow_scheduler_service) is retained as a fallback
+    # but no longer started here.
 
     logger.info("Services ready - app is now accepting requests")
 
@@ -117,7 +115,6 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down Mini-Hub MCP Server...")
-    workflow_scheduler_service.shutdown()
 
 # Create FastAPI app
 app = FastAPI(

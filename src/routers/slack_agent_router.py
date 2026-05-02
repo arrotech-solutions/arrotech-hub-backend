@@ -272,14 +272,11 @@ async def slack_events(
             
             logger.info(f"[APP_MENTION] Firing workflow trigger for user {user.id}, clean_text='{clean_text[:80]}'")
             
-            background_tasks.add_task(
-                process_message_async,
-                user_id=user.id,
-                channel=channel,
-                message=clean_text,
-                slack_user_id=slack_user_id,
-                is_mention=True
-            )
+            try:
+                from ..tasks.webhook_tasks import process_slack_event_task
+                process_slack_event_task.delay(body)
+            except Exception as e:
+                logger.error(f"Failed to enqueue slack event: {e}")
         
         return {"status": "ok"}
     

@@ -222,13 +222,23 @@ class EmailService:
         html_content: str,
         text_content: Optional[str] = None
     ) -> None:
-        """Fire-and-forget email: schedules send_email as a background task
-        so the caller's HTTP response is not blocked by SMTP latency."""
-        task = asyncio.create_task(
-            self.send_email(to_email, subject, html_content, text_content)
-        )
-        # Prevent 'Task was destroyed but it is pending' warnings
-        task.add_done_callback(lambda t: t.exception() if not t.cancelled() and t.exception() else None)
+        """Fire-and-forget email via Celery task queue.
+
+        Replaces the old asyncio.create_task() pattern with a durable,
+        retryable Celery task. Falls back to asyncio if Celery is unavailable.
+        """
+        try:
+            from src.tasks.email_tasks import send_email_task
+            send_email_task.delay(to_email, subject, html_content, text_content)
+        except Exception:
+            # Fallback: if Celery broker is down, use the old fire-and-forget
+            import asyncio
+            task = asyncio.create_task(
+                self.send_email(to_email, subject, html_content, text_content)
+            )
+            task.add_done_callback(
+                lambda t: t.exception() if not t.cancelled() and t.exception() else None
+            )
     
     def _send_smtp(self, msg: MIMEMultipart) -> None:
         """Send email via SMTP (blocking). Called inside a thread-pool executor."""
