@@ -178,16 +178,32 @@ class TelegramService:
             return
 
         webhook_url = f"{base_url}/api/telegram/webhook"
-        url = f"https://api.telegram.org/bot{self.bot_token}/setWebhook"
         
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.post(url, json={"url": webhook_url, "drop_pending_updates": True}, timeout=10.0)
+                # 1. Check current webhook info
+                info_url = f"https://api.telegram.org/bot{self.bot_token}/getWebhookInfo"
+                info_resp = await client.get(info_url, timeout=10.0)
+                if info_resp.status_code == 200:
+                    info_data = info_resp.json()
+                    current_url = info_data.get("result", {}).get("url", "")
+                    if current_url == webhook_url:
+                        logger.info("Telegram webhook is already correctly configured.")
+                        return
+
+                # 2. Set webhook if not matching
+                set_url = f"https://api.telegram.org/bot{self.bot_token}/setWebhook"
+                response = await client.post(set_url, json={"url": webhook_url, "drop_pending_updates": True}, timeout=10.0)
                 response.raise_for_status()
                 data = response.json()
                 if data.get("ok"):
                     logger.info(f"Telegram webhook successfully registered to {webhook_url}")
                 else:
                     logger.error(f"Failed to set Telegram webhook: {data}")
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    logger.warning("Telegram setWebhook rate limited (429). Webhook is likely already set.")
+                else:
+                    logger.error(f"HTTP Error while checking/setting Telegram webhook: {e}")
             except Exception as e:
                 logger.error(f"Exception while setting Telegram webhook: {e}")
