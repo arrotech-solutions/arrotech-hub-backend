@@ -14,15 +14,7 @@ from src.celery_app import app
 logger = logging.getLogger(__name__)
 
 
-def _run_async(coro):
-    """Helper to run an async coroutine in a sync Celery task."""
-    import asyncio
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
-
+from .utils import run_async as _run_async
 
 @app.task(
     name="src.tasks.maintenance_tasks.db_log_flush_task",
