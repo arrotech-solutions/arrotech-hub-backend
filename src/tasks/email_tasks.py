@@ -32,16 +32,10 @@ def send_email_task(self, to_email: str, subject: str, html_content: str, text_c
 
     logger.info(f"[CeleryEmail] Sending email to {to_email}: {subject[:50]}")
 
-    loop = asyncio.new_event_loop()
-    try:
-        result = loop.run_until_complete(
-            email_service.send_email(to_email, subject, html_content, text_content)
-        )
-        if not result:
-            raise RuntimeError(f"Email send returned False for {to_email}")
-        return {"status": "sent", "to": to_email}
-    finally:
-        loop.close()
+    result = _run_async(email_service.send_email(to_email, subject, html_content, text_content))
+    if not result:
+        raise RuntimeError(f"Email send returned False for {to_email}")
+    return {"status": "sent", "to": to_email}
 
 
 @app.task(
@@ -57,7 +51,7 @@ def send_welcome_email_task(self, to_email: str, user_name: str):
     from src.services.email_service import email_service
 
     result = _run_async(email_service.send_welcome_email(to_email, user_name))
-        return {"status": "sent" if result else "failed", "to": to_email}
+    return {"status": "sent" if result else "failed", "to": to_email}
 
 
 @app.task(
@@ -73,7 +67,7 @@ def send_password_reset_email_task(self, to_email: str, reset_token: str, reset_
     from src.services.email_service import email_service
 
     result = _run_async(email_service.send_password_reset_email(to_email, reset_token, reset_url))
-        return {"status": "sent" if result else "failed", "to": to_email}
+    return {"status": "sent" if result else "failed", "to": to_email}
 
 
 @app.task(
@@ -89,7 +83,7 @@ def send_2fa_otp_email_task(self, to_email: str, otp: str):
     from src.services.email_service import email_service
 
     result = _run_async(email_service.send_2fa_otp_email(to_email, otp))
-        return {"status": "sent" if result else "failed", "to": to_email}
+    return {"status": "sent" if result else "failed", "to": to_email}
 
 
 @app.task(
@@ -105,7 +99,7 @@ def send_email_verification_task(self, to_email: str, user_name: str, otp: str):
     from src.services.email_service import email_service
 
     result = _run_async(email_service.send_email_verification(to_email, user_name, otp))
-        return {"status": "sent" if result else "failed", "to": to_email}
+    return {"status": "sent" if result else "failed", "to": to_email}
 
 
 @app.task(
@@ -123,7 +117,7 @@ def send_org_invitation_email_task(
     from src.services.email_service import email_service
 
     result = _run_async(email_service.send_org_invitation_email(to_email, org_name, inviter_name, role, invite_url))
-        return {"status": "sent" if result else "failed", "to": to_email}
+    return {"status": "sent" if result else "failed", "to": to_email}
 
 
 @app.task(
@@ -144,4 +138,4 @@ def send_payment_notification_task(
     result = _run_async(email_service.send_payment_received_notification(
                 to_email, user_name, amount, currency, payment_method, item_name)
         )
-        return {"status": "sent" if result else "failed", "to": to_email}
+    return {"status": "sent" if result else "failed", "to": to_email}
