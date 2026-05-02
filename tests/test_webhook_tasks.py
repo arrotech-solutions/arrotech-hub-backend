@@ -20,7 +20,7 @@ class TestWebhookTasks:
         from src.tasks.webhook_tasks import process_telegram_message_task
         mock_run_async.return_value = {"status": "processed", "type": "telegram"}
         
-        result = process_telegram_message_task("user_123", {"update_id": 123})
+        result = process_telegram_message_task({"update_id": 123})
         assert result == {"status": "processed", "type": "telegram"}
         mock_run_async.assert_called_once()
 
@@ -28,7 +28,7 @@ class TestWebhookTasks:
         from src.tasks.webhook_tasks import process_slack_event_task
         mock_run_async.return_value = {"status": "processed", "type": "slack"}
         
-        result = process_slack_event_task("user_123", {"event": {}})
+        result = process_slack_event_task({"type": "message"}, "user_123")
         assert result == {"status": "processed", "type": "slack"}
         mock_run_async.assert_called_once()
 
@@ -36,6 +36,6 @@ class TestWebhookTasks:
         from src.tasks.webhook_tasks import process_gmail_notification_task
         mock_run_async.return_value = {"status": "processed", "type": "gmail"}
         
-        result = process_gmail_notification_task("user_123", "user@test.com", 12345)
+        result = process_gmail_notification_task({"emailAddress": "test@test.com", "historyId": 123})
         assert result == {"status": "processed", "type": "gmail"}
         mock_run_async.assert_called_once()
