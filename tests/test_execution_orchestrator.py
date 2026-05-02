@@ -209,7 +209,7 @@ class TestExecutionOrchestrator:
         orchestrator.tool_router.get_relevant_tools.return_value = [{"name": "fake_tool"}]
         orchestrator.user.subscription_tier = "free" # Ensure Code Mode is false
         
-        mock_convert.return_value = [{"type": "function", "function": {"name": "fake_tool"}}]
+        mock_convert.return_value = [{"type": "function", "function": {"name": "fake_tool", "description": "fake tool"}}]
         mock_get_context.return_value = []
         
         # Mock function calling loop to return successfully
