@@ -10,8 +10,8 @@ def mock_run_async():
 class TestBroadcastTasks:
     def test_execute_broadcast_campaign_task(self, mock_run_async):
         from src.tasks.broadcast_tasks import execute_broadcast_campaign_task
-        mock_run_async.return_value = {"status": "completed", "messages_sent": 100}
+        mock_run_async.return_value = {"status": "completed", "sent": 100, "failed": 0}
         
         result = execute_broadcast_campaign_task("campaign_123", "user_123", ["contact_1", "contact_2"])
-        assert result == {"status": "completed", "messages_sent": 100}
+        assert result == {"status": "completed", "sent": 100, "failed": 0}
         mock_run_async.assert_called_once()

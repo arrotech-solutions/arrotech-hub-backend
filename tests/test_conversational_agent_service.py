@@ -155,13 +155,16 @@ class TestConversationalAgentService:
                 # ToolExecutor throws a standard MCP error
                 mock_exec.return_value = {"success": False, "error": "API Key Invalid"}
                 
-                await svc.execute(
-                    user_message="Do it",
-                    session_key="test_session",
-                    business_config={"enabled_mcp_tools": ["some_tool"]},
-                    user=mock_user,
-                    db=mock_db
-                )
+                with patch('src.services.dynamic_tool_registry.dynamic_tool_registry.get_tool') as mock_get_tool:
+                    mock_get_tool.return_value = {"name": "some_tool", "description": "desc", "inputSchema": {}}
+                    
+                    await svc.execute(
+                        user_message="Do it",
+                        session_key="test_session",
+                        business_config={"enabled_mcp_tools": ["some_tool"]},
+                        user=mock_user,
+                        db=mock_db
+                    )
                 
                 # Verify that on the second call to LLM, the messages array contains the error payload
                 second_call_args = mock_chat.call_args_list[1]
