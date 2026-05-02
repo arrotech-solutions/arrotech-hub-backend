@@ -42,13 +42,9 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             if message_text and chat_id:
                 logger.info(f"[TELEGRAM_WEBHOOK] Received message from user {sender_id} in chat {chat_id}: {message_text[:50]}")
                 
-                # Process the trigger asynchronously
-                background_tasks.add_task(
-                    TelegramWorkflowTrigger.on_message_received,
-                    sender_id=sender_id,
-                    chat_id=chat_id,
-                    message=message_text
-                )
+                # Process the trigger asynchronously via Celery
+                from ..tasks.webhook_tasks import process_telegram_message_task
+                process_telegram_message_task.delay(data)
         
         # Telegram requires a 200 OK response quickly
         return Response(content="OK", status_code=200, media_type="text/plain")

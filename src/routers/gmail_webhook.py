@@ -111,8 +111,9 @@ async def gmail_push_notification(
         
         logger.info(f"Gmail push notification received for {email_address} — queuing background task")
         
-        # Queue the actual processing in the background
-        background_tasks.add_task(_process_gmail_notification_bg, email_address, history_id)
+        # Enqueue to Celery for background processing
+        from ..tasks.webhook_tasks import process_gmail_notification_task
+        process_gmail_notification_task.delay(email_address, history_id)
         
         return {"status": "accepted"}
     

@@ -21,6 +21,16 @@ class BaseConfig(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379"
 
+    # Celery
+    CELERY_BROKER_URL: str = "redis://localhost:6379/1"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
+    CELERY_TASK_TIME_LIMIT: int = 300
+    CELERY_TASK_SOFT_TIME_LIMIT: int = 240
+    CELERY_WORKER_MAX_TASKS_PER_CHILD: int = 100
+    CELERY_WORKER_CONCURRENCY: int = 4
+    CELERY_FLOWER_PORT: int = 5555
+    CELERY_FLOWER_BASIC_AUTH: Optional[str] = None  # "user:password"
+
     # API Keys
     HUBSPOT_API_KEY: Optional[str] = None
     HUBSPOT_CLIENT_ID: Optional[str] = None

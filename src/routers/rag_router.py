@@ -554,18 +554,22 @@ async def trigger_sync(
         source.status = "indexing"
         await db.commit()
         
-        # Run ingestion in background
-        from ..database import get_session_maker
-        session_maker = get_session_maker()
+        # Determine source identifier from config
+        source_config = source.config or {}
+        url_or_id = (
+            source_config.get("url") or source_config.get("file_id") or 
+            source_config.get("page_id") or source_config.get("spreadsheet_id") or
+            source_config.get("channel") or source_config.get("query") or 
+            source_config.get("id", "")
+        )
         
-        background_tasks.add_task(
-            _run_sync_in_background,
-            source_id=str(source.id),
+        # Enqueue the Celery Task
+        from ..tasks.rag_tasks import rag_ingest_source_task
+        rag_ingest_source_task.delay(
+            url_or_id=url_or_id,
             kb_id=str(source.kb_id),
             user_id=str(user.id),
-            source_type=source.source_type,
-            source_config=source.config,
-            db_session_maker=session_maker
+            source_type=source.source_type
         )
         
         return {"status": "sync_triggered", "source_id": source_id, "message": "Background ingestion started"}
