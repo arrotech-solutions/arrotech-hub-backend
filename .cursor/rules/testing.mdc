@@ -1,0 +1,33 @@
+---
+description: Rules for modifying test files
+globs: tests/**/*.py
+alwaysApply: false
+---
+
+# Testing Rules
+
+When modifying files in `tests/`:
+
+## Test Structure
+- Test files mirror source: `src/services/foo.py` → `tests/test_foo.py`
+- Use existing fixtures from `tests/conftest.py`: `db_session`, `test_user`, `auth_headers`, `client`
+- Async tests use `@pytest.mark.asyncio` decorator
+- Mark tests: `@pytest.mark.unit`, `@pytest.mark.integration`, `@pytest.mark.architecture`, `@pytest.mark.harness`
+
+## Fixture Reference
+```python
+db_session       # AsyncSession (in-memory SQLite)
+test_user        # User(email="test@example.com", tier="free")
+test_user_2      # Second test user
+auth_headers     # {"Authorization": "Bearer <token>"}
+client           # AsyncClient with db override
+test_conversation # Conversation linked to test_user
+test_connection   # HubSpot connection for test_user
+```
+
+## Running Tests
+```bash
+pytest tests/test_<module>.py -v           # Single file
+pytest tests/ -m "architecture" -v         # By marker
+pytest tests/ -x -q                        # All, stop on first failure
+```

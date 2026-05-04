@@ -1,0 +1,21 @@
+---
+description: Core architecture rules that apply to all code changes in the project
+alwaysApply: true
+---
+
+# Arrotech Hub — Architecture Rules
+
+You are working on the Arrotech Hub backend (Python/FastAPI). Read `AGENTS.md` in the repo root for full context.
+
+## Critical Rules (NEVER violate)
+1. **Layer direction**: Models → Services → Routers. Services must NEVER import from routers.
+2. **No print()**: Use `logger = logging.getLogger(__name__)` in all service/router files.
+3. **No hardcoded secrets**: Use `src/config.py` settings or UserSettings BYOK.
+4. **No direct engine creation**: Use `get_db()` dependency injection.
+
+## Before completing any task, run verification:
+```bash
+python scripts/verify_architecture.py
+python scripts/verify_imports.py
+pytest tests/ -x -q
+```
