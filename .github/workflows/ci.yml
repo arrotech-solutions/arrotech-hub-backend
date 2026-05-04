@@ -139,6 +139,7 @@ jobs:
     with:
       environment: "staging"
       platform: "railway"
+      service: "arrotech-hub-backend"
       wait-for-rollout: true
     secrets:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
@@ -152,6 +153,7 @@ jobs:
     with:
       environment: "production"
       platform: "railway"
+      service: "arrotech-hub-backend"
       wait-for-rollout: true
     secrets:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
