@@ -50,12 +50,34 @@ jobs:
       fail-on-high-severity: false
 
   # ===========================================================================
+  # Stage 1.5: Architecture Verification (Harness Gates)
+  # ===========================================================================
+
+  architecture-check:
+    name: Architecture Verification
+    needs: [code-quality]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Verify Architecture
+        run: python scripts/verify_architecture.py
+      - name: Verify Imports
+        run: python scripts/verify_imports.py
+      - name: Verify Tool Consistency
+        run: python scripts/verify_tools.py
+
+  # ===========================================================================
   # Stage 2: Testing
   # ===========================================================================
 
   test:
     name: Tests
-    needs: [code-quality]
+    needs: [architecture-check]
     uses: arrotech-solutions/arrotech-solutions-actions/.github/workflows/ci-test.yml@main
     with:
       language: "python"
@@ -63,6 +85,47 @@ jobs:
       coverage-threshold: 20  # TODO: Increase as tests are added
       upload-coverage: true
       parallel-tests: true
+
+  # ===========================================================================
+  # Stage 2.5: Change Impact Analysis (PR only)
+  # ===========================================================================
+
+  impact-analysis:
+    name: Change Impact Analysis
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Analyze Change Impact
+        id: impact
+        run: |
+          python scripts/analyze_impact.py --diff origin/${{ github.base_ref }} --output markdown > impact_report.md
+          cat impact_report.md
+      - name: Post Impact Report
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            try {
+              const report = fs.readFileSync('impact_report.md', 'utf8');
+              if (report.trim()) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: report
+                });
+              }
+            } catch (e) {
+              console.log('No impact report to post');
+            }
+
 
   # ===========================================================================
   # Stage 3: Deploy to Fly.io

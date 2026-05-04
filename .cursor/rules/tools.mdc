@@ -1,0 +1,34 @@
+---
+description: Rules for modifying tool registration files (platform_registry, dynamic_tool_registry, tool_executor)
+globs: src/services/platform_registry.py,src/services/dynamic_tool_registry.py,src/services/tool_executor.py
+alwaysApply: false
+---
+
+# Tool Registration Rules
+
+These three files must stay in sync. Every tool needs entries in ALL THREE:
+
+1. **platform_registry.py** — Tool schema (name, description, parameters)
+2. **dynamic_tool_registry.py** — Tool availability rules (which users/tiers get access)
+3. **tool_executor.py** — Dispatch mapping (tool_name → service method call)
+
+## After Any Change
+```bash
+python scripts/verify_tools.py    # Checks consistency across all 3 files
+```
+
+## Adding a New Tool
+```python
+# 1. platform_registry.py
+"my_tool": {
+    "name": "my_tool",
+    "description": "What it does",
+    "inputSchema": {"type": "object", "properties": {...}, "required": [...]}
+}
+
+# 2. tool_executor.py — add dispatch case
+elif tool_name == "my_tool":
+    result = await self._execute_my_platform_tool(tool_name, arguments)
+
+# 3. dynamic_tool_registry.py — add to appropriate platform tools list
+```
