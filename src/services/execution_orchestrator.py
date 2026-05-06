@@ -641,6 +641,9 @@ class ExecutionOrchestrator:
                                 tool_result["_meta"] = tool_def["_meta"]
                             else:
                                 tool_result = {"content": str(tool_result), "_meta": tool_def["_meta"]}
+                            print(f"🔧 Injected _meta into tool_result: {tool_def['_meta']}")
+                        else:
+                            print(f"🔧 No _meta found for tool {function_name}. tool_def: {tool_def}")
 
                         # Add to tools_called list
                         tools_called.append({
@@ -1638,6 +1641,14 @@ When the user asks you to perform actions, write Python code using the available
                                 "platform_color": tool_context.get("platform_color", "gray"),
                                 "category": tool_context.get("category", "general")
                             }
+
+                            # Inject UI metadata if present in tool definition
+                            tool_def = dynamic_tool_registry.get_tool_schema_by_name(function_name)
+                            if tool_def and "_meta" in tool_def:
+                                if isinstance(tool_result, dict):
+                                    tool_result["_meta"] = tool_def["_meta"]
+                                else:
+                                    tool_result = {"content": str(tool_result), "_meta": tool_def["_meta"]}
 
                             tools_called.append({"name": function_name, "arguments": arguments, "result": tool_result, "context": tool_context})
 
