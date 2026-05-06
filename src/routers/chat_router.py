@@ -993,15 +993,6 @@ async def execute_function_calling_loop(
                     function_name, arguments, user, db, tools_called
                 )
                 
-                # Inject UI metadata if present in tool definition
-                tool_def = dynamic_tool_registry.get_tool_schema_by_name(function_name)
-                if tool_def and "_meta" in tool_def:
-                    if isinstance(tool_result, dict):
-                        tool_result["_meta"] = tool_def["_meta"]
-                    else:
-                        tool_result = {"content": str(tool_result), "_meta": tool_def["_meta"]}
-                
-
                 # Store tool call info
                 tools_called.append({
                     "name": function_name,
