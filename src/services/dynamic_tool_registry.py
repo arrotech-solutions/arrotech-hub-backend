@@ -710,11 +710,6 @@ class DynamicToolRegistry:
                 },
                 "category": "payments",
                 "always_available": True,
-                "_meta": {
-                    "ui": {
-                        "resourceUri": "ui://mpesa-dashboard/index.html"
-                    }
-                },
                 "few_shot_examples": [
                     {
                         "user": "Show me today's M-Pesa payments",
@@ -2224,11 +2219,6 @@ class DynamicToolRegistry:
                 "connection_id": connection.id,
                 "platform": "google_workspace",
                 "status": "available",
-                "_meta": {
-                    "ui": {
-                        "resourceUri": "ui://google-workspace/index.html"
-                    }
-                },
                 "id": "google_workspace_gmail"
             },
             {
@@ -2256,11 +2246,6 @@ class DynamicToolRegistry:
                 "connection_id": connection.id,
                 "platform": "google_workspace",
                 "status": "available",
-                "_meta": {
-                    "ui": {
-                        "resourceUri": "ui://google-workspace/index.html"
-                    }
-                },
                 "id": "google_workspace_calendar"
             },
             {
@@ -2893,7 +2878,6 @@ class DynamicToolRegistry:
             "description": tool.get("description", ""),
             "category": tool.get("category", "general"),
             "inputSchema": tool.get("inputSchema", {}),
-            "_meta": tool.get("_meta"),
         }
 
     def list_tool_categories(self) -> List[Dict[str, Any]]:
