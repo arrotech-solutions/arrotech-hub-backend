@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 from fastapi import (APIRouter, Depends, HTTPException, Request, Response,
                      status)
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -271,3 +271,32 @@ async def debug_settings(
             }
         }
     }
+
+@router.get("/ui/{app_id}/{path:path}")
+async def serve_ui_resource(app_id: str, path: str):
+    """
+    ### Serve MCP App UI Resources
+    
+    Serves the HTML/JS/CSS resources for interactive MCP Apps.
+    This endpoint implements the backend side of the `ui://` protocol.
+    """
+    # Base directory for MCP apps
+    # On production, this might be a persistent volume or S3 bucket
+    base_dir = os.path.join(os.getcwd(), "mcp_apps")
+    file_path = os.path.abspath(os.path.join(base_dir, app_id, path))
+    
+    # Security: Ensure the path is within the base directory
+    if not file_path.startswith(os.path.abspath(base_dir)):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="UI resource not found")
+    
+    # Set headers for security and caching
+    headers = {
+        "Content-Security-Policy": "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; connect-src *; img-src * data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com;",
+        "X-Frame-Options": "SAMEORIGIN", # This might need to be relaxed or managed via CORS if frontend is on different domain
+        "Cache-Control": "no-cache" # During development
+    }
+    
+    return FileResponse(file_path, headers=headers)

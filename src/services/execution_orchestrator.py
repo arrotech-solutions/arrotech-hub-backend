@@ -634,6 +634,14 @@ class ExecutionOrchestrator:
                             function_name, arguments, self.user, self.db, tools_called
                         )
                         
+                        # Inject UI metadata if present in tool definition
+                        tool_def = dynamic_tool_registry.get_tool_schema_by_name(function_name)
+                        if tool_def and "_meta" in tool_def:
+                            if isinstance(tool_result, dict):
+                                tool_result["_meta"] = tool_def["_meta"]
+                            else:
+                                tool_result = {"content": str(tool_result), "_meta": tool_def["_meta"]}
+
                         # Add to tools_called list
                         tools_called.append({
                             "name": function_name,
