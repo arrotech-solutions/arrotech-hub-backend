@@ -2893,6 +2893,7 @@ class DynamicToolRegistry:
             "description": tool.get("description", ""),
             "category": tool.get("category", "general"),
             "inputSchema": tool.get("inputSchema", {}),
+            "_meta": tool.get("_meta"),
         }
 
     def list_tool_categories(self) -> List[Dict[str, Any]]:

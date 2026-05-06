@@ -419,7 +419,7 @@
                 const item = document.createElement('div');
                 item.className = 'email-item';
                 item.innerHTML = `
-                    <div class="email-sender">${email.from_name || email.from_email}</div>
+                    <div class="email-sender">${email.from}</div>
                     <div class="email-content">
                         <div class="email-subject">${email.subject}</div>
                         <div class="email-snippet">${email.snippet || ''}</div>
@@ -464,15 +464,17 @@
 
                 // Filter events for this day
                 const dayEvents = events.filter(e => {
-                    const eventDate = new Date(e.start);
+                    const eventStart = e.start.dateTime || e.start.date;
+                    const eventDate = new Date(eventStart);
                     return eventDate.toDateString() === dayDate.toDateString();
                 });
 
                 dayEvents.forEach(e => {
+                    const eventStart = e.start.dateTime || e.start.date;
                     const eventEl = document.createElement('div');
                     eventEl.className = 'calendar-event';
                     eventEl.innerText = e.summary;
-                    eventEl.title = `${e.summary} (${new Date(e.start).toLocaleTimeString()})`;
+                    eventEl.title = `${e.summary} (${new Date(eventStart).toLocaleTimeString()})`;
                     dayEl.appendChild(eventEl);
                 });
 
