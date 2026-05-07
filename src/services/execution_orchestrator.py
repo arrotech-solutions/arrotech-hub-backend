@@ -1366,7 +1366,9 @@ When the user asks you to perform actions, write Python code using the available
         content: str, 
         provider: str,
         use_reasoning: bool = False,
-        use_search: bool = False
+        use_search: bool = False,
+        current_time: Optional[str] = None,
+        timezone: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Process a user message and yield SSE events at each stage.
@@ -1465,7 +1467,9 @@ When the user asks you to perform actions, write Python code using the available
                 relevant_tools,
                 user_context={"tier": self.user.subscription_tier, "connections": []},
                 user_query=content,
-                tool_awareness_context=tool_awareness_context
+                tool_awareness_context=tool_awareness_context,
+                current_time=current_time,
+                timezone=timezone
             )
             
             messages = [{"role": "system", "content": system_prompt}]

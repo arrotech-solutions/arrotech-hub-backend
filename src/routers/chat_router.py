@@ -52,6 +52,14 @@ class MessageCreate(BaseModel):
         False,
         description="If True, the orchestrator will inject a web_search tool and require the LLM to research the query before answering."
     )
+    current_time: Optional[str] = Field(
+        None,
+        description="Optional ISO string representing the user's current local time. Used for temporal awareness (e.g., 'today', 'latest')."
+    )
+    timezone: Optional[str] = Field(
+        None,
+        description="Optional IANA timezone string (e.g., 'Africa/Nairobi')."
+    )
 
 
 class ConversationCreate(BaseModel):
@@ -242,7 +250,14 @@ async def get_conversation(
     }
 
 
-async def build_system_prompt(tools: List[Dict[str, Any]] = None, user_context: Dict[str, Any] = None, user_query: str = "", tool_awareness_context: str = "") -> str:
+async def build_system_prompt(
+    tools: List[Dict[str, Any]] = None, 
+    user_context: Dict[str, Any] = None, 
+    user_query: str = "", 
+    tool_awareness_context: str = "",
+    current_time: Optional[str] = None,
+    timezone: Optional[str] = None
+) -> str:
     """
     Build an enhanced system prompt for high-accuracy tool calling.
     
@@ -251,8 +266,19 @@ async def build_system_prompt(tools: List[Dict[str, Any]] = None, user_context: 
         user_context: Optional dict with user's connections, tier, etc.
         user_query: The user's current message for semantic relevance
         tool_awareness_context: Rich context from ToolContextEngine about connections & capabilities
+        current_time: ISO string for temporal awareness
+        timezone: User's timezone
     """
-    system_prompt = """You are Mini-Hub, an advanced AI-powered Business Assistant with access to 50+ integrations and deep awareness of the user's connected business tools.
+    # ── Temporal Awareness ──────────────────────────────────────────────────
+    temporal_str = ""
+    if current_time:
+        temporal_str = f"\n- Current local time: {current_time}"
+    if timezone:
+        temporal_str += f"\n- User's timezone: {timezone}"
+    if temporal_str:
+        temporal_str = f"\n\n## TEMPORAL CONTEXT (CRITICAL):{temporal_str}\n- Use this date to prioritize the LATEST information in search results. If you see conflicting info from January and May of the same year, the May info is the current one.\n- Use this date to resolve terms like 'today', 'this season', 'current', or 'last week'."
+
+    system_prompt = f"""You are Mini-Hub, an advanced AI-powered Business Assistant with access to 50+ integrations and deep awareness of the user's connected business tools.{temporal_str}
 
 ## YOUR IDENTITY:
 - You are a professional, proactive assistant specialized in business automation and operations
@@ -1507,7 +1533,9 @@ async def send_message_stream(
                 data.content, 
                 data.provider or settings.DEFAULT_LLM_PROVIDER,
                 use_reasoning=data.use_reasoning,
-                use_search=data.use_search
+                use_search=data.use_search,
+                current_time=data.current_time,
+                timezone=data.timezone
             ):
                 event_type = event.get("type", "")
                 
