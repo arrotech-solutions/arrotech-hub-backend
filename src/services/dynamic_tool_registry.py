@@ -473,11 +473,11 @@ class DynamicToolRegistry:
             },
             "web_search": {
                 "name": "web_search",
-                "description": "Perform live web searches using DuckDuckGo to answer user queries with up-to-date and real-time internet information. Useful for current events, news, specific facts, or deep research.",
+                "description": "Perform live web searches using DuckDuckGo to answer user queries with up-to-date and real-time internet information. Useful for current events, news, specific facts, or deep research. IMPORTANT: Always include the current year in your query when searching for 'current', 'latest', or 'today's' information to ensure fresh results.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "The search query to look up on the internet"},
+                        "query": {"type": "string", "description": "The search query to look up on the internet (e.g., 'Manchester United manager 2026')"},
                         "max_results": {"type": "integer", "description": "Maximum number of search results to return", "default": 5}
                     },
                     "required": ["query"]
