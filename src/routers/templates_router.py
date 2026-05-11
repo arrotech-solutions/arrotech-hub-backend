@@ -2128,6 +2128,77 @@ WORKFLOW_TEMPLATES = [
                 "show_if": {"field": "storage_provider", "value": "airtable"}
             }
         }
+    },
+    {
+        "id": "whatsapp_support_agent",
+        "name": "WhatsApp Support Agent",
+        "description": "AI-powered WhatsApp support agent that answers customer questions using your Knowledge Base. No ordering — purely informational.",
+        "category": "Customer Support",
+        "icon": "💬",
+        "difficulty": "beginner",
+        "estimated_time": "3 mins",
+        "tags": ["whatsapp", "support", "agent", "saas", "services"],
+        "required_connections": ["whatsapp", "rag_pipeline"],
+        "trigger_type": WorkflowTriggerType.EVENT,
+        "trigger_config": {
+            "platform": "whatsapp",
+            "event_type": "whatsapp_message_received"
+        },
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "rag_search",
+                "tool_parameters": {
+                    "query": "{{whatsapp_message_content}}",
+                    "kb_id": "{{variables.kb_id}}",
+                    "top_k": 5,
+                    "session_key": "{{session_key}}"
+                },
+                "description": "Search knowledge base for relevant information"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "ai_text_generation",
+                "tool_parameters": {
+                    "operation": "generate",
+                    "prompt": "{{whatsapp_message_content}}",
+                    "context": "{{step_1.result}}",
+                    "system_prompt": "You are a helpful customer support assistant for {{variables.business_name}}. Answer based on the provided context. Be concise and friendly (WhatsApp style). {{variables.system_prompt}}",
+                    "session_key": "{{session_key}}",
+                    "temperature": 0.3,
+                    "max_tokens": 500
+                },
+                "description": "Generate contextual response using KB results"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "whatsapp_send_message",
+                "tool_parameters": {
+                    "operation": "send_message",
+                    "to_number": "{{whatsapp_contact_phone}}",
+                    "message": "{{step_2.result}}"
+                },
+                "description": "Reply to customer"
+            }
+        ],
+        "variables": {
+            "kb_id": {
+                "type": "string",
+                "required": True,
+                "description": "Knowledge Base ID containing your FAQs/Docs",
+                "connection_for": "rag_pipeline"
+            },
+            "business_name": {
+                "type": "string",
+                "required": True,
+                "description": "Your business name (shown to customers)"
+            },
+            "system_prompt": {
+                "type": "string",
+                "required": False,
+                "description": "Custom Instructions (Optional, e.g. tone, escalation rules)"
+            }
+        }
     }
 ]
 
