@@ -284,6 +284,10 @@ app.include_router(assistant_router.router)  # AI Assistant widget (KB + Tool Di
 app.include_router(public_forms_router.router)  # Public contact forms & newsletter
 # We already included linkedin_router above
 
+# Coding Agent — session management + tool execution
+from .routers.coding_agent_router import router as coding_agent_router
+app.include_router(coding_agent_router)  # Already has /coding-agent prefix
+
 # Harness Engineering internal monitoring API
 try:
     from .routers.harness_router import router as harness_router

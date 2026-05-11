@@ -1102,6 +1102,10 @@ class DynamicToolRegistry:
                 ]
             }
         }
+        
+        # ── Coding Agent Tools (24 tools) ──────────────────────────────
+        from .coding_agent_registry import CODING_AGENT_TOOLS
+        self.base_tools.update(CODING_AGENT_TOOLS)
     
     async def get_user_tools(self, user_id: uuid.UUID, db: AsyncSession, include_all: bool = False) -> List[Dict[str, Any]]:
         """Get tools available for a specific user based on their connections."""

@@ -63,6 +63,31 @@ class ExecutionOrchestrator:
             self.agent_context = None
             self._harness_enabled = False
 
+    async def _ensure_coding_session(self) -> str:
+        """Find an active coding agent session for the current user, or create one.
+
+        Returns the session_id string.  This method is idempotent — calling it
+        multiple times within the same request is safe.
+        """
+        from .coding_agent_sandbox import coding_agent_sandbox
+
+        user_id_str = str(self.user.id)
+
+        # 1. Reuse an existing active session
+        active_sessions = [
+            s for s in coding_agent_sandbox.sessions.values()
+            if s.user_id == user_id_str and s.status == "active"
+        ]
+        if active_sessions:
+            return active_sessions[0].session_id
+
+        # 2. Create a new session
+        new_session_id = f"auto-{uuid.uuid4().hex[:8]}"
+        new_session = await coding_agent_sandbox.create_session(
+            new_session_id, user_id=user_id_str
+        )
+        return new_session.session_id
+
     @staticmethod
     async def get_daily_message_count(db: AsyncSession, user_id: uuid.UUID) -> int:
         """Get the number of AI messages sent by the user today."""
@@ -600,6 +625,11 @@ class ExecutionOrchestrator:
                     try:
                         # Parse arguments
                         arguments = json.loads(arguments_str)
+
+                        # Auto-create or reuse coding agent session if it's a coding tool and session_id is missing
+                        if function_name.startswith("coding_") and "session_id" not in arguments:
+                            arguments["session_id"] = await self._ensure_coding_session()
+                            print(f"🔧 Auto-injected session_id {arguments['session_id']} into {function_name}")
                         
                         # Validate arguments
                         is_valid, error_msg = ToolArgumentValidator.validate(function_name, arguments, tools)
@@ -628,6 +658,11 @@ class ExecutionOrchestrator:
                                 "result": {"error": error_msg}
                             })
                             continue
+
+                        # Auto-create or reuse coding agent session (idempotent — may already have been injected above)
+                        if function_name.startswith("coding_") and "session_id" not in arguments:
+                            arguments["session_id"] = await self._ensure_coding_session()
+                            print(f"🔧 Auto-injected session_id {arguments['session_id']} into {function_name}")
 
                         # Execute tool
                         tool_result = await tool_executor.execute_tool(
@@ -1570,6 +1605,10 @@ When the user asks you to perform actions, write Python code using the available
                             arguments = json.loads(arguments_str)
                         except json.JSONDecodeError:
                             arguments = {}
+
+                        # Auto-create or reuse coding agent session if it's a coding tool and session_id is missing
+                        if function_name.startswith("coding_") and "session_id" not in arguments:
+                            arguments["session_id"] = await self._ensure_coding_session()
 
                         # Rich tool_context injection
                         from .tool_context_engine import tool_context_engine
