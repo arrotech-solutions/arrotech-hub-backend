@@ -14,6 +14,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     gcc \
     curl \
+    git \
     # Basic dependencies for enhanced tools
     libjpeg-dev \
     libffi-dev \

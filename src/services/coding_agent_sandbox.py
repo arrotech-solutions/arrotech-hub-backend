@@ -162,16 +162,77 @@ class CodingAgentSandbox:
         return r.stdout.decode("utf-8").strip()
 
     async def _clone_repo(self, repo_url: str, workspace_path: str, token: Optional[str] = None):
+        """Clone a repository into the workspace.
+
+        Tries `git clone` first.  If the `git` binary is not installed,
+        falls back to downloading the GitHub tarball via the REST API.
+        """
         clone_url = repo_url
         if token and "github.com" in repo_url:
             clone_url = repo_url.replace("https://github.com", f"https://{token}@github.com")
+
+        # git clone fails if target dir exists — remove the empty pre-created one
+        if os.path.isdir(workspace_path) and not os.listdir(workspace_path):
+            os.rmdir(workspace_path)
+
         try:
             r = await self._run_proc(["git", "clone", "--depth", "1", clone_url, workspace_path], 120)
             if r.returncode != 0:
                 err = strip_sensitive_token(r.stderr.decode("utf-8", errors="replace") if r.stderr else "", token)
                 raise RuntimeError(f"Git clone failed: {err}")
+        except FileNotFoundError:
+            # git binary not installed — try GitHub tarball fallback
+            logger.warning("git binary not found — falling back to GitHub tarball download")
+            await self._clone_via_tarball(repo_url, workspace_path, token)
         except Exception as e:
             raise RuntimeError(strip_sensitive_token(str(e), token)) from None
+
+    async def _clone_via_tarball(self, repo_url: str, workspace_path: str, token: Optional[str] = None):
+        """Download and extract a GitHub repo as a tarball (fallback when git is unavailable)."""
+        import tarfile
+        import tempfile
+        import io
+
+        try:
+            import httpx
+        except ImportError:
+            raise RuntimeError(
+                "Neither git nor httpx is available. Install git in the container "
+                "or add httpx to requirements.txt for tarball fallback."
+            )
+
+        # Parse owner/repo from URL
+        # e.g. https://github.com/owner/repo.git → owner/repo
+        parts = repo_url.rstrip("/").removesuffix(".git").split("github.com/")
+        if len(parts) < 2:
+            raise RuntimeError(f"Cannot parse GitHub owner/repo from URL: {repo_url}")
+        owner_repo = parts[1]
+
+        tarball_url = f"https://api.github.com/repos/{owner_repo}/tarball"
+        headers = {"Accept": "application/vnd.github.v3+json"}
+        if token:
+            headers["Authorization"] = f"token {token}"
+
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            resp = await client.get(tarball_url, headers=headers)
+            if resp.status_code >= 400:
+                raise RuntimeError(f"GitHub tarball download failed ({resp.status_code})")
+
+            os.makedirs(workspace_path, exist_ok=True)
+
+            with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
+                # GitHub tarballs have a top-level directory — strip it
+                members = tar.getmembers()
+                if not members:
+                    raise RuntimeError("Empty tarball received from GitHub")
+                prefix = members[0].name.split("/")[0] + "/"
+                for member in members:
+                    if member.name.startswith(prefix):
+                        member.name = member.name[len(prefix):]
+                        if member.name:  # skip the root dir itself
+                            tar.extract(member, workspace_path)
+
+        logger.info(f"Repo extracted via tarball to {workspace_path}")
 
     async def _exec_docker(self, container_id: str, command: str,
                             timeout: int, env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
