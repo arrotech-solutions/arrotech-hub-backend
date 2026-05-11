@@ -50,7 +50,13 @@ class CodingAgentSandbox:
         if user_id:
             active = [s for s in self.sessions.values() if s.user_id == user_id and s.status == "active"]
             if len(active) >= self.max_sessions:
-                raise ValueError(f"Max {self.max_sessions} active session(s). Destroy existing sessions first.")
+                # Auto-destroy stale sessions instead of rejecting the new one
+                logger.info(f"Auto-destroying {len(active)} existing session(s) for user {user_id}")
+                for stale in active:
+                    try:
+                        await self.destroy_session(stale.session_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to auto-destroy session {stale.session_id}: {e}")
 
         session_base = os.path.join(self.sessions_dir, session_id)
         workspace_path = os.path.join(session_base, "workspace")
