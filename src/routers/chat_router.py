@@ -22,6 +22,16 @@ from sqlalchemy.orm import selectinload
 from ..database import get_db
 from ..models import Conversation, Message, MessageRole, MessageStatus, User
 from ..routers.auth_router import get_current_user
+
+
+def get_redis(request: Request):
+    """Get the async Redis client from app.state (initialized per-worker in lifespan)."""
+    redis = getattr(request.app.state, "redis", None)
+    if redis is None:
+        # Fallback for local dev if redis isn't in app.state yet
+        # (Though in prod/Railway it must be there)
+        return None
+    return redis
 from ..routers.settings_router import get_or_create_user_settings
 from ..services.dynamic_tool_registry import dynamic_tool_registry
 from ..services.execution_orchestrator import ExecutionOrchestrator
@@ -1401,7 +1411,8 @@ async def send_message(
     conversation_id: uuid.UUID,
     data: MessageCreate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user)
+    user: User = Depends(get_current_user),
+    redis = Depends(get_redis)
 ):
     """
     ### Send a Message & Direct AI Execution
@@ -1439,7 +1450,7 @@ async def send_message(
     await db.refresh(user_message)
     
     # Use ExecutionOrchestrator for masterclass-level processing
-    orchestrator = ExecutionOrchestrator(db, user, conversation_id)
+    orchestrator = ExecutionOrchestrator(db, user, conversation_id, redis=redis)
     
     try:
         # Process message with full orchestration
@@ -1486,7 +1497,8 @@ async def send_message_stream(
     conversation_id: uuid.UUID,
     data: MessageCreate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user)
+    user: User = Depends(get_current_user),
+    redis = Depends(get_redis)
 ):
     """
     ### Stream AI Response via Server-Sent Events (SSE)
@@ -1521,7 +1533,7 @@ async def send_message_stream(
 
     async def event_generator():
         """Generate SSE events from the orchestrator stream."""
-        orchestrator = ExecutionOrchestrator(db, user, conversation_id)
+        orchestrator = ExecutionOrchestrator(db, user, conversation_id, redis=redis)
         accumulated_content = ""
         accumulated_reasoning = ""
         tools_called_final = []
@@ -1772,7 +1784,8 @@ async def ollama_diagnostic():
 async def test_direct_response(
     data: MessageCreate,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user)
+    user: User = Depends(get_current_user),
+    redis = Depends(get_redis)
 ):
     """Test direct response generation without tools."""
     try:
@@ -1788,7 +1801,7 @@ async def test_direct_response(
         await db.refresh(conversation)
         
         # Test the orchestrator
-        orchestrator = ExecutionOrchestrator(db, user, conversation.id)
+        orchestrator = ExecutionOrchestrator(db, user, conversation.id, redis=redis)
         response, tools_called = await orchestrator.process_message(data.content, data.provider or "ollama")
         
         # Clean up test conversation

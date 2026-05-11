@@ -17,9 +17,9 @@ logger = logging.getLogger(__name__)
 
 # ── Command Execution ──────────────────────────────────────────────────
 
-async def handle_run_command(args: Dict, sandbox) -> Dict:
+async def handle_run_command(args: Dict, sandbox, redis) -> Dict:
     result = await sandbox.execute_in_sandbox(
-        args["session_id"], args["command"],
+        redis, args["session_id"], args["command"],
         timeout=min(int(args.get("timeout_seconds", 60)), 300),
         env=args.get("env"), working_directory=args.get("working_directory", "."),
     )
@@ -28,7 +28,7 @@ async def handle_run_command(args: Dict, sandbox) -> Dict:
     return result
 
 
-async def handle_run_tests(args: Dict, sandbox, workspace: str) -> Dict:
+async def handle_run_tests(args: Dict, sandbox, workspace: str, redis) -> Dict:
     # Auto-detect test framework
     cmd = None
     if os.path.isfile(os.path.join(workspace, "package.json")):
@@ -65,7 +65,7 @@ async def handle_run_tests(args: Dict, sandbox, workspace: str) -> Dict:
             cmd += f" -t '{test_filter}'"
 
     result = await sandbox.execute_in_sandbox(
-        args["session_id"], cmd,
+        redis, args["session_id"], cmd,
         timeout=min(int(args.get("timeout_seconds", 120)), 300),
         working_directory=args.get("working_directory", "."),
     )
@@ -92,7 +92,7 @@ async def handle_run_tests(args: Dict, sandbox, workspace: str) -> Dict:
     return result
 
 
-async def handle_install_deps(args: Dict, sandbox) -> Dict:
+async def handle_install_deps(args: Dict, sandbox, redis) -> Dict:
     pm = args["package_manager"]
     packages = args.get("packages", [])
     dev = args.get("dev", False)
@@ -116,7 +116,7 @@ async def handle_install_deps(args: Dict, sandbox) -> Dict:
         }
     cmd = cmds.get(pm, f"{pm} install")
     result = await sandbox.execute_in_sandbox(
-        args["session_id"], cmd, timeout=180,
+        redis, args["session_id"], cmd, timeout=180,
         working_directory=args.get("working_directory", "."),
     )
     result["stdout"] = truncate_output(result.get("stdout", ""))
@@ -126,12 +126,12 @@ async def handle_install_deps(args: Dict, sandbox) -> Dict:
 
 # ── Git Tools ──────────────────────────────────────────────────────────
 
-async def handle_git_status(args: Dict, sandbox) -> Dict:
+async def handle_git_status(args: Dict, sandbox, redis) -> Dict:
     sid = args["session_id"]
-    status = await sandbox.run_git_command(sid, "status --porcelain")
-    branch = await sandbox.run_git_command(sid, "branch --show-current")
-    ahead = await sandbox.run_git_command(sid, "rev-list @{u}..HEAD --count 2>/dev/null || echo 0")
-    behind = await sandbox.run_git_command(sid, "rev-list HEAD..@{u} --count 2>/dev/null || echo 0")
+    status = await sandbox.run_git_command(redis, sid, "status --porcelain")
+    branch = await sandbox.run_git_command(redis, sid, "branch --show-current")
+    ahead = await sandbox.run_git_command(redis, sid, "rev-list @{u}..HEAD --count 2>/dev/null || echo 0")
+    behind = await sandbox.run_git_command(redis, sid, "rev-list HEAD..@{u} --count 2>/dev/null || echo 0")
     files = []
     for line in status.get("stdout", "").strip().splitlines():
         if len(line) >= 4:
@@ -145,7 +145,7 @@ async def handle_git_status(args: Dict, sandbox) -> Dict:
     }
 
 
-async def handle_git_diff(args: Dict, sandbox) -> Dict:
+async def handle_git_diff(args: Dict, sandbox, redis) -> Dict:
     sid = args["session_id"]
     cmd = "diff"
     if args.get("staged"):
@@ -154,26 +154,26 @@ async def handle_git_diff(args: Dict, sandbox) -> Dict:
         cmd += f" {args['base_ref']}..HEAD"
     if args.get("file_path"):
         cmd += f" -- {args['file_path']}"
-    result = await sandbox.run_git_command(sid, cmd)
+    result = await sandbox.run_git_command(redis, sid, cmd)
     result["stdout"] = truncate_output(result.get("stdout", ""))
     return {"diff": result.get("stdout", ""), "exit_code": result.get("exit_code", 0)}
 
 
-async def handle_git_commit(args: Dict, sandbox) -> Dict:
+async def handle_git_commit(args: Dict, sandbox, redis) -> Dict:
     sid = args["session_id"]
     name = args.get("author_name", "Arrotech Coding Agent")
     email = args.get("author_email", "agent@arrotechsolutions.com")
     env = {"GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email,
            "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email}
     if args.get("add_all", True):
-        add_r = await sandbox.run_git_command(sid, "add -A", env=env)
+        add_r = await sandbox.run_git_command(redis, sid, "add -A", env=env)
         if add_r.get("exit_code", 0) != 0:
             return {"error": f"git add failed: {add_r.get('stderr', '')}"}
     msg = args["message"].replace('"', '\\"')
-    commit_r = await sandbox.run_git_command(sid, f'commit -m "{msg}"', env=env)
+    commit_r = await sandbox.run_git_command(redis, sid, f'commit -m "{msg}"', env=env)
     if commit_r.get("exit_code", 0) != 0:
         return {"error": f"git commit failed: {commit_r.get('stderr', '')}"}
-    hash_r = await sandbox.run_git_command(sid, "rev-parse HEAD")
+    hash_r = await sandbox.run_git_command(redis, sid, "rev-parse HEAD")
     return {
         "commit_hash": hash_r.get("stdout", "").strip(),
         "message": args["message"],
@@ -181,29 +181,29 @@ async def handle_git_commit(args: Dict, sandbox) -> Dict:
     }
 
 
-async def handle_git_push(args: Dict, sandbox, github_token: Optional[str] = None) -> Dict:
+async def handle_git_push(args: Dict, sandbox, github_token: Optional[str] = None, redis=None) -> Dict:
     sid = args["session_id"]
     remote = args.get("remote", "origin")
     branch = args.get("branch", "")
     if not branch:
-        br = await sandbox.run_git_command(sid, "branch --show-current")
+        br = await sandbox.run_git_command(redis, sid, "branch --show-current")
         branch = br.get("stdout", "").strip()
     # Inject token into remote URL for auth
     if github_token:
-        url_r = await sandbox.run_git_command(sid, f"remote get-url {remote}")
+        url_r = await sandbox.run_git_command(redis, sid, f"remote get-url {remote}")
         url = url_r.get("stdout", "").strip()
         if "github.com" in url and "@" not in url:
             auth_url = url.replace("https://github.com", f"https://{github_token}@github.com")
-            await sandbox.run_git_command(sid, f"remote set-url {remote} {auth_url}")
+            await sandbox.run_git_command(redis, sid, f"remote set-url {remote} {auth_url}")
 
     cmd = f"push {remote} {branch}"
     if args.get("force"):
         cmd += " --force"
-    result = await sandbox.run_git_command(sid, cmd)
+    result = await sandbox.run_git_command(redis, sid, cmd)
 
     # Restore original URL (strip token)
     if github_token:
-        await sandbox.run_git_command(sid, f"remote set-url {remote} {url}")
+        await sandbox.run_git_command(redis, sid, f"remote set-url {remote} {url}")
 
     stdout = strip_sensitive_token(result.get("stdout", ""), github_token)
     stderr = strip_sensitive_token(result.get("stderr", ""), github_token)
@@ -211,25 +211,25 @@ async def handle_git_push(args: Dict, sandbox, github_token: Optional[str] = Non
             "output": stdout, "stderr": stderr}
 
 
-async def handle_git_create_branch(args: Dict, sandbox) -> Dict:
+async def handle_git_create_branch(args: Dict, sandbox, redis) -> Dict:
     sid = args["session_id"]
-    await sandbox.run_git_command(sid, "fetch origin")
+    await sandbox.run_git_command(redis, sid, "fetch origin")
     name = args["branch_name"]
     from_ref = args.get("from_ref", "main")
-    result = await sandbox.run_git_command(sid, f"checkout -b {name} {from_ref}")
+    result = await sandbox.run_git_command(redis, sid, f"checkout -b {name} {from_ref}")
     if result.get("exit_code", 0) != 0:
         return {"error": f"Failed: {result.get('stderr', '')}"}
     return {"branch": name, "from_ref": from_ref, "output": result.get("stdout", "")}
 
 
-async def handle_git_read_log(args: Dict, sandbox) -> Dict:
+async def handle_git_read_log(args: Dict, sandbox, redis) -> Dict:
     sid = args["session_id"]
     n = min(int(args.get("max_commits", 20)), 100)
     fmt = "--pretty=format:%H|%an|%ae|%aI|%s"
     cmd = f"log -{n} {fmt}"
     if args.get("file_path"):
         cmd += f" -- {args['file_path']}"
-    result = await sandbox.run_git_command(sid, cmd)
+    result = await sandbox.run_git_command(redis, sid, cmd)
     commits = []
     for line in result.get("stdout", "").strip().splitlines():
         parts = line.split("|", 4)

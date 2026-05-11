@@ -11,6 +11,7 @@ class CacheService:
     """Generic Redis caching service."""
 
     def __init__(self):
+        
         self.redis_client: Optional[redis.Redis] = None
 
     async def initialize(self):

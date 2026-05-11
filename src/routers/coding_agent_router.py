@@ -10,7 +10,7 @@ Endpoints:
 import uuid
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +31,19 @@ class SessionCreateRequest(BaseModel):
 class ToolExecuteRequest(BaseModel):
     tool_name: str = Field(..., description="Name of the coding tool (e.g. coding_file_read)")
     arguments: Dict[str, Any] = Field(default_factory=dict, description="Tool arguments")
+
+
+# ── Dependencies ───────────────────────────────────────────────────────
+
+def get_redis(request: Request):
+    """Get the async Redis client from app.state (initialized per-worker in lifespan)."""
+    redis = getattr(request.app.state, "redis", None)
+    if redis is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Redis is not available. Cannot manage coding agent sessions.",
+        )
+    return redis
 
 
 # ── Tier Guard ─────────────────────────────────────────────────────────
@@ -55,6 +68,7 @@ async def create_session(
     data: SessionCreateRequest,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
+    redis=Depends(get_redis),
 ):
     """Create a new coding agent session with optional repo clone."""
     _require_pro_tier(user)
@@ -64,6 +78,7 @@ async def create_session(
     session_id = str(uuid.uuid4())
     try:
         session = await coding_agent_sandbox.create_session(
+            redis,
             session_id=session_id,
             repo_url=data.repo_url,
             github_token=data.github_token,
@@ -89,11 +104,12 @@ async def create_session(
 async def get_session(
     session_id: str,
     user: User = Depends(get_current_user),
+    redis=Depends(get_redis),
 ):
     """Get the current status of a coding agent session."""
     from ..services.coding_agent_sandbox import coding_agent_sandbox
 
-    session = coding_agent_sandbox.get_session(session_id)
+    session = await coding_agent_sandbox.get_session(redis, session_id)
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     if session.user_id != str(user.id):
@@ -113,17 +129,18 @@ async def get_session(
 async def destroy_session(
     session_id: str,
     user: User = Depends(get_current_user),
+    redis=Depends(get_redis),
 ):
     """Destroy a coding agent session — stops container and deletes workspace."""
     from ..services.coding_agent_sandbox import coding_agent_sandbox
 
-    session = coding_agent_sandbox.get_session(session_id)
+    session = await coding_agent_sandbox.get_session(redis, session_id)
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     if session.user_id != str(user.id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your session")
 
-    await coding_agent_sandbox.destroy_session(session_id)
+    await coding_agent_sandbox.destroy_session(redis, session_id)
     return {"success": True, "session_id": session_id, "message": "Session destroyed"}
 
 
@@ -133,13 +150,14 @@ async def execute_tool(
     data: ToolExecuteRequest,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
+    redis=Depends(get_redis),
 ):
     """Execute a coding agent tool within an active session."""
     _require_pro_tier(user)
 
     from ..services.coding_agent_sandbox import coding_agent_sandbox
 
-    session = coding_agent_sandbox.get_session(session_id)
+    session = await coding_agent_sandbox.get_session(redis, session_id)
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     if session.user_id != str(user.id):
@@ -155,5 +173,5 @@ async def execute_tool(
 
     # Inject session_id into arguments
     arguments = {**data.arguments, "session_id": session_id}
-    result = await coding_agent_executor.execute(data.tool_name, arguments, user, db)
+    result = await coding_agent_executor.execute(data.tool_name, arguments, user, db, redis)
     return result

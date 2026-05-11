@@ -4,6 +4,8 @@ Coding Agent — Main Tool Executor
 Routes coding_* tool calls to the appropriate handler, wraps every call
 in the standard {tool, success, output, error, duration_ms} envelope,
 and integrates with the sandbox lifecycle.
+
+Session state is read from Redis (via session_store.py).
 """
 import logging
 import time
@@ -11,6 +13,7 @@ from typing import Any, Dict, Optional
 
 from .coding_agent_helpers import build_tool_envelope
 from .coding_agent_sandbox import CodingAgentSandbox, coding_agent_sandbox
+from . import session_store
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +63,7 @@ class CodingAgentToolExecutor:
 
     Usage from ToolExecutor._execute_tool_logic():
         from .coding_agent_executor import coding_agent_executor
-        return await coding_agent_executor.execute(tool_name, arguments, user, db)
+        return await coding_agent_executor.execute(tool_name, arguments, user, db, redis)
     """
 
     def __init__(self, sandbox: CodingAgentSandbox = None):
@@ -72,6 +75,7 @@ class CodingAgentToolExecutor:
         arguments: Dict[str, Any],
         user: Any = None,
         db: Any = None,
+        redis: Any = None,
     ) -> Dict[str, Any]:
         """
         Route and execute a coding agent tool.
@@ -86,16 +90,23 @@ class CodingAgentToolExecutor:
         if not session_id:
             return build_tool_envelope(tool_name, False, None, "Missing required: session_id", 0)
 
-        # Validate session exists
-        session = self.sandbox.get_session(session_id)
+        # Validate session exists in Redis
+        if redis is None:
+            return build_tool_envelope(tool_name, False, None, "Redis unavailable — cannot look up session", 0)
+
+        session = await session_store.get_session(redis, session_id)
         if not session:
             return build_tool_envelope(tool_name, False, None, f"No active session: {session_id}", 0)
 
         workspace = session.workspace_path
 
         try:
-            output = await self._dispatch(tool_name, arguments, session, workspace, user)
+            output = await self._dispatch(tool_name, arguments, session, workspace, user, redis)
             duration_ms = int((time.time() - start) * 1000)
+
+            # Extend session TTL on successful execution
+            await session_store.touch_session(redis, session_id)
+
             return build_tool_envelope(tool_name, True, output, None, duration_ms)
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
@@ -103,7 +114,7 @@ class CodingAgentToolExecutor:
             return build_tool_envelope(tool_name, False, None, str(e), duration_ms)
 
     async def _dispatch(
-        self, tool_name: str, args: Dict, session: Any, workspace: str, user: Any
+        self, tool_name: str, args: Dict, session: Any, workspace: str, user: Any, redis: Any
     ) -> Dict:
         """Route tool_name to the correct handler."""
 
@@ -115,24 +126,24 @@ class CodingAgentToolExecutor:
                 return await handler(args, session)
             return await handler(args, workspace)
 
-        # ── Command Execution tools (need sandbox) ─────────────────────
+        # ── Command Execution tools (need sandbox + redis) ─────────────
         if tool_name == "coding_run_command":
-            return await _OPS_HANDLERS[tool_name](args, self.sandbox)
+            return await _OPS_HANDLERS[tool_name](args, self.sandbox, redis)
 
         if tool_name == "coding_run_tests":
-            return await _OPS_HANDLERS[tool_name](args, self.sandbox, workspace)
+            return await _OPS_HANDLERS[tool_name](args, self.sandbox, workspace, redis)
 
         if tool_name == "coding_install_dependencies":
-            return await _OPS_HANDLERS[tool_name](args, self.sandbox)
+            return await _OPS_HANDLERS[tool_name](args, self.sandbox, redis)
 
-        # ── Git tools (need sandbox for git commands) ──────────────────
+        # ── Git tools (need sandbox + redis for git commands) ──────────
         if tool_name in ("coding_git_status", "coding_git_diff", "coding_git_commit",
                          "coding_git_create_branch", "coding_git_read_log"):
-            return await _OPS_HANDLERS[tool_name](args, self.sandbox)
+            return await _OPS_HANDLERS[tool_name](args, self.sandbox, redis)
 
         if tool_name == "coding_git_push":
             token = self._get_github_token(user)
-            return await _OPS_HANDLERS[tool_name](args, self.sandbox, token)
+            return await _OPS_HANDLERS[tool_name](args, self.sandbox, token, redis)
 
         # ── GitHub API tools (need token) ──────────────────────────────
         if tool_name in ("coding_github_create_pr", "coding_github_get_pr_status",

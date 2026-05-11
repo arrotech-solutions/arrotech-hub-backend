@@ -1,6 +1,9 @@
 """
 Coding Agent — Docker Sandbox Manager
 Manages Docker container lifecycle for coding agent sessions.
+
+Session state is stored in Redis (via session_store.py), NOT in-process memory.
+This ensures all Uvicorn workers share the same session data.
 """
 import asyncio
 import logging
@@ -8,53 +11,45 @@ import os
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from .coding_agent_helpers import strip_sensitive_token
+from . import session_store
+from .session_store import AgentSession
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class CodingAgentSession:
-    """Represents an active coding agent session."""
-    session_id: str
-    workspace_path: str
-    scratchpad_path: str
-    container_id: Optional[str] = None
-    repo_url: Optional[str] = None
-    status: str = "creating"
-    created_at: float = field(default_factory=time.time)
-    last_activity_at: float = field(default_factory=time.time)
-    user_id: Optional[str] = None
-
-
 class CodingAgentSandbox:
-    """Manages Docker containers and workspace directories for coding agent sessions."""
+    """Manages Docker containers and workspace directories for coding agent sessions.
+
+    Session metadata lives in Redis.  This class handles only:
+    - Filesystem operations (workspace, scratchpad, clone)
+    - Docker lifecycle (create, exec, destroy containers)
+    - Subprocess execution (fallback when Docker is unavailable)
+    """
 
     def __init__(self):
         from ..config import settings
-        self.sessions: Dict[str, CodingAgentSession] = {}
         self.docker_image = getattr(settings, "CODING_AGENT_DOCKER_IMAGE", "node:20-alpine")
-        self.session_timeout = getattr(settings, "CODING_AGENT_SESSION_TIMEOUT", 1800)
+        self.session_timeout = getattr(settings, "CODING_AGENT_SESSION_TIMEOUT", 3600)
         self.max_sessions = getattr(settings, "CODING_AGENT_MAX_SESSIONS_PER_USER", 1)
         self.cpu_limit = getattr(settings, "CODING_AGENT_CPU_LIMIT", "2")
         self.memory_limit = getattr(settings, "CODING_AGENT_MEMORY_LIMIT", "2g")
         self.sessions_dir = getattr(settings, "CODING_AGENT_SESSIONS_DIR", "/tmp/agent-sessions")
         self._docker_available: Optional[bool] = None
 
-    async def create_session(self, session_id: str, repo_url: Optional[str] = None,
-                             github_token: Optional[str] = None, user_id: Optional[str] = None) -> CodingAgentSession:
+    async def create_session(self, redis, session_id: str, repo_url: Optional[str] = None,
+                             github_token: Optional[str] = None, user_id: Optional[str] = None) -> AgentSession:
         """Create a new coding agent session with workspace and Docker container."""
         if user_id:
-            active = [s for s in self.sessions.values() if s.user_id == user_id and s.status == "active"]
+            active = await session_store.get_user_sessions(redis, user_id)
             if len(active) >= self.max_sessions:
                 # Auto-destroy stale sessions instead of rejecting the new one
                 logger.info(f"Auto-destroying {len(active)} existing session(s) for user {user_id}")
                 for stale in active:
                     try:
-                        await self.destroy_session(stale.session_id)
+                        await self.destroy_session(redis, stale.session_id)
                     except Exception as e:
                         logger.warning(f"Failed to auto-destroy session {stale.session_id}: {e}")
 
@@ -66,7 +61,7 @@ class CodingAgentSandbox:
         with open(scratchpad_path, "w", encoding="utf-8") as f:
             f.write(f"# Agent Scratchpad — Session {session_id}\n\n")
 
-        session = CodingAgentSession(
+        session = AgentSession(
             session_id=session_id, workspace_path=workspace_path,
             scratchpad_path=scratchpad_path, repo_url=repo_url, user_id=user_id,
         )
@@ -74,22 +69,26 @@ class CodingAgentSandbox:
         if repo_url:
             await self._clone_repo(repo_url, workspace_path, github_token)
 
+        container_id = None
         if await self._is_docker_available():
-            session.container_id = await self._create_container(session_id, workspace_path)
+            container_id = await self._create_container(session_id, workspace_path)
+            session.container_id = container_id
         else:
             logger.warning("Docker not available — sandboxed tools will run on host (DEV ONLY)")
 
         session.status = "active"
-        self.sessions[session_id] = session
+        await session_store.save_session(redis, session, self.session_timeout)
         logger.info(f"Coding agent session created: {session_id}")
         return session
 
-    async def destroy_session(self, session_id: str) -> bool:
+    async def destroy_session(self, redis, session_id: str) -> bool:
         """Stop container and delete workspace for a session."""
-        session = self.sessions.get(session_id)
+        session = await session_store.get_session(redis, session_id)
         if not session:
             return False
-        session.status = "destroying"
+
+        # Update status to destroying
+        await session_store.update_session(redis, session_id, status="destroying")
 
         if session.container_id:
             try:
@@ -99,23 +98,23 @@ class CodingAgentSandbox:
 
         session_base = os.path.dirname(session.workspace_path)
         shutil.rmtree(session_base, ignore_errors=True)
-        session.status = "destroyed"
-        del self.sessions[session_id]
+
+        await session_store.delete_session(redis, session_id, session.user_id)
         logger.info(f"Coding agent session destroyed: {session_id}")
         return True
 
-    def get_session(self, session_id: str) -> Optional[CodingAgentSession]:
-        """Get session metadata. Returns None if not found."""
-        session = self.sessions.get(session_id)
+    async def get_session(self, redis, session_id: str) -> Optional[AgentSession]:
+        """Get session metadata from Redis. Returns None if not found."""
+        session = await session_store.get_session(redis, session_id)
         if session:
-            session.last_activity_at = time.time()
+            await session_store.touch_session(redis, session_id, self.session_timeout)
         return session
 
-    async def execute_in_sandbox(self, session_id: str, command: str,
+    async def execute_in_sandbox(self, redis, session_id: str, command: str,
                                   timeout: int = 60, env: Optional[Dict[str, str]] = None,
                                   working_directory: str = ".") -> Dict[str, Any]:
         """Execute a command inside the session's Docker container (or subprocess fallback)."""
-        session = self.sessions.get(session_id)
+        session = await session_store.get_session(redis, session_id)
         if not session or session.status != "active":
             return {"stdout": "", "stderr": "No active session", "exit_code": -1, "timed_out": False, "duration_ms": 0}
 
@@ -129,16 +128,45 @@ class CodingAgentSandbox:
             result = await self._exec_subprocess(command, work_dir, timeout, env)
 
         result["duration_ms"] = int((time.time() - start) * 1000)
-        session.last_activity_at = time.time()
+        await session_store.touch_session(redis, session_id, self.session_timeout)
         return result
 
-    async def run_git_command(self, session_id: str, git_args: str,
+    async def run_git_command(self, redis, session_id: str, git_args: str,
                               env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """Run a git command against the session workspace clone."""
-        session = self.sessions.get(session_id)
+        session = await session_store.get_session(redis, session_id)
         if not session or session.status != "active":
             return {"stdout": "", "stderr": "No active session", "exit_code": -1}
         return await self._exec_subprocess(f"git {git_args}", session.workspace_path, 30, env)
+
+    # ── Orphan Cleanup ─────────────────────────────────────────────────
+
+    async def cleanup_orphaned_workspaces(self, redis) -> int:
+        """Remove workspace directories whose Redis session key has expired.
+
+        Should be called periodically (e.g. every 10 minutes) via a background task.
+        """
+        if not os.path.exists(self.sessions_dir):
+            return 0
+
+        cleaned = 0
+        for entry in os.listdir(self.sessions_dir):
+            session_path = os.path.join(self.sessions_dir, entry)
+            if not os.path.isdir(session_path):
+                continue
+
+            session = await session_store.get_session(redis, entry)
+            if session is None:
+                # Session expired in Redis — clean up filesystem and Docker
+                logger.info(f"Cleaning orphaned workspace: {entry}")
+                try:
+                    await self._run_proc(["docker", "rm", "-f", f"coding-agent-{entry[:12]}"], 10)
+                except Exception:
+                    pass
+                shutil.rmtree(session_path, ignore_errors=True)
+                cleaned += 1
+
+        return cleaned
 
     # ── Internal ───────────────────────────────────────────────────────
 
@@ -196,7 +224,6 @@ class CodingAgentSandbox:
     async def _clone_via_tarball(self, repo_url: str, workspace_path: str, token: Optional[str] = None):
         """Download and extract a GitHub repo as a tarball (fallback when git is unavailable)."""
         import tarfile
-        import tempfile
         import io
 
         try:
@@ -208,7 +235,6 @@ class CodingAgentSandbox:
             )
 
         # Parse owner/repo from URL
-        # e.g. https://github.com/owner/repo.git → owner/repo
         parts = repo_url.rstrip("/").removesuffix(".git").split("github.com/")
         if len(parts) < 2:
             raise RuntimeError(f"Cannot parse GitHub owner/repo from URL: {repo_url}")
@@ -227,7 +253,6 @@ class CodingAgentSandbox:
             os.makedirs(workspace_path, exist_ok=True)
 
             with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
-                # GitHub tarballs have a top-level directory — strip it
                 members = tar.getmembers()
                 if not members:
                     raise RuntimeError("Empty tarball received from GitHub")
@@ -235,7 +260,7 @@ class CodingAgentSandbox:
                 for member in members:
                     if member.name.startswith(prefix):
                         member.name = member.name[len(prefix):]
-                        if member.name:  # skip the root dir itself
+                        if member.name:
                             tar.extract(member, workspace_path)
 
         logger.info(f"Repo extracted via tarball to {workspace_path}")
@@ -286,15 +311,6 @@ class CodingAgentSandbox:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return subprocess.CompletedProcess(args=cmd, returncode=proc.returncode or 0, stdout=stdout, stderr=stderr)
 
-    async def cleanup_expired_sessions(self) -> int:
-        """Destroy sessions that exceeded idle timeout."""
-        now = time.time()
-        expired = [sid for sid, s in self.sessions.items()
-                    if (now - s.last_activity_at) > self.session_timeout and s.status == "active"]
-        for sid in expired:
-            await self.destroy_session(sid)
-        return len(expired)
 
-
-# Global sandbox instance
+# Global sandbox instance (stateless — session state is in Redis)
 coding_agent_sandbox = CodingAgentSandbox()
