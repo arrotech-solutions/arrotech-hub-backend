@@ -40,10 +40,11 @@ class ExecutionOrchestrator:
     3. Quality Gates — Post-execution response evaluation and scoring
     """
     
-    def __init__(self, db: AsyncSession, user: User, conversation_id: uuid.UUID):
+    def __init__(self, db: AsyncSession, user: User, conversation_id: uuid.UUID, redis: Any = None):
         self.db = db
         self.user = user
         self.conversation_id = conversation_id
+        self.redis = redis
         self.tool_router = ToolRouter(user, db)
         self.intent_processor = IntentProcessor(user, db)
         
@@ -70,21 +71,23 @@ class ExecutionOrchestrator:
         multiple times within the same request is safe.
         """
         from .coding_agent_sandbox import coding_agent_sandbox
+        from . import session_store
+
+        if not self.redis:
+            raise RuntimeError("Redis not available in Orchestrator — cannot manage coding session")
 
         user_id_str = str(self.user.id)
 
         # 1. Reuse an existing active session
-        active_sessions = [
-            s for s in coding_agent_sandbox.sessions.values()
-            if s.user_id == user_id_str and s.status == "active"
-        ]
+        active_sessions = await session_store.get_user_sessions(self.redis, user_id_str)
+        
         if active_sessions:
             return active_sessions[0].session_id
 
         # 2. Create a new session
         new_session_id = f"auto-{uuid.uuid4().hex[:8]}"
         new_session = await coding_agent_sandbox.create_session(
-            new_session_id, user_id=user_id_str
+            self.redis, new_session_id, user_id=user_id_str
         )
         return new_session.session_id
 

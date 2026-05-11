@@ -33,6 +33,7 @@ from .services import (BillingService, ContentCreationService,
                        RateLimitService, SlackService, SocialMediaService, TelegramService,
                        WebToolsService, WorkflowSchedulerService,
                        cache_service)
+from .services.coding_agent_sandbox import coding_agent_sandbox
 from .observability.logger import setup_observability_logging, db_log_worker, log_cleanup_job
 from .observability.middleware import ObservabilityMiddleware
 from .routers.internal_router import router as internal_router
@@ -109,12 +110,45 @@ async def lifespan(app: FastAPI):
     # APScheduler (workflow_scheduler_service) is retained as a fallback
     # but no longer started here.
 
+    # Initialize Async Redis for Coding Agent
+    try:
+        import redis.asyncio as aioredis
+        app.state.redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        await app.state.redis.ping()
+        logger.info("Async Redis for Coding Agent initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize Async Redis: {e}")
+        app.state.redis = None
+
+    # Background task for orphan cleanup
+    async def orphan_cleanup_loop():
+        await asyncio.sleep(60)  # Wait for startup
+        while True:
+            if hasattr(app.state, "redis") and app.state.redis:
+                try:
+                    cleaned = await coding_agent_sandbox.cleanup_orphaned_workspaces(app.state.redis)
+                    if cleaned > 0:
+                        logger.info(f"Orphan cleanup: removed {cleaned} workspaces")
+                except Exception as e:
+                    logger.warning(f"Orphan cleanup failed: {e}")
+            await asyncio.sleep(600)  # Run every 10 minutes
+
+    cleanup_task = asyncio.create_task(orphan_cleanup_loop())
+
     logger.info("Services ready - app is now accepting requests")
 
     yield
 
     # Shutdown
     logger.info("Shutting down Mini-Hub MCP Server...")
+    if hasattr(app.state, "redis") and app.state.redis:
+        await app.state.redis.close()
+    
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
 
 # Create FastAPI app
 app = FastAPI(
@@ -569,7 +603,7 @@ def main():
             port=port,
             reload=False if is_prod else settings.RELOAD,
             log_level="info" if is_prod else settings.LOG_LEVEL.lower(),
-            workers=2 if is_prod else 1
+            workers=int(os.getenv("WEB_CONCURRENCY", 2))
         )
 
 
