@@ -111,6 +111,19 @@ PLATFORM_METADATA = {
             "Automate sales workflows"
         ]
     },
+    "coding_agent": {
+        "display_name": "Coding Agent",
+        "icon": "🤖",
+        "color": "indigo",
+        "category": "productivity",
+        "description": "Autonomous AI Software Engineer",
+        "capabilities_when_connected": [
+            "Read and write files",
+            "Execute terminal commands",
+            "Manage version control",
+            "Analyze codebase structure"
+        ]
+    },
     "asana": {
         "display_name": "Asana",
         "icon": "✅",
@@ -376,6 +389,7 @@ CATEGORY_LABELS = {
     "email": "📧 Email Management",
     "localization": "🌍 Localization & Intelligence",
     "real_estate": "🏠 Real Estate",
+    "coding_agent": "💻 Coding Agent",
 }
 
 
