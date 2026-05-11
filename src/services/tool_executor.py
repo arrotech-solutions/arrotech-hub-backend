@@ -323,6 +323,10 @@ class ToolExecutor:
                 return await self._execute_conversational_agent_tool(arguments, user, db, background_tasks)
             elif tool_name == "execute_python_code":
                 return await self._execute_python_code_tool(arguments, user, db, background_tasks)
+            # Coding Agent Tools (24 tools — filesystem, search, git, GitHub, etc.)
+            elif tool_name.startswith("coding_"):
+                from .coding_agent_executor import coding_agent_executor
+                return await coding_agent_executor.execute(tool_name, arguments, user, db)
             # Code Mode Discovery Meta-Tools
             elif tool_name == "search_tools":
                 from .dynamic_tool_registry import dynamic_tool_registry
@@ -580,6 +584,7 @@ class ToolExecutor:
         if tool_name.startswith("unstructured_"): return "document_parsers"
         if tool_name.startswith("firecrawl_"): return "document_parsers"
         if tool_name == "ai_embeddings": return "ai_models"
+        if tool_name.startswith("coding_"): return None  # Tier-gated at router level
         
         # Kenyan Specific Mappings
         if tool_name.endswith("_payment_ops"): return tool_name.replace("_payment_ops", "")

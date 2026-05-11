@@ -272,6 +272,15 @@ class BaseConfig(BaseSettings):
     CCM_ENABLE_SUMMARIZATION: bool = False  # Auto-summarize old messages via LLM
     CCM_SUMMARY_THRESHOLD: int = 30        # Trigger summarization above this count
 
+    # Coding Agent Configuration
+    GITHUB_TOKEN: Optional[str] = None
+    CODING_AGENT_DOCKER_IMAGE: str = "node:20-alpine"
+    CODING_AGENT_SESSION_TIMEOUT: int = 1800  # 30 minutes idle timeout
+    CODING_AGENT_MAX_SESSIONS_PER_USER: int = 1
+    CODING_AGENT_CPU_LIMIT: str = "2"
+    CODING_AGENT_MEMORY_LIMIT: str = "2g"
+    CODING_AGENT_SESSIONS_DIR: str = "/tmp/agent-sessions"
+
     # JWT Settings
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
