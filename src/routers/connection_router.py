@@ -30,6 +30,8 @@ from ..services.bilingual_service import BilingualService
 from ..services.kra_service import kra_service
 from ..services.airtable_service import AirtableService
 from ..services.xero_service import XeroService
+from ..services.github_service import GitHubService
+from ..services.quickbooks_service import quickbooks_service
 
 router = APIRouter()
 
@@ -422,6 +424,8 @@ async def test_platform_connection(platform: str, config: Dict[str, Any]) -> Dic
             return await test_zoho_connection(config)
         elif platform == "xero":
             return await test_xero_connection(config)
+        elif platform == "github":
+            return await test_github_connection(config)
         else:
             return {
                 "success": False,
@@ -483,6 +487,23 @@ async def test_xero_connection(config: Dict[str, Any]) -> Dict[str, Any]:
         return await service.test_connection(config)
     except Exception as e:
         return {"success": False, "error": f"Xero validation failed: {str(e)}"}
+
+
+async def test_quickbooks_connection(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Test QuickBooks connection."""
+    try:
+        return await quickbooks_service.test_connection(config)
+    except Exception as e:
+        return {"success": False, "error": f"QuickBooks validation failed: {str(e)}"}
+
+
+async def test_github_connection(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Test GitHub connection."""
+    try:
+        service = GitHubService()
+        return await service.test_connection(config)
+    except Exception as e:
+        return {"success": False, "error": f"GitHub validation failed: {str(e)}"}
 
 
 async def test_facebook_connection(config: Dict[str, Any]) -> Dict[str, Any]:
