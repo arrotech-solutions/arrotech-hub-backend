@@ -1,0 +1,28 @@
+name: testing
+description: Testing enforcement skill
+capability: testing
+
+triggers:
+  - test
+  - unit test
+  - integration test
+
+system_prompt: |
+  Always write tests before finalizing implementation.
+
+protocol:
+  execution_steps:
+    - Analyze existing test suite
+    - Generate tests
+    - Execute tests
+
+  review_steps:
+    - Validate coverage
+    - Validate failure cases
+
+  failure_recovery:
+    - Repair broken tests
+
+validation_rules:
+  - name: tests_must_pass
+    required: true
