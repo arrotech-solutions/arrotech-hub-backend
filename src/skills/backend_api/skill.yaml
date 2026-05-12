@@ -1,0 +1,27 @@
+name: backend_api
+description: Safe FastAPI endpoint implementation
+capability: backend
+
+triggers:
+  - api
+  - endpoint
+  - route
+
+system_prompt: |
+  Implement endpoints following repository conventions.
+
+protocol:
+  execution_steps:
+    - Inspect router structure
+    - Add endpoint
+    - Validate dependencies
+
+  review_steps:
+    - Validate route registration
+
+  failure_recovery:
+    - rollback invalid changes
+
+validation_rules:
+  - name: route_registered
+    required: true
