@@ -37,6 +37,8 @@ from .services.coding_agent_sandbox import coding_agent_sandbox
 from .observability.logger import setup_observability_logging, db_log_worker, log_cleanup_job
 from .observability.middleware import ObservabilityMiddleware
 from .routers.internal_router import router as internal_router
+from .core.skills import SkillRegistry, load_skill
+from pathlib import Path
 
 
 # setup_observability_logging replaces the old manual logging setup below
@@ -65,6 +67,22 @@ async def lifespan(app: FastAPI):
     # handled by Celery Beat periodic tasks. See src/tasks/maintenance_tasks.py.
     
     logger.info("Starting Mini-Hub MCP Server...")
+    
+    # Load Skills Runtime
+    try:
+        registry = SkillRegistry()
+        # Reset registry to avoid issues if lifespan is called multiple times (e.g. tests)
+        registry._clear_for_testing()
+        
+        skills_dir = Path(__file__).parent / "skills"
+        for yaml_path in skills_dir.glob("**/skill.yaml"):
+            skill = load_skill(yaml_path)
+            registry.register(skill)
+            logger.info(f"Loaded skill: {skill.name}")
+    except Exception as e:
+        logger.critical(f"Skill initialization failed: {e}")
+        # FAIL ENTIRE APPLICATION STARTUP
+        raise SystemExit(1)
     
     # Initialize database with timeout
     try:
