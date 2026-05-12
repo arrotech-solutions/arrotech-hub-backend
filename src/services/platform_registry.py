@@ -862,6 +862,86 @@ class PlatformRegistry:
             test_function="test_salesforce_connection"
         )
 
+        # GitHub Platform
+        github_capabilities = [
+            PlatformCapability(
+                name="Repository Operations",
+                description="List, search, and manage GitHub repositories",
+                tool_name="github_repo_operations",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["list_repos", "search_repos", "get_repo", "create_repo"]},
+                        "query": {"type": "string"},
+                        "owner": {"type": "string"},
+                        "repo": {"type": "string"},
+                        "name": {"type": "string"},
+                        "description": {"type": "string"},
+                        "private": {"type": "boolean", "default": True}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["list_repos", "search_repos", "get_repo", "create_repo"]
+            ),
+            PlatformCapability(
+                name="Issue & PR Management",
+                description="Manage GitHub issues and pull requests",
+                tool_name="github_collaboration",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["list_issues", "create_issue", "list_prs", "get_pr", "merge_pr", "add_comment"]},
+                        "owner": {"type": "string"},
+                        "repo": {"type": "string"},
+                        "issue_number": {"type": "integer"},
+                        "pr_number": {"type": "integer"},
+                        "title": {"type": "string"},
+                        "body": {"type": "string"},
+                        "comment_body": {"type": "string"}
+                    },
+                    "required": ["operation", "owner", "repo"]
+                },
+                operations=["list_issues", "create_issue", "list_prs", "get_pr", "merge_pr", "add_comment"]
+            ),
+            PlatformCapability(
+                name="User Profile",
+                description="Fetch GitHub user profile information",
+                tool_name="github_user_profile",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "enum": ["get_user", "get_emails"]},
+                        "username": {"type": "string"}
+                    },
+                    "required": ["operation"]
+                },
+                operations=["get_user", "get_emails"]
+            )
+        ]
+
+        self.platforms["github"] = Platform(
+            id="github",
+            name="GitHub",
+            description="Collaborative code hosting and version control platform",
+            icon="github",
+            features=[
+                "Repository management",
+                "Issue tracking",
+                "Pull request collaboration",
+                "Automated workflows"
+            ],
+            capabilities=github_capabilities,
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "access_token": {"type": "string", "description": "GitHub OAuth Access Token"},
+                    "refresh_token": {"type": "string", "description": "GitHub OAuth Refresh Token"}
+                },
+                "required": ["access_token"]
+            },
+            test_function="test_github_connection"
+        )
+
         # Google Workspace Platform
         google_workspace_capabilities = [
             PlatformCapability(
