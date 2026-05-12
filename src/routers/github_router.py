@@ -1,6 +1,9 @@
 import logging
 import time
+import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional
+from jose import jwt, JWTError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,9 +18,6 @@ from ..config import settings
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/github", tags=["github-oauth"])
-
-# Store state mapping to user_id
-_state_store: Dict[str, Dict[str, Any]] = {}
 
 @router.get("/auth-url")
 async def get_auth_url(
@@ -42,20 +42,14 @@ async def get_auth_url(
         if not service.client_id or not service.client_secret:
              raise HTTPException(status_code=500, detail="GitHub credentials not configured")
 
-        # Create a unique state parameter
-        state = f"gh_user_{user.id}_{int(time.time())}"
-        
-        # Store the state for the callback
-        _state_store[state] = {
-            "user_id": user.id,
-            "created_at": time.time()
+        # Create a stateless signed state parameter to avoid issues with multi-worker backends
+        state_payload = {
+            "sub": str(user.id),
+            "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+            "iat": datetime.now(timezone.utc),
+            "type": "github_auth"
         }
-        
-        # Clean up old states
-        now = time.time()
-        expired_states = [s for s, data in _state_store.items() if now - data["created_at"] > 3600]
-        for s in expired_states:
-            _state_store.pop(s, None)
+        state = jwt.encode(state_payload, settings.SECRET_KEY, algorithm="HS256")
 
         auth_url = GitHubService.get_auth_url(state=state)
 
@@ -78,14 +72,20 @@ async def oauth_callback(
     Handle OAuth callback for GitHub.
     """
     try:
-        if state not in _state_store:
-            logger.error("State not found in state store")
+        # Decode and verify the stateless state parameter
+        try:
+            payload = jwt.decode(state, settings.SECRET_KEY, algorithms=["HS256"])
+            if payload.get("type") != "github_auth":
+                raise JWTError("Invalid state type")
+            user_id_str = payload.get("sub")
+            if not user_id_str:
+                raise JWTError("Missing subject in state")
+            user_id = uuid.UUID(user_id_str)
+        except (JWTError, ValueError) as e:
+            logger.error(f"Invalid or expired GitHub OAuth state: {e}")
             return RedirectResponse(
                 f"{settings.FRONTEND_URL}/connections?error=Invalid or expired state parameter"
             )
-
-        state_data = _state_store.pop(state)
-        user_id = state_data["user_id"]
 
         service = GitHubService()
         if not service.client_id or not service.client_secret:
