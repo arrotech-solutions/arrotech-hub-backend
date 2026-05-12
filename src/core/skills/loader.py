@@ -3,6 +3,10 @@ from pathlib import Path
 from pydantic import ValidationError
 from .models import SkillDefinition
 from .exceptions import SkillLoadError
+from .validators import validate_execution_contract
+import logging
+
+logger = logging.getLogger(__name__)
 
 def load_skill(path: Path) -> SkillDefinition:
     """
@@ -47,7 +51,11 @@ def load_skill(path: Path) -> SkillDefinition:
         )
 
     try:
-        return SkillDefinition(**data)
+        skill = SkillDefinition(**data)
+        # Validate execution contract
+        validate_execution_contract(skill.execution_contract)
+        logger.info(f"Validated execution contract: {skill.name}")
+        return skill
 
     except ValidationError as e:
         raise SkillLoadError(

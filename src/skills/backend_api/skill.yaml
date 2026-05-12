@@ -25,3 +25,31 @@ protocol:
 validation_rules:
   - name: route_registered
     required: true
+
+execution_contract:
+  contract_version: 1
+  allowed_tools:
+    - tool_name: file_editor
+      read_only: false
+
+    - tool_name: route_inspector
+      read_only: true
+
+  forbidden_actions:
+    - modify_auth_core
+    - delete_routes
+
+  required_validations:
+    - route_registered
+    - lint_passed
+
+  constraints:
+    require_human_approval: false
+    allow_network_access: false
+    allow_file_mutation: true
+    allow_shell_execution: false
+    allowed_environments:
+      - development
+      - staging
+
+  risk_level: medium
