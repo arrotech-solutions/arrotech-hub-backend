@@ -27,7 +27,7 @@ from .routers import (access_router, agent_router, analytics_router, api_router,
                       mcp_router, mpesa_agent_router, notification_router, payment_router, preferences_router,
                       security_router, settings_router, slack_agent_router, slack_router, subscription_router, templates_router, whatsapp_router, workflow_router, facebook_router, instagram_router, telegram_router, twitter_router, clickup_router, teams_router, zoom_router,
                       outlook_router, notion_router, trello_router, jira_router, whatsapp_webhook, whatsapp_contacts, whatsapp_broadcast, tiktok_router, ai_router, support_router, kra_router, productivity_router, asana_router,
-                       blog_router, employee_router, gmail_webhook, hubspot_router, ws_router, organization_router, quickbooks_router, airtable_router, xero_router, zoho_router, zoho_webhook, linkedin_router, rag_router, public_forms_router)
+                       blog_router, employee_router, gmail_webhook, hubspot_router, ws_router, organization_router, quickbooks_router, airtable_router, xero_router, zoho_router, zoho_webhook, linkedin_router, rag_router, public_forms_router, github_router)
 from .services import (BillingService, ContentCreationService,
                        FileManagementService, HubSpotService,
                        RateLimitService, SlackService, SocialMediaService, TelegramService,
@@ -313,6 +313,7 @@ app.include_router(xero_router)  # Xero OAuth connection flow
 app.include_router(organization_router.router, prefix="/api/v1/organizations", tags=["organizations"])
 app.include_router(zoho_router.router) # Zoho OAuth connection flow
 app.include_router(zoho_webhook.router) # Zoho real-time events webhook
+app.include_router(github_router.router) # GitHub OAuth connection flow
 app.include_router(rag_router.router)  # RAG Knowledge Base pipeline
 app.include_router(assistant_router.router)  # AI Assistant widget (KB + Tool Discovery)
 app.include_router(public_forms_router.router)  # Public contact forms & newsletter
