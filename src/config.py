@@ -83,6 +83,12 @@ class BaseConfig(BaseSettings):
     LINKEDIN_CLIENT_SECRET: Optional[str] = None
     LINKEDIN_REDIRECT_URI: Optional[str] = None
 
+    # GitHub Configuration
+    GITHUB_CLIENT_ID: Optional[str] = None
+    GITHUB_CLIENT_SECRET: Optional[str] = None
+    GITHUB_REDIRECT_URI: Optional[str] = None
+    GITHUB_WEBHOOK_SECRET: Optional[str] = None
+
     # TikTok Configuration
     TIKTOK_CLIENT_KEY: Optional[str] = None
     TIKTOK_CLIENT_SECRET: Optional[str] = None
