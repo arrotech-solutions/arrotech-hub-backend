@@ -1,26 +1,50 @@
 import time
-from datetime import datetime, timezone
 from src.core.skills.models import SkillDefinition
 from src.core.skills.contracts import RegisteredToolRegistry
 from src.core.skills.enforcer import SkillExecutionEnforcer
 from .requests import ToolExecutionRequest
 from .results import ToolExecutionResult
-from .audit import audit_logger, ExecutionAuditRecord
+from .audit import audit_logger
 from .sandbox import SandboxGovernance
 from .registry import runtime_registry
-from .exceptions import RuntimeAuthorizationError, RuntimeGovernanceError, RuntimeExecutionError
+from .exceptions import RuntimeAuthorizationError, RuntimeGovernanceError, RuntimeExecutionError, RuntimeTimeoutError
+from .validators import validate_tool_output
+from .factory import ExecutionResultFactory
 
 class GovernedToolExecutor:
     """
     Executes runtime tools strictly enforcing governance contracts BEFORE execution.
     """
+    def _elapsed_ms(self, start_time: float) -> int:
+        """Calculate elapsed milliseconds using monotonic clock."""
+        return int((time.perf_counter() - start_time) * 1000)
+
+    def _finalize_failure(
+        self,
+        *,
+        request: ToolExecutionRequest,
+        start_time: float,
+        status: ExecutionStatus,
+        error_message: str
+    ) -> None:
+        execution_time_ms = self._elapsed_ms(start_time)
+        tool_name = getattr(request, 'tool_name', 'unknown').strip().lower()
+
+        _, audit_record = ExecutionResultFactory.failure(
+            execution_id=request.execution_id,
+            tool_name=tool_name,
+            skill_name=request.skill_name,
+            environment=request.environment,
+            approved_by_human=request.approved_by_human,
+            execution_time_ms=execution_time_ms,
+            status=status,
+            error_message=error_message
+        )
+        
+        audit_logger.record(audit_record)
 
     def execute(self, skill: SkillDefinition, request: ToolExecutionRequest) -> ToolExecutionResult:
-        error_msg = None
-        success = False
         start_time = time.perf_counter()
-        execution_time_ms = 0
-        output = {}
 
         try:
             # 0. Validate skill ownership
@@ -47,46 +71,73 @@ class GovernedToolExecutor:
                 raise RuntimeAuthorizationError(f"Skill '{skill.name}' requires human approval for execution.")
 
             # 5. Run sandbox governance validation
-            # Get the static tool definition from the governance registry
             tool_def = RegisteredToolRegistry.get(tool_name)
-            SandboxGovernance.validate(skill, tool_def)
+            SandboxGovernance.validate(skill, tool_def, request)
 
             # 6. Execute tool (Deterministic execution, no async)
             tool_output = runtime_tool.execute(request)
             
-            end_time = time.perf_counter()
-            execution_time_ms = int((end_time - start_time) * 1000)
-            
-            success = tool_output.success
-            output = tool_output.output
-            if tool_output.error_message:
-                error_msg = tool_output.error_message
+            # Validate output
+            validate_tool_output(tool_output)
 
-            return ToolExecutionResult(
-                success=success,
+            execution_time_ms = self._elapsed_ms(start_time)
+            
+            if execution_time_ms > skill.execution_contract.constraints.max_execution_time_ms:
+                raise RuntimeTimeoutError(
+                    f"Tool execution exceeded maximum allowed time of "
+                    f"{skill.execution_contract.constraints.max_execution_time_ms}ms"
+                )
+
+            result, audit_record = ExecutionResultFactory.success(
+                execution_id=request.execution_id,
                 tool_name=tool_name,
-                execution_time_ms=execution_time_ms,
-                output=output,
-                error_message=error_msg
-            )
-
-        except (RuntimeAuthorizationError, RuntimeGovernanceError, RuntimeExecutionError) as e:
-            end_time = time.perf_counter()
-            execution_time_ms = int((end_time - start_time) * 1000)
-            success = False
-            error_msg = str(e)
-            raise e
-            
-        finally:
-            # 7. Generate audit record
-            record = ExecutionAuditRecord(
                 skill_name=request.skill_name,
-                tool_name=request.tool_name.strip().lower(),
-                timestamp=datetime.now(timezone.utc),
-                execution_time_ms=execution_time_ms,
-                success=success,
-                approved_by_human=request.approved_by_human,
                 environment=request.environment,
-                error_message=error_msg
+                approved_by_human=request.approved_by_human,
+                execution_time_ms=execution_time_ms,
+                output=tool_output.output
             )
-            audit_logger.record(record)
+            audit_logger.record(audit_record)
+            return result
+
+        except RuntimeTimeoutError as e:
+            self._finalize_failure(
+                request=request, start_time=start_time,
+                status=ExecutionStatus.TIMEOUT,
+                error_message=str(e)
+            )
+            raise e
+        except RuntimeAuthorizationError as e:
+            self._finalize_failure(
+                request=request, start_time=start_time,
+                status=ExecutionStatus.DENIED,
+                error_message=str(e)
+            )
+            raise e
+        except RuntimeGovernanceError as e:
+            self._finalize_failure(
+                request=request, start_time=start_time,
+                status=ExecutionStatus.GOVERNANCE_REJECTED,
+                error_message=str(e)
+            )
+            raise e
+        except RuntimeExecutionError as e:
+            self._finalize_failure(
+                request=request, start_time=start_time,
+                status=ExecutionStatus.FAILED,
+                error_message=str(e)
+            )
+            raise e
+        except Exception as e:
+            internal_message = (
+                f"Unhandled runtime failure: {type(e).__name__}"
+            )
+            
+            self._finalize_failure(
+                request=request, start_time=start_time,
+                status=ExecutionStatus.FAILED,
+                error_message=internal_message
+            )
+            raise RuntimeExecutionError(
+                "Unhandled runtime execution failure"
+            ) from e

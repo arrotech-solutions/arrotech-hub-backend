@@ -70,6 +70,11 @@ class ExecutionConstraint(BaseModel):
     allow_file_mutation: bool = False
     allow_shell_execution: bool = False
     allowed_environments: List[EnvironmentScope]
+    max_execution_time_ms: int = Field(
+        default=30000,
+        ge=1,
+        le=300000
+    )
 
     model_config = {
         "extra": "forbid",
