@@ -5,6 +5,8 @@ from src.core.runtime.requests import ToolExecutionRequest
 from src.core.runtime.exceptions import RuntimeAuthorizationError, RuntimeGovernanceError
 from src.core.runtime.registry import runtime_registry
 from src.core.runtime.audit import audit_logger
+from src.core.runtime.status import ExecutionStatus
+import uuid
 from src.core.skills.models import SkillDefinition, SkillCapability, SkillProtocol, SkillExecutionContract, ToolPermission, ExecutionConstraint, SkillRiskLevel, EnvironmentScope
 
 @pytest.fixture
@@ -39,7 +41,7 @@ def executor():
 
 @pytest.fixture(autouse=True)
 def setup_audit():
-    audit_logger.clear_for_testing()
+    audit_logger._clear_for_testing_only()
     yield
 
 def test_successful_execution(skill, executor):
@@ -53,13 +55,13 @@ def test_successful_execution(skill, executor):
     )
     
     result = executor.execute(skill, request)
-    assert result.success is True
+    assert result.status == ExecutionStatus.SUCCESS
     assert result.tool_name == "test_runner"
     
     # Verify audit
     records = audit_logger.all()
     assert len(records) == 1
-    assert records[0].success is True
+    assert records[0].status == ExecutionStatus.SUCCESS
     assert records[0].tool_name == "test_runner"
 
 def test_unregistered_runtime_tool(skill, executor):
@@ -79,7 +81,7 @@ def test_unregistered_runtime_tool(skill, executor):
     # Failed execution should still be audited
     records = audit_logger.all()
     assert len(records) == 1
-    assert records[0].success is False
+    assert records[0].status == ExecutionStatus.DENIED
 
 def test_unauthorized_tool_by_contract(skill, executor):
     # route_inspector is registered but not in the skill's allowed_tools

@@ -1,7 +1,9 @@
 import pytest
+import uuid
 from datetime import datetime, timezone
 from src.core.runtime.audit import RuntimeAuditLogger, ExecutionAuditRecord
 from src.core.skills.models import EnvironmentScope
+from src.core.runtime.status import ExecutionStatus
 
 def test_audit_logger_append_only():
     logger = RuntimeAuditLogger()
@@ -10,7 +12,8 @@ def test_audit_logger_append_only():
         tool_name="test_tool",
         timestamp=datetime.now(timezone.utc),
         execution_time_ms=5,
-        success=True,
+        status=ExecutionStatus.SUCCESS,
+        execution_id=uuid.uuid4(),
         approved_by_human=False,
         environment=EnvironmentScope.DEVELOPMENT
     )
@@ -32,12 +35,13 @@ def test_audit_logger_clear():
         tool_name="test_tool",
         timestamp=datetime.now(timezone.utc),
         execution_time_ms=5,
-        success=True,
+        status=ExecutionStatus.SUCCESS,
+        execution_id=uuid.uuid4(),
         approved_by_human=False,
         environment=EnvironmentScope.DEVELOPMENT
     )
     
     logger.record(record)
-    logger.clear_for_testing()
+    logger._clear_for_testing_only()
     
     assert len(logger.all()) == 0

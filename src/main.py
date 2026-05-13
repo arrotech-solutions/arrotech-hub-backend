@@ -70,6 +70,10 @@ async def lifespan(app: FastAPI):
     
     # Load Skills Runtime
     try:
+        from .core.runtime.bootstrap import validate_runtime_integrity
+        validate_runtime_integrity()
+        logger.info("Runtime integrity validation passed")
+        
         registry = SkillRegistry()
         # Reset registry to avoid issues if lifespan is called multiple times (e.g. tests)
         registry._clear_for_testing()
