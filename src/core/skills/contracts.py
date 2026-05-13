@@ -1,6 +1,7 @@
 from enum import Enum
 from typing import List, Dict
 from pydantic import BaseModel
+from src.core.skills.models import EnvironmentScope
 
 class ToolRiskLevel(str, Enum):
     LOW = "low"
@@ -24,6 +25,8 @@ class ToolDefinition(BaseModel):
     mutates_files: bool = False
     requires_network: bool = False
     requires_shell: bool = False
+    allowed_environments: List[EnvironmentScope]
+    deterministic: bool = True
 
     model_config = {
         "extra": "forbid",
@@ -46,6 +49,8 @@ class RegisteredToolRegistry:
             mutates_files=False,
             requires_network=False,
             requires_shell=True,
+            allowed_environments=[EnvironmentScope.DEVELOPMENT, EnvironmentScope.STAGING],
+            deterministic=True,
         ),
         "file_editor": ToolDefinition(
             name="file_editor",
@@ -57,6 +62,8 @@ class RegisteredToolRegistry:
             mutates_files=True,
             requires_network=False,
             requires_shell=False,
+            allowed_environments=[EnvironmentScope.DEVELOPMENT, EnvironmentScope.STAGING, EnvironmentScope.PRODUCTION],
+            deterministic=True,
         ),
         "route_inspector": ToolDefinition(
             name="route_inspector",
@@ -68,6 +75,8 @@ class RegisteredToolRegistry:
             mutates_files=False,
             requires_network=False,
             requires_shell=False,
+            allowed_environments=[EnvironmentScope.DEVELOPMENT, EnvironmentScope.STAGING, EnvironmentScope.PRODUCTION],
+            deterministic=True,
         ),
     }
 
