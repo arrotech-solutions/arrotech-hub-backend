@@ -1,19 +1,20 @@
-from typing import Dict, Any, Optional
-from pydantic import BaseModel
+from typing import Optional
+from pydantic import BaseModel, ConfigDict
 from uuid import UUID
 from .status import ExecutionStatus
 from .governance import GovernanceDecision
 from .version import RUNTIME_VERSION
+from .types import ImmutableJSON
 
 class ToolOutput(BaseModel):
     status: ExecutionStatus
-    output: Dict[str, Any]
+    output: ImmutableJSON
     error_message: Optional[str] = None
 
-    model_config = {
-        "extra": "forbid",
-        "frozen": True
-    }
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid"
+    )
 
 class ToolExecutionResult(BaseModel):
     status: ExecutionStatus
@@ -22,10 +23,10 @@ class ToolExecutionResult(BaseModel):
     execution_time_ms: int
     execution_id: UUID
     runtime_version: str = RUNTIME_VERSION
-    output: Dict[str, Any]
+    output: ImmutableJSON
     error_message: Optional[str] = None
 
-    model_config = {
-        "extra": "forbid",
-        "frozen": True
-    }
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid"
+    )

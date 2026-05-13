@@ -108,13 +108,18 @@ def validate_runtime_integrity() -> None:
             "requires_network": bool,
             "mutates_files": bool,
             "deterministic": bool,
-            "allowed_environments": list
+            "allowed_environments": list,
         }
-        
+
         for attr, expected_type in required_types.items():
-            val = getattr(run_tool, attr, None)
-            if not isinstance(val, expected_type):
-                raise SystemExit(f"Runtime validation failed: Tool '{name}' attribute '{attr}' must be of type {expected_type.__name__}")
+
+            value = getattr(run_tool, attr, None)
+
+            if type(value) is not expected_type:
+                raise SystemExit(
+                    f"Tool '{name}' attribute '{attr}' "
+                    f"must be EXACTLY {expected_type}"
+                )
 
         if not run_tool.allowed_environments:
             raise SystemExit(f"Runtime validation failed: Tool '{name}' allowed_environments list cannot be empty.")
