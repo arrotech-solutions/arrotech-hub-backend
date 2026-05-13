@@ -1,53 +1,86 @@
-import json
 import math
-from .results import ToolOutput
-from .status import ExecutionStatus
 from .exceptions import RuntimeExecutionError
 
-MAX_TOOL_OUTPUT_BYTES = 1024 * 1024
 MAX_OUTPUT_DEPTH = 25
 
-def _validate_json_safe(obj: any, depth: int = 0) -> None:
+
+def _validate_json_safe(
+    obj: any,
+    depth: int = 0,
+    visited: set[int] | None = None
+) -> None:
+
+    if visited is None:
+        visited = set()
+
     if depth > MAX_OUTPUT_DEPTH:
-        raise RuntimeExecutionError(f"Tool output exceeds maximum depth of {MAX_OUTPUT_DEPTH}")
-        
-    if isinstance(obj, float):
+        raise RuntimeExecutionError(
+            f"Output exceeds maximum depth of {MAX_OUTPUT_DEPTH}"
+        )
+
+    obj_id = id(obj)
+
+    if obj_id in visited:
+        raise RuntimeExecutionError(
+            "Circular reference detected in output"
+        )
+
+    obj_type = type(obj)
+
+    if obj is None:
+        return
+
+    if obj_type in (str, int, bool):
+        return
+
+    if obj_type is float:
         if not math.isfinite(obj):
-            raise RuntimeExecutionError(f"Tool output contains non-finite float: {obj}")
+            raise RuntimeExecutionError(
+                f"Non-finite float detected: {obj}"
+            )
         return
-    if type(obj) in (str, int, bool, type(None)):
+
+    if obj_type is dict:
+        visited.add(obj_id)
+
+        for key, value in obj.items():
+            if type(key) is not str:
+                raise RuntimeExecutionError(
+                    f"Output keys must be EXACTLY str, got {type(key)}"
+                )
+
+            _validate_json_safe(
+                value,
+                depth + 1,
+                visited
+            )
+
+        visited.remove(obj_id)
         return
-    elif isinstance(obj, dict):
-        for k, v in obj.items():
-            if not isinstance(k, str):
-                raise RuntimeExecutionError(f"Tool output dictionary keys must be strings, got {type(k)}")
-            _validate_json_safe(v, depth + 1)
-    elif isinstance(obj, list):
+
+    if obj_type is list:
+        visited.add(obj_id)
+
         for item in obj:
-            _validate_json_safe(item, depth + 1)
-    else:
-        raise RuntimeExecutionError(f"Tool output contains invalid type: {type(obj)}. Only JSON-safe types are allowed.")
+            _validate_json_safe(
+                item,
+                depth + 1,
+                visited
+            )
 
-def validate_tool_output(output: ToolOutput) -> None:
-    if output is None:
-        raise RuntimeExecutionError("Tool output cannot be None")
+        visited.remove(obj_id)
+        return
+
+    raise RuntimeExecutionError(
+        f"Forbidden output type: {obj_type}"
+    )
+
+
+def validate_tool_output(output: any) -> None:
+    """
+    Validates that tool output is JSON-safe and bounded.
+    """
+    if not isinstance(output, dict):
+        raise RuntimeExecutionError(f"Tool output must be a dictionary, got {type(output)}")
     
-    if not isinstance(output.output, dict):
-        raise RuntimeExecutionError("Tool output payload must be a dictionary")
-
-    if output.status not in (ExecutionStatus.SUCCESS, ExecutionStatus.FAILED):
-        raise RuntimeExecutionError(f"Tool returned forbidden status '{output.status.value}'. Tools may only return SUCCESS or FAILED.")
-        
-    if output.status != ExecutionStatus.SUCCESS:
-        if not output.error_message:
-            raise RuntimeExecutionError("error_message is required when status is not SUCCESS")
-    else:
-        if output.error_message:
-            raise RuntimeExecutionError("error_message is forbidden when status is SUCCESS")
-            
-    _validate_json_safe(output.output)
-            
-    # Output Size Governance
-    output_size = len(json.dumps(output.output, separators=(',', ':')).encode('utf-8'))
-    if output_size > MAX_TOOL_OUTPUT_BYTES:
-        raise RuntimeExecutionError(f"Tool output exceeds maximum size of {MAX_TOOL_OUTPUT_BYTES} bytes (actual: {output_size} bytes)")
+    _validate_json_safe(output)

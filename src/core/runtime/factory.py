@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+from typing import Optional, Tuple
 from uuid import UUID
 
 from src.core.skills.models import EnvironmentScope
@@ -8,6 +8,7 @@ from .governance import GovernanceDecision
 from .results import ToolExecutionResult
 from .audit import ExecutionAuditRecord
 from .version import RUNTIME_VERSION
+from .types import ImmutableJSON
 
 class ExecutionResultFactory:
     """Central factory for constructing deterministic execution results and audit records."""
@@ -22,11 +23,11 @@ class ExecutionResultFactory:
         execution_time_ms: int,
         status: ExecutionStatus,
         governance_decision: GovernanceDecision,
-        output: Dict[str, Any] = None,
+        output: ImmutableJSON = None,
         error_message: Optional[str] = None
-    ) -> tuple[ToolExecutionResult, ExecutionAuditRecord]:
+    ) -> Tuple[ToolExecutionResult, ExecutionAuditRecord]:
         
-        # Issue 4: Enforce output/error mutual exclusion
+        # Enforce output/error mutual exclusion
         if status == ExecutionStatus.SUCCESS:
             if error_message is not None:
                 raise ValueError("SUCCESS status cannot have an error_message")
@@ -36,6 +37,10 @@ class ExecutionResultFactory:
 
         now = datetime.now(timezone.utc)
         
+        # Ensure output is treated as immutable JSON
+        from types import MappingProxyType
+        final_output = output if output is not None else MappingProxyType({})
+        
         result = ToolExecutionResult(
             status=status,
             governance_decision=governance_decision,
@@ -43,7 +48,7 @@ class ExecutionResultFactory:
             execution_time_ms=execution_time_ms,
             execution_id=execution_id,
             runtime_version=RUNTIME_VERSION,
-            output=output or {},
+            output=final_output,
             error_message=error_message
         )
         
@@ -58,14 +63,14 @@ class ExecutionResultFactory:
             runtime_version=RUNTIME_VERSION,
             approved_by_human=approved_by_human,
             environment=environment,
-            output=output,
+            output=final_output,
             error_message=error_message
         )
         
         return result, audit_record
 
     @staticmethod
-    def success(execution_id: UUID, tool_name: str, skill_name: str, environment: EnvironmentScope, approved_by_human: bool, execution_time_ms: int, output: Dict[str, Any]) -> tuple[ToolExecutionResult, ExecutionAuditRecord]:
+    def success(execution_id: UUID, tool_name: str, skill_name: str, environment: EnvironmentScope, approved_by_human: bool, execution_time_ms: int, output: ImmutableJSON) -> Tuple[ToolExecutionResult, ExecutionAuditRecord]:
         return ExecutionResultFactory._create(
             execution_id=execution_id,
             tool_name=tool_name,
@@ -89,11 +94,10 @@ class ExecutionResultFactory:
         execution_time_ms: int,
         status: ExecutionStatus,
         error_message: str
-    ) -> tuple[ToolExecutionResult, ExecutionAuditRecord]:
+    ) -> Tuple[ToolExecutionResult, ExecutionAuditRecord]:
         if status == ExecutionStatus.SUCCESS:
             raise ValueError("SUCCESS status cannot be processed via the failure factory method.")
             
-        # Internal semantic mapping (Issue 7)
         mapping = {
             ExecutionStatus.FAILED: GovernanceDecision.ALLOWED,
             ExecutionStatus.TIMEOUT: GovernanceDecision.ALLOWED,
