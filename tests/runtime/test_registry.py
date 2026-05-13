@@ -1,25 +1,27 @@
 import pytest
-from src.core.runtime.registry import RuntimeToolRegistry, MockTestRunner
+from src.core.runtime.registry import RuntimeToolRegistry
 from src.core.runtime.exceptions import RuntimeAuthorizationError
-from src.core.runtime.interfaces import RuntimeTool
-from src.core.runtime.results import ToolExecutionResult
+from src.core.runtime.results import ToolOutput
+from src.core.runtime.status import ExecutionStatus
 
-class AnotherMockTool:
-    name = "another_mock"
+class TestRunnerMockTool:
+    name = "test_runner"
     def execute(self, request):
-        return ToolExecutionResult(success=True, tool_name=self.name, execution_time_ms=1, output={})
+        return ToolOutput(status=ExecutionStatus.SUCCESS, output={})
 
 def test_registry_registration():
     registry = RuntimeToolRegistry()
-    tool = AnotherMockTool()
+    registry._TOOLS.clear() # clear for testing
+    tool = TestRunnerMockTool()
     registry.register(tool)
     
-    assert registry.exists("another_mock") is True
-    assert registry.get("another_mock") == tool
+    assert registry.exists("test_runner") is True
+    assert registry.get("test_runner") == tool
 
 def test_duplicate_registration_rejected():
     registry = RuntimeToolRegistry()
-    tool = AnotherMockTool()
+    registry._TOOLS.clear()
+    tool = TestRunnerMockTool()
     registry.register(tool)
     
     with pytest.raises(ValueError) as exc:

@@ -40,6 +40,20 @@ def validate_execution_contract(contract: SkillExecutionContract) -> None:
                 f"Tool requires file mutation but contract forbids file mutation: {tool_perm.tool_name}"
             )
         
+        # RULE 4: Determinism
+        if not tool_def.deterministic:
+            raise SkillValidationError(
+                f"Tool {tool_perm.tool_name} is non-deterministic, which is forbidden."
+            )
+            
+        # RULE 5: Environment compatibility
+        for env in contract.constraints.allowed_environments:
+            if env not in tool_def.allowed_environments:
+                raise SkillValidationError(
+                    f"Skill allows environment '{env.value}' but tool '{tool_perm.tool_name}' "
+                    f"does not support it."
+                )
+        
         # Tool uniqueness check
         if tool_perm.tool_name in tool_names:
             raise SkillValidationError(f"Duplicate tool permission: {tool_perm.tool_name}")
