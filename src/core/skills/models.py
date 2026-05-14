@@ -20,6 +20,7 @@ class SkillRiskLevel(str, Enum):
     CRITICAL = "critical"
 
 class EnvironmentScope(str, Enum):
+    LOCAL = "local"
     DEVELOPMENT = "development"
     STAGING = "staging"
     PRODUCTION = "production"

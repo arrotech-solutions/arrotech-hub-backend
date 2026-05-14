@@ -5,6 +5,9 @@ Routes coding_* tool calls to the appropriate handler, wraps every call
 in the standard {tool, success, output, error, duration_ms} envelope,
 and integrates with the sandbox lifecycle.
 
+All tool calls are validated through the GovernedCodingBridge before
+dispatch, ensuring governance policy compliance and audit chain recording.
+
 Session state is read from Redis (via session_store.py).
 """
 import logging
@@ -20,6 +23,9 @@ logger = logging.getLogger(__name__)
 # Handler imports (deferred to avoid circular imports at module load)
 _FS_HANDLERS = None
 _OPS_HANDLERS = None
+
+# Governance bridge (deferred import to avoid circular imports)
+_BRIDGE = None
 
 
 def _load_handlers():
@@ -57,9 +63,99 @@ def _load_handlers():
         }
 
 
+def _get_bridge():
+    """Lazy-load the governance bridge to avoid circular imports."""
+    global _BRIDGE
+    if _BRIDGE is None:
+        from src.core.runtime.governed_bridge import GovernedCodingBridge
+        from src.core.skills.contracts import CODING_AGENT_POLICY
+        from src.core.skills.models import EnvironmentScope
+
+        # Load and register all coding skill manifests
+        _register_coding_skills()
+
+        _BRIDGE = GovernedCodingBridge(
+            policy=CODING_AGENT_POLICY,
+            environment=EnvironmentScope.LOCAL,
+            # LOW/MEDIUM tools auto-approve; HIGH/CRITICAL handled per-call
+            approved_by_human=False,
+        )
+    return _BRIDGE
+
+
+# ── TOOL → RISK LEVEL MAP (for auto-approval decisions) ──────────────
+_TOOL_RISK_CACHE = None
+
+def _get_tool_risk(tool_name: str) -> str:
+    """Get cached risk level for a tool."""
+    global _TOOL_RISK_CACHE
+    if _TOOL_RISK_CACHE is None:
+        from src.core.skills.contracts import RegisteredToolRegistry
+        _TOOL_RISK_CACHE = {
+            name: defn.risk_level.value
+            for name, defn in RegisteredToolRegistry.all().items()
+        }
+    return _TOOL_RISK_CACHE.get(tool_name, "critical")
+
+
+def _is_auto_approved(tool_name: str) -> bool:
+    """LOW and MEDIUM risk tools are auto-approved. HIGH/CRITICAL need explicit approval."""
+    risk = _get_tool_risk(tool_name)
+    return risk in ("low", "medium")
+
+
+# ── SKILL MANIFEST AUTO-LOADING ──────────────────────────────────────
+_SKILLS_LOADED = False
+
+def _register_coding_skills():
+    """Load all coding skill manifests into the SkillRegistry at startup."""
+    global _SKILLS_LOADED
+    if _SKILLS_LOADED:
+        return
+
+    import os
+    from pathlib import Path
+    from src.core.skills.loader import load_skill
+    from src.core.skills.registry import SkillRegistry
+    from src.core.skills.exceptions import SkillLoadError, SkillValidationError
+
+    registry = SkillRegistry()
+    skills_dir = Path(__file__).resolve().parent.parent / "skills"
+
+    if not skills_dir.exists():
+        logger.warning(f"Skills directory not found: {skills_dir}")
+        _SKILLS_LOADED = True
+        return
+
+    loaded = 0
+    for skill_dir in sorted(skills_dir.iterdir()):
+        manifest = skill_dir / "skill.yaml"
+        if not manifest.exists():
+            continue
+        try:
+            skill = load_skill(manifest)
+            try:
+                registry.register(skill)
+            except SkillValidationError:
+                pass  # Already registered (e.g. from a previous import)
+            loaded += 1
+        except (SkillLoadError, SkillValidationError) as e:
+            logger.warning(f"Failed to load skill {skill_dir.name}: {e}")
+        except Exception as e:
+            logger.warning(f"Unexpected error loading skill {skill_dir.name}: {e}")
+
+    _SKILLS_LOADED = True
+    logger.info(f"Loaded {loaded} coding skill manifests")
+
+
 class CodingAgentToolExecutor:
     """
     Main executor for all 24 coding agent tools.
+
+    Every tool call passes through the GovernedCodingBridge for:
+    - Policy evaluation (risk level, capability constraints)
+    - Environment authorization
+    - Audit chain recording (immutable, tamper-evident)
 
     Usage from ToolExecutor._execute_tool_logic():
         from .coding_agent_executor import coding_agent_executor
@@ -100,17 +196,62 @@ class CodingAgentToolExecutor:
 
         workspace = session.workspace_path
 
+        # ── GOVERNANCE GATE ────────────────────────────────────────────
+        bridge = _get_bridge()
+        auto_approved = _is_auto_approved(tool_name)
         try:
-            output = await self._dispatch(tool_name, arguments, session, workspace, user, redis)
+            bridge.authorize(
+                tool_name,
+                approved_by_human=auto_approved,
+            )
+        except Exception as e:
+            duration_ms = int((time.time() - start) * 1000)
+            logger.warning(f"Governance rejected {tool_name}: {e}")
+            bridge.record_failure(
+                tool_name=tool_name,
+                skill_name="coding_agent",
+                execution_time_ms=duration_ms,
+                error_message=str(e),
+            )
+            return build_tool_envelope(tool_name, False, None, f"Governance: {e}", duration_ms)
+
+        # ── EXECUTION WITH TIMEOUT ─────────────────────────────────────
+        try:
+            from src.core.runtime.timeout import execute_with_timeout, get_timeout_for_risk
+            risk = _get_tool_risk(tool_name)
+            timeout_sec = get_timeout_for_risk(risk)
+
+            output = await execute_with_timeout(
+                self._dispatch(tool_name, arguments, session, workspace, user, redis),
+                timeout_seconds=timeout_sec,
+                tool_name=tool_name,
+            )
             duration_ms = int((time.time() - start) * 1000)
 
             # Extend session TTL on successful execution
             await session_store.touch_session(redis, session_id)
 
+            # Record success in audit chain
+            bridge.record_success(
+                tool_name=tool_name,
+                skill_name="coding_agent",
+                execution_time_ms=duration_ms,
+                output=output if isinstance(output, dict) else {"result": str(output)},
+            )
+
             return build_tool_envelope(tool_name, True, output, None, duration_ms)
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
             logger.warning(f"Coding tool {tool_name} failed: {e}", exc_info=True)
+
+            # Record failure in audit chain
+            bridge.record_failure(
+                tool_name=tool_name,
+                skill_name="coding_agent",
+                execution_time_ms=duration_ms,
+                error_message=str(e),
+            )
+
             return build_tool_envelope(tool_name, False, None, str(e), duration_ms)
 
     async def _dispatch(

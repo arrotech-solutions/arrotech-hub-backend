@@ -59,11 +59,11 @@ from src.core.skills.models import EnvironmentScope
 
 class MockTestRunner:
     name = "test_runner"
-    requires_shell = False
+    requires_shell = True
     requires_network = False
     mutates_files = False
     deterministic = True
-    allowed_environments = [EnvironmentScope.LOCAL, EnvironmentScope.STAGING, EnvironmentScope.PRODUCTION]
+    allowed_environments = [EnvironmentScope.LOCAL, EnvironmentScope.DEVELOPMENT, EnvironmentScope.STAGING]
 
     def execute(self, request: ToolExecutionRequest) -> ToolOutput:
         return ToolOutput(
@@ -77,7 +77,7 @@ class MockFileEditor:
     requires_network = False
     mutates_files = True
     deterministic = True
-    allowed_environments = [EnvironmentScope.LOCAL, EnvironmentScope.STAGING]
+    allowed_environments = [EnvironmentScope.LOCAL, EnvironmentScope.DEVELOPMENT, EnvironmentScope.STAGING, EnvironmentScope.PRODUCTION]
 
     def execute(self, request: ToolExecutionRequest) -> ToolOutput:
         return ToolOutput(
@@ -91,7 +91,7 @@ class MockRouteInspector:
     requires_network = False
     mutates_files = False
     deterministic = True
-    allowed_environments = [EnvironmentScope.LOCAL, EnvironmentScope.STAGING, EnvironmentScope.PRODUCTION]
+    allowed_environments = [EnvironmentScope.LOCAL, EnvironmentScope.DEVELOPMENT, EnvironmentScope.STAGING, EnvironmentScope.PRODUCTION]
 
     def execute(self, request: ToolExecutionRequest) -> ToolOutput:
         return ToolOutput(

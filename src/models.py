@@ -1914,3 +1914,40 @@ class FailedEvent(Base):
         Index('ix_failed_events_status_retry', 'status', 'retry_count'),
     )
 
+
+class AuditRecordRow(Base):
+    """SQLAlchemy model for persistent audit records."""
+    __tablename__ = "runtime_audit_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    skill_name = Column(String(255), nullable=False)
+    tool_name = Column(String(255), nullable=False)
+    timestamp = Column(DateTime(timezone=True), nullable=False)
+    execution_time_ms = Column(Integer, nullable=False)
+    status = Column(String(50), nullable=False)
+    governance_decision = Column(String(50), nullable=False)
+    execution_id = Column(String(36), nullable=False, unique=True, index=True)
+    runtime_version = Column(String(20), nullable=False)
+    approved_by_human = Column(Boolean, nullable=False)
+    environment = Column(String(50), nullable=False)
+    output_json = Column(Text, nullable=True)
+    record_hash = Column(String(64), nullable=True)
+    previous_record_hash = Column(String(64), nullable=True)
+    error_message = Column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("ix_audit_timestamp", "timestamp"),
+        Index("ix_audit_skill", "skill_name"),
+        Index("ix_audit_status", "status"),
+    )
+
+
+class AuditChainMetaRow(Base):
+    """Stores chain metadata (genesis hash, record count)."""
+    __tablename__ = "runtime_audit_chain_meta"
+
+    id = Column(Integer, primary_key=True, default=1)
+    genesis_hash = Column(String(64), nullable=True)
+    record_count = Column(Integer, default=0)
+    last_updated = Column(DateTime(timezone=True), nullable=True)
+

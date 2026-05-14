@@ -1,0 +1,72 @@
+name: coding_git
+description: Version control operations skill
+capability: backend
+
+triggers:
+  - git
+  - commit
+  - branch
+  - diff
+  - push
+  - version control
+
+system_prompt: |
+  You are a version control agent. Manage git operations safely.
+  Always check status before committing. Never force-push without approval.
+  Write descriptive commit messages.
+
+protocol:
+  execution_steps:
+    - Check git status
+    - Stage appropriate changes
+    - Commit with descriptive message
+    - Push if requested
+
+  review_steps:
+    - Verify commit contains expected changes
+    - Verify branch is correct
+
+  failure_recovery:
+    - Report git errors clearly
+    - Suggest manual resolution steps
+
+validation_rules:
+  - name: clean_commit
+    required: true
+
+execution_contract:
+  contract_version: 1
+  allowed_tools:
+    - tool_name: coding_git_status
+      read_only: true
+    - tool_name: coding_git_diff
+      read_only: true
+    - tool_name: coding_git_commit
+      read_only: false
+    - tool_name: coding_git_create_branch
+      read_only: false
+    - tool_name: coding_git_read_log
+      read_only: true
+    - tool_name: coding_git_push
+      read_only: false
+    - tool_name: coding_write_scratchpad
+      read_only: false
+
+  forbidden_actions:
+    - force_push_main
+    - delete_remote_branches
+    - rewrite_history
+
+  required_validations:
+    - clean_commit
+
+  constraints:
+    require_human_approval: true
+    allow_network_access: true
+    allow_file_mutation: true
+    allow_shell_execution: true
+    allowed_environments:
+      - local
+      - development
+
+  risk_level: high

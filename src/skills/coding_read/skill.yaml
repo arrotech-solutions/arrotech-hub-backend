@@ -1,0 +1,78 @@
+name: coding_read
+description: Read-only code analysis and navigation
+capability: architecture
+
+triggers:
+  - read file
+  - search code
+  - find definition
+  - project structure
+  - grep
+  - list directory
+  - analyze
+
+system_prompt: |
+  You are a code analysis agent. Read, search, and understand the codebase.
+  Never modify files. Report findings clearly and precisely.
+
+protocol:
+  execution_steps:
+    - Understand the user request
+    - Search for relevant files and symbols
+    - Read and analyze code
+    - Report findings
+
+  review_steps:
+    - Verify all referenced files exist
+    - Verify line numbers are accurate
+
+  failure_recovery:
+    - Retry with broader search
+    - Report what could not be found
+
+validation_rules:
+  - name: files_exist
+    required: true
+
+execution_contract:
+  contract_version: 1
+  allowed_tools:
+    - tool_name: coding_file_read
+      read_only: true
+    - tool_name: coding_directory_list
+      read_only: true
+    - tool_name: coding_file_search
+      read_only: true
+    - tool_name: coding_grep_search
+      read_only: true
+    - tool_name: coding_get_definition
+      read_only: true
+    - tool_name: coding_read_file_summary
+      read_only: true
+    - tool_name: coding_get_project_structure
+      read_only: true
+    - tool_name: coding_read_scratchpad
+      read_only: true
+    - tool_name: coding_write_scratchpad
+      read_only: false
+
+  forbidden_actions:
+    - modify_files
+    - delete_files
+    - run_commands
+    - push_code
+
+  required_validations:
+    - files_exist
+
+  constraints:
+    require_human_approval: false
+    allow_network_access: false
+    allow_file_mutation: true
+    allow_shell_execution: false
+    allowed_environments:
+      - local
+      - development
+      - staging
+
+  risk_level: low
