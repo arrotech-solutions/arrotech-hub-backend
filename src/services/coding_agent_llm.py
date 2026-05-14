@@ -25,9 +25,20 @@ class CodingAgentLLM:
         self.user = user
 
     def _get_coding_tools_openai_format(self) -> List[Dict[str, Any]]:
-        """Extract the 24 coding tools and convert them to OpenAI format."""
+        """Extract the 24 coding tools and convert them to OpenAI format, stripping session_id."""
         tools_list = list(CODING_AGENT_TOOLS.values())
-        return dynamic_tool_registry.convert_tools_to_openai_format(tools_list)
+        
+        # Deep copy to avoid modifying the registry
+        import copy
+        tools_list_copy = copy.deepcopy(tools_list)
+        
+        for tool in tools_list_copy:
+            if "session_id" in tool.get("inputSchema", {}).get("properties", {}):
+                del tool["inputSchema"]["properties"]["session_id"]
+            if "session_id" in tool.get("inputSchema", {}).get("required", []):
+                tool["inputSchema"]["required"].remove("session_id")
+                
+        return dynamic_tool_registry.convert_tools_to_openai_format(tools_list_copy)
 
     async def generate_response(
         self, 
@@ -58,10 +69,30 @@ class CodingAgentLLM:
                 "content": "No OpenAI API key found. Please configure one in your settings."
             }
 
-        # 2. Get tools
+        # 2. Get tools (session_id is stripped)
         tools = self._get_coding_tools_openai_format()
 
-        # 3. Call OpenAI
+        # 3. Inject System Prompt
+        system_prompt = {
+            "role": "system",
+            "content": (
+                "You are the Arrotech Hub autonomous Coding Agent. "
+                "You have access to a secure sandbox with tools to read, write, and execute code.\n\n"
+                "CRITICAL INSTRUCTIONS:\n"
+                "1. File Paths: Files are often in subdirectories (e.g., src/). If you cannot find a file in the root, "
+                "use `coding_run_command` with `find . -name \"filename\"` to locate it before giving up.\n"
+                "2. The system automatically handles your session_id, you do not need to provide it.\n"
+                "3. If an action requires human approval, wait for the user to approve it."
+            )
+        }
+        
+        # Check if first message is already a system prompt
+        if messages and messages[0].get("role") == "system":
+            messages[0] = system_prompt
+        else:
+            messages = [system_prompt] + messages
+
+        # 4. Call OpenAI
         try:
             from openai import AsyncOpenAI
             client = AsyncOpenAI(api_key=api_key)
