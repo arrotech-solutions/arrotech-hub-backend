@@ -47,6 +47,7 @@ execution_contract:
     allow_file_mutation: true
     allow_shell_execution: true
     allowed_environments:
+      - local
       - development
       - staging
 

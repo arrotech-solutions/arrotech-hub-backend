@@ -4,19 +4,28 @@ from .models import (
     SkillExecutionContract, 
     ExecutionConstraint, 
     ToolPermission, 
-    SkillRiskLevel
+    SkillRiskLevel,
+    EnvironmentScope
 )
 from .registry import SkillRegistry
 from .loader import load_skill
 from .matcher import match_skills
 from .enforcer import SkillExecutionEnforcer
-from .contracts import RegisteredToolRegistry
+from .contracts import (
+    RegisteredToolRegistry,
+    GovernancePolicy,
+    DEFAULT_POLICY,
+    CODING_AGENT_POLICY,
+    READ_ONLY_POLICY,
+    ToolRiskLevel,
+)
 from .exceptions import SkillError, SkillLoadError, SkillValidationError, SkillNotFoundError
 
 __all__ = [
     "SkillRegistry",
     "SkillDefinition",
     "SkillCapability",
+    "EnvironmentScope",
     "load_skill",
     "match_skills",
     "SkillExecutionContract",
@@ -25,8 +34,14 @@ __all__ = [
     "SkillRiskLevel",
     "SkillExecutionEnforcer",
     "RegisteredToolRegistry",
+    "GovernancePolicy",
+    "DEFAULT_POLICY",
+    "CODING_AGENT_POLICY",
+    "READ_ONLY_POLICY",
+    "ToolRiskLevel",
     "SkillError",
     "SkillLoadError",
     "SkillValidationError",
     "SkillNotFoundError",
 ]
+

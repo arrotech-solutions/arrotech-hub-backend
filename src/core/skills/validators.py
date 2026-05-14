@@ -40,11 +40,19 @@ def validate_execution_contract(contract: SkillExecutionContract) -> None:
                 f"Tool requires file mutation but contract forbids file mutation: {tool_perm.tool_name}"
             )
         
-        # RULE 4: Determinism
+        # RULE 4: Non-deterministic tools require CRITICAL or HIGH risk level
+        # and human approval to prevent uncontrolled execution
         if not tool_def.deterministic:
-            raise SkillValidationError(
-                f"Tool {tool_perm.tool_name} is non-deterministic, which is forbidden."
-            )
+            if contract.risk_level not in (SkillRiskLevel.HIGH, SkillRiskLevel.CRITICAL):
+                raise SkillValidationError(
+                    f"Tool '{tool_perm.tool_name}' is non-deterministic and requires "
+                    f"HIGH or CRITICAL risk level skill (current: {contract.risk_level.value})."
+                )
+            if not contract.constraints.require_human_approval:
+                raise SkillValidationError(
+                    f"Tool '{tool_perm.tool_name}' is non-deterministic and requires "
+                    f"human approval to be enabled in the contract."
+                )
             
         # RULE 5: Environment compatibility
         for env in contract.constraints.allowed_environments:
@@ -63,5 +71,5 @@ def validate_execution_contract(contract: SkillExecutionContract) -> None:
     if contract.risk_level in [SkillRiskLevel.HIGH, SkillRiskLevel.CRITICAL]:
         if not contract.constraints.require_human_approval:
             raise SkillValidationError(
-                f"{contract.risk_level.upper()} risk skills MUST require human approval"
+                f"{contract.risk_level.value.upper()} risk skills MUST require human approval"
             )
