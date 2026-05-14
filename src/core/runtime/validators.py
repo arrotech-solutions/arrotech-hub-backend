@@ -15,14 +15,14 @@ def _validate_json_safe(
 
     if depth > MAX_OUTPUT_DEPTH:
         raise RuntimeExecutionError(
-            f"Output exceeds maximum depth of {MAX_OUTPUT_DEPTH}"
+            f"Tool output exceeds maximum depth of {MAX_OUTPUT_DEPTH}"
         )
 
     obj_id = id(obj)
 
     if obj_id in visited:
         raise RuntimeExecutionError(
-            "Circular reference detected in output"
+            "Circular reference detected in tool output"
         )
 
     obj_type = type(obj)
@@ -41,38 +41,48 @@ def _validate_json_safe(
         return
 
     if obj_type is dict:
+
         visited.add(obj_id)
 
-        for key, value in obj.items():
-            if type(key) is not str:
-                raise RuntimeExecutionError(
-                    f"Output keys must be EXACTLY str, got {type(key)}"
+        try:
+            for key, value in obj.items():
+
+                if type(key) is not str:
+                    raise RuntimeExecutionError(
+                        "Tool output keys must be EXACTLY str"
+                    )
+
+                _validate_json_safe(
+                    value,
+                    depth + 1,
+                    visited
                 )
 
-            _validate_json_safe(
-                value,
-                depth + 1,
-                visited
-            )
+        finally:
+            visited.remove(obj_id)
 
-        visited.remove(obj_id)
         return
 
     if obj_type is list:
+
         visited.add(obj_id)
 
-        for item in obj:
-            _validate_json_safe(
-                item,
-                depth + 1,
-                visited
-            )
+        try:
+            for item in obj:
 
-        visited.remove(obj_id)
+                _validate_json_safe(
+                    item,
+                    depth + 1,
+                    visited
+                )
+
+        finally:
+            visited.remove(obj_id)
+
         return
 
     raise RuntimeExecutionError(
-        f"Forbidden output type: {obj_type}"
+        f"Invalid output type detected: {obj_type}"
     )
 
 
@@ -80,7 +90,8 @@ def validate_tool_output(output: any) -> None:
     """
     Validates that tool output is JSON-safe and bounded.
     """
-    if not isinstance(output, dict):
-        raise RuntimeExecutionError(f"Tool output must be a dictionary, got {type(output)}")
+    # Risk 6: Replace isinstance with exact type match
+    if type(output) is not dict:
+        raise RuntimeExecutionError(f"Tool output must be EXACTLY a dictionary, got {type(output)}")
     
     _validate_json_safe(output)

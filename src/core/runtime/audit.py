@@ -1,10 +1,12 @@
-from typing import List, Optional, Tuple, Dict, Any
+from __future__ import annotations
+
+import json
 from types import MappingProxyType
+from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime
 from uuid import UUID
 import threading
 import hashlib
-import json
 from pydantic import BaseModel
 from src.core.skills.models import EnvironmentScope
 from .status import ExecutionStatus
@@ -12,6 +14,8 @@ from .governance import GovernanceDecision
 from .version import RUNTIME_VERSION
 from .audit_store import AuditStore, InMemoryAuditStore
 from .types import ImmutableJSON
+from .immutability import freeze_structure, _stable_json_repr, _canonicalize_json
+
 
 class ExecutionAuditRecord(BaseModel):
     skill_name: str
@@ -34,42 +38,8 @@ class ExecutionAuditRecord(BaseModel):
         "frozen": True
     }
 
-def _stable_json_repr(obj: Any) -> str:
-    return json.dumps(
-        _canonicalize_json(obj),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False
-    )
 
 
-def _canonicalize_json(obj: Any) -> Any:
-
-    if isinstance(obj, (dict, MappingProxyType)):
-        return {
-            k: _canonicalize_json(v)
-            for k, v in sorted(obj.items())
-        }
-
-    if isinstance(obj, (list, tuple)):
-        return [
-            _canonicalize_json(v)
-            for v in obj
-        ]
-
-    if isinstance(obj, (set, frozenset)):
-        canonical_items = [
-            _canonicalize_json(v)
-            for v in obj
-        ]
-
-        return sorted(
-            canonical_items,
-            key=_stable_json_repr
-        )
-
-    return obj
 
 class RuntimeAuditLogger:
     """Append-only audit logger for runtime tool execution."""
@@ -113,9 +83,21 @@ class RuntimeAuditLogger:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def record(self, record: ExecutionAuditRecord) -> None:
+        """
+        Three-phase atomic audit commit.
 
-        from .immutability import freeze_structure
+        Guarantees:
+        - No partial mutation
+        - No replay leakage
+        - No hash drift
+        - Immutable persistence
+        """
+
         from .exceptions import RuntimeExecutionError
+
+        # ==================================================
+        # PHASE 1 — BUILD IMMUTABLE RECORD
+        # ==================================================
 
         genesis = self._store.get_chain_genesis_hash()
 
@@ -152,11 +134,23 @@ class RuntimeAuditLogger:
                 }
             )
 
-        evicted = self._store.append(hashed_record)
+        # ==================================================
+        # PHASE 2 — PERSIST
+        # ==================================================
+
+        evicted = self._store.append(
+            hashed_record
+        )
+
+        # ==================================================
+        # PHASE 3 — MEMORY SYNCHRONIZATION
+        # ==================================================
 
         with self._lock:
 
-            self._last_hash = new_hash
+            self._last_hash = (
+                hashed_record.record_hash
+            )
 
             self._seen_execution_ids.add(
                 record.execution_id
@@ -176,6 +170,7 @@ class RuntimeAuditLogger:
                     evicted.execution_id
                 )
 
+
     def all(self) -> Tuple[ExecutionAuditRecord, ...]:
         """Get all recorded execution audit events."""
         with self._lock:
@@ -188,12 +183,13 @@ class RuntimeAuditLogger:
         genesis = self._store.get_chain_genesis_hash()
 
         with self._lock:
+
             if self._chain_genesis_hash != genesis:
                 return False
 
         seen_ids = set()
 
-        expected_prev_hash = genesis
+        expected_hash = genesis
 
         for record in records:
 
@@ -202,22 +198,22 @@ class RuntimeAuditLogger:
 
             seen_ids.add(record.execution_id)
 
-            if record.previous_record_hash != expected_prev_hash:
+            if record.previous_record_hash != expected_hash:
                 return False
 
-            computed_hash = self._compute_hash(
-                expected_prev_hash,
+            recomputed_hash = self._compute_hash(
+                expected_hash,
                 record
             )
 
-            if record.record_hash != computed_hash:
+            if record.record_hash != recomputed_hash:
                 return False
 
-            expected_prev_hash = computed_hash
+            expected_hash = recomputed_hash
 
         with self._lock:
 
-            if self._last_hash != expected_prev_hash:
+            if self._last_hash != expected_hash:
                 return False
 
             if self._seen_execution_ids != seen_ids:
