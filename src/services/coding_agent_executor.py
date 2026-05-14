@@ -172,6 +172,7 @@ class CodingAgentToolExecutor:
         user: Any = None,
         db: Any = None,
         redis: Any = None,
+        approved: bool = False,
     ) -> Dict[str, Any]:
         """
         Route and execute a coding agent tool.
@@ -199,10 +200,11 @@ class CodingAgentToolExecutor:
         # ── GOVERNANCE GATE ────────────────────────────────────────────
         bridge = _get_bridge()
         auto_approved = _is_auto_approved(tool_name)
+        is_approved = auto_approved or approved
         try:
             bridge.authorize(
                 tool_name,
-                approved_by_human=auto_approved,
+                approved_by_human=is_approved,
             )
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
@@ -213,7 +215,15 @@ class CodingAgentToolExecutor:
                 execution_time_ms=duration_ms,
                 error_message=str(e),
             )
-            return build_tool_envelope(tool_name, False, None, f"Governance: {e}", duration_ms)
+            requires_approval = "requires human approval" in str(e).lower()
+            return build_tool_envelope(
+                tool_name, 
+                False, 
+                None, 
+                f"Governance: {e}", 
+                duration_ms, 
+                requires_approval=requires_approval
+            )
 
         # ── EXECUTION WITH TIMEOUT ─────────────────────────────────────
         try:
