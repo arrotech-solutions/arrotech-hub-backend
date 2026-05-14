@@ -193,7 +193,7 @@ async def handle_git_push(args: Dict, sandbox, github_token: Optional[str] = Non
         url_r = await sandbox.run_git_command(redis, sid, f"remote get-url {remote}")
         url = url_r.get("stdout", "").strip()
         if "github.com" in url and "@" not in url:
-            auth_url = url.replace("https://github.com", f"https://x-access-token:{github_token}@github.com")
+            auth_url = url.replace("https://github.com", f"https://oauth2:{github_token}@github.com")
             await sandbox.run_git_command(redis, sid, f"remote set-url {remote} {auth_url}")
 
     cmd = f"push {remote} {branch}"
