@@ -280,7 +280,7 @@ async def get_creator_workflows(
 @router.get("/top", response_model=ApiResponse)
 async def get_top_creators(
     limit: int = Query(10, ge=1, le=50),
-    sort_by: str = Query("downloads", regex="^(downloads|rating|workflows)$"),
+    sort_by: str = Query("downloads", pattern="^(downloads|rating|workflows)$"),
     db: AsyncSession = Depends(get_db),
 ):
     """Get top creators by various metrics."""
