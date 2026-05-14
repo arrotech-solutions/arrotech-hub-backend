@@ -276,81 +276,87 @@ app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 # Add Observability Middleware (at the end to wrap everything)
 app.add_middleware(ObservabilityMiddleware)
 
-# Include routers
-app.include_router(access_router.router)
-app.include_router(internal_router)
-app.include_router(auth_router, prefix="/auth", tags=["auth"])
-app.include_router(payment_router, prefix="/payments", tags=["payments"])
-app.include_router(connection_router, prefix="/connections",
-                   tags=["connections"])
-app.include_router(mcp_router, prefix="/mcp", tags=["mcp"])
-app.include_router(api_router, prefix="/api/v1", tags=["api"])
-app.include_router(settings_router, prefix="/settings", tags=["settings"])
-app.include_router(security_router.router, prefix="/api/v1/security", tags=["security"])
-app.include_router(chat_router, prefix="/chat", tags=["chat"])
-app.include_router(workflow_router, prefix="/workflows", tags=["workflows"])
-app.include_router(agent_router, prefix="/agents", tags=["agents"])
-app.include_router(mpesa_agent_router)  # Already has /api/agents/mpesa prefix
-app.include_router(slack_agent_router)  # Already has /api/slack prefix
-app.include_router(marketplace_router, tags=["marketplace"])  # Already has /marketplace prefix
-app.include_router(creator_router, tags=["creators"])  # Already has /creators prefix
-app.include_router(analytics_router, tags=["analytics"])  # Already has /analytics prefix
-app.include_router(notification_router, tags=["notifications"])  # Already has /notifications prefix
-app.include_router(templates_router, prefix="/templates", tags=["templates"])
-app.include_router(favorites_router, prefix="/favorites", tags=["favorites"])
-app.include_router(preferences_router, prefix="/preferences", tags=["preferences"])
-app.include_router(subscription_router.router)
-app.include_router(google_workspace_router)  # Already has /api/google-workspace prefix
-app.include_router(slack_router) # Already has /api/slack prefix
-app.include_router(whatsapp_router)
-app.include_router(whatsapp_webhook.router)  # WhatsApp incoming messages webhook
-app.include_router(whatsapp_contacts.router)  # WhatsApp contacts, messages, auto-reply API
-app.include_router(whatsapp_broadcast.router)  # WhatsApp broadcast campaigns
-app.include_router(facebook_router)
-app.include_router(instagram_router)
-app.include_router(telegram_router.router)
-app.include_router(twitter_router)
-app.include_router(linkedin_router.router)
-app.include_router(clickup_router.router)
-app.include_router(teams_router.router)
-app.include_router(zoom_router.router)
-app.include_router(outlook_router)
-app.include_router(notion_router)
-app.include_router(trello_router)
-app.include_router(jira_router)
-app.include_router(tiktok_router.router)
-app.include_router(ai_router.router)
-app.include_router(support_router.router)  # Help & Support ticket endpoint
-app.include_router(gmail_webhook.router)  # Gmail Pub/Sub push notifications webhook
-app.include_router(kra_router.router)
-app.include_router(productivity_router.router)  # Phase 5: Productivity analytics
-app.include_router(ws_router.router)
-app.include_router(asana_router.router)
-app.include_router(blog_router)  # Blog service - public + admin endpoints
-app.include_router(employee_router)  # Employee management + admin subscribers
-app.include_router(hubspot_router)  # HubSpot OAuth connection flow
-app.include_router(quickbooks_router) # QuickBooks OAuth connection flow
-app.include_router(airtable_router) # Airtable OAuth connection flow
-app.include_router(xero_router)  # Xero OAuth connection flow
-app.include_router(organization_router.router, prefix="/api/v1/organizations", tags=["organizations"])
-app.include_router(zoho_router.router) # Zoho OAuth connection flow
-app.include_router(zoho_webhook.router) # Zoho real-time events webhook
-app.include_router(github_router.router) # GitHub OAuth connection flow
-app.include_router(rag_router.router)  # RAG Knowledge Base pipeline
-app.include_router(assistant_router.router)  # AI Assistant widget (KB + Tool Discovery)
-app.include_router(public_forms_router.router)  # Public contact forms & newsletter
-# We already included linkedin_router above
+# --- Consolidated Router Setup (Fixes FastAPI Lifespan Recursion) ---
+from fastapi import APIRouter
+main_router = APIRouter()
 
-# Coding Agent — session management + tool execution
+main_router.include_router(access_router.router)
+main_router.include_router(internal_router)
+main_router.include_router(auth_router, prefix="/auth", tags=["auth"])
+main_router.include_router(payment_router, prefix="/payments", tags=["payments"])
+main_router.include_router(connection_router, prefix="/connections", tags=["connections"])
+main_router.include_router(mcp_router, prefix="/mcp", tags=["mcp"])
+main_router.include_router(api_router, prefix="/api/v1", tags=["api"])
+main_router.include_router(settings_router, prefix="/settings", tags=["settings"])
+main_router.include_router(security_router.router, prefix="/api/v1/security", tags=["security"])
+main_router.include_router(chat_router, prefix="/chat", tags=["chat"])
+main_router.include_router(workflow_router, prefix="/workflows", tags=["workflows"])
+main_router.include_router(agent_router, prefix="/agents", tags=["agents"])
+main_router.include_router(mpesa_agent_router)
+main_router.include_router(slack_agent_router)
+main_router.include_router(marketplace_router, tags=["marketplace"])
+main_router.include_router(creator_router, tags=["creators"])
+main_router.include_router(analytics_router, tags=["analytics"])
+main_router.include_router(notification_router, tags=["notifications"])
+main_router.include_router(templates_router, prefix="/templates", tags=["templates"])
+main_router.include_router(favorites_router, prefix="/favorites", tags=["favorites"])
+main_router.include_router(preferences_router, prefix="/preferences", tags=["preferences"])
+main_router.include_router(subscription_router.router)
+main_router.include_router(google_workspace_router)
+main_router.include_router(slack_router)
+main_router.include_router(whatsapp_router)
+main_router.include_router(whatsapp_webhook.router)
+main_router.include_router(whatsapp_contacts.router)
+main_router.include_router(whatsapp_broadcast.router)
+main_router.include_router(facebook_router)
+main_router.include_router(instagram_router)
+main_router.include_router(telegram_router.router)
+main_router.include_router(twitter_router)
+main_router.include_router(linkedin_router.router)
+main_router.include_router(clickup_router.router)
+main_router.include_router(teams_router.router)
+main_router.include_router(zoom_router.router)
+main_router.include_router(outlook_router)
+main_router.include_router(notion_router)
+main_router.include_router(trello_router)
+main_router.include_router(jira_router)
+main_router.include_router(tiktok_router.router)
+main_router.include_router(ai_router.router)
+main_router.include_router(support_router.router)
+main_router.include_router(gmail_webhook.router)
+# Note: kra_router is already included via api_router
+main_router.include_router(productivity_router.router)
+main_router.include_router(ws_router.router)
+main_router.include_router(asana_router.router)
+main_router.include_router(blog_router)
+main_router.include_router(employee_router)
+main_router.include_router(hubspot_router)
+main_router.include_router(quickbooks_router)
+main_router.include_router(airtable_router)
+main_router.include_router(xero_router)
+main_router.include_router(organization_router.router, prefix="/api/v1/organizations", tags=["organizations"])
+main_router.include_router(zoho_router.router)
+main_router.include_router(zoho_webhook.router)
+main_router.include_router(github_router.router)
+main_router.include_router(rag_router.router)
+main_router.include_router(assistant_router.router)
+main_router.include_router(public_forms_router.router)
+
+# Coding Agent
 from .routers.coding_agent_router import router as coding_agent_router
-app.include_router(coding_agent_router)  # Already has /coding-agent prefix
+main_router.include_router(coding_agent_router)
 
-# Harness Engineering internal monitoring API
+# Harness Engineering
 try:
     from .routers.harness_router import router as harness_router
-    app.include_router(harness_router)  # Internal: /_internal/harness/*
+    main_router.include_router(harness_router)
 except ImportError as e:
     logging.warning(f"Harness router not available: {e}")
+
+# Finally, include the consolidated router into the app once.
+# This prevents the deep recursion in merged_lifespan.
+app.include_router(main_router)
+
 
 
 
