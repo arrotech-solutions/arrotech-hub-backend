@@ -95,6 +95,7 @@ def build_tool_envelope(
     output: Any,
     error: Optional[str],
     duration_ms: int,
+    requires_approval: bool = False,
 ) -> Dict[str, Any]:
     """
     Build the standard response envelope for every coding agent tool call.
@@ -108,9 +109,10 @@ def build_tool_envelope(
         output: The tool-specific output dict (None on failure).
         error: Error message string (None on success).
         duration_ms: Wall-clock execution time in milliseconds.
+        requires_approval: True if the tool execution is blocked waiting for human approval.
 
     Returns:
-        Standard envelope dict: {tool, success, output, error, duration_ms}
+        Standard envelope dict: {tool, success, output, error, duration_ms, requires_approval}
     """
     return {
         "tool": tool_name,
@@ -118,6 +120,7 @@ def build_tool_envelope(
         "output": output,
         "error": error,
         "duration_ms": duration_ms,
+        "requires_approval": requires_approval,
     }
 
 

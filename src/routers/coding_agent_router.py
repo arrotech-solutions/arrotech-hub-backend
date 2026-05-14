@@ -31,6 +31,7 @@ class SessionCreateRequest(BaseModel):
 class ToolExecuteRequest(BaseModel):
     tool_name: str = Field(..., description="Name of the coding tool (e.g. coding_file_read)")
     arguments: Dict[str, Any] = Field(default_factory=dict, description="Tool arguments")
+    approved: bool = Field(False, description="Whether the user explicitly approved this execution")
 
 
 # ── Dependencies ───────────────────────────────────────────────────────
@@ -173,5 +174,12 @@ async def execute_tool(
 
     # Inject session_id into arguments
     arguments = {**data.arguments, "session_id": session_id}
-    result = await coding_agent_executor.execute(data.tool_name, arguments, user, db, redis)
+    result = await coding_agent_executor.execute(
+        data.tool_name, 
+        arguments, 
+        user, 
+        db, 
+        redis,
+        approved=data.approved
+    )
     return result
