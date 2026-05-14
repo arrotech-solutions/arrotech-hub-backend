@@ -11,9 +11,10 @@ from src.core.skills.models import EnvironmentScope
 
 def _is_recursively_immutable(obj: Any) -> bool:
     """Issue 6: Recursive immutability inspection."""
-    if obj is None or isinstance(obj, (str, int, float, bool)):
+    obj_type = type(obj)
+    if obj is None or obj_type in (str, int, float, bool):
         return True
-    if isinstance(obj, (tuple, frozenset)):
+    if obj_type in (tuple, frozenset):
         return all(_is_recursively_immutable(item) for item in obj)
     if callable(obj):
         return True
@@ -121,12 +122,12 @@ def validate_runtime_integrity() -> None:
                     f"must be EXACTLY {expected_type}"
                 )
 
-        if not run_tool.allowed_environments:
-            raise SystemExit(f"Runtime validation failed: Tool '{name}' allowed_environments list cannot be empty.")
-            
         for env in run_tool.allowed_environments:
-            if not isinstance(env, EnvironmentScope):
-                raise SystemExit(f"Runtime validation failed: Tool '{name}' has invalid environment type in allowed_environments.")
+
+            if type(env) is not EnvironmentScope:
+                raise SystemExit(
+                    f"Tool '{name}' contains invalid environment type"
+                )
             
         if tool_def.requires_shell != run_tool.requires_shell:
             raise SystemExit(f"Runtime validation failed: Tool '{name}' requires_shell mismatch.")
