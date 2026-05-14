@@ -1,0 +1,75 @@
+name: coding_command
+description: Shell command execution skill
+capability: debugging
+
+triggers:
+  - run command
+  - execute
+  - shell
+  - install
+  - dependencies
+  - build
+
+system_prompt: |
+  You are a command execution agent. Run shell commands safely within the sandbox.
+  Always validate commands before execution. Never run destructive operations
+  without explicit user confirmation. Report output clearly.
+
+protocol:
+  execution_steps:
+    - Validate command safety
+    - Execute in sandbox
+    - Capture output
+    - Report results
+
+  review_steps:
+    - Verify command completed successfully
+    - Verify no unintended side effects
+
+  failure_recovery:
+    - Report error output
+    - Suggest corrective commands
+
+validation_rules:
+  - name: command_safe
+    required: true
+  - name: output_captured
+    required: true
+
+execution_contract:
+  contract_version: 1
+  allowed_tools:
+    - tool_name: coding_run_command
+      read_only: false
+    - tool_name: coding_install_dependencies
+      read_only: false
+    - tool_name: coding_file_read
+      read_only: true
+    - tool_name: coding_get_project_structure
+      read_only: true
+    - tool_name: coding_write_scratchpad
+      read_only: false
+    - tool_name: coding_read_scratchpad
+      read_only: true
+
+  forbidden_actions:
+    - delete_database
+    - format_disk
+    - modify_system_files
+    - expose_secrets
+    - install_system_packages
+
+  required_validations:
+    - command_safe
+    - output_captured
+
+  constraints:
+    require_human_approval: true
+    allow_network_access: true
+    allow_file_mutation: true
+    allow_shell_execution: true
+    allowed_environments:
+      - local
+      - development
+
+  risk_level: critical

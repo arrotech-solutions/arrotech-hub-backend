@@ -287,6 +287,9 @@ class BaseConfig(BaseSettings):
     CODING_AGENT_MEMORY_LIMIT: str = "2g"
     CODING_AGENT_SESSIONS_DIR: str = "/tmp/agent-sessions"
 
+    # Governed Runtime Configuration
+    AUDIT_STORE_BACKEND: str = "memory"  # "memory" or "postgres"
+
     # JWT Settings
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30

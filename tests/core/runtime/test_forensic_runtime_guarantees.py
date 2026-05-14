@@ -2,13 +2,14 @@ import pytest
 import threading
 import math
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 from datetime import datetime
 from types import MappingProxyType
 
-from src.core.runtime.audit import RuntimeAuditLogger
-from src.core.runtime.audit_store import InMemoryAuditStore
+from src.core.runtime.audit import RuntimeAuditLogger, ExecutionAuditRecord
+from src.core.runtime.audit_store import InMemoryAuditStore, MAX_AUDIT_RECORDS
 from src.core.runtime.immutability import (
     validate_json_safe_payload, 
     freeze_structure, 
@@ -293,3 +294,86 @@ def test_rapid_restart_simulation():
     final_logger = RuntimeAuditLogger(store)
     assert len(final_logger._seen_execution_ids) == 10
     assert final_logger.verify_integrity() is True
+
+
+# 22. duplicate execution ID race barrier (High Pressure)
+class SlowAuditStore(InMemoryAuditStore):
+    def append(self, record):
+        import time
+        time.sleep(0.05)  # FORCE RACE WINDOW
+        return super().append(record)
+
+def test_duplicate_execution_id_race_barrier():
+    store = SlowAuditStore()
+    logger = RuntimeAuditLogger(store)
+
+    execution_id = uuid4()
+
+    successes = []
+    failures = []
+
+    def worker():
+        try:
+            _, r = ExecutionResultFactory.success(
+                execution_id=execution_id,
+                tool_name="tool",
+                skill_name="skill",
+                environment=EnvironmentScope.LOCAL,
+                approved_by_human=True,
+                execution_time_ms=1,
+                output={"ok": True},
+            )
+            logger.record(r)
+            successes.append(True)
+        except RuntimeExecutionError:
+            failures.append(True)
+
+    with ThreadPoolExecutor(max_workers=25) as executor:
+        futures = [executor.submit(worker) for _ in range(25)]
+        for future in futures:
+            future.result()
+
+    # EXACTLY ONE SUCCESS MUST EXIST
+    assert len(successes) == 1
+    # EVERY OTHER THREAD MUST FAIL
+    assert len(failures) == 24
+    # STORE MUST CONTAIN EXACTLY ONE RECORD
+    records = store.all()
+    assert len(records) == 1
+    # VERIFY NO DUPLICATES
+    assert records[0].execution_id == execution_id
+    # FINAL INTEGRITY CHECK
+    assert logger.verify_integrity() is True
+
+
+# 23. pending execution ID cleanup on append failure
+class ExplodingStore(InMemoryAuditStore):
+    def append(self, record):
+        raise RuntimeError("Simulated storage failure")
+
+def test_pending_execution_id_cleanup_on_append_failure():
+    store = ExplodingStore()
+    logger = RuntimeAuditLogger(store)
+
+    execution_id = uuid4()
+    _, r = ExecutionResultFactory.success(
+        execution_id=execution_id,
+        tool_name="tool",
+        skill_name="skill",
+        environment=EnvironmentScope.LOCAL,
+        approved_by_human=True,
+        execution_time_ms=1,
+        output={"x": 1},
+    )
+
+    with pytest.raises(RuntimeError, match="Simulated storage failure"):
+        logger.record(r)
+
+    # MUST CLEAN PENDING IDS
+    assert logger._pending_execution_ids == set()
+    # MUST NOT MUTATE HASH STATE
+    assert logger._last_hash is None
+    # MUST NOT LEAK REPLAY IDS
+    assert logger._seen_execution_ids == set()
+    # INTEGRITY SHOULD BE STABLE (but empty)
+    assert logger.verify_integrity() is True
