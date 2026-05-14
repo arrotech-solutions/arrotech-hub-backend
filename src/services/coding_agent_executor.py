@@ -232,7 +232,7 @@ class CodingAgentToolExecutor:
             timeout_sec = get_timeout_for_risk(risk)
 
             output = await execute_with_timeout(
-                self._dispatch(tool_name, arguments, session, workspace, user, redis),
+                self._dispatch(tool_name, arguments, session, workspace, user, redis, db),
                 timeout_seconds=timeout_sec,
                 tool_name=tool_name,
             )
@@ -265,7 +265,7 @@ class CodingAgentToolExecutor:
             return build_tool_envelope(tool_name, False, None, str(e), duration_ms)
 
     async def _dispatch(
-        self, tool_name: str, args: Dict, session: Any, workspace: str, user: Any, redis: Any
+        self, tool_name: str, args: Dict, session: Any, workspace: str, user: Any, redis: Any, db: Any = None
     ) -> Dict:
         """Route tool_name to the correct handler."""
 
@@ -293,24 +293,42 @@ class CodingAgentToolExecutor:
             return await _OPS_HANDLERS[tool_name](args, self.sandbox, redis)
 
         if tool_name == "coding_git_push":
-            token = self._get_github_token(user)
+            token = await self._get_github_token(user, db)
             return await _OPS_HANDLERS[tool_name](args, self.sandbox, token, redis)
 
         # ── GitHub API tools (need token) ──────────────────────────────
         if tool_name in ("coding_github_create_pr", "coding_github_get_pr_status",
                          "coding_github_get_check_logs"):
-            token = self._get_github_token(user)
+            token = await self._get_github_token(user, db)
             if not token:
-                raise ValueError("GitHub token not configured. Set GITHUB_TOKEN in environment.")
+                raise ValueError("GitHub token not configured. Please connect your GitHub account in the Integrations page.")
             return await _OPS_HANDLERS[tool_name](args, token)
 
         raise ValueError(f"Unknown coding tool: {tool_name}")
 
-    def _get_github_token(self, user: Any = None) -> Optional[str]:
-        """Get GitHub token — first from user settings, then from env."""
-        # Per-user token (future: stored in UserSettings/Connection)
+    async def _get_github_token(self, user: Any = None, db: Any = None) -> Optional[str]:
+        """Get GitHub token — first from user connections, then from env."""
+        if user and db:
+            from sqlalchemy import select
+            from ..models import Connection
+            
+            try:
+                stmt = select(Connection).where(
+                    Connection.user_id == user.id,
+                    Connection.platform == "github",
+                    Connection.status == "active"
+                )
+                result = await db.execute(stmt)
+                connection = result.scalar_one_or_none()
+                if connection and connection.config and "access_token" in connection.config:
+                    return connection.config["access_token"]
+            except Exception as e:
+                logger.warning(f"Failed to fetch GitHub token from DB: {e}")
+                
+        # Per-user token (fallback)
         if user and hasattr(user, "github_token") and user.github_token:
             return user.github_token
+            
         # Fall back to platform-level env var
         from ..config import settings
         return getattr(settings, "GITHUB_TOKEN", None)
