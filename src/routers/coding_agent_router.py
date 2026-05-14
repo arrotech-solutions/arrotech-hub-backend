@@ -33,6 +33,11 @@ class ToolExecuteRequest(BaseModel):
     arguments: Dict[str, Any] = Field(default_factory=dict, description="Tool arguments")
     approved: bool = Field(False, description="Whether the user explicitly approved this execution")
 
+class ChatExecuteRequest(BaseModel):
+    messages: list = Field(..., description="List of message dicts (role, content, etc)")
+    model_override: Optional[str] = Field(None, description="Optional model override")
+
+
 
 # ── Dependencies ───────────────────────────────────────────────────────
 
@@ -182,4 +187,30 @@ async def execute_tool(
         redis,
         approved=data.approved
     )
+    return result
+
+@router.post("/sessions/{session_id}/chat", response_model=Dict[str, Any])
+async def execute_chat(
+    session_id: str,
+    data: ChatExecuteRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+    redis=Depends(get_redis),
+):
+    """Execute a single LLM chat completion with Coding Agent tools injected."""
+    _require_pro_tier(user)
+
+    from ..services.coding_agent_sandbox import coding_agent_sandbox
+
+    session = await coding_agent_sandbox.get_session(redis, session_id)
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    if session.user_id != str(user.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your session")
+
+    from ..services.coding_agent_llm import coding_agent_llm_factory
+    
+    llm_service = coding_agent_llm_factory(db, user)
+    result = await llm_service.generate_response(data.messages, model_override=data.model_override)
+    
     return result
