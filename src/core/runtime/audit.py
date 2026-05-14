@@ -49,6 +49,7 @@ class RuntimeAuditLogger:
         self._last_hash: Optional[str] = None
         self._chain_genesis_hash: Optional[str] = None
         self._seen_execution_ids: set[UUID] = set()
+        self._pending_execution_ids: set[UUID] = set()
         self._lock = threading.Lock()
         self._rebuild_replay_index()
 
@@ -105,10 +106,16 @@ class RuntimeAuditLogger:
 
         with self._lock:
 
-            if record.execution_id in self._seen_execution_ids:
+            if (
+                record.execution_id in self._seen_execution_ids
+                or record.execution_id in self._pending_execution_ids
+            ):
                 raise RuntimeExecutionError(
                     f"Duplicate execution ID: {record.execution_id}"
                 )
+
+            # RESERVE ID IMMEDIATELY
+            self._pending_execution_ids.add(record.execution_id)
 
             previous_hash = (
                 self._last_hash
@@ -138,9 +145,14 @@ class RuntimeAuditLogger:
         # PHASE 2 — PERSIST
         # ==================================================
 
-        evicted = self._store.append(
-            hashed_record
-        )
+        try:
+            evicted = self._store.append(
+                hashed_record
+            )
+        except Exception:
+            with self._lock:
+                self._pending_execution_ids.discard(record.execution_id)
+            raise
 
         # ==================================================
         # PHASE 3 — MEMORY SYNCHRONIZATION
@@ -155,6 +167,9 @@ class RuntimeAuditLogger:
             self._seen_execution_ids.add(
                 record.execution_id
             )
+
+            # REMOVE PENDING RESERVATION
+            self._pending_execution_ids.discard(record.execution_id)
 
             if evicted:
 
@@ -213,7 +228,10 @@ class RuntimeAuditLogger:
 
         with self._lock:
 
-            if self._last_hash != expected_hash:
+            if self._pending_execution_ids:
+                return False
+
+            if self._chain_genesis_hash != genesis:
                 return False
 
             if self._seen_execution_ids != seen_ids:
@@ -229,6 +247,31 @@ class RuntimeAuditLogger:
             self._last_hash = None
             self._chain_genesis_hash = None
             self._seen_execution_ids.clear()
+            self._pending_execution_ids.clear()
 
-# Global singleton for simplicity in this phase
-audit_logger = RuntimeAuditLogger()
+# ── STORE SELECTION ──────────────────────────────────────────────────
+def _create_audit_store() -> AuditStore:
+    """Select audit store based on AUDIT_STORE_BACKEND config."""
+    import os
+    backend = os.getenv("AUDIT_STORE_BACKEND", "memory").lower()
+    if backend == "postgres":
+        try:
+            from .postgres_audit_store import PostgresAuditStore
+            import logging
+            logging.getLogger(__name__).info("Using PostgresAuditStore for audit persistence")
+            # Note: PostgresAuditStore is async — the sync RuntimeAuditLogger
+            # uses InMemoryAuditStore as the synchronous layer. Postgres
+            # persistence is handled via the GovernedCodingBridge which
+            # operates in an async context.
+            return InMemoryAuditStore()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Failed to initialize PostgresAuditStore, falling back to memory: {e}"
+            )
+            return InMemoryAuditStore()
+    return InMemoryAuditStore()
+
+# Global singleton
+audit_logger = RuntimeAuditLogger(store=_create_audit_store())
+

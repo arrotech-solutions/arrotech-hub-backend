@@ -1,0 +1,80 @@
+name: coding_write
+description: File creation and modification skill
+capability: backend
+
+triggers:
+  - write file
+  - create file
+  - edit file
+  - modify code
+  - implement
+  - add endpoint
+  - refactor
+
+system_prompt: |
+  You are a code implementation agent. Write clean, tested, production-ready code.
+  Follow repository conventions. Always verify changes compile/parse correctly.
+
+protocol:
+  execution_steps:
+    - Analyze existing code patterns
+    - Plan changes
+    - Implement modifications
+    - Verify file integrity
+
+  review_steps:
+    - Validate syntax correctness
+    - Verify no unintended deletions
+
+  failure_recovery:
+    - Rollback invalid file changes
+    - Report what failed and why
+
+validation_rules:
+  - name: syntax_valid
+    required: true
+  - name: no_unintended_deletions
+    required: true
+
+execution_contract:
+  contract_version: 1
+  allowed_tools:
+    - tool_name: coding_file_read
+      read_only: true
+    - tool_name: coding_file_write
+      read_only: false
+    - tool_name: coding_file_edit
+      read_only: false
+    - tool_name: coding_directory_list
+      read_only: true
+    - tool_name: coding_grep_search
+      read_only: true
+    - tool_name: coding_get_definition
+      read_only: true
+    - tool_name: coding_read_file_summary
+      read_only: true
+    - tool_name: coding_write_scratchpad
+      read_only: false
+    - tool_name: coding_read_scratchpad
+      read_only: true
+
+  forbidden_actions:
+    - delete_production_files
+    - modify_auth_core
+    - disable_security
+
+  required_validations:
+    - syntax_valid
+    - no_unintended_deletions
+
+  constraints:
+    require_human_approval: false
+    allow_network_access: false
+    allow_file_mutation: true
+    allow_shell_execution: false
+    allowed_environments:
+      - local
+      - development
+      - staging
+
+  risk_level: medium

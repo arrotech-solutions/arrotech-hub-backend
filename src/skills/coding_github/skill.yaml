@@ -1,0 +1,67 @@
+name: coding_github
+description: GitHub API operations skill
+capability: backend
+
+triggers:
+  - pull request
+  - pr
+  - github
+  - ci
+  - check status
+  - create pr
+
+system_prompt: |
+  You are a GitHub integration agent. Create pull requests, monitor CI status,
+  and retrieve check logs. Always verify branch state before creating PRs.
+
+protocol:
+  execution_steps:
+    - Verify branch is pushed
+    - Create or inspect pull request
+    - Monitor CI check status
+    - Report results
+
+  review_steps:
+    - Verify PR targets correct base branch
+    - Verify CI checks completed
+
+  failure_recovery:
+    - Report API errors
+    - Suggest manual steps
+
+validation_rules:
+  - name: pr_created_or_inspected
+    required: true
+
+execution_contract:
+  contract_version: 1
+  allowed_tools:
+    - tool_name: coding_github_create_pr
+      read_only: false
+    - tool_name: coding_github_get_pr_status
+      read_only: true
+    - tool_name: coding_github_get_check_logs
+      read_only: true
+    - tool_name: coding_git_status
+      read_only: true
+    - tool_name: coding_write_scratchpad
+      read_only: false
+
+  forbidden_actions:
+    - merge_without_approval
+    - delete_branches
+    - modify_repo_settings
+
+  required_validations:
+    - pr_created_or_inspected
+
+  constraints:
+    require_human_approval: true
+    allow_network_access: true
+    allow_file_mutation: true
+    allow_shell_execution: true
+    allowed_environments:
+      - local
+      - development
+
+  risk_level: high
