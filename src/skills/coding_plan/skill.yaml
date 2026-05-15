@@ -1,6 +1,6 @@
 name: coding_plan
 description: Goal-structured development planning skill
-capability: planning
+capability: architecture
 
 triggers:
   - plan
