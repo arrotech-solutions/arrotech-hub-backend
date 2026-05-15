@@ -307,11 +307,18 @@ class CodingAgentToolExecutor:
         raise ValueError(f"Unknown coding tool: {tool_name}")
 
     async def _get_github_token(self, user: Any = None, db: Any = None) -> Optional[str]:
-        """Get GitHub token — first from user connections, then from env."""
+        """
+        Get a valid GitHub token for the user.
+
+        Priority:
+          1. Active Connection in DB → validate → refresh if expired → return
+          2. user.github_token attribute (legacy fallback)
+          3. GITHUB_TOKEN env var (platform fallback)
+        """
         if user and db:
             from sqlalchemy import select
             from ..models import Connection
-            
+
             try:
                 stmt = select(Connection).where(
                     Connection.user_id == user.id,
@@ -320,18 +327,96 @@ class CodingAgentToolExecutor:
                 )
                 result = await db.execute(stmt)
                 connection = result.scalar_one_or_none()
-                if connection and connection.config and "access_token" in connection.config:
-                    return connection.config["access_token"]
+
+                if connection and connection.config:
+                    access_token = connection.config.get("access_token")
+                    refresh_token = connection.config.get("refresh_token")
+
+                    if not access_token:
+                        logger.warning("GitHub connection found but access_token is empty")
+                        return None
+
+                    # 1. Validate the token
+                    if await self._validate_github_token(access_token):
+                        logger.info("GitHub token validated successfully")
+                        return access_token
+
+                    # 2. Token is invalid/expired — try to refresh
+                    logger.warning("GitHub token is invalid or expired, attempting refresh")
+                    if refresh_token:
+                        new_tokens = await self._refresh_github_token(refresh_token)
+                        if new_tokens:
+                            new_access = new_tokens["access_token"]
+                            updated_config = {**connection.config, "access_token": new_access}
+                            if "refresh_token" in new_tokens:
+                                updated_config["refresh_token"] = new_tokens["refresh_token"]
+                            connection.config = updated_config
+                            from sqlalchemy.orm.attributes import flag_modified
+                            flag_modified(connection, "config")
+                            await db.commit()
+                            logger.info("GitHub token refreshed and saved")
+                            return new_access
+                        else:
+                            logger.error("GitHub token refresh failed — user must reconnect")
+                    else:
+                        logger.error("No refresh_token available — user must reconnect GitHub")
+
+                    return None  # Token expired, refresh failed
             except Exception as e:
-                logger.warning(f"Failed to fetch GitHub token from DB: {e}")
-                
-        # Per-user token (fallback)
+                logger.error(f"Failed to fetch/refresh GitHub token: {e}", exc_info=True)
+
+        # Legacy per-user fallback
         if user and hasattr(user, "github_token") and user.github_token:
             return user.github_token
-            
-        # Fall back to platform-level env var
+
+        # Platform env var fallback
         from ..config import settings
         return getattr(settings, "GITHUB_TOKEN", None)
+
+    async def _validate_github_token(self, token: str) -> bool:
+        """Validate a GitHub token by calling the /user endpoint."""
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    "https://api.github.com/user",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/vnd.github.v3+json",
+                        "User-Agent": "ArrotechHub",
+                    },
+                )
+                if resp.status_code == 200:
+                    return True
+                logger.warning(f"GitHub token validation failed: HTTP {resp.status_code}")
+                return False
+        except Exception as e:
+            logger.warning(f"GitHub token validation error: {e}")
+            return False
+
+    async def _refresh_github_token(self, refresh_token: str) -> Optional[Dict]:
+        """Use a refresh token to get a new GitHub access token."""
+        import httpx
+        from ..config import settings
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(
+                    "https://github.com/login/oauth/access_token",
+                    data={
+                        "client_id": settings.GITHUB_CLIENT_ID,
+                        "client_secret": settings.GITHUB_CLIENT_SECRET,
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh_token,
+                    },
+                    headers={"Accept": "application/json"},
+                )
+                data = resp.json()
+                if "access_token" in data:
+                    return data
+                logger.error(f"GitHub refresh response missing access_token: {data}")
+        except Exception as e:
+            logger.error(f"GitHub token refresh request failed: {e}")
+        return None
 
 
 # Global executor instance
