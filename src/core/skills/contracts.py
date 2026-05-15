@@ -376,6 +376,44 @@ class RegisteredToolRegistry:
             allowed_environments=_LOCAL_DEV_STAGING,
             deterministic=True,
         ),
+        
+        # ==================================================================
+        # CODING AGENT — Planning Tools (3)
+        # ==================================================================
+
+        "coding_create_plan": ToolDefinition(
+            name="coding_create_plan",
+            description="Create a new execution plan with structured tasks",
+            risk_level=ToolRiskLevel.LOW,
+            capabilities=[ToolCapability(name="planning")],
+            mutates_files=False,
+            requires_network=False,
+            requires_shell=False,
+            allowed_environments=_ALL_ENVS,
+            deterministic=True,
+        ),
+        "coding_update_task": ToolDefinition(
+            name="coding_update_task",
+            description="Update the status of a planned task",
+            risk_level=ToolRiskLevel.LOW,
+            capabilities=[ToolCapability(name="planning")],
+            mutates_files=False,
+            requires_network=False,
+            requires_shell=False,
+            allowed_environments=_ALL_ENVS,
+            deterministic=True,
+        ),
+        "coding_get_plan": ToolDefinition(
+            name="coding_get_plan",
+            description="Get the current active execution plan and its status",
+            risk_level=ToolRiskLevel.LOW,
+            capabilities=[ToolCapability(name="planning")],
+            mutates_files=False,
+            requires_network=False,
+            requires_shell=False,
+            allowed_environments=_ALL_ENVS,
+            deterministic=True,
+        ),
     }
 
     @classmethod
