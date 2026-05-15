@@ -188,22 +188,40 @@ async def handle_git_push(args: Dict, sandbox, github_token: Optional[str] = Non
     if not branch:
         br = await sandbox.run_git_command(redis, sid, "branch --show-current")
         branch = br.get("stdout", "").strip()
-    # Inject token into remote URL for auth
-    if github_token:
-        url_r = await sandbox.run_git_command(redis, sid, f"remote get-url {remote}")
-        url = url_r.get("stdout", "").strip()
-        if "github.com" in url and "@" not in url:
-            auth_url = url.replace("https://github.com", f"https://oauth2:{github_token}@github.com")
-            await sandbox.run_git_command(redis, sid, f"remote set-url {remote} {auth_url}")
 
-    cmd = f"push {remote} {branch}"
-    if args.get("force"):
-        cmd += " --force"
-    result = await sandbox.run_git_command(redis, sid, cmd)
+    # Get current remote URL
+    url_r = await sandbox.run_git_command(redis, sid, f"remote get-url {remote}")
+    original_url = url_r.get("stdout", "").strip()
 
-    # Restore original URL (strip token)
-    if github_token:
-        await sandbox.run_git_command(redis, sid, f"remote set-url {remote} {url}")
+    if not github_token:
+        return {
+            "error": "GitHub authentication required. Please connect your GitHub account in the Connections page, or reconnect if your token has expired.",
+            "exit_code": 128, "branch": branch, "remote": remote, "output": "", "stderr": "",
+        }
+
+    if "github.com" not in original_url:
+        return {
+            "error": f"Remote '{remote}' does not point to github.com: {original_url}",
+            "exit_code": 128, "branch": branch, "remote": remote, "output": "", "stderr": "",
+        }
+
+    # Always strip any existing credentials from the URL before injecting fresh ones.
+    # This prevents stale tokens from lingering after a failed push.
+    import re
+    clean_url = re.sub(r'https://[^@]+@github\.com', 'https://github.com', original_url)
+
+    # Inject the fresh token using oauth2:<token> format
+    auth_url = clean_url.replace("https://github.com", f"https://oauth2:{github_token}@github.com")
+    await sandbox.run_git_command(redis, sid, f"remote set-url {remote} {auth_url}")
+
+    try:
+        cmd = f"push {remote} {branch}"
+        if args.get("force"):
+            cmd += " --force"
+        result = await sandbox.run_git_command(redis, sid, cmd)
+    finally:
+        # ALWAYS restore the clean URL (no credentials) regardless of success or failure
+        await sandbox.run_git_command(redis, sid, f"remote set-url {remote} {clean_url}")
 
     stdout = strip_sensitive_token(result.get("stdout", ""), github_token)
     stderr = strip_sensitive_token(result.get("stderr", ""), github_token)
