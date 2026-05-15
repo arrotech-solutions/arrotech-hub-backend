@@ -6,6 +6,5 @@ from types import MappingProxyType
 ImmutableJSON: TypeAlias = Union[
     str, int, float, bool, None,
     Tuple[Any, ...],
-    MappingProxyType
+    Dict[str, Any]
 ]
-  
