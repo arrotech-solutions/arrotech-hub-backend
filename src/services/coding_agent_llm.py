@@ -72,18 +72,33 @@ class CodingAgentLLM:
         # 2. Get tools (session_id is stripped)
         tools = self._get_coding_tools_openai_format()
 
-        # 3. Inject System Prompt
+        # 3. Fetch Memory Context
+        from src.core.orchestration.memory import agent_memory
+        memory_context = agent_memory.recall_context(categories=["convention", "architecture", "error"])
+
+        # 4. Inject System Prompt
+        system_content = (
+            "You are the Arrotech Hub autonomous Coding Agent. "
+            "You have access to a secure sandbox with tools to read, write, and execute code.\n\n"
+            "CRITICAL INSTRUCTIONS:\n"
+            "1. File Paths: Files are often in subdirectories (e.g., src/). If you cannot find a file in the root, "
+            "use `coding_run_command` with `find . -name \"filename\"` to locate it before giving up.\n"
+            "2. The system automatically handles your session_id, you do not need to provide it.\n"
+            "3. If an action requires human approval, wait for the user to approve it.\n\n"
+            "PLANNING & EXECUTION:\n"
+            "- For complex or multi-step requests, ALWAYS use `coding_create_plan` FIRST before executing any other tools. "
+            "Break the goal down into logical tasks.\n"
+            "- For simple, single-step requests (e.g., 'fix line 10', 'run tests'), you may skip planning and execute directly.\n"
+            "- If you are following a plan, use `coding_update_task` to mark tasks as 'in_progress', 'completed', or 'failed' as you work.\n"
+            "- Do not ask the user for permission to execute the plan, just create it and begin executing the first task immediately."
+        )
+
+        if memory_context:
+            system_content += f"\n\nPROJECT CONTEXT & MEMORY:\n{memory_context}"
+
         system_prompt = {
             "role": "system",
-            "content": (
-                "You are the Arrotech Hub autonomous Coding Agent. "
-                "You have access to a secure sandbox with tools to read, write, and execute code.\n\n"
-                "CRITICAL INSTRUCTIONS:\n"
-                "1. File Paths: Files are often in subdirectories (e.g., src/). If you cannot find a file in the root, "
-                "use `coding_run_command` with `find . -name \"filename\"` to locate it before giving up.\n"
-                "2. The system automatically handles your session_id, you do not need to provide it.\n"
-                "3. If an action requires human approval, wait for the user to approve it."
-            )
+            "content": system_content
         }
         
         # Check if first message is already a system prompt
@@ -92,7 +107,7 @@ class CodingAgentLLM:
         else:
             messages = [system_prompt] + messages
 
-        # 4. Call OpenAI
+        # 5. Call OpenAI
         try:
             from openai import AsyncOpenAI
             client = AsyncOpenAI(api_key=api_key)

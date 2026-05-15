@@ -411,4 +411,72 @@ CODING_AGENT_TOOLS = {
         "category": "coding_agent",
         "always_available": True,
     },
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Category 5: Planning Tools (3)
+    # ═══════════════════════════════════════════════════════════════════
+    "coding_create_plan": {
+        "name": "coding_create_plan",
+        "description": "Create a new execution plan with structured tasks. Use this for complex, multi-step goals before executing.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "Active session ID"},
+                "goal": {"type": "string", "description": "High-level goal of the plan"},
+                "tasks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string", "description": "Short title of the task"},
+                            "description": {"type": "string", "description": "Detailed description"},
+                            "skill_name": {"type": "string", "description": "Skill needed (e.g., coding_write, coding_read)"},
+                            "tools_needed": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Tools that will likely be used"
+                            },
+                            "depends_on": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "IDs of tasks that must complete first (if any). Omit if no dependencies."
+                            }
+                        },
+                        "required": ["title"]
+                    }
+                }
+            },
+            "required": ["goal", "tasks"]
+        },
+        "category": "planning",
+        "always_available": True,
+    },
+    "coding_update_task": {
+        "name": "coding_update_task",
+        "description": "Update the status of a planned task. Call this as you make progress on a plan.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "Active session ID"},
+                "task_id": {"type": "string", "description": "ID of the task to update"},
+                "status": {"type": "string", "enum": ["in_progress", "completed", "failed", "skipped"]},
+                "output": {"type": "string", "description": "Output or error message to record"}
+            },
+            "required": ["task_id", "status"]
+        },
+        "category": "planning",
+        "always_available": True,
+    },
+    "coding_get_plan": {
+        "name": "coding_get_plan",
+        "description": "Get the current active execution plan and its status.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "Active session ID"}
+            }
+        },
+        "category": "planning",
+        "always_available": True,
+    }
 }
