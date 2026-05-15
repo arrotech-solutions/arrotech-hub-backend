@@ -52,7 +52,7 @@ app.config_from_object({
     "worker_max_tasks_per_child": int(os.getenv("CELERY_WORKER_MAX_TASKS_PER_CHILD", "100")),
 
     # ── Timeouts ──
-    "task_time_limit": int(os.getenv("CELERY_TASK_TIME_LIMIT", "280")),          # Hard kill after 5 min
+    "task_time_limit": int(os.getenv("CELERY_TASK_TIME_LIMIT", "300")),          # Hard kill after 5 min
     "task_soft_time_limit": int(os.getenv("CELERY_TASK_SOFT_TIME_LIMIT", "240")),  # SoftTimeLimitExceeded after 4 min
 
     # ── Result Expiry ──
