@@ -12,6 +12,7 @@ class SkillCapability(str, Enum):
     ARCHITECTURE = "architecture"
     OBSERVABILITY = "observability"
     SECURITY = "security"
+    PLANNING = "planning"
 
 class SkillRiskLevel(str, Enum):
     LOW = "low"
