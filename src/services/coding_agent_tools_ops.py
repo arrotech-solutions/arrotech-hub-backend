@@ -308,3 +308,101 @@ async def handle_github_get_check_logs(args: Dict, token: str) -> Dict:
     log_text = truncate_output(log_text, 20000)
     return {"check_run_id": check_id, "name": cr.get("name"), "status": cr.get("status"),
             "conclusion": cr.get("conclusion"), "logs": log_text}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Category 5: Planning Tools Handlers
+# ═══════════════════════════════════════════════════════════════════
+
+async def handle_create_plan(args: Dict, redis=None) -> Dict:
+    from src.services.session_store import get_session, save_session
+    from src.core.orchestration.planner import planner_agent, ExecutionPlan
+    import json
+
+    sid = args["session_id"]
+    goal = args.get("goal", "Execute task")
+    tasks = args.get("tasks", [])
+    
+    plan = planner_agent.create_plan(goal=goal, tasks=tasks)
+    
+    # Store the plan in the session
+    if redis:
+        session = await get_session(redis, sid)
+        if session:
+            # We'll attach the plan as a serialized dict in the session metadata
+            if not hasattr(session, "metadata"):
+                session.metadata = {}
+            # Update metadata and save
+            metadata = session.model_dump().get("metadata", {})
+            if metadata is None:
+                metadata = {}
+            metadata["active_plan"] = plan.to_dict()
+            
+            # Use update_session via dictionary trick since pydantic model might not have metadata directly
+            # For AgentSession it doesn't have metadata natively, so we can store it in a separate redis key
+            plan_key = f"agent:session:{sid}:plan"
+            await redis.set(plan_key, json.dumps(plan.to_dict()), ex=3600)
+            
+    return {"success": True, "plan": plan.to_dict()}
+
+
+async def handle_update_task(args: Dict, redis=None) -> Dict:
+    import json
+    from src.core.orchestration.planner import TaskStatus
+    
+    sid = args["session_id"]
+    task_id = args.get("task_id")
+    status = args.get("status")
+    output = args.get("output", "")
+    
+    if not redis:
+        return {"success": False, "error": "Redis required for plan persistence"}
+        
+    plan_key = f"agent:session:{sid}:plan"
+    raw_plan = await redis.get(plan_key)
+    
+    if not raw_plan:
+        return {"success": False, "error": "No active plan found"}
+        
+    plan_dict = json.loads(raw_plan)
+    
+    # Simple manual update to avoid reconstructing the whole dataclass
+    task_updated = False
+    for task in plan_dict.get("tasks", []):
+        if task.get("id") == task_id:
+            task["status"] = status
+            task["output"] = output
+            task_updated = True
+            break
+            
+    if not task_updated:
+        return {"success": False, "error": f"Task {task_id} not found in plan"}
+        
+    # Recalculate progress
+    tasks = plan_dict.get("tasks", [])
+    if tasks:
+        done = sum(1 for t in tasks if t.get("status") in ("completed", "skipped"))
+        plan_dict["progress"] = f"{round(done / len(tasks) * 100, 1)}%"
+        
+        # Check if plan is complete
+        plan_dict["success"] = all(t.get("status") in ("completed", "skipped") for t in tasks)
+        
+    await redis.set(plan_key, json.dumps(plan_dict), ex=3600)
+    
+    return {"success": True, "task_id": task_id, "status": status, "plan": plan_dict}
+
+
+async def handle_get_plan(args: Dict, redis=None) -> Dict:
+    import json
+    sid = args["session_id"]
+    
+    if not redis:
+        return {"success": False, "error": "Redis required for plan persistence"}
+        
+    plan_key = f"agent:session:{sid}:plan"
+    raw_plan = await redis.get(plan_key)
+    
+    if not raw_plan:
+        return {"success": False, "error": "No active plan found"}
+        
+    return {"success": True, "plan": json.loads(raw_plan)}

@@ -60,6 +60,9 @@ def _load_handlers():
             "coding_github_create_pr": ops.handle_github_create_pr,
             "coding_github_get_pr_status": ops.handle_github_get_pr_status,
             "coding_github_get_check_logs": ops.handle_github_get_check_logs,
+            "coding_create_plan": ops.handle_create_plan,
+            "coding_update_task": ops.handle_update_task,
+            "coding_get_plan": ops.handle_get_plan,
         }
 
 
@@ -303,6 +306,10 @@ class CodingAgentToolExecutor:
             if not token:
                 raise ValueError("GitHub token not configured. Please connect your GitHub account in the Integrations page.")
             return await _OPS_HANDLERS[tool_name](args, token)
+
+        # ── Planning tools (need redis) ──────────────────────────────
+        if tool_name in ("coding_create_plan", "coding_update_task", "coding_get_plan"):
+            return await _OPS_HANDLERS[tool_name](args, redis)
 
         raise ValueError(f"Unknown coding tool: {tool_name}")
 
