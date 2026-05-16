@@ -38,7 +38,6 @@ from .observability.logger import setup_observability_logging, db_log_worker, lo
 from .observability.middleware import ObservabilityMiddleware
 from .routers.internal_router import router as internal_router
 from .core.skills import SkillRegistry, load_skill
-from .services.websocket_manager import connection_manager
 from pathlib import Path
 
 
@@ -121,13 +120,6 @@ async def lifespan(app: FastAPI):
         logger.warning("Cache service initialization timed out")
     except Exception as e:
         logger.warning(f"Cache service initialization failed: {e}")
-
-    try:
-        await asyncio.wait_for(connection_manager.initialize(), timeout=5.0)
-    except asyncio.TimeoutError:
-        logger.warning("Connection manager initialization timed out")
-    except Exception as e:
-        logger.warning(f"Connection manager initialization failed: {e}")
 
     # Attach services to app state for dependency injection in routers
     app.state.rate_limit_service = rate_limit_service

@@ -89,8 +89,7 @@ class InstagramWorkflowTrigger:
                                     workflow_id=workflow.id,
                                     user_id=user_id,
                                     db=db,
-                                    input_data=input_vars,
-                                    trigger_type=WorkflowTriggerType.EVENT
+                                    input_data=input_vars
                                 )
                             except Exception as e:
                                 logger.error(f"[IG_TRIGGER] Failed to execute workflow {workflow.id}: {e}")
