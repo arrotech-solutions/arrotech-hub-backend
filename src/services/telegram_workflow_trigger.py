@@ -134,7 +134,8 @@ class TelegramWorkflowTrigger:
                                 workflow_id=workflow.id,
                                 user_id=workflow.user_id,
                                 db=db,
-                                input_data=input_vars
+                                input_data=input_vars,
+                                trigger_type=WorkflowTriggerType.EVENT
                             )
                         except Exception as e:
                             logger.error(f"[TG_TRIGGER] Failed to execute workflow {workflow.id}: {e}")
