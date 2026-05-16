@@ -155,8 +155,7 @@ class WorkflowSchedulerService:
                     workflow_id=workflow_id,
                     user_id=user_id,
                     db=db,
-                    input_data={"source": "scheduler", "timestamp": datetime.utcnow().isoformat()},
-                    trigger_type=WorkflowTriggerType.SCHEDULED
+                    input_data={"source": "scheduler", "timestamp": datetime.utcnow().isoformat()}
                 )
                 logger.info(f"✅ Scheduled workflow {workflow_id} executed. Status: {result.status}")
                 
