@@ -333,6 +333,7 @@ async def background_process_message(user_id: uuid.UUID, contact_id: uuid.UUID, 
                     await wa_svc.mark_message_read(
                         message.whatsapp_message_id,
                         show_typing=True,
+                        to_number=contact.phone_number,
                         config=wa_config
                     )
             except Exception as e:
