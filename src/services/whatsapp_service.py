@@ -139,6 +139,7 @@ class WhatsAppService:
         self,
         message_id: str,
         show_typing: bool = False,
+        to_number: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Mark a message as read and optionally show a typing indicator."""
@@ -177,21 +178,23 @@ class WhatsAppService:
                         logger.warning(f"Failed to mark as read: {result}")
 
                 # 2) Send typing indicator as a separate request
-                if show_typing:
-                    # Extract recipient from the message context
-                    # WhatsApp Cloud API requires recipient_type + to for typing
+                if show_typing and to_number:
+                    formatted_number = self._format_phone_number(to_number)
                     typing_payload = {
                         "messaging_product": "whatsapp",
                         "recipient_type": "individual",
-                        "to": message_id,  # Will be overridden below
-                        "type": "reaction",
+                        "to": formatted_number,
+                        "type": "typing_indicator",
+                        "typing_indicator": {
+                            "action": "typing_on"
+                        }
                     }
-                    # Note: WhatsApp Cloud API doesn't have a public typing indicator endpoint.
-                    # The typing state is shown automatically when you mark as "read"
-                    # and then send a message shortly after. The blue ticks + quick response
-                    # creates the perceived "typing" experience.
-                    # For true typing indicators, use the experimental endpoint if available.
-                    logger.debug(f"[WA_SERVICE] Read receipt sent for {message_id}, typing will show on response")
+                    async with session.post(url, json=typing_payload, headers=headers) as typing_response:
+                        typing_result = await typing_response.json()
+                        if typing_response.status != 200:
+                            logger.warning(f"Failed to send typing indicator: {typing_result}")
+                        else:
+                            logger.debug(f"[WA_SERVICE] Typing indicator sent for {to_number}")
 
             return {"success": True, "result": "Read receipt sent"}
                 
