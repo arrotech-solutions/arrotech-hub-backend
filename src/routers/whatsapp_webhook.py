@@ -325,7 +325,11 @@ async def background_process_message(user_id: uuid.UUID, contact_id: uuid.UUID, 
                     )
                 )
                 connection = conn_res.scalar_one_or_none()
+                if not connection:
+                    logger.warning(f"[WHATSAPP WEBHOOK BG] No active WhatsApp connection found for user {user_id}")
                 wa_config = connection.config if connection else None
+                if wa_config:
+                    logger.info(f"[WHATSAPP WEBHOOK BG] Found connection config, phone_id: {wa_config.get('phone_number_id')}")
 
                 if message.whatsapp_message_id:
                     from ..services.whatsapp_service import WhatsAppService

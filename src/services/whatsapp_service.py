@@ -182,19 +182,19 @@ class WhatsAppService:
                     formatted_number = self._format_phone_number(to_number)
                     typing_payload = {
                         "messaging_product": "whatsapp",
-                        "recipient_type": "individual",
                         "to": formatted_number,
                         "type": "typing_indicator",
                         "typing_indicator": {
                             "action": "typing_on"
                         }
                     }
+                    logger.info(f"[WA_SERVICE] Sending typing indicator to {formatted_number}")
                     async with session.post(url, json=typing_payload, headers=headers) as typing_response:
                         typing_result = await typing_response.json()
                         if typing_response.status != 200:
-                            logger.warning(f"Failed to send typing indicator: {typing_result}")
+                            logger.error(f"[WA_SERVICE] Failed to send typing indicator: {typing_result}")
                         else:
-                            logger.debug(f"[WA_SERVICE] Typing indicator sent for {to_number}")
+                            logger.info(f"[WA_SERVICE] Typing indicator successfully sent to {formatted_number}")
 
             return {"success": True, "result": "Read receipt sent"}
                 
