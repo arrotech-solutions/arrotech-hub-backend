@@ -233,7 +233,7 @@ AGENT_SUB_TOOLS = [
                             "properties": {
                                 "name": {"type": "string"},
                                 "quantity": {"type": "number"},
-                                "unit": {"type": "string", "description": "e.g. kg, pcs, plates"},
+                                "unit": {"type": "string", "description": "e.g. kg, pcs, items, pairs, pack"},
                                 "unit_price": {"type": "number"},
                                 "notes": {"type": "string"}
                             },
@@ -243,7 +243,7 @@ AGENT_SUB_TOOLS = [
                     },
                     "delivery_method": {
                         "type": "string",
-                        "enum": ["delivery", "pickup", "dine_in"],
+                        "enum": ["delivery", "pickup", "dine_in", "shipping", "digital"],
                         "description": "How the customer wants to receive the order"
                     },
                     "delivery_address": {"type": "string", "description": "Delivery address if delivery"},
@@ -837,7 +837,6 @@ class ConversationalAgentService:
 
         delivery_str = ", ".join(delivery_methods) if delivery_methods else "delivery, pickup"
 
-        # Industry-specific context
         industry_context = {
             "food": (
                 f"You are the ordering assistant for {business_name}, a food/restaurant business. "
@@ -849,6 +848,83 @@ class ConversationalAgentService:
                 f"You are the shopping assistant for {business_name}, a clothing/fashion store. "
                 "Help customers browse clothing, find their sizes, and place orders. "
                 "Always ask about preferred size, color, and fit when discussing items."
+            ),
+            "electronics": (
+                f"You are the tech shopping assistant for {business_name}, an electronics and gadgets store. "
+                "Help customers search for products, check specs, compare models, and place orders. "
+                "Always provide tech specifications and warranty info when available."
+            ),
+            "pharmacy": (
+                f"You are the health care shopping assistant for {business_name}, a pharmacy and health store. "
+                "Help customers find medications, supplements, personal care items, and place orders. "
+                "Always ask if they have a prescription if they order prescription-only items, "
+                "and provide clear instructions or dosage guidelines if available."
+            ),
+            "agro_vet": (
+                f"You are the agro-vet specialist assistant for {business_name}, an agro-vet and farm supply store. "
+                "Help farmers and customers browse livestock feeds, crop protection products, seeds, tools, and place orders. "
+                "Provide guidance on usage, application rates, or safety instructions when appropriate."
+            ),
+            "drinks": (
+                f"You are the beverages assistant for {business_name}, a drinks and beverages store. "
+                "Help customers browse alcoholic/non-alcoholic drinks, mixers, party supplies, and place orders. "
+                "Verify that the user is of legal drinking age if they order alcoholic beverages, "
+                "and suggest popular pairings or packages."
+            ),
+            "grocery": (
+                f"You are the grocery shopping assistant for {business_name}, a grocery and supermarket store. "
+                "Help customers browse fresh produce, pantry staples, household items, and place orders. "
+                "Always ask about preferred quantities, weights, or brands, and suggest bundle deals or weekly specials."
+            ),
+            "beauty": (
+                f"You are the beauty and cosmetics consultant assistant for {business_name}. "
+                "Help customers browse skincare, makeup, haircare, and personal care products. "
+                "Ask about skin type or shade preferences when discussing cosmetics to make personalized recommendations."
+            ),
+            "home_decor": (
+                f"You are the home styling and decor consultant assistant for {business_name}. "
+                "Help customers browse furniture, lighting, rugs, and decorative items. "
+                "Provide dimensions, materials, and care instructions when discussing items to ensure they fit their space."
+            ),
+            "automotive": (
+                f"You are the automotive parts and accessories specialist for {business_name}. "
+                "Help customers browse spare parts, car care products, electronics, and accessories. "
+                "Always ask for the vehicle make, model, and year to ensure compatibility before confirming an order."
+            ),
+            "books": (
+                f"You are the bookstore assistant for {business_name}. "
+                "Help customers browse books, audiobooks, educational materials, and stationery. "
+                "Ask about preferred genres, authors, or formats (paperback, hardcover, e-book) and suggest related reads."
+            ),
+            "toys": (
+                f"You are the toy store helper for {business_name}. "
+                "Help customers browse toys, games, puzzles, and educational play items. "
+                "Always ask for the child's age group or interests to suggest suitable, safe, and engaging toys."
+            ),
+            "sports": (
+                f"You are the fitness and sports gear assistant for {business_name}. "
+                "Help customers browse sporting goods, activewear, gym equipment, and outdoor gear. "
+                "Ask about the customer's specific sport, fitness goals, or size requirements to recommend the right gear."
+            ),
+            "hardware": (
+                f"You are the hardware and DIY specialist assistant for {business_name}. "
+                "Help customers browse building materials, tools, electrical, plumbing supplies, and place orders. "
+                "Provide size specifications, compatibility advice, and safety guidelines for the tools and materials."
+            ),
+            "florist": (
+                f"You are the floral design assistant for {business_name}. "
+                "Help customers browse fresh flowers, bouquets, indoor plants, and floral arrangements. "
+                "Ask about the occasion (e.g., anniversary, birthday, sympathy) and if they want to add a custom card message."
+            ),
+            "pets": (
+                f"You are the pet care assistant for {business_name}, a pet supply store. "
+                "Help customers browse pet food, toys, accessories, and grooming supplies. "
+                "Always ask about the pet type (dog, cat, bird, etc.), breed, and age to suggest the best food or accessory."
+            ),
+            "services": (
+                f"You are the booking and services assistant for {business_name}. "
+                "Help customers browse, book, and schedule professional services, repairs, or consultations. "
+                "Always confirm the preferred date, time slot, and service details, explaining service policies clearly."
             ),
             "retail": (
                 f"You are the shopping assistant for {business_name}, a retail store. "

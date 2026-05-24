@@ -174,3 +174,90 @@ class TestConversationalAgentService:
                 last_message = messages[-1]
                 assert last_message["role"] == "tool"
                 assert "API Key Invalid" in last_message["content"]
+
+    def test_build_system_prompt_verticals(self):
+        """Test system prompt building for new business verticals."""
+        svc = ConversationalAgentService()
+        
+        # Test electronics vertical
+        prompt_electronics = svc._build_system_prompt(
+            business_name="TechStore",
+            order_type="electronics",
+            currency="USD",
+            delivery_methods=["shipping"]
+        )
+        assert "electronics and gadgets store" in prompt_electronics
+        assert "warranty info" in prompt_electronics
+        assert "USD" in prompt_electronics
+        assert "shipping" in prompt_electronics
+        
+        # Test pharmacy vertical
+        prompt_pharmacy = svc._build_system_prompt(
+            business_name="HealthMed",
+            order_type="pharmacy",
+            currency="KES",
+            delivery_methods=["pickup", "delivery"]
+        )
+        assert "pharmacy and health store" in prompt_pharmacy
+        assert "prescription" in prompt_pharmacy
+        assert "KES" in prompt_pharmacy
+        
+        # Test agro_vet vertical
+        prompt_agro = svc._build_system_prompt(
+            business_name="FarmSupply",
+            order_type="agro_vet",
+            currency="KES",
+            delivery_methods=["delivery"]
+        )
+        assert "agro-vet and farm supply" in prompt_agro
+        assert "livestock feeds" in prompt_agro
+        
+        # Test drinks vertical
+        prompt_drinks = svc._build_system_prompt(
+            business_name="VinoLiquors",
+            order_type="drinks",
+            currency="KES",
+            delivery_methods=["delivery"]
+        )
+        assert "drinks and beverages store" in prompt_drinks
+        assert "legal drinking age" in prompt_drinks
+
+        # Test grocery vertical
+        prompt_grocery = svc._build_system_prompt(
+            business_name="QuickMart",
+            order_type="grocery",
+            currency="KES",
+            delivery_methods=["delivery"]
+        )
+        assert "grocery and supermarket store" in prompt_grocery
+        assert "fresh produce" in prompt_grocery
+
+        # Test beauty vertical
+        prompt_beauty = svc._build_system_prompt(
+            business_name="GlowBoutique",
+            order_type="beauty",
+            currency="KES",
+            delivery_methods=["shipping"]
+        )
+        assert "beauty and cosmetics consultant" in prompt_beauty
+        assert "skin type" in prompt_beauty
+
+        # Test home_decor vertical
+        prompt_decor = svc._build_system_prompt(
+            business_name="DecoHaus",
+            order_type="home_decor",
+            currency="USD",
+            delivery_methods=["shipping"]
+        )
+        assert "home styling and decor" in prompt_decor
+        assert "furniture" in prompt_decor
+
+        # Test services vertical
+        prompt_services = svc._build_system_prompt(
+            business_name="FixIt",
+            order_type="services",
+            currency="KES",
+            delivery_methods=["pickup"]
+        )
+        assert "booking and services assistant" in prompt_services
+        assert "schedule professional services" in prompt_services

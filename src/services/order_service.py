@@ -34,7 +34,11 @@ STATUS_TRANSITIONS = {
     "refunded": [],
 }
 
-ORDER_TYPES = ["food", "clothing", "retail", "grocery", "pharmacy", "custom"]
+ORDER_TYPES = [
+    "food", "clothing", "retail", "grocery", "pharmacy", "electronics", "drinks", "agro_vet",
+    "beauty", "home_decor", "automotive", "books", "toys", "sports", "hardware", "florist",
+    "pets", "services", "custom"
+]
 
 DELIVERY_METHODS = ["pickup", "delivery", "dine_in", "shipping", "digital"]
 

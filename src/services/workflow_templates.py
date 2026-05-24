@@ -31,10 +31,10 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
         "description": (
             "AI-powered WhatsApp ordering agent with menu/catalog browsing, "
             "conversational order capture, and automatic business notifications. "
-            "Supports food, clothing, and retail businesses."
+            "Supports food, clothing, retail, grocery, and other commerce verticals."
         ),
         "icon": "🛒",
-        "industry_tags": ["food", "retail", "clothing", "restaurant", "ecommerce"],
+        "industry_tags": ["food", "retail", "clothing", "grocery", "pharmacy", "agro_vet", "beauty", "home_decor", "automotive", "books", "toys", "sports", "hardware", "florist", "pets", "services", "ecommerce"],
         "platform": "whatsapp",
         "estimated_setup": "5 minutes",
         "trigger": {
@@ -76,9 +76,24 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "required": True,
                 "options": [
                     {"value": "food", "label": "🍖 Food / Restaurant"},
-                    {"value": "clothing", "label": "👕 Clothing / Fashion"},
-                    {"value": "retail", "label": "🏪 General Retail"},
-                    {"value": "general", "label": "📦 Other"}
+                    {"value": "clothing", "label": "👕 Clothing / Fashion / Boutique"},
+                    {"value": "electronics", "label": "💻 Electronics & Gadgets"},
+                    {"value": "drinks", "label": "🍺 Drinks & Beverages"},
+                    {"value": "pharmacy", "label": "💊 Pharmacy & Health"},
+                    {"value": "agro_vet", "label": "🌱 Agro-vet & Farm Supplies"},
+                    {"value": "grocery", "label": "🛒 Grocery & Supermarket"},
+                    {"value": "beauty", "label": "💄 Beauty & Cosmetics"},
+                    {"value": "home_decor", "label": "🛋️ Home Decor & Furniture"},
+                    {"value": "automotive", "label": "🚗 Automotive & Car Care"},
+                    {"value": "books", "label": "📚 Bookstore & Stationery"},
+                    {"value": "toys", "label": "🧸 Toys & Games"},
+                    {"value": "sports", "label": "⚽ Sports & Fitness"},
+                    {"value": "hardware", "label": "🛠️ Hardware & DIY"},
+                    {"value": "florist", "label": "💐 Florist & Plants"},
+                    {"value": "pets", "label": "🐶 Pet Supplies & Food"},
+                    {"value": "services", "label": "📞 Professional Services / Booking"},
+                    {"value": "retail", "label": "🏪 General Retail / Other"},
+                    {"value": "general", "label": "📦 Other / Custom Business"}
                 ],
                 "default": "food"
             },
@@ -95,9 +110,11 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "description": "How customers can receive their orders",
                 "required": True,
                 "options": [
-                    {"value": "delivery", "label": "🚚 Delivery"},
-                    {"value": "pickup", "label": "📍 Pickup"},
-                    {"value": "dine_in", "label": "🍽️ Dine In"}
+                    {"value": "delivery", "label": "🚚 Home/Local Delivery"},
+                    {"value": "pickup", "label": "📍 In-Store Pickup"},
+                    {"value": "dine_in", "label": "🍽️ Dine In / Table Service"},
+                    {"value": "shipping", "label": "📦 Shipping / Courier Service"},
+                    {"value": "digital", "label": "📧 Digital Delivery / Download"}
                 ],
                 "default": ["delivery", "pickup"]
             },
@@ -264,7 +281,7 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
             "conversational order capture, and automatic business notifications."
         ),
         "icon": "🤖",
-        "industry_tags": ["food", "retail", "clothing", "restaurant", "ecommerce"],
+        "industry_tags": ["food", "retail", "clothing", "grocery", "pharmacy", "agro_vet", "beauty", "home_decor", "automotive", "books", "toys", "sports", "hardware", "florist", "pets", "services", "ecommerce"],
         "platform": "telegram",
         "estimated_setup": "5 minutes",
         "trigger": {
@@ -306,9 +323,24 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "required": True,
                 "options": [
                     {"value": "food", "label": "🍖 Food / Restaurant"},
-                    {"value": "clothing", "label": "👕 Clothing / Fashion"},
-                    {"value": "retail", "label": "🏪 General Retail"},
-                    {"value": "general", "label": "📦 Other"}
+                    {"value": "clothing", "label": "👕 Clothing / Fashion / Boutique"},
+                    {"value": "electronics", "label": "💻 Electronics & Gadgets"},
+                    {"value": "drinks", "label": "🍺 Drinks & Beverages"},
+                    {"value": "pharmacy", "label": "💊 Pharmacy & Health"},
+                    {"value": "agro_vet", "label": "🌱 Agro-vet & Farm Supplies"},
+                    {"value": "grocery", "label": "🛒 Grocery & Supermarket"},
+                    {"value": "beauty", "label": "💄 Beauty & Cosmetics"},
+                    {"value": "home_decor", "label": "🛋️ Home Decor & Furniture"},
+                    {"value": "automotive", "label": "🚗 Automotive & Car Care"},
+                    {"value": "books", "label": "📚 Bookstore & Stationery"},
+                    {"value": "toys", "label": "🧸 Toys & Games"},
+                    {"value": "sports", "label": "⚽ Sports & Fitness"},
+                    {"value": "hardware", "label": "🛠️ Hardware & DIY"},
+                    {"value": "florist", "label": "💐 Florist & Plants"},
+                    {"value": "pets", "label": "🐶 Pet Supplies & Food"},
+                    {"value": "services", "label": "📞 Professional Services / Booking"},
+                    {"value": "retail", "label": "🏪 General Retail / Other"},
+                    {"value": "general", "label": "📦 Other / Custom Business"}
                 ],
                 "default": "food"
             },
@@ -325,9 +357,11 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "description": "How customers can receive their orders",
                 "required": True,
                 "options": [
-                    {"value": "delivery", "label": "🚚 Delivery"},
-                    {"value": "pickup", "label": "📍 Pickup"},
-                    {"value": "dine_in", "label": "🍽️ Dine In"}
+                    {"value": "delivery", "label": "🚚 Home/Local Delivery"},
+                    {"value": "pickup", "label": "📍 In-Store Pickup"},
+                    {"value": "dine_in", "label": "🍽️ Dine In / Table Service"},
+                    {"value": "shipping", "label": "📦 Shipping / Courier Service"},
+                    {"value": "digital", "label": "📧 Digital Delivery / Download"}
                 ],
                 "default": ["delivery", "pickup"]
             },
