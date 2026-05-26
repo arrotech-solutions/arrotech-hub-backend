@@ -506,6 +506,7 @@ class ConversationalAgentService:
             order_notification = ""
             collected_image_urls: List[str] = []
             collected_product_cards: List[Dict[str, Any]] = []
+            sent_product_ids: set = set()  # Track product IDs already sent as cards this turn
             max_iterations = 3
 
             # Assemble dynamic tools
@@ -632,6 +633,48 @@ class ConversationalAgentService:
                         except Exception as e:
                             logger.warning(f"[CONV_AGENT] Guardrail check failed: {e}")
 
+                    # ── Dedup guard: filter out already-sent products ──
+                    # The LLM sometimes calls display_product_cards again in
+                    # a later iteration with the same products.  Each call
+                    # actually sends WhatsApp messages, so we must prevent
+                    # duplicates from reaching the customer.
+                    if tool_name == "display_product_cards" and sent_product_ids:
+                        incoming_products = tool_args.get("products", [])
+                        new_products = [
+                            p for p in incoming_products
+                            if p.get("id") not in sent_product_ids
+                        ]
+                        if not new_products:
+                            # All products already sent — skip this call entirely
+                            logger.info(
+                                f"[CONV_AGENT] Skipping duplicate display_product_cards "
+                                f"(all {len(incoming_products)} products already sent)"
+                            )
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": call_id,
+                                "content": (
+                                    "SKIPPED: These product cards were already sent to "
+                                    "the customer earlier in this conversation turn. "
+                                    "Do NOT call display_product_cards again with the "
+                                    "same products. Just respond with your text message."
+                                )
+                            })
+                            actions_taken.append({
+                                "tool": tool_name,
+                                "args": tool_args,
+                                "result_summary": "SKIPPED: duplicate cards"
+                            })
+                            continue
+                        elif len(new_products) < len(incoming_products):
+                            # Some products already sent — only send the new ones
+                            logger.info(
+                                f"[CONV_AGENT] Filtered display_product_cards: "
+                                f"{len(incoming_products)} → {len(new_products)} "
+                                f"(removed {len(incoming_products) - len(new_products)} duplicates)"
+                            )
+                            tool_args = {**tool_args, "products": new_products}
+
                     # Execute the sub-tool
                     tool_result = await self._execute_sub_tool(
                         tool_name=tool_name,
@@ -678,7 +721,15 @@ class ConversationalAgentService:
                     if tool_name == "display_product_cards":
                         tool_cards = tool_result.get("cards", [])
                         if tool_cards:
-                            collected_product_cards.extend(tool_cards)
+                            # Deduplicate: only add cards not already collected
+                            for card in tool_cards:
+                                card_id = card.get("id", "")
+                                if card_id and card_id not in sent_product_ids:
+                                    collected_product_cards.append(card)
+                                    sent_product_ids.add(card_id)
+                                elif not card_id:
+                                    # No ID — append but can't deduplicate
+                                    collected_product_cards.append(card)
                         # Remove images that were already sent as part of product cards
                         # to prevent duplicate bare image sends
                         sent_card_images = set(tool_result.get("sent_image_urls", []))
