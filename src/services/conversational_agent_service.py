@@ -524,7 +524,7 @@ class ConversationalAgentService:
                     messages=messages,
                     tools=dynamic_tools,
                     temperature=0.3,
-                    max_tokens=500,
+                    max_tokens=1500,
                     provider="openai",
                     use_background_model=True
                 )

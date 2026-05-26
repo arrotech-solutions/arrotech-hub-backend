@@ -497,7 +497,7 @@ class WorkflowBuilderService:
     
     async def _evaluate_condition(self, condition: Dict[str, Any], context: Dict[str, Any]) -> bool:
         """
-        Evaluate conditional logic for workflow steps.
+        Evaluate conditional logic for workflow steps with robust type-forgiving comparison.
         """
         if not condition or condition.get("type") != "if":
             return True
@@ -509,19 +509,39 @@ class WorkflowBuilderService:
         # Extract actual value from context
         actual_value = self._extract_value_from_context(field_path, context)
         
+        # Helper to safely coerce values to booleans/strings for comparison
+        def _to_bool_str(val) -> str:
+            if val is True or str(val).lower() in ("true", "1", "yes"):
+                return "true"
+            if val is False or str(val).lower() in ("false", "0", "no"):
+                return "false"
+            return str(val).strip().lower()
+
+        is_bool_like = lambda v: v is True or v is False or str(v).lower() in ("true", "false", "1", "0", "yes", "no")
+
         # Apply operator
         if operator == "equals":
+            if is_bool_like(actual_value) or is_bool_like(expected_value):
+                return _to_bool_str(actual_value) == _to_bool_str(expected_value)
             return actual_value == expected_value
         elif operator == "not_equals":
+            if is_bool_like(actual_value) or is_bool_like(expected_value):
+                return _to_bool_str(actual_value) != _to_bool_str(expected_value)
             return actual_value != expected_value
         elif operator == "contains":
             return expected_value in str(actual_value)
         elif operator == "not_contains":
             return expected_value not in str(actual_value)
         elif operator == "greater_than":
-            return float(actual_value) > float(expected_value)
+            try:
+                return float(actual_value) > float(expected_value)
+            except (ValueError, TypeError):
+                return False
         elif operator == "less_than":
-            return float(actual_value) < float(expected_value)
+            try:
+                return float(actual_value) < float(expected_value)
+            except (ValueError, TypeError):
+                return False
         elif operator == "exists":
             return actual_value is not None and actual_value != ""
         elif operator == "not_exists":
