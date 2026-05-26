@@ -519,12 +519,14 @@ class ConversationalAgentService:
             for iteration in range(max_iterations):
                 # Call LLM with sub-tools
                 # Use gpt-4o-mini for speed — 3x faster than gpt-4o with
-                # equivalent tool-calling accuracy for commerce conversations
+                # equivalent tool-calling accuracy for commerce conversations.
+                # max_tokens=4096 is needed because display_product_cards
+                # generates large JSON arguments (5+ products × ~100 tokens each).
                 response = await self.llm_service.chat_completion(
                     messages=messages,
                     tools=dynamic_tools,
                     temperature=0.3,
-                    max_tokens=1500,
+                    max_tokens=4096,
                     provider="openai",
                     use_background_model=True
                 )
@@ -1057,6 +1059,7 @@ class ConversationalAgentService:
                 },
                 user, db
             )
+            logger.info(f"[CONV_AGENT] search_products result length: {len(str(result.get('result', '')))} chars")
 
             if result.get("success"):
                 search_text = result.get("result", "No results found")
@@ -1310,6 +1313,16 @@ class ConversationalAgentService:
                 "result": "No products to display.",
                 "cards": []
             }
+
+        # Cap at 10 products to prevent:
+        # 1) Token overflow in LLM tool call arguments (the JSON gets truncated)
+        # 2) WhatsApp/Telegram message floods (too many cards annoy users)
+        MAX_PRODUCT_CARDS = 10
+        if len(products) > MAX_PRODUCT_CARDS:
+            logger.info(
+                f"[CONV_AGENT] Capping product cards from {len(products)} to {MAX_PRODUCT_CARDS}"
+            )
+            products = products[:MAX_PRODUCT_CARDS]
 
         # Detect platform and extract recipient phone
         platform = "whatsapp"
@@ -2416,6 +2429,7 @@ class ConversationalAgentService:
                 "We're experiencing a brief issue. Our team will respond shortly. 🙏"
             ),
             "image_urls": [],
+            "cards": [],
             "order_created": False,
             "order_data": None,
             "order_notification": "",

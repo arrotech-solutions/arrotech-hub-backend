@@ -91,20 +91,44 @@ class OpenAIProvider(LLMProvider):
 
             response = await self.client.chat.completions.create(**kwargs)
 
-            content = response.choices[0].message.content or ""
+            choice = response.choices[0]
+            content = choice.message.content or ""
             tools_called = []
+            finish_reason = getattr(choice, "finish_reason", None)
 
-            if response.choices[0].message.tool_calls:
-                for tool_call in response.choices[0].message.tool_calls:
-                    tools_called.append({
-                        "name": tool_call.function.name,
-                        "arguments": json.loads(tool_call.function.arguments)
-                    })
+            # Detect response truncation (max_tokens exceeded)
+            if finish_reason == "length":
+                logger.warning(
+                    f"[OpenAI] Response truncated (finish_reason=length) — "
+                    f"max_tokens={kwargs.get('max_tokens')} may be too low for "
+                    f"tool call arguments. Attempting partial recovery."
+                )
+
+            if choice.message.tool_calls:
+                for tool_call in choice.message.tool_calls:
+                    try:
+                        parsed_args = json.loads(tool_call.function.arguments)
+                        tools_called.append({
+                            "name": tool_call.function.name,
+                            "arguments": parsed_args
+                        })
+                    except json.JSONDecodeError as je:
+                        # Tool call arguments were truncated mid-JSON
+                        # (common when max_tokens is too low for large product arrays)
+                        logger.warning(
+                            f"[OpenAI] Skipping truncated tool call "
+                            f"'{tool_call.function.name}': JSON parse error — "
+                            f"{je}. Raw args (first 300 chars): "
+                            f"{tool_call.function.arguments[:300]}"
+                        )
+                        # Don't add this tool call — let the agent loop
+                        # treat it as a text-only response and retry
+                        continue
 
             return LLMResponse(
                 content=content,
                 tokens_used=response.usage.total_tokens if response.usage else None,
-                tools_called=tools_called
+                tools_called=tools_called if tools_called else None
             )
 
         except Exception as e:
