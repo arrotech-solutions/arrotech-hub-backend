@@ -142,7 +142,13 @@ class WhatsAppService:
         to_number: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Mark a message as read and optionally show a typing indicator."""
+        """Mark a message as read and optionally show a typing indicator.
+
+        Per WhatsApp Cloud API docs, the typing indicator is included
+        directly in the read-receipt payload — NOT as a separate message.
+        The indicator auto-dismisses after 25 seconds or when a reply
+        is sent, whichever comes first.
+        """
         try:
             credentials = self._get_credentials()
             
@@ -164,37 +170,29 @@ class WhatsAppService:
                 "Content-Type": "application/json"
             }
             
-            # 1) Send read receipt
+            # Build read receipt payload
             read_payload = {
                 "messaging_product": "whatsapp",
                 "status": "read",
                 "message_id": message_id
             }
+
+            # Include typing indicator in the SAME read-receipt request
+            # (WhatsApp Cloud API requires this — it's not a separate message type)
+            if show_typing:
+                read_payload["typing_indicator"] = {
+                    "type": "text"
+                }
+                logger.info(f"[WA_SERVICE] Sending read receipt + typing indicator for message {message_id}")
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=read_payload, headers=headers) as response:
                     result = await response.json()
                     if response.status != 200:
-                        logger.warning(f"Failed to mark as read: {result}")
-
-                # 2) Send typing indicator as a separate request
-                if show_typing and to_number:
-                    formatted_number = self._format_phone_number(to_number)
-                    typing_payload = {
-                        "messaging_product": "whatsapp",
-                        "to": formatted_number,
-                        "type": "typing_indicator",
-                        "typing_indicator": {
-                            "action": "typing_on"
-                        }
-                    }
-                    logger.info(f"[WA_SERVICE] Sending typing indicator to {formatted_number}")
-                    async with session.post(url, json=typing_payload, headers=headers) as typing_response:
-                        typing_result = await typing_response.json()
-                        if typing_response.status != 200:
-                            logger.error(f"[WA_SERVICE] Failed to send typing indicator: {typing_result}")
-                        else:
-                            logger.info(f"[WA_SERVICE] Typing indicator successfully sent to {formatted_number}")
+                        logger.warning(f"[WA_SERVICE] Failed to mark as read / send typing: {result}")
+                    else:
+                        if show_typing:
+                            logger.info(f"[WA_SERVICE] Read receipt + typing indicator sent successfully")
 
             return {"success": True, "result": "Read receipt sent"}
                 
