@@ -306,6 +306,26 @@ AGENT_SUB_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "cancel_order",
+            "description": (
+                "Cancel an existing order. Use this when a customer explicitly requests to cancel their order. "
+                "You must ask for the Order ID. If you already have their phone number from the chat session, you can use it, "
+                "otherwise ask for the phone number used to place the order for verification."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {"type": "string", "description": "The ID of the order to cancel"},
+                    "customer_phone": {"type": "string", "description": "Customer phone number for verification"},
+                    "reason": {"type": "string", "description": "Reason for cancellation provided by customer"}
+                },
+                "required": ["order_id", "customer_phone", "reason"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "display_product_cards",
             "description": (
                 "REQUIRED: Send products to the customer as interactive WhatsApp/Telegram cards. "
@@ -746,6 +766,17 @@ class ConversationalAgentService:
                             order_data, business_name, currency
                         )
 
+                    # Check if an order was cancelled
+                    if tool_name == "cancel_order" and tool_result.get("success"):
+                        cancel_data = tool_result.get("cancellation_data", {})
+                        # OrderService format_order_notification handles cancellation type
+                        order_notification = self.order_service.format_order_notification(
+                            order_data=cancel_data,
+                            business_name=business_name,
+                            currency=currency,
+                            notification_type="cancellation"
+                        )
+
                     # Build the tool result message for the LLM
                     # For display_product_cards: tell the LLM cards were already sent
                     # so it doesn't repeat product details in its text response
@@ -935,6 +966,7 @@ class ConversationalAgentService:
 6. Confirm the order summary with total price using `calculate_total`
 7. Create the order using `create_order`
 8. After order is created, offer M-Pesa payment using `initiate_mpesa_payment`
+9. If a customer wants to cancel an order, ask for the Order ID and their phone number (if not known), then call `cancel_order`
 
 ## CRITICAL Product Display Rules
 - ALWAYS use `display_product_cards` when showing products with images/prices
@@ -1078,6 +1110,16 @@ class ConversationalAgentService:
                     db=db,
                 )
 
+            elif tool_name == "cancel_order":
+                return await self._sub_cancel_order(
+                    arguments=arguments,
+                    storage_config=storage_config,
+                    business_name=business_name,
+                    user=user,
+                    db=db,
+                    background_tasks=background_tasks
+                )
+
             else:
                 # Dynamic MCP Tool execution (Harness delegation)
                 from .tool_executor import ToolExecutor
@@ -1206,6 +1248,52 @@ class ConversationalAgentService:
             }
         except Exception as e:
             return {"success": False, "result": f"Calculation error: {str(e)}"}
+
+    async def _sub_cancel_order(
+        self,
+        arguments: Dict[str, Any],
+        storage_config: Dict[str, Any],
+        business_name: str,
+        user: User,
+        db: AsyncSession,
+        background_tasks: Optional['BackgroundTasks'] = None
+    ) -> Dict[str, Any]:
+        """Cancel an order and update connected storage."""
+        try:
+            order_id = arguments.get("order_id", "")
+            reason = arguments.get("reason", "Customer requested cancellation via chat")
+            customer_phone = arguments.get("customer_phone", "")
+            
+            cancel_result = await self.order_service.handle_operation(
+                operation="cancel_order",
+                order_id=order_id,
+                reason=reason,
+                cancelled_by="customer"
+            )
+
+            if cancel_result.get("success"):
+                # Persist status update to storage
+                if storage_config and storage_config.get("provider") not in (None, "", "none"):
+                    provider = storage_config.get("provider")
+                    if background_tasks:
+                        background_tasks.add_task(
+                            self._run_update_task,
+                            provider, order_id, "cancelled", storage_config, user
+                        )
+                    else:
+                        await self._run_update_task(
+                            provider, order_id, "cancelled", storage_config, user
+                        )
+
+            return {
+                "success": cancel_result.get("success", False),
+                "result": cancel_result.get("message", "Order cancellation failed"),
+                "cancellation_data": cancel_result
+            }
+
+        except Exception as e:
+            logger.error(f"[CONV_AGENT] Order cancellation error: {e}")
+            return {"success": False, "result": f"Cancellation error: {str(e)}"}
 
     async def _sub_initiate_mpesa_payment(
         self,
@@ -1775,6 +1863,180 @@ class ConversationalAgentService:
 
         except Exception as e:
             logger.warning(f"[CONV_AGENT] Storage persistence setup failed (non-fatal): {e}")
+
+    async def _run_update_task(
+        self,
+        provider: str,
+        order_id: str,
+        status: str,
+        storage_config: Dict[str, Any],
+        user: User
+    ):
+        """Background worker for updating order status in external storage."""
+        try:
+            from ..database import get_session_maker
+            from .tool_executor import ToolExecutor
+            executor = ToolExecutor()
+            session_maker = get_session_maker()
+            
+            async with session_maker() as new_db:
+                if provider == "google_sheets":
+                    await self._update_order_status_in_google_sheets(
+                        executor, order_id, status, storage_config, user, new_db
+                    )
+                elif provider == "airtable":
+                    await self._update_order_status_in_airtable(
+                        executor, order_id, status, storage_config, user, new_db
+                    )
+        except Exception as e:
+            logger.error(f"[CONV_AGENT] Background status update failed (non-fatal): {e}")
+
+    async def _update_order_status_in_google_sheets(
+        self,
+        executor,
+        order_id: str,
+        status: str,
+        storage_config: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ):
+        spreadsheet_id = storage_config.get("spreadsheet_id", "")
+        if not spreadsheet_id or not order_id:
+            return
+
+        sheet_name = (storage_config.get("orders_sheet_name") or "Orders").strip() or "Orders"
+
+        # Read the sheet to find the Order ID and Status columns
+        read_res = await executor.execute_tool(
+            "google_workspace_sheets",
+            {
+                "operation": "read_range",
+                "spreadsheet_id": spreadsheet_id,
+                "range_name": f"{sheet_name}!A:ZZ",
+            },
+            user,
+            db,
+        )
+        if not read_res.get("success"):
+            return
+
+        values = read_res.get("values") or []
+        if not values or len(values) < 2:
+            return
+
+        headers = values[0]
+        header_norms = [_normalize_header(h) for h in headers]
+        
+        target_norm = _normalize_header("Order ID")
+        status_norm = _normalize_header("Status")
+        
+        if target_norm not in header_norms or status_norm not in header_norms:
+            return
+            
+        order_idx = header_norms.index(target_norm)
+        status_idx = header_norms.index(status_norm)
+        
+        # Find the row
+        target_row_num = None
+        for r_idx, row in enumerate(values):
+            if r_idx == 0:
+                continue
+            if len(row) > order_idx and _safe_str(row[order_idx]).strip() == order_id:
+                target_row_num = r_idx + 1 # 1-based index
+                break
+                
+        if not target_row_num:
+            logger.info(f"[CONV_AGENT] Order {order_id} not found in Sheets for update")
+            return
+            
+        status_col_a1 = _col_idx_to_a1(status_idx)
+        range_to_update = f"{sheet_name}!{status_col_a1}{target_row_num}"
+        
+        await executor.execute_tool(
+            "google_workspace_sheets",
+            {
+                "operation": "write_range",
+                "spreadsheet_id": spreadsheet_id,
+                "range_name": range_to_update,
+                "values": [[status]],
+            },
+            user,
+            db,
+        )
+        logger.info(f"[CONV_AGENT] Updated order {order_id} status to {status} in Sheets")
+
+    async def _update_order_status_in_airtable(
+        self,
+        executor,
+        order_id: str,
+        status: str,
+        storage_config: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ):
+        base_id = storage_config.get("airtable_base_id", "")
+        if not base_id or not order_id:
+            return
+            
+        table_name = storage_config.get("airtable_orders_table", "Orders")
+        
+        # First find the record ID
+        search_res = await executor.execute_tool(
+            "airtable_record_management",
+            {
+                "operation": "search_records",
+                "base_id": base_id,
+                "table_name": table_name,
+                "formula": f"{{Order ID}} = '{order_id}'",
+                "max_records": 1
+            },
+            user,
+            db
+        )
+        
+        if not search_res.get("success") or not search_res.get("records"):
+            # Try fallback read if search fails or is unsupported
+            read_res = await executor.execute_tool(
+                "airtable_record_management",
+                {
+                    "operation": "read_records",
+                    "base_id": base_id,
+                    "table_name": table_name,
+                    "max_records": 100
+                },
+                user,
+                db
+            )
+            records = read_res.get("records", []) if read_res.get("success") else []
+            target_record = next((r for r in records if r.get("fields", {}).get("Order ID") == order_id), None)
+        else:
+            target_record = search_res.get("records")[0]
+            
+        if not target_record:
+            logger.info(f"[CONV_AGENT] Order {order_id} not found in Airtable for update")
+            return
+            
+        record_id = target_record.get("id")
+        
+        # Update the record
+        update_res = await executor.execute_tool(
+            "airtable_record_management",
+            {
+                "operation": "update_records",
+                "base_id": base_id,
+                "table_name": table_name,
+                "records_data": [
+                    {"id": record_id, "fields": {"Status": status}}
+                ]
+            },
+            user,
+            db
+        )
+        
+        if update_res.get("error"):
+            logger.warning(f"[CONV_AGENT] Airtable update failed: {update_res.get('error')}")
+        else:
+            logger.info(f"[CONV_AGENT] Updated order {order_id} status to {status} in Airtable")
 
     async def persist_payment_transaction_to_storage(
         self,
