@@ -1390,13 +1390,34 @@ class ConversationalAgentService:
             return []
 
         sheet_name = (storage_config.get("orders_sheet_name") or "Orders").strip() or "Orders"
+        
+        orders_headers_required = [
+            "Order ID", "Status", "Customer Name", "Customer Phone", 
+            "Customer Email", "Items", "Item Count", "Subtotal", 
+            "Currency", "Delivery Method", "Delivery Address", 
+            "Notes", "Order Type", "Created At"
+        ]
+        
+        orders_headers = await self._ensure_sheet_headers_with_fallback(
+            executor=executor,
+            spreadsheet_id=spreadsheet_id,
+            preferred_sheet=sheet_name,
+            fallback_sheets=["Orders", "Sheet1"],
+            required_headers=orders_headers_required,
+            user=user,
+            db=db,
+        )
+        if not orders_headers:
+            return []
+            
+        actual_sheet_name = orders_headers["sheet_name"]
 
         read_res = await executor.execute_tool(
             "google_workspace_sheets",
             {
                 "operation": "read_range",
                 "spreadsheet_id": spreadsheet_id,
-                "range_name": f"{sheet_name}!A:ZZ",
+                "range_name": f"{actual_sheet_name}!A:ZZ",
             },
             user,
             db,
@@ -2104,13 +2125,34 @@ class ConversationalAgentService:
 
         sheet_name = (storage_config.get("orders_sheet_name") or "Orders").strip() or "Orders"
 
+        orders_headers_required = [
+            "Order ID", "Status", "Customer Name", "Customer Phone", 
+            "Customer Email", "Items", "Item Count", "Subtotal", 
+            "Currency", "Delivery Method", "Delivery Address", 
+            "Notes", "Order Type", "Created At"
+        ]
+        
+        orders_headers = await self._ensure_sheet_headers_with_fallback(
+            executor=executor,
+            spreadsheet_id=spreadsheet_id,
+            preferred_sheet=sheet_name,
+            fallback_sheets=["Orders", "Sheet1"],
+            required_headers=orders_headers_required,
+            user=user,
+            db=db,
+        )
+        if not orders_headers:
+            return
+            
+        actual_sheet_name = orders_headers["sheet_name"]
+
         # Read the sheet to find the Order ID and Status columns
         read_res = await executor.execute_tool(
             "google_workspace_sheets",
             {
                 "operation": "read_range",
                 "spreadsheet_id": spreadsheet_id,
-                "range_name": f"{sheet_name}!A:ZZ",
+                "range_name": f"{actual_sheet_name}!A:ZZ",
             },
             user,
             db,
@@ -2148,7 +2190,7 @@ class ConversationalAgentService:
             return
             
         status_col_a1 = _col_idx_to_a1(status_idx)
-        range_to_update = f"{sheet_name}!{status_col_a1}{target_row_num}"
+        range_to_update = f"{actual_sheet_name}!{status_col_a1}{target_row_num}"
         
         await executor.execute_tool(
             "google_workspace_sheets",
