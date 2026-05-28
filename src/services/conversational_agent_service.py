@@ -182,6 +182,17 @@ def _safe_str(v: Any) -> str:
         return ""
     return str(v)
 
+def _phones_match(p1: str, p2: str) -> bool:
+    """Robustly compare phone numbers by checking the last 9 digits."""
+    if not p1 or not p2:
+        return False
+    n1 = re.sub(r"\D", "", str(p1))
+    n2 = re.sub(r"\D", "", str(p2))
+    if not n1 or not n2:
+        return False
+    length = min(9, len(n1), len(n2))
+    return n1[-length:] == n2[-length:]
+
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1417,7 +1428,7 @@ class ConversationalAgentService:
         found_orders = []
         # Reverse to get newest first (assuming appended at bottom)
         for row in reversed(values[1:]):
-            if len(row) > phone_idx and _safe_str(row[phone_idx]).strip() == phone.strip():
+            if len(row) > phone_idx and _phones_match(_safe_str(row[phone_idx]), phone):
                 order = {}
                 for f, idx in key_indices.items():
                     order[f] = _safe_str(row[idx]) if len(row) > idx else ""
@@ -1466,7 +1477,7 @@ class ConversationalAgentService:
                 db
             )
             all_records = read_res.get("records", []) if read_res.get("success") else []
-            records = [r for r in all_records if r.get("fields", {}).get("Customer Phone") == phone][:10]
+            records = [r for r in all_records if _phones_match(r.get("fields", {}).get("Customer Phone"), phone)][:10]
 
         found_orders = []
         for r in records:
