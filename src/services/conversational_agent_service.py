@@ -527,6 +527,16 @@ class ConversationalAgentService:
                 custom_prompt=custom_system_prompt
             )
 
+            # Inject active customer phone context if available from the session key
+            active_phone = ""
+            if session_key and session_key.startswith("ccm:"):
+                parts = session_key.split(":")
+                if len(parts) >= 4:
+                    active_phone = parts[3]
+            
+            if active_phone:
+                system_prompt += f"\n\n## Active Customer Context\n- Active Phone Number: {active_phone}\n- Channel Platform: {platform}\n"
+
             # Harness: inject agent context into system prompt
             if self._harness_enabled:
                 try:
@@ -995,7 +1005,7 @@ class ConversationalAgentService:
 6. Confirm the order summary with total price using `calculate_total`
 7. Create the order using `create_order`
 8. After order is created, offer M-Pesa payment using `initiate_mpesa_payment`
-9. If a customer wants to cancel an order, ask for the Order ID and their phone number (if not known), then call `cancel_order`
+9. If a customer wants to cancel an order, ask for the Order ID and their phone number (if not known), then call `cancel_order`. After `cancel_order` returns success, ALWAYS output a clear confirmation message to the customer (e.g., "Your order ORD-xxxx has been successfully cancelled").
 10. If a customer wants to see their order history or check an order status, use `get_user_orders` with their phone number. Summarize the retrieved orders clearly.
 
 ## CRITICAL Product Display Rules
@@ -1296,12 +1306,68 @@ class ConversationalAgentService:
         db: AsyncSession,
         background_tasks: Optional['BackgroundTasks'] = None
     ) -> Dict[str, Any]:
-        """Cancel an order and update connected storage."""
+        """Cancel an order, verify customer phone, and update connected storage."""
         try:
-            order_id = arguments.get("order_id", "")
+            order_id = arguments.get("order_id", "").strip()
             reason = arguments.get("reason", "Customer requested cancellation via chat")
-            customer_phone = arguments.get("customer_phone", "")
+            customer_phone = arguments.get("customer_phone", "").strip()
             
+            if not order_id or not customer_phone:
+                return {
+                    "success": False,
+                    "result": "Order ID and Customer Phone number are required for verification and cancellation."
+                }
+
+            # 1. Fetch customer's orders to verify ownership
+            provider = storage_config.get("provider", "none")
+            if provider in (None, "", "none"):
+                return {
+                    "success": False,
+                    "result": "No active database/sheets storage is connected to the agent. Cannot verify order details."
+                }
+
+            from .tool_executor import ToolExecutor
+            executor = ToolExecutor()
+            
+            orders = []
+            if provider == "google_sheets":
+                orders = await self._get_orders_from_google_sheets(executor, customer_phone, storage_config, user, db)
+            elif provider == "airtable":
+                orders = await self._get_orders_from_airtable(executor, customer_phone, storage_config, user, db)
+            else:
+                return {
+                    "success": False,
+                    "result": f"Storage provider {provider} is not supported for order history verification."
+                }
+
+            # 2. Find matching order
+            order_found = None
+            for o in orders:
+                o_id = o.get("Order ID", "").strip()
+                if o_id and o_id.lower() == order_id.lower():
+                    order_found = o
+                    break
+
+            if not order_found:
+                return {
+                    "success": False,
+                    "result": f"Verification failed: No order with ID '{order_id}' was found associated with the phone number '{customer_phone}'."
+                }
+
+            # 3. Check if already cancelled
+            current_status = order_found.get("Status", "").strip().lower()
+            if current_status == "cancelled":
+                return {
+                    "success": True,
+                    "result": f"Order {order_id} is already cancelled.",
+                    "cancellation_data": {
+                        "success": True,
+                        "message": f"Order {order_id} is already cancelled.",
+                        "order_id": order_id
+                    }
+                }
+
+            # 4. Perform the cancellation in stateless order service
             cancel_result = await self.order_service.handle_operation(
                 operation="cancel_order",
                 order_id=order_id,
@@ -1310,27 +1376,50 @@ class ConversationalAgentService:
             )
 
             if cancel_result.get("success"):
-                # Persist status update to storage
-                if storage_config and storage_config.get("provider") not in (None, "", "none"):
-                    provider = storage_config.get("provider")
-                    if background_tasks:
-                        background_tasks.add_task(
-                            self._run_update_task,
-                            provider, order_id, "cancelled", storage_config, user
-                        )
-                    else:
-                        await self._run_update_task(
-                            provider, order_id, "cancelled", storage_config, user
-                        )
+                # 5. Persist status update to sheets/airtable
+                if background_tasks:
+                    background_tasks.add_task(
+                        self._run_update_task,
+                        provider, order_id, "cancelled", storage_config, user
+                    )
+                else:
+                    await self._run_update_task(
+                        provider, order_id, "cancelled", storage_config, user
+                    )
+
+            # Build enriched cancellation data for beautiful business alerts
+            customer_name = order_found.get("Customer Name") or "Customer"
+            items_summary = order_found.get("Items") or ""
+            subtotal = order_found.get("Subtotal") or "0"
+            currency = order_found.get("Currency") or "KES"
+
+            enriched_cancellation = {
+                "success": True,
+                "order_id": order_id,
+                "cancellation_reason": reason,
+                "customer": {
+                    "name": customer_name,
+                    "phone": customer_phone
+                },
+                "items": [{"name": items_summary, "quantity": 1, "unit": "order"}],
+                "subtotal": subtotal,
+                "currency": currency,
+                "cancellation": {
+                    "order_id": order_id,
+                    "status": "cancelled",
+                    "reason": reason,
+                    "cancelled_by": "customer"
+                }
+            }
 
             return {
                 "success": cancel_result.get("success", False),
-                "result": cancel_result.get("message", "Order cancellation failed"),
-                "cancellation_data": cancel_result
+                "result": f"Order {order_id} has been successfully cancelled.",
+                "cancellation_data": enriched_cancellation
             }
 
         except Exception as e:
-            logger.error(f"[CONV_AGENT] Order cancellation error: {e}")
+            logger.error(f"[CONV_AGENT] Order cancellation error: {e}", exc_info=True)
             return {"success": False, "result": f"Cancellation error: {str(e)}"}
 
     async def _sub_get_user_orders(
@@ -1439,7 +1528,7 @@ class ConversationalAgentService:
         phone_idx = header_norms.index(target_norm)
         
         # We need these indices to extract data
-        key_fields = ["Order ID", "Status", "Created At", "Subtotal", "Currency", "Items"]
+        key_fields = ["Order ID", "Status", "Created At", "Subtotal", "Currency", "Items", "Customer Name", "Customer Phone"]
         key_indices = {}
         for f in key_fields:
             fn = _normalize_header(f)
@@ -1509,7 +1598,9 @@ class ConversationalAgentService:
                 "Created At": fields.get("Created At", ""),
                 "Subtotal": fields.get("Subtotal", ""),
                 "Currency": fields.get("Currency", "KES"),
-                "Items": fields.get("Items", "")
+                "Items": fields.get("Items", ""),
+                "Customer Name": fields.get("Customer Name", ""),
+                "Customer Phone": fields.get("Customer Phone", "")
             })
             
         return found_orders
