@@ -326,6 +326,24 @@ AGENT_SUB_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_user_orders",
+            "description": (
+                "Search and retrieve the customer's order history and details. Use this when a customer asks to see their past orders, "
+                "check an order status, or if they need to find their Order ID to cancel an order. "
+                "Requires the customer's phone number. If you already have their phone number from the chat session, you can use it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "customer_phone": {"type": "string", "description": "Customer phone number to search by"}
+                },
+                "required": ["customer_phone"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "display_product_cards",
             "description": (
                 "REQUIRED: Send products to the customer as interactive WhatsApp/Telegram cards. "
@@ -967,6 +985,7 @@ class ConversationalAgentService:
 7. Create the order using `create_order`
 8. After order is created, offer M-Pesa payment using `initiate_mpesa_payment`
 9. If a customer wants to cancel an order, ask for the Order ID and their phone number (if not known), then call `cancel_order`
+10. If a customer wants to see their order history or check an order status, use `get_user_orders` with their phone number. Summarize the retrieved orders clearly.
 
 ## CRITICAL Product Display Rules
 - ALWAYS use `display_product_cards` when showing products with images/prices
@@ -1118,6 +1137,14 @@ class ConversationalAgentService:
                     user=user,
                     db=db,
                     background_tasks=background_tasks
+                )
+
+            elif tool_name == "get_user_orders":
+                return await self._sub_get_user_orders(
+                    arguments=arguments,
+                    storage_config=storage_config,
+                    user=user,
+                    db=db
                 )
 
             else:
@@ -1294,6 +1321,166 @@ class ConversationalAgentService:
         except Exception as e:
             logger.error(f"[CONV_AGENT] Order cancellation error: {e}")
             return {"success": False, "result": f"Cancellation error: {str(e)}"}
+
+    async def _sub_get_user_orders(
+        self,
+        arguments: Dict[str, Any],
+        storage_config: Dict[str, Any],
+        user: User,
+        db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Fetch user order history from connected storage."""
+        customer_phone = arguments.get("customer_phone", "")
+        if not customer_phone:
+            return {"success": False, "result": "Customer phone number is required to look up orders."}
+
+        provider = storage_config.get("provider", "none")
+        if provider in (None, "", "none"):
+            return {"success": False, "result": "No database connected. Cannot retrieve order history."}
+
+        try:
+            from .tool_executor import ToolExecutor
+            executor = ToolExecutor()
+            
+            orders = []
+            if provider == "google_sheets":
+                orders = await self._get_orders_from_google_sheets(executor, customer_phone, storage_config, user, db)
+            elif provider == "airtable":
+                orders = await self._get_orders_from_airtable(executor, customer_phone, storage_config, user, db)
+            else:
+                return {"success": False, "result": f"Storage provider {provider} is not supported for order history."}
+
+            if not orders:
+                return {"success": True, "result": f"No orders found for phone number {customer_phone}."}
+
+            # Format orders for the LLM
+            formatted_orders = []
+            for o in orders:
+                formatted_orders.append(
+                    f"- Order ID: {o.get('Order ID')}\n"
+                    f"  Status: {o.get('Status')}\n"
+                    f"  Date: {o.get('Created At')}\n"
+                    f"  Total: {o.get('Subtotal')} {o.get('Currency', 'KES')}\n"
+                    f"  Items: {o.get('Items')}"
+                )
+            
+            summary = f"Found {len(orders)} order(s) for {customer_phone}:\n\n" + "\n\n".join(formatted_orders)
+            return {"success": True, "result": summary, "orders": orders}
+
+        except Exception as e:
+            logger.error(f"[CONV_AGENT] Get user orders error: {e}")
+            return {"success": False, "result": f"Failed to retrieve order history: {str(e)}"}
+
+    async def _get_orders_from_google_sheets(
+        self, executor, phone: str, storage_config: Dict[str, Any], user: User, db: AsyncSession
+    ) -> List[Dict[str, Any]]:
+        spreadsheet_id = storage_config.get("spreadsheet_id", "")
+        if not spreadsheet_id:
+            return []
+
+        sheet_name = (storage_config.get("orders_sheet_name") or "Orders").strip() or "Orders"
+
+        read_res = await executor.execute_tool(
+            "google_workspace_sheets",
+            {
+                "operation": "read_range",
+                "spreadsheet_id": spreadsheet_id,
+                "range_name": f"{sheet_name}!A:ZZ",
+            },
+            user,
+            db,
+        )
+        if not read_res.get("success"):
+            return []
+
+        values = read_res.get("values") or []
+        if len(values) < 2:
+            return []
+
+        headers = values[0]
+        header_norms = [_normalize_header(h) for h in headers]
+        
+        target_norm = _normalize_header("Customer Phone")
+        if target_norm not in header_norms:
+            return []
+            
+        phone_idx = header_norms.index(target_norm)
+        
+        # We need these indices to extract data
+        key_fields = ["Order ID", "Status", "Created At", "Subtotal", "Currency", "Items"]
+        key_indices = {}
+        for f in key_fields:
+            fn = _normalize_header(f)
+            if fn in header_norms:
+                key_indices[f] = header_norms.index(fn)
+
+        found_orders = []
+        # Reverse to get newest first (assuming appended at bottom)
+        for row in reversed(values[1:]):
+            if len(row) > phone_idx and _safe_str(row[phone_idx]).strip() == phone.strip():
+                order = {}
+                for f, idx in key_indices.items():
+                    order[f] = _safe_str(row[idx]) if len(row) > idx else ""
+                found_orders.append(order)
+                
+            # Limit to 10 most recent to prevent huge context
+            if len(found_orders) >= 10:
+                break
+                
+        return found_orders
+
+    async def _get_orders_from_airtable(
+        self, executor, phone: str, storage_config: Dict[str, Any], user: User, db: AsyncSession
+    ) -> List[Dict[str, Any]]:
+        base_id = storage_config.get("airtable_base_id", "")
+        if not base_id:
+            return []
+            
+        table_name = storage_config.get("airtable_orders_table", "Orders")
+        
+        search_res = await executor.execute_tool(
+            "airtable_record_management",
+            {
+                "operation": "search_records",
+                "base_id": base_id,
+                "table_name": table_name,
+                "formula": f"{{Customer Phone}} = '{phone}'",
+                "max_records": 10
+            },
+            user,
+            db
+        )
+        
+        records = search_res.get("records", []) if search_res.get("success") else []
+        if not records and not search_res.get("success"):
+            # Try read_records fallback
+            read_res = await executor.execute_tool(
+                "airtable_record_management",
+                {
+                    "operation": "read_records",
+                    "base_id": base_id,
+                    "table_name": table_name,
+                    "max_records": 100
+                },
+                user,
+                db
+            )
+            all_records = read_res.get("records", []) if read_res.get("success") else []
+            records = [r for r in all_records if r.get("fields", {}).get("Customer Phone") == phone][:10]
+
+        found_orders = []
+        for r in records:
+            fields = r.get("fields", {})
+            found_orders.append({
+                "Order ID": fields.get("Order ID", ""),
+                "Status": fields.get("Status", ""),
+                "Created At": fields.get("Created At", ""),
+                "Subtotal": fields.get("Subtotal", ""),
+                "Currency": fields.get("Currency", "KES"),
+                "Items": fields.get("Items", "")
+            })
+            
+        return found_orders
 
     async def _sub_initiate_mpesa_payment(
         self,
