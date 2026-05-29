@@ -551,6 +551,7 @@ class ConversationalAgentService:
             # Run the inner tool-calling loop (max 3 iterations)
             actions_taken = []
             order_created = False
+            order_cancelled = False
             order_data = None
             order_notification = ""
             collected_image_urls: List[str] = []
@@ -626,6 +627,7 @@ class ConversationalAgentService:
                         "image_urls": image_urls,
                         "cards": collected_product_cards,
                         "order_created": order_created,
+                        "order_cancelled": order_cancelled,
                         "order_data": order_data,
                         "order_notification": order_notification,
                         "actions_taken": actions_taken
@@ -797,14 +799,19 @@ class ConversationalAgentService:
 
                     # Check if an order was cancelled
                     if tool_name == "cancel_order" and tool_result.get("success"):
+                        order_cancelled = True
                         cancel_data = tool_result.get("cancellation_data", {})
                         # OrderService format_order_notification handles cancellation type
-                        order_notification = self.order_service.format_order_notification(
+                        notif_result = await self.order_service.format_order_notification(
                             order_data=cancel_data,
                             business_name=business_name,
                             currency=currency,
                             notification_type="cancellation"
                         )
+                        if isinstance(notif_result, dict):
+                            order_notification = notif_result.get("message", "")
+                        else:
+                            order_notification = str(notif_result)
 
                     # Build the tool result message for the LLM
                     # For display_product_cards: tell the LLM cards were already sent
@@ -853,6 +860,7 @@ class ConversationalAgentService:
                 "image_urls": image_urls,
                 "cards": collected_product_cards,
                 "order_created": order_created,
+                "order_cancelled": order_cancelled,
                 "order_data": order_data,
                 "order_notification": order_notification,
                 "actions_taken": actions_taken
@@ -2984,6 +2992,7 @@ class ConversationalAgentService:
             "image_urls": [],
             "cards": [],
             "order_created": False,
+            "order_cancelled": False,
             "order_data": None,
             "order_notification": "",
             "actions_taken": []

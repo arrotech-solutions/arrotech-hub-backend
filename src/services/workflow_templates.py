@@ -252,6 +252,21 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                     "to_number": "{{config.business_phone}}",
                     "message": "{{step_1.order_notification}}"
                 }
+            },
+            {
+                "tool_name": "whatsapp_send_message",
+                "description": "Notify business owner of cancelled order (WhatsApp)",
+                "condition": {
+                    "type": "if",
+                    "field": "step_1.order_cancelled",
+                    "operator": "equals",
+                    "value": True
+                },
+                "parameters": {
+                    "operation": "send_message",
+                    "to_number": "{{config.business_phone}}",
+                    "message": "{{step_1.order_notification}}"
+                }
             }
         ]
     },

@@ -7215,6 +7215,7 @@ Description: {payment.description or 'N/A'}"""
                 "image_urls": result.get("image_urls", []),
                 "cards": result.get("cards", []),
                 "order_created": result.get("order_created", False),
+                "order_cancelled": result.get("order_cancelled", False),
                 "order_data": result.get("order_data"),
                 "order_notification": result.get("order_notification", ""),
                 "actions_taken": result.get("actions_taken", []),

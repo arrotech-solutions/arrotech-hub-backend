@@ -1954,6 +1954,17 @@ WORKFLOW_TEMPLATES = [
                 },
                 "description": "Notify business owner of new order",
                 "condition": {"if": "step_1.order_created == True"}
+            },
+            {
+                "step_number": 4,
+                "tool_name": "whatsapp_send_message",
+                "tool_parameters": {
+                    "operation": "send_message",
+                    "to_number": "{{variables.business_phone}}",
+                    "message": "{{step_1.order_notification}}"
+                },
+                "description": "Notify business owner of cancelled order",
+                "condition": {"if": "step_1.order_cancelled == True"}
             }
         ],
         "variables": {
