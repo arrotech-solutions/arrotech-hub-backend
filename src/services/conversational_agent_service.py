@@ -317,6 +317,39 @@ AGENT_SUB_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "validate_order",
+            "description": (
+                "Validate order details before asking the customer to confirm. "
+                "Call this after collecting items and customer info, and BEFORE create_order. "
+                "Then show a clear summary and ask the customer to reply YES to confirm."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "customer_name": {"type": "string"},
+                    "customer_phone": {"type": "string"},
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "quantity": {"type": "number"},
+                                "unit_price": {"type": "number"}
+                            },
+                            "required": ["name", "quantity"]
+                        }
+                    },
+                    "delivery_method": {"type": "string"},
+                    "delivery_address": {"type": "string"}
+                },
+                "required": ["customer_name", "customer_phone", "items"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "cancel_order",
             "description": (
                 "Cancel an existing order. ONLY call this tool if you already have the EXACT order_id "
@@ -520,6 +553,41 @@ class ConversationalAgentService:
             currency = business_config.get("currency", "KES")
             delivery_methods = business_config.get("delivery_methods", ["delivery", "pickup"])
             custom_system_prompt = business_config.get("system_prompt", "")
+            customer_phone = business_config.get("customer_phone", "")
+            customer_name = business_config.get("customer_name", "")
+            business_phone = business_config.get("business_phone", "")
+
+            from .whatsapp_ordering_helpers import (
+                check_user_message_injection,
+                injection_safe_reply,
+                is_order_confirmation_message,
+            )
+
+            if check_user_message_injection(user_message):
+                logger.warning("[CONV_AGENT] Blocked suspected prompt injection in user message")
+                return {
+                    "response_text": injection_safe_reply(business_name),
+                    "image_urls": [],
+                    "cards": [],
+                    "order_created": False,
+                    "order_cancelled": False,
+                    "order_data": None,
+                    "order_notification": "",
+                    "actions_taken": [{"tool": "guard", "result_summary": "injection_blocked"}],
+                }
+
+            if session_key and is_order_confirmation_message(user_message):
+                try:
+                    await context_manager.mark_order_confirmed(session_key)
+                except Exception as e:
+                    logger.warning(f"[CONV_AGENT] mark_order_confirmed failed: {e}")
+
+            if not kb_id:
+                return self._fallback_response(
+                    business_name,
+                    error_code="no_kb",
+                    business_phone=business_phone,
+                )
             
             enabled_mcp_tool_names = business_config.get("enabled_mcp_tools", [])
             if isinstance(enabled_mcp_tool_names, str):
@@ -562,8 +630,14 @@ class ConversationalAgentService:
                 order_type=order_type,
                 currency=currency,
                 delivery_methods=delivery_methods,
-                custom_prompt=custom_system_prompt
+                custom_prompt=custom_system_prompt,
+                customer_phone=customer_phone,
+                customer_name=customer_name,
             )
+
+            cart_context = await self._build_cart_context_block(session_key, currency)
+            if cart_context:
+                system_prompt += cart_context
 
             # Harness: inject agent context into system prompt
             if self._harness_enabled:
@@ -595,7 +669,25 @@ class ConversationalAgentService:
             collected_image_urls: List[str] = []
             collected_product_cards: List[Dict[str, Any]] = []
             sent_product_ids: set = set()  # Track product IDs already sent as cards this turn
-            max_iterations = 3
+            checkout_keywords = ("order", "cart", "checkout", "pay", "total", "confirm", "delivery")
+            msg_lower = (user_message or "").lower()
+            has_checkout_intent = any(k in msg_lower for k in checkout_keywords)
+            if session_key:
+                try:
+                    session = await context_manager.get_session_by_key(session_key)
+                    if session and context_manager.get_cart(session):
+                        has_checkout_intent = True
+                except Exception:
+                    pass
+            max_iterations = 6 if has_checkout_intent else 4
+
+            await self._maybe_send_welcome_quick_replies(
+                session_key=session_key,
+                business_name=business_name,
+                customer_name=customer_name,
+                user=user,
+                db=db,
+            )
 
             # Assemble dynamic tools
             from .dynamic_tool_registry import dynamic_tool_registry
@@ -622,7 +714,9 @@ class ConversationalAgentService:
 
                 if response.error:
                     logger.error(f"[CONV_AGENT] LLM error: {response.error}")
-                    return self._fallback_response(business_name)
+                    return self._fallback_response(
+                        business_name, error_code="llm_error", business_phone=business_phone
+                    )
 
                 # If no tool calls, we have the final response
                 if not response.tools_called:
@@ -776,7 +870,10 @@ class ConversationalAgentService:
                         session_key=session_key,
                         user=user,
                         db=db,
-                        background_tasks=background_tasks
+                        background_tasks=background_tasks,
+                        user_message=user_message,
+                        default_customer_phone=customer_phone,
+                        default_customer_name=customer_name,
                     )
 
                     # Harness: track tool call for quality evaluation
@@ -828,9 +925,24 @@ class ConversationalAgentService:
                             ]
 
                     # Check if an order was created
+                    if tool_name == "calculate_total" and tool_result.get("success") and session_key:
+                        try:
+                            await context_manager.set_pending_confirmation(
+                                session_key,
+                                tool_args.get("items", []),
+                                tool_result.get("data") or {},
+                            )
+                        except Exception as e:
+                            logger.warning(f"[CONV_AGENT] pending_confirmation failed: {e}")
+
                     if tool_name == "create_order" and tool_result.get("success"):
                         order_created = True
                         order_data = tool_result.get("order_data", tool_result)
+                        if session_key:
+                            try:
+                                await context_manager.clear_cart(session_key)
+                            except Exception as e:
+                                logger.warning(f"[CONV_AGENT] clear_cart failed: {e}")
                         order_notification = self._format_business_notification(
                             order_data, business_name, currency
                         )
@@ -907,7 +1019,9 @@ class ConversationalAgentService:
         except Exception as e:
             logger.error(f"[CONV_AGENT] Execute error: {e}", exc_info=True)
             return self._fallback_response(
-                business_config.get("business_name", "Our Business")
+                business_config.get("business_name", "Our Business"),
+                error_code="exception",
+                business_phone=business_config.get("business_phone", ""),
             )
 
     def _detect_channel_platform(self, explicit_platform: Optional[str], session_key: str) -> str:
@@ -990,11 +1104,23 @@ class ConversationalAgentService:
         order_type: str,
         currency: str,
         delivery_methods: list,
-        custom_prompt: str = ""
+        custom_prompt: str = "",
+        customer_phone: str = "",
+        customer_name: str = "",
     ) -> str:
         """Build the business-specific system prompt for the AI agent."""
 
         delivery_str = ", ".join(delivery_methods) if delivery_methods else "delivery, pickup"
+        customer_context = ""
+        if customer_phone or customer_name:
+            customer_context = "\n## Known customer (from WhatsApp)\n"
+            if customer_name:
+                customer_context += f"- Name on file: {customer_name}\n"
+            if customer_phone:
+                customer_context += (
+                    f"- Phone on file: {customer_phone}\n"
+                    "- Use this phone for order lookup and M-Pesa unless they ask to use a different number.\n"
+                )
 
         # Industry-specific context
         industry_context = {
@@ -1039,10 +1165,12 @@ class ConversationalAgentService:
 4. Ask about delivery method ({delivery_str})
 5. If delivery, collect the delivery address
 6. Confirm the order summary with total price using `calculate_total`
-7. Create the order using `create_order`
-8. After order is created, offer M-Pesa payment using `initiate_mpesa_payment`
-9. If a customer wants to cancel an order, FIRST call `get_user_orders` to show their orders with Cancel buttons — do NOT guess the Order ID and do NOT ask them to type it. If you don't know their phone number, ask for it so you can look up their orders. If the order_id is already provided (e.g. from a button click), proceed directly with `cancel_order`
-10. If a customer wants to see their order history or check an order status, call `get_user_orders` then ALWAYS call `display_order_cards` with the results
+7. Call `validate_order`, then show a clear summary and ask the customer to reply *YES* to confirm
+8. Only after they confirm, create the order using `create_order`
+9. After order is created, offer M-Pesa payment using `initiate_mpesa_payment`
+10. If a customer wants to cancel an order, FIRST call `get_user_orders` to show their orders with Cancel buttons — do NOT guess the Order ID and do NOT ask them to type it. If you don't know their phone number, ask for it so you can look up their orders. If the order_id is already provided (e.g. from a button click), proceed directly with `cancel_order`
+11. If a customer wants to see their order history or check an order status, call `get_user_orders` then ALWAYS call `display_order_cards` with the results
+12. If the customer has items in their cart (see Cart section below), reference the cart when summarizing their order
 
 ## CRITICAL Product Display Rules
 - ALWAYS use `display_product_cards` when showing products with images/prices
@@ -1074,10 +1202,99 @@ class ConversationalAgentService:
 - For M-Pesa: only initiate after order is confirmed and customer agrees to pay now
 """
 
+        if customer_context:
+            prompt += customer_context
+
         if custom_prompt:
             prompt += f"\n## Additional Business Instructions\n{custom_prompt}\n"
 
         return prompt
+
+    async def _build_cart_context_block(self, session_key: str, currency: str) -> str:
+        if not session_key:
+            return ""
+        try:
+            session = await context_manager.get_session_by_key(session_key)
+            if not session:
+                return ""
+            cart = context_manager.get_cart(session)
+            if not cart:
+                return ""
+            from .whatsapp_ordering_helpers import format_cart_summary
+            summary = format_cart_summary(cart, currency)
+            return (
+                f"\n## Current cart (persisted — do not ignore)\n{summary}\n"
+                "When the customer is ready to checkout, use these cart items for "
+                "`calculate_total`, `validate_order`, and `create_order`.\n"
+            )
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] cart context block failed: {e}")
+            return ""
+
+    async def _maybe_send_welcome_quick_replies(
+        self,
+        session_key: str,
+        business_name: str,
+        customer_name: str,
+        user: User,
+        db: AsyncSession,
+    ) -> None:
+        if not session_key or not session_key.startswith("ccm:whatsapp:"):
+            return
+        try:
+            session = await context_manager.get_session_by_key(session_key)
+            if not session or session.metadata.get("welcome_sent"):
+                return
+            user_msgs = [m for m in session.messages if m.get("role") == "user"]
+            if len(user_msgs) > 2:
+                return
+
+            parts = session_key.split(":")
+            recipient = parts[3] if len(parts) >= 4 else ""
+            if not recipient:
+                return
+
+            from sqlalchemy import select
+            from ..models import Connection, ConnectionStatus
+            from .whatsapp_service import WhatsAppService
+
+            result = await db.execute(
+                select(Connection).filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == "whatsapp",
+                    Connection.status == ConnectionStatus.ACTIVE,
+                )
+            )
+            connection = result.scalar_one_or_none()
+            if not connection:
+                return
+            config = connection.config or {}
+            if not config.get("access_token") or not config.get("phone_number_id"):
+                return
+
+            greet_name = customer_name.split()[0] if customer_name else "there"
+            body = (
+                f"Hi {greet_name}! 👋 Welcome to *{business_name}*.\n\n"
+                "Tap an option below or tell me what you'd like."
+            )
+            wa = WhatsAppService()
+            await wa.send_quick_reply_buttons(
+                to_number=recipient,
+                body_text=body,
+                buttons=[
+                    {"id": "menu:browse", "title": "Browse menu"},
+                    {"id": "menu:orders", "title": "My orders"},
+                    {"id": "menu:human", "title": "Talk to us"},
+                ],
+                config={
+                    "access_token": config.get("access_token"),
+                    "phone_number_id": config.get("phone_number_id"),
+                },
+            )
+            session.metadata["welcome_sent"] = True
+            await context_manager.save_session(session)
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] welcome quick replies failed: {e}")
 
     # ═══════════════════════════════════════════════════════════
     # CONVERSATION HISTORY (CCM integration)
@@ -1141,7 +1358,10 @@ class ConversationalAgentService:
         session_key: str,
         user: User,
         db: AsyncSession,
-        background_tasks: Optional['BackgroundTasks'] = None
+        background_tasks: Optional['BackgroundTasks'] = None,
+        user_message: str = "",
+        default_customer_phone: str = "",
+        default_customer_name: str = "",
     ) -> Dict[str, Any]:
         """Execute one of the agent's sub-tools."""
 
@@ -1155,6 +1375,10 @@ class ConversationalAgentService:
                 )
 
             elif tool_name == "create_order":
+                if not arguments.get("customer_phone") and default_customer_phone:
+                    arguments["customer_phone"] = default_customer_phone
+                if not arguments.get("customer_name") and default_customer_name:
+                    arguments["customer_name"] = default_customer_name
                 return await self._sub_create_order(
                     arguments=arguments,
                     order_type=order_type,
@@ -1163,13 +1387,27 @@ class ConversationalAgentService:
                     storage_config=storage_config,
                     user=user,
                     db=db,
-                    background_tasks=background_tasks
+                    background_tasks=background_tasks,
+                    session_key=session_key,
+                    user_message=user_message,
+                )
+
+            elif tool_name == "validate_order":
+                if not arguments.get("customer_phone") and default_customer_phone:
+                    arguments["customer_phone"] = default_customer_phone
+                if not arguments.get("customer_name") and default_customer_name:
+                    arguments["customer_name"] = default_customer_name
+                return await self._sub_validate_order(
+                    arguments=arguments,
+                    order_type=order_type,
+                    currency=currency,
                 )
 
             elif tool_name == "calculate_total":
                 return await self._sub_calculate_total(
                     items=arguments.get("items", []),
-                    currency=currency
+                    currency=currency,
+                    session_key=session_key,
                 )
 
             elif tool_name == "initiate_mpesa_payment":
@@ -1205,6 +1443,8 @@ class ConversationalAgentService:
                 )
 
             elif tool_name == "get_user_orders":
+                if not arguments.get("customer_phone") and default_customer_phone:
+                    arguments["customer_phone"] = default_customer_phone
                 return await self._sub_get_user_orders(
                     arguments=arguments,
                     storage_config=storage_config,
@@ -1239,13 +1479,15 @@ class ConversationalAgentService:
             return {"success": False, "result": "No knowledge base configured for this business."}
 
         try:
+            from .whatsapp_ordering_helpers import normalize_search_query
             from .tool_executor import ToolExecutor
             executor = ToolExecutor()
 
+            normalized_query = normalize_search_query(query)
             result = await executor.execute_tool(
                 "rag_search",
                 {
-                    "query": query,
+                    "query": normalized_query,
                     "kb_id": kb_id,
                     "top_k": 5,
                     "rerank": True,
@@ -1253,6 +1495,19 @@ class ConversationalAgentService:
                 },
                 user, db
             )
+            if not result.get("success") and normalized_query != query:
+                result = await executor.execute_tool(
+                    "rag_search",
+                    {
+                        "query": query,
+                        "kb_id": kb_id,
+                        "top_k": 5,
+                        "rerank": True,
+                        "rerank_top_n": 3,
+                    },
+                    user,
+                    db,
+                )
             logger.info(f"[CONV_AGENT] search_products result length: {len(str(result.get('result', '')))} chars")
 
             if result.get("success"):
@@ -1274,6 +1529,47 @@ class ConversationalAgentService:
             logger.error(f"[CONV_AGENT] RAG search error: {e}")
             return {"success": False, "result": f"Search error: {str(e)}"}
 
+    async def _sub_validate_order(
+        self,
+        arguments: Dict[str, Any],
+        order_type: str,
+        currency: str,
+    ) -> Dict[str, Any]:
+        """Validate order fields before confirmation."""
+        try:
+            order_data = {
+                "customer": {
+                    "name": arguments.get("customer_name", ""),
+                    "phone": arguments.get("customer_phone", ""),
+                },
+                "items": arguments.get("items", []),
+                "delivery_method": arguments.get("delivery_method", "pickup"),
+                "delivery_address": arguments.get("delivery_address", ""),
+                "currency": currency,
+                "order_type": order_type,
+            }
+            result = await self.order_service.handle_operation(
+                operation="validate_order",
+                order_data=order_data,
+                order_type=order_type,
+            )
+            is_valid = result.get("is_valid", False)
+            if is_valid:
+                result["result"] = (
+                    f"{result.get('message', 'Order looks good.')}\n"
+                    "INSTRUCTION: Show the customer a clear order summary with total, "
+                    "then ask them to reply YES to confirm before calling create_order."
+                )
+            return {
+                "success": is_valid,
+                "result": result.get(
+                    "message", result.get("error", "Validation failed")
+                ),
+                "data": result,
+            }
+        except Exception as e:
+            return {"success": False, "result": f"Validation error: {str(e)}"}
+
     async def _sub_create_order(
         self,
         arguments: Dict[str, Any],
@@ -1283,10 +1579,32 @@ class ConversationalAgentService:
         storage_config: Dict[str, Any] = None,
         user: User = None,
         db: AsyncSession = None,
-        background_tasks: Optional['BackgroundTasks'] = None
+        background_tasks: Optional['BackgroundTasks'] = None,
+        session_key: str = "",
+        user_message: str = "",
     ) -> Dict[str, Any]:
         """Create an order via OrderService, then persist to connected storage."""
         try:
+            from .whatsapp_ordering_helpers import is_order_confirmation_message
+
+            if session_key:
+                session = await context_manager.get_session_by_key(session_key)
+                pending = (session.metadata.get("pending_confirmation") if session else None)
+                confirmed = (
+                    is_order_confirmation_message(user_message)
+                    or (session and session.metadata.get("order_confirmed"))
+                )
+                if pending and not confirmed:
+                    return {
+                        "success": False,
+                        "result": (
+                            "ORDER_NOT_CONFIRMED: The customer has not confirmed yet. "
+                            "Show them the order summary with total and ask them to reply "
+                            "YES (or Ndio) to confirm. Do NOT call create_order until they confirm."
+                        ),
+                        "error": "ORDER_NOT_CONFIRMED",
+                    }
+
             order_result = await self.order_service.handle_operation(
                 operation="create_order",
                 customer_name=arguments.get("customer_name", ""),
@@ -1333,7 +1651,10 @@ class ConversationalAgentService:
             return {"success": False, "result": f"Order error: {str(e)}"}
 
     async def _sub_calculate_total(
-        self, items: List[Dict], currency: str
+        self,
+        items: List[Dict],
+        currency: str,
+        session_key: str = "",
     ) -> Dict[str, Any]:
         """Calculate order total via OrderService."""
         try:
@@ -1342,9 +1663,20 @@ class ConversationalAgentService:
                 items=items,
                 currency=currency
             )
+            if result.get("success") and session_key:
+                try:
+                    await context_manager.set_pending_confirmation(
+                        session_key, items, result
+                    )
+                except Exception as e:
+                    logger.warning(f"[CONV_AGENT] set_pending_confirmation: {e}")
             return {
                 "success": True,
-                "result": result.get("result", ""),
+                "result": (
+                    f"{result.get('result', '')}\n"
+                    "INSTRUCTION: Present this total to the customer and ask them to reply "
+                    "YES to confirm the order."
+                ),
                 "data": result
             }
         except Exception as e:
@@ -3358,13 +3690,30 @@ class ConversationalAgentService:
     # FALLBACK
     # ═══════════════════════════════════════════════════════════
 
-    def _fallback_response(self, business_name: str) -> Dict[str, Any]:
+    def _fallback_response(
+        self,
+        business_name: str,
+        error_code: str = "generic",
+        business_phone: str = "",
+    ) -> Dict[str, Any]:
         """Return a safe fallback when the agent encounters an error."""
-        return {
-            "response_text": (
-                f"Thank you for contacting {business_name}! "
-                "We're experiencing a brief issue. Our team will respond shortly. 🙏"
+        phone_hint = f" Please call {business_phone}." if business_phone else ""
+        messages = {
+            "no_kb": (
+                f"Thanks for messaging {business_name}! "
+                f"Our menu isn't available in chat yet.{phone_hint}"
             ),
+            "llm_error": (
+                f"Thanks for contacting {business_name}! "
+                f"We're having a brief technical issue.{phone_hint} We'll help you shortly. 🙏"
+            ),
+            "generic": (
+                f"Thank you for contacting {business_name}! "
+                f"We're experiencing a brief issue.{phone_hint} Our team will respond shortly. 🙏"
+            ),
+        }
+        return {
+            "response_text": messages.get(error_code, messages["generic"]),
             "image_urls": [],
             "cards": [],
             "order_created": False,

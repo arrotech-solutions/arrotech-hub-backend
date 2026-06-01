@@ -259,14 +259,14 @@ class WhatsAppService:
                             {
                                 "type": "reply",
                                 "reply": {
-                                    "id": f"cart:{name[:100]}:{price}",
+                                    "id": f"cart:{self._product_button_id(product_id)}",
                                     "title": "Add to Cart"
                                 }
                             },
                             {
                                 "type": "reply",
                                 "reply": {
-                                    "id": f"details:{name[:100]}:{price}",
+                                    "id": f"details:{self._product_button_id(product_id)}",
                                     "title": "View Details"
                                 }
                             }
@@ -801,6 +801,80 @@ class WhatsAppService:
                 "success": False,
                 "error": str(e)
             }
+
+    @staticmethod
+    def _product_button_id(product_id: str) -> str:
+        """Stable Meta reply button id (max 256 chars)."""
+        from .whatsapp_ordering_helpers import sanitize_product_button_id
+        return sanitize_product_button_id(product_id)
+
+    async def send_quick_reply_buttons(
+        self,
+        to_number: str,
+        body_text: str,
+        buttons: List[Dict[str, str]],
+        config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Send WhatsApp interactive reply buttons (max 3).
+        buttons: [{"id": "menu:browse", "title": "Browse menu"}, ...]
+        """
+        try:
+            credentials = self._get_credentials()
+            if config:
+                phone_number_id = config.get("phone_number_id")
+                access_token = config.get("access_token")
+                base_url = config.get("base_url", credentials["base_url"])
+            else:
+                phone_number_id = credentials["phone_number_id"]
+                access_token = credentials["access_token"]
+                base_url = credentials["base_url"]
+
+            if not phone_number_id or not access_token:
+                return {"success": False, "error": "WhatsApp credentials not configured"}
+
+            wa_buttons = []
+            for btn in buttons[:3]:
+                title = (btn.get("title") or "Option")[:20]
+                btn_id = (btn.get("id") or "menu:option")[:256]
+                wa_buttons.append({
+                    "type": "reply",
+                    "reply": {"id": btn_id, "title": title},
+                })
+
+            if not wa_buttons:
+                return {"success": False, "error": "No buttons provided"}
+
+            formatted_number = self._format_phone_number(to_number)
+            url = f"{base_url}/{phone_number_id}/messages"
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": formatted_number,
+                "type": "interactive",
+                "interactive": {
+                    "type": "button",
+                    "body": {"text": body_text[:1024]},
+                    "action": {"buttons": wa_buttons},
+                },
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=headers) as response:
+                    result = await response.json()
+                    if response.status == 200:
+                        return {
+                            "success": True,
+                            "message_id": result.get("messages", [{}])[0].get("id"),
+                        }
+                    logger.warning(f"Failed to send quick reply buttons: {result}")
+                    return {"success": False, "error": result}
+        except Exception as e:
+            logger.error(f"Error sending quick reply buttons: {e}")
+            return {"success": False, "error": str(e)}
 
     def _format_phone_number(self, phone_number: str) -> str:
         """Format phone number for WhatsApp API."""

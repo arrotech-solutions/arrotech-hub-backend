@@ -65,6 +65,11 @@ class BaseConfig(BaseSettings):
     WHATSAPP_APP_ID: Optional[str] = None
     WHATSAPP_APP_SECRET: Optional[str] = None
     WHATSAPP_VERIFY_TOKEN: Optional[str] = None
+    # Inbound webhook flood control (per business owner + customer phone)
+    WHATSAPP_WEBHOOK_RATE_LIMIT: int = 15
+    WHATSAPP_WEBHOOK_RATE_WINDOW: int = 60
+    # Require X-Hub-Signature-256 when app secret is set
+    WHATSAPP_WEBHOOK_REQUIRE_SIGNATURE: bool = False
     
     # Facebook (Pages) Configuration
     FACEBOOK_APP_ID: Optional[str] = None

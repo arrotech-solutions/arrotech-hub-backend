@@ -44,8 +44,14 @@ async def verify_webhook(
     logger.info(f"[WHATSAPP WEBHOOK] Verification request received")
     logger.info(f"[WHATSAPP WEBHOOK] Mode: {hub_mode}, Token: {hub_verify_token}")
     
-    # Check verification token
-    verify_token = settings.WHATSAPP_VERIFY_TOKEN or "arrotech_whatsapp_webhook_2024"
+    # Check verification token (required in production)
+    verify_token = settings.WHATSAPP_VERIFY_TOKEN
+    env = getattr(settings, "ENVIRONMENT", "development").lower()
+    if not verify_token and env in ("development", "testing"):
+        verify_token = "arrotech_whatsapp_webhook_2024"
+    if not verify_token:
+        logger.error("[WHATSAPP WEBHOOK] WHATSAPP_VERIFY_TOKEN is not configured")
+        raise HTTPException(status_code=503, detail="Webhook verify token not configured")
     
     if hub_mode == "subscribe" and hub_verify_token == verify_token:
         logger.info("[WHATSAPP WEBHOOK] Verification successful!")
@@ -66,7 +72,23 @@ async def receive_webhook(
     This is where all the magic happens for auto-reply!
     """
     try:
-        body = await request.json()
+        raw_body = await request.body()
+        signature_header = request.headers.get("X-Hub-Signature-256", "")
+        app_secret = settings.WHATSAPP_APP_SECRET or settings.FACEBOOK_APP_SECRET
+        require_sig = getattr(settings, "WHATSAPP_WEBHOOK_REQUIRE_SIGNATURE", True)
+
+        if app_secret and require_sig:
+            from ..services.whatsapp_ordering_helpers import verify_whatsapp_signature
+            if not verify_whatsapp_signature(raw_body, signature_header, app_secret):
+                logger.warning("[WHATSAPP WEBHOOK] Invalid or missing signature")
+                raise HTTPException(status_code=403, detail="Invalid signature")
+        elif require_sig and not app_secret:
+            logger.warning(
+                "[WHATSAPP WEBHOOK] WHATSAPP_APP_SECRET not set — skipping signature check"
+            )
+
+        import json as _json
+        body = _json.loads(raw_body.decode("utf-8") if raw_body else "{}")
         logger.info(f"[WHATSAPP WEBHOOK] Received webhook payload: {body}")
         
         # Extract the entry array
@@ -110,6 +132,7 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
     logger.info(f"[WHATSAPP WEBHOOK] Processing {len(messages)} incoming message(s)")
     
     for msg in messages:
+        pending_cart_item = None
         try:
             # Extract message details
             msg_id = msg.get("id")
@@ -196,28 +219,75 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                             )
                         msg_type = "text"
 
+                    # ── Welcome / menu quick-reply buttons ──
+                    elif btn_id.startswith("menu:"):
+                        menu_action = btn_id.split(":", 1)[1] if ":" in btn_id else ""
+                        menu_messages = {
+                            "browse": "I'd like to browse the menu. Please show me what you have.",
+                            "orders": "I'd like to see my order history and status.",
+                            "human": "I'd like to speak with a person, please.",
+                            "reset": "reset",
+                        }
+                        content = menu_messages.get(
+                            menu_action,
+                            title or "Hello, I need help with my order.",
+                        )
+                        msg_type = "text"
+
                     # ── Parse product card button clicks ──
-                    # New format: "cart:Chicken Stew:400" or "details:Chicken Stew:400"
-                    # Old format: "add_to_cart_TG-0218" or "view_details_TG-0218"
+                    # New format: cart:{product_id} / details:{product_id}
+                    # Legacy: cart:Chicken Stew:400
                     elif btn_id.startswith("cart:") or btn_id.startswith("details:"):
-                        # New self-contained format — name:price embedded in ID
+                        from ..services.whatsapp_ordering_helpers import parse_product_button_id
+
                         is_add_to_cart = btn_id.startswith("cart:")
-                        parts = btn_id.split(":", 2)  # ["cart", "Chicken Stew", "400"]
-                        product_name = parts[1] if len(parts) >= 2 else None
+                        _action, product_id = parse_product_button_id(btn_id)
+                        product_name = None
                         product_price = ""
-                        if len(parts) >= 3:
+                        price_val = 0.0
+                        cache_key_id = product_id
+
+                        if product_id:
                             try:
-                                price_val = float(parts[2])
-                                product_price = f" (KES {price_val:,.0f})"
-                            except (ValueError, TypeError):
-                                pass
+                                from ..services.cache_service import cache_service
+                                cached = cache_service.get(
+                                    f"product_card:{phone_number_id}:{product_id}"
+                                )
+                                if cached and isinstance(cached, dict):
+                                    product_name = cached.get("name", product_id)
+                                    price_val = float(cached.get("price", 0) or 0)
+                                    if price_val:
+                                        product_price = f" (KES {price_val:,.0f})"
+                            except Exception as cache_err:
+                                logger.warning(
+                                    f"[WHATSAPP WEBHOOK] Product cache lookup failed: {cache_err}"
+                                )
+                            if not product_name:
+                                product_name = product_id
+                        else:
+                            # Legacy name:price format
+                            parts = btn_id.split(":", 2)
+                            product_name = parts[1] if len(parts) >= 2 else None
+                            if len(parts) >= 3:
+                                try:
+                                    price_val = float(parts[2])
+                                    product_price = f" (KES {price_val:,.0f})"
+                                except (ValueError, TypeError):
+                                    pass
+                            cache_key_id = product_name
 
                         if product_name:
                             if is_add_to_cart:
                                 content = (
                                     f"I want to add {product_name}{product_price} to my cart. "
-                                    f"Please proceed with my order."
+                                    f"Please show my cart and help me complete the order."
                                 )
+                                pending_cart_item = {
+                                    "id": cache_key_id or product_name,
+                                    "name": product_name,
+                                    "unit_price": price_val,
+                                    "quantity": 1,
+                                }
                             else:
                                 content = (
                                     f"I want to see more details about {product_name}{product_price}. "
@@ -232,23 +302,30 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                         is_add_to_cart = btn_id.startswith("add_to_cart_")
                         product_id = btn_id.replace("add_to_cart_", "").replace("view_details_", "")
                         product_name = product_id  # fallback to opaque ID
+                        legacy_price = 0.0
                         try:
                             from ..services.cache_service import cache_service
                             cached = cache_service.get(f"product_card:{phone_number_id}:{product_id}")
                             if cached and isinstance(cached, dict):
                                 product_name = cached.get("name", product_id)
-                                price = cached.get("price", 0)
+                                legacy_price = float(cached.get("price", 0) or 0)
                                 currency = cached.get("currency", "KES")
-                                if price:
-                                    product_price = f" ({currency} {price:,.0f})"
+                                if legacy_price:
+                                    product_price = f" ({currency} {legacy_price:,.0f})"
                         except Exception as cache_err:
                             logger.warning(f"[WHATSAPP WEBHOOK] Product cache lookup failed: {cache_err}")
 
                         if is_add_to_cart:
                             content = (
                                 f"I want to add {product_name}{product_price} to my cart. "
-                                f"Please proceed with my order."
+                                f"Please show my cart and help me complete the order."
                             )
+                            pending_cart_item = {
+                                "id": product_id or product_name,
+                                "name": product_name,
+                                "unit_price": legacy_price,
+                                "quantity": 1,
+                            }
                         else:
                             content = (
                                 f"I want to see more details about {product_name}{product_price}. "
@@ -327,6 +404,17 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
             await db.refresh(message)
             
             logger.info(f"[WHATSAPP WEBHOOK] Saved message {msg_id} from {from_number}")
+
+            if pending_cart_item:
+                try:
+                    from ..services.conversation_context_manager import (
+                        context_manager,
+                        _build_session_key,
+                    )
+                    sk = _build_session_key("whatsapp", str(owner_user_id), from_number)
+                    await context_manager.add_cart_item(sk, pending_cart_item)
+                except Exception as cart_err:
+                    logger.warning(f"[WHATSAPP WEBHOOK] Cart update failed: {cart_err}")
             
             # Trigger processing
             if background_tasks:
@@ -360,6 +448,8 @@ async def background_process_message(user_id: uuid.UUID, contact_id: uuid.UUID, 
                 logger.error(f"[WHATSAPP WEBHOOK BG] Contact or message not found")
                 return
 
+            wa_config = None
+
             # Mark message as read and show typing indicator
             try:
                 from ..models import Connection
@@ -392,16 +482,61 @@ async def background_process_message(user_id: uuid.UUID, contact_id: uuid.UUID, 
             except Exception as e:
                 logger.error(f"[WHATSAPP WEBHOOK BG] Failed to send typing indicator: {e}")
 
-
-            # Trigger auto-reply processing
+            # Per-sender rate limit
             try:
-                from ..services.whatsapp_auto_reply import auto_reply_engine
-                await auto_reply_engine.process_incoming_message(
-                    db, user_id, contact, message
+                from ..services.cache_service import cache_service
+                from ..services.whatsapp_ordering_helpers import (
+                    check_whatsapp_rate_limit,
+                    rate_limit_message,
+                )
+                limit = getattr(settings, "WHATSAPP_WEBHOOK_RATE_LIMIT", 15)
+                window = getattr(settings, "WHATSAPP_WEBHOOK_RATE_WINDOW", 60)
+                allowed, count = check_whatsapp_rate_limit(
+                    cache_service.redis_client,
+                    str(user_id),
+                    contact.phone_number,
+                    limit=limit,
+                    window_seconds=window,
+                )
+                if not allowed:
+                    logger.warning(
+                        f"[WHATSAPP WEBHOOK BG] Rate limit exceeded for {contact.phone_number} ({count})"
+                    )
+                    if wa_config:
+                        from ..services.whatsapp_service import WhatsAppService
+                        biz_phone = (wa_config or {}).get("business_phone", "")
+                        await WhatsAppService().send_message(
+                            contact.phone_number,
+                            rate_limit_message(biz_phone),
+                            config=wa_config,
+                        )
+                    return
+            except Exception as e:
+                logger.error(f"[WHATSAPP WEBHOOK BG] Rate limit check error: {e}")
+
+            has_agent_workflow = False
+            try:
+                from ..services.whatsapp_workflow_trigger import WhatsAppWorkflowTrigger
+                has_agent_workflow = await WhatsAppWorkflowTrigger.has_active_conversational_agent(
+                    user_id, db
                 )
             except Exception as e:
-                logger.error(f"[WHATSAPP WEBHOOK BG] Auto-reply error: {e}")
-            
+                logger.warning(f"[WHATSAPP WEBHOOK BG] Agent workflow check failed: {e}")
+
+            # Skip auto-reply when a conversational ordering workflow is active
+            if not has_agent_workflow:
+                try:
+                    from ..services.whatsapp_auto_reply import auto_reply_engine
+                    await auto_reply_engine.process_incoming_message(
+                        db, user_id, contact, message
+                    )
+                except Exception as e:
+                    logger.error(f"[WHATSAPP WEBHOOK BG] Auto-reply error: {e}")
+            else:
+                logger.info(
+                    "[WHATSAPP WEBHOOK BG] Skipping auto-reply — conversational agent workflow active"
+                )
+
             # Trigger workflow automation
             try:
                 from ..services.whatsapp_workflow_trigger import WhatsAppWorkflowTrigger

@@ -340,6 +340,10 @@ class ConversationContextManager:
         session.summary = ""
         session.message_count = 0
         session.last_activity_at = time.time()
+        session.metadata.pop("cart", None)
+        session.metadata.pop("pending_confirmation", None)
+        session.metadata.pop("order_confirmed", None)
+        session.metadata.pop("welcome_sent", None)
 
         self._save_to_redis(session)
         await self._save_to_db(session)
@@ -369,6 +373,94 @@ class ConversationContextManager:
         if session:
             self._save_to_redis(session)
         return session
+
+    async def save_session(self, session: ConversationSession) -> None:
+        """Persist session metadata/messages to Redis and PostgreSQL."""
+        session.last_activity_at = time.time()
+        self._save_to_redis(session)
+        await self._save_to_db(session)
+
+    def get_cart(self, session: ConversationSession) -> List[Dict[str, Any]]:
+        cart = session.metadata.get("cart", [])
+        return cart if isinstance(cart, list) else []
+
+    async def add_cart_item(
+        self,
+        session_key: str,
+        item: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Add or increment an item in the session cart."""
+        session = await self.get_session_by_key(session_key)
+        if not session:
+            return []
+
+        cart = self.get_cart(session)
+        product_id = str(item.get("id") or item.get("product_id") or "")
+        name = (item.get("name") or "Item").strip()
+        unit_price = float(item.get("unit_price", item.get("price", 0)) or 0)
+        quantity = float(item.get("quantity", 1) or 1)
+
+        merged = False
+        for entry in cart:
+            same_id = product_id and str(entry.get("id")) == product_id
+            same_name = not product_id and entry.get("name", "").lower() == name.lower()
+            if same_id or same_name:
+                entry["quantity"] = float(entry.get("quantity", 1)) + quantity
+                merged = True
+                break
+
+        if not merged:
+            cart.append({
+                "id": product_id or name[:50],
+                "name": name,
+                "quantity": quantity,
+                "unit_price": unit_price,
+                "unit": item.get("unit", "pcs"),
+            })
+
+        session.metadata["cart"] = cart
+        await self.save_session(session)
+        return cart
+
+    async def clear_cart(self, session_key: str) -> None:
+        session = await self.get_session_by_key(session_key)
+        if not session:
+            return
+        session.metadata["cart"] = []
+        session.metadata.pop("pending_confirmation", None)
+        await self.save_session(session)
+
+    async def set_pending_confirmation(
+        self,
+        session_key: str,
+        items: List[Dict[str, Any]],
+        total_data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        session = await self.get_session_by_key(session_key)
+        if not session:
+            return
+        session.metadata["pending_confirmation"] = {
+            "items": items,
+            "total_data": total_data or {},
+            "at": time.time(),
+        }
+        session.metadata.pop("order_confirmed", None)
+        await self.save_session(session)
+
+    async def mark_order_confirmed(self, session_key: str) -> None:
+        session = await self.get_session_by_key(session_key)
+        if not session:
+            return
+        session.metadata["order_confirmed"] = True
+        await self.save_session(session)
+
+    async def clear_pending_confirmation(self, session_key: str) -> None:
+        session = await self.get_session_by_key(session_key)
+        if not session:
+            return
+        session.metadata.pop("pending_confirmation", None)
+        session.metadata.pop("order_confirmed", None)
+        await self.save_session(session)
 
     # ─── Redis Storage (synchronous — matches cache_service pattern) ──────
 

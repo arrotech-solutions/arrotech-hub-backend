@@ -53,6 +53,41 @@ RE_KEYWORDS = {
 
 class WhatsAppWorkflowTrigger:
     """Service to trigger workflows based on WhatsApp events."""
+
+    @classmethod
+    async def has_active_conversational_agent(
+        cls,
+        user_id: uuid.UUID,
+        db: AsyncSession,
+    ) -> bool:
+        """True if user has an active WhatsApp workflow with a conversational_agent step."""
+        from ..models import WorkflowStep
+
+        result = await db.execute(
+            select(Workflow).where(
+                and_(
+                    Workflow.user_id == user_id,
+                    Workflow.status == WorkflowStatus.ACTIVE,
+                    Workflow.trigger_type == WorkflowTriggerType.EVENT.value,
+                )
+            )
+        )
+        workflows = result.scalars().all()
+        for workflow in workflows:
+            trigger_config = workflow.trigger_config or {}
+            if trigger_config.get("event_type") != "whatsapp_message_received":
+                continue
+            step_result = await db.execute(
+                select(WorkflowStep).where(
+                    and_(
+                        WorkflowStep.workflow_id == workflow.id,
+                        WorkflowStep.tool_name == "conversational_agent",
+                    )
+                )
+            )
+            if step_result.scalar_one_or_none():
+                return True
+        return False
     
     TRIGGER_EVENTS = [
         "whatsapp_message_received",
@@ -163,6 +198,14 @@ class WhatsAppWorkflowTrigger:
                         should_trigger = True
                     
                     if should_trigger:
+                        wf_config = dict((workflow.variables or {}).get("config", {}) or {})
+                        wf_config.setdefault("customer_phone", contact.phone_number)
+                        wf_config.setdefault(
+                            "customer_name",
+                            contact.name or contact.profile_name or "Customer",
+                        )
+                        wf_config.setdefault("platform", "whatsapp")
+
                         # Build input variables for workflow
                         input_vars = {
                             "whatsapp_contact_id": str(contact.id) if contact.id else None,
@@ -176,7 +219,7 @@ class WhatsAppWorkflowTrigger:
                             "session_key": session_key,
                             "platform": "whatsapp",
                             # ── Inject workflow-level config for agent tools ──
-                            "config": (workflow.variables or {}).get("config", {}),
+                            "config": wf_config,
                         }
                         
                         # Add real estate context if detected

@@ -7194,7 +7194,21 @@ Description: {payment.description or 'N/A'}"""
 
             user_message = parameters.get("user_message", "")
             session_key = parameters.get("session_key", "")
-            business_config = parameters.get("business_config", {})
+            business_config = dict(parameters.get("business_config") or {})
+
+            # Merge workflow-level config and WhatsApp contact context
+            workflow_config = parameters.get("config")
+            if isinstance(workflow_config, dict):
+                for key, value in workflow_config.items():
+                    if value is not None and value != "":
+                        business_config.setdefault(key, value)
+
+            if parameters.get("whatsapp_contact_phone"):
+                business_config.setdefault("customer_phone", parameters["whatsapp_contact_phone"])
+            if parameters.get("whatsapp_contact_name"):
+                business_config.setdefault("customer_name", parameters["whatsapp_contact_name"])
+            if parameters.get("platform"):
+                business_config.setdefault("platform", parameters["platform"])
 
             if not user_message:
                 return {"success": False, "error": "No user message provided", "result": None}
