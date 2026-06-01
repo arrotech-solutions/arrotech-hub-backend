@@ -428,7 +428,88 @@ class ConversationContextManager:
             return
         session.metadata["cart"] = []
         session.metadata.pop("pending_confirmation", None)
+        session.metadata.pop("order_confirmed", None)
         await self.save_session(session)
+
+    def _find_cart_entry_index(
+        self,
+        cart: List[Dict[str, Any]],
+        product_id: str = "",
+        product_name: str = "",
+    ) -> int:
+        """Return 0-based index of matching cart line, or -1."""
+        pid = (product_id or "").strip()
+        pname = (product_name or "").strip().lower()
+        for i, entry in enumerate(cart):
+            if pid and str(entry.get("id", "")) == pid:
+                return i
+            if pname and (entry.get("name", "") or "").strip().lower() == pname:
+                return i
+        if pname:
+            for i, entry in enumerate(cart):
+                if pname in (entry.get("name", "") or "").strip().lower():
+                    return i
+        return -1
+
+    async def remove_cart_item(
+        self,
+        session_key: str,
+        product_id: str = "",
+        product_name: str = "",
+    ) -> tuple:
+        """
+        Remove one line from the cart.
+        Returns (cart, removed: bool, removed_name: str).
+        """
+        session = await self.get_session_by_key(session_key)
+        if not session:
+            return [], False, ""
+
+        cart = self.get_cart(session)
+        idx = self._find_cart_entry_index(cart, product_id, product_name)
+        if idx < 0:
+            return cart, False, product_name or product_id
+
+        removed_name = cart[idx].get("name", "Item")
+        cart.pop(idx)
+        session.metadata["cart"] = cart
+        session.metadata.pop("pending_confirmation", None)
+        await self.save_session(session)
+        return cart, True, removed_name
+
+    async def set_cart_item_quantity(
+        self,
+        session_key: str,
+        quantity: float,
+        product_id: str = "",
+        product_name: str = "",
+    ) -> tuple:
+        """
+        Set quantity for a cart line. quantity <= 0 removes the item.
+        Returns (cart, success: bool, item_name: str, message_key: str).
+        """
+        session = await self.get_session_by_key(session_key)
+        if not session:
+            return [], False, "", "no_session"
+
+        cart = self.get_cart(session)
+        idx = self._find_cart_entry_index(cart, product_id, product_name)
+        if idx < 0:
+            return cart, False, product_name or product_id, "not_found"
+
+        item_name = cart[idx].get("name", "Item")
+        if quantity <= 0:
+            cart.pop(idx)
+            session.metadata["cart"] = cart
+            session.metadata.pop("pending_confirmation", None)
+            await self.save_session(session)
+            return cart, True, item_name, "removed"
+
+        cart[idx]["quantity"] = float(quantity)
+        session.metadata["cart"] = cart
+        session.metadata.pop("pending_confirmation", None)
+        await self.save_session(session)
+        return cart, True, item_name, "updated"
 
     async def set_pending_confirmation(
         self,

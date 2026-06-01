@@ -224,6 +224,9 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                         menu_action = btn_id.split(":", 1)[1] if ":" in btn_id else ""
                         menu_messages = {
                             "browse": "I'd like to browse the menu. Please show me what you have.",
+                            "cart": "view my cart",
+                            "clear_cart": "clear cart",
+                            "checkout": "checkout",
                             "orders": "I'd like to see my order history and status.",
                             "human": "I'd like to speak with a person, please.",
                             "reset": "reset",
@@ -412,7 +415,41 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                         _build_session_key,
                     )
                     sk = _build_session_key("whatsapp", str(owner_user_id), from_number)
-                    await context_manager.add_cart_item(sk, pending_cart_item)
+                    cart = await context_manager.add_cart_item(sk, pending_cart_item)
+                    # Friendly instant feedback + cart action buttons (before agent reply)
+                    try:
+                        from ..models import Connection
+                        conn_res = await db.execute(
+                            select(Connection).filter(
+                                Connection.user_id == owner_user_id,
+                                Connection.platform == "whatsapp",
+                                Connection.status == "active",
+                            )
+                        )
+                        wa_conn = conn_res.scalar_one_or_none()
+                        wa_cfg = wa_conn.config if wa_conn else None
+                        if wa_cfg and wa_cfg.get("access_token"):
+                            from ..services.whatsapp_service import WhatsAppService
+                            from ..services.whatsapp_ordering_helpers import (
+                                cart_action_buttons,
+                            )
+                            item_name = pending_cart_item.get("name", "Item")
+                            count = len(cart)
+                            wa = WhatsAppService()
+                            await wa.send_quick_reply_buttons(
+                                to_number=from_number,
+                                body_text=(
+                                    f"✅ Added *{item_name}*!\n"
+                                    f"You have {count} item(s) in your cart.\n\n"
+                                    "What would you like to do next?"
+                                ),
+                                buttons=cart_action_buttons(),
+                                config=wa_cfg,
+                            )
+                    except Exception as btn_err:
+                        logger.warning(
+                            f"[WHATSAPP WEBHOOK] Cart confirmation buttons failed: {btn_err}"
+                        )
                 except Exception as cart_err:
                     logger.warning(f"[WHATSAPP WEBHOOK] Cart update failed: {cart_err}")
             

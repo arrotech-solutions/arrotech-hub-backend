@@ -142,18 +142,153 @@ def parse_product_button_id(btn_id: str) -> Tuple[Optional[str], Optional[str]]:
 
 def format_cart_summary(cart: List[Dict[str, Any]], currency: str = "KES") -> str:
     if not cart:
-        return "Your cart is empty."
+        return "Your cart is empty. 🛒\nTap *Browse menu* to add items, or tell me what you'd like."
     lines = [f"🛒 *Your cart* ({len(cart)} item(s)):"]
     total = 0.0
-    for item in cart:
+    for i, item in enumerate(cart, 1):
         qty = float(item.get("quantity", 1))
         price = float(item.get("unit_price", 0) or item.get("price", 0))
         name = item.get("name", "Item")
         line_total = qty * price
         total += line_total
-        lines.append(f"• {name} × {qty:g} — {currency} {line_total:,.0f}")
+        lines.append(f"{i}. {name} × {qty:g} — {currency} {line_total:,.0f}")
     lines.append(f"\n*Total:* {currency} {total:,.0f}")
+    lines.append(
+        "\n_To change your cart:_\n"
+        "• Tap *Clear cart* to start over\n"
+        "• Say *remove [item name]* or *change [item] to 2*\n"
+        "• Tap *Checkout* when you're ready"
+    )
     return "\n".join(lines)
+
+
+_CART_CLEAR_PHRASES = (
+    "clear cart",
+    "clear my cart",
+    "empty cart",
+    "empty my cart",
+    "delete cart",
+    "remove all",
+    "start over cart",
+    "futa cart",
+    "futa kikapu",
+    "ondoa cart",
+    "ondoa kikapu",
+    "clear the cart",
+)
+
+_CART_VIEW_PHRASES = (
+    "view cart",
+    "view my cart",
+    "my cart",
+    "show cart",
+    "show my cart",
+    "what's in my cart",
+    "whats in my cart",
+    "cart summary",
+    "see my cart",
+    "onyesha cart",
+    "kikapu changu",
+)
+
+_CART_CHECKOUT_PHRASES = (
+    "checkout",
+    "check out",
+    "place order",
+    "ready to order",
+    "complete order",
+    "finish order",
+    "lipa",
+    "order now",
+)
+
+
+def match_cart_command(message: str) -> Optional[str]:
+    """
+    Detect simple cart intents from customer text or menu button synthetic messages.
+    Returns: 'clear' | 'view' | 'checkout' | 'reset' | None
+    """
+    if not message:
+        return None
+    normalized = message.strip().lower()
+    if normalized in ("reset", "start over", "new conversation", "clear", "restart", "anza upya"):
+        return "reset"
+    if normalized in _CART_CLEAR_PHRASES or any(
+        normalized == p or normalized.startswith(p + " ") for p in _CART_CLEAR_PHRASES
+    ):
+        return "clear"
+    if normalized in _CART_VIEW_PHRASES or any(
+        normalized == p or normalized.startswith(p) for p in _CART_VIEW_PHRASES
+    ):
+        return "view"
+    if normalized in _CART_CHECKOUT_PHRASES or any(
+        normalized == p or normalized.startswith(p) for p in _CART_CHECKOUT_PHRASES
+    ):
+        return "checkout"
+    # "remove chicken" / "remove 1 chicken stew"
+    if normalized.startswith("remove ") and "cart" not in normalized:
+        return "remove"
+    # "change chicken to 2" / "set chicken to 3" / "make it 2 chicken"
+    if re.match(r"^(change|set|update)\s+.+\s+to\s+\d+", normalized):
+        return "set_quantity"
+    if re.match(r"^\d+\s+.+", normalized):  # "2 chicken stew"
+        return "set_quantity"
+    return None
+
+
+def parse_remove_item_name(message: str) -> str:
+    """Extract product name from 'remove X' messages."""
+    m = message.strip()
+    lower = m.lower()
+    for prefix in ("remove ", "delete ", "cancel ", "ondoa "):
+        if lower.startswith(prefix):
+            return m[len(prefix):].strip()
+    return m.strip()
+
+
+def parse_set_quantity_message(message: str) -> Tuple[Optional[str], Optional[float]]:
+    """
+    Parse quantity updates from messages like:
+    - 'change chicken stew to 2'
+    - 'set pilau to 1'
+    - '2 chicken stew'
+    """
+    m = message.strip()
+    lower = m.lower()
+    match = re.match(r"^(?:change|set|update)\s+(.+?)\s+to\s+(\d+(?:\.\d+)?)", lower, re.I)
+    if match:
+        return match.group(1).strip(), float(match.group(2))
+    match = re.match(r"^(\d+(?:\.\d+)?)\s+(.+)$", lower)
+    if match:
+        return match.group(2).strip(), float(match.group(1))
+    return None, None
+
+
+def cart_cleared_message() -> str:
+    return (
+        "✅ Your cart is now empty.\n\n"
+        "Tap *Browse menu* to add items, or tell me what you'd like. 🛒"
+    )
+
+
+def cart_item_removed_message(item_name: str) -> str:
+    return f"✅ Removed *{item_name}* from your cart."
+
+
+def cart_quantity_updated_message(item_name: str, quantity: float) -> str:
+    if quantity <= 0:
+        return cart_item_removed_message(item_name)
+    qty_label = int(quantity) if quantity == int(quantity) else quantity
+    return f"✅ Updated *{item_name}* to ×{qty_label} in your cart."
+
+
+def cart_action_buttons() -> List[Dict[str, str]]:
+    """WhatsApp quick-reply buttons (max 3)."""
+    return [
+        {"id": "menu:cart", "title": "View my cart"},
+        {"id": "menu:clear_cart", "title": "Clear cart"},
+        {"id": "menu:checkout", "title": "Checkout"},
+    ]
 
 
 def check_whatsapp_rate_limit(

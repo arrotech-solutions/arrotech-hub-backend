@@ -350,6 +350,42 @@ AGENT_SUB_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "manage_cart",
+            "description": (
+                "View or update the customer's persisted shopping cart. ALWAYS use this when they "
+                "want to see the cart, clear it, remove an item, or change quantities. "
+                "Actions: 'view' (show cart), 'clear' (empty cart), 'remove' (drop one item), "
+                "'set_quantity' (change qty; use quantity 0 to remove). "
+                "For remove/set_quantity provide product_name (or product_id from catalog)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["view", "clear", "remove", "set_quantity"],
+                        "description": "Cart operation to perform"
+                    },
+                    "product_id": {
+                        "type": "string",
+                        "description": "Catalog product id (optional if product_name given)"
+                    },
+                    "product_name": {
+                        "type": "string",
+                        "description": "Product name to match in cart (partial match OK)"
+                    },
+                    "quantity": {
+                        "type": "number",
+                        "description": "New quantity for set_quantity (0 = remove item)"
+                    }
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "cancel_order",
             "description": (
                 "Cancel an existing order. ONLY call this tool if you already have the EXACT order_id "
@@ -561,6 +597,13 @@ class ConversationalAgentService:
                 check_user_message_injection,
                 injection_safe_reply,
                 is_order_confirmation_message,
+                match_cart_command,
+                format_cart_summary,
+                cart_cleared_message,
+                cart_item_removed_message,
+                cart_quantity_updated_message,
+                parse_remove_item_name,
+                parse_set_quantity_message,
             )
 
             if check_user_message_injection(user_message):
@@ -581,6 +624,159 @@ class ConversationalAgentService:
                     await context_manager.mark_order_confirmed(session_key)
                 except Exception as e:
                     logger.warning(f"[CONV_AGENT] mark_order_confirmed failed: {e}")
+
+            # ── Fast path: reset / cart commands (no LLM needed) ──
+            if session_key:
+                cart_cmd = match_cart_command(user_message)
+                if cart_cmd == "reset":
+                    try:
+                        session = await context_manager.get_session_by_key(session_key)
+                        if session:
+                            await context_manager.clear_session(session)
+                    except Exception as e:
+                        logger.warning(f"[CONV_AGENT] reset failed: {e}")
+                    reply = (
+                        f"🔄 Fresh start! Your cart and chat history are cleared.\n\n"
+                        f"Welcome back to *{business_name}* — what would you like today?"
+                    )
+                    await self._save_to_ccm(session_key, "assistant", reply)
+                    await self._send_cart_action_buttons(
+                        session_key, user, db, "Tap below to get started 👇"
+                    )
+                    return {
+                        "response_text": reply,
+                        "image_urls": [],
+                        "cards": [],
+                        "order_created": False,
+                        "order_cancelled": False,
+                        "order_data": None,
+                        "order_notification": "",
+                        "actions_taken": [{"tool": "manage_cart", "result_summary": "reset"}],
+                    }
+                if cart_cmd == "clear":
+                    await context_manager.clear_cart(session_key)
+                    reply = cart_cleared_message()
+                    await self._save_to_ccm(session_key, "assistant", reply)
+                    await self._send_cart_action_buttons(
+                        session_key, user, db, "Your cart is empty — browse the menu 🍽️"
+                    )
+                    return {
+                        "response_text": reply,
+                        "image_urls": [],
+                        "cards": [],
+                        "order_created": False,
+                        "order_cancelled": False,
+                        "order_data": None,
+                        "order_notification": "",
+                        "actions_taken": [{"tool": "manage_cart", "result_summary": "clear"}],
+                    }
+                if cart_cmd == "view":
+                    session = await context_manager.get_session_by_key(session_key)
+                    cart = context_manager.get_cart(session) if session else []
+                    reply = format_cart_summary(cart, currency)
+                    await self._save_to_ccm(session_key, "assistant", reply)
+                    if cart:
+                        await self._send_cart_action_buttons(
+                            session_key, user, db, "Tap a button to continue 👇"
+                        )
+                    return {
+                        "response_text": reply,
+                        "image_urls": [],
+                        "cards": [],
+                        "order_created": False,
+                        "order_cancelled": False,
+                        "order_data": None,
+                        "order_notification": "",
+                        "actions_taken": [{"tool": "manage_cart", "result_summary": "view"}],
+                    }
+                if cart_cmd == "checkout":
+                    session = await context_manager.get_session_by_key(session_key)
+                    cart = context_manager.get_cart(session) if session else []
+                    if not cart:
+                        reply = (
+                            "Your cart is empty right now. 🛒\n"
+                            "Browse the menu and tap *Add to Cart* on something you like!"
+                        )
+                    else:
+                        summary = format_cart_summary(cart, currency)
+                        reply = (
+                            f"{summary}\n\n"
+                            "Great! To checkout, please share:\n"
+                            "1️⃣ Your name\n"
+                            "2️⃣ Delivery or pickup?\n"
+                            "(I'll use your WhatsApp number for contact.)"
+                        )
+                    await self._save_to_ccm(session_key, "assistant", reply)
+                    if cart:
+                        await self._send_cart_action_buttons(
+                            session_key, user, db, "Ready when you are 👇"
+                        )
+                    return {
+                        "response_text": reply,
+                        "image_urls": [],
+                        "cards": [],
+                        "order_created": False,
+                        "order_cancelled": False,
+                        "order_data": None,
+                        "order_notification": "",
+                        "actions_taken": [{"tool": "manage_cart", "result_summary": "checkout"}],
+                    }
+                if cart_cmd == "remove":
+                    name = parse_remove_item_name(user_message)
+                    cart, removed, removed_name = await context_manager.remove_cart_item(
+                        session_key, product_name=name
+                    )
+                    if removed:
+                        reply = f"{cart_item_removed_message(removed_name)}\n\n{format_cart_summary(cart, currency)}"
+                    else:
+                        reply = (
+                            f"I couldn't find *{name}* in your cart.\n\n"
+                            f"{format_cart_summary(cart, currency)}"
+                        )
+                    await self._save_to_ccm(session_key, "assistant", reply)
+                    await self._send_cart_action_buttons(
+                        session_key, user, db, "Cart updated — what's next? 👇"
+                    )
+                    return {
+                        "response_text": reply,
+                        "image_urls": [],
+                        "cards": [],
+                        "order_created": False,
+                        "order_cancelled": False,
+                        "order_data": None,
+                        "order_notification": "",
+                        "actions_taken": [{"tool": "manage_cart", "result_summary": "remove"}],
+                    }
+                if cart_cmd == "set_quantity":
+                    name, qty = parse_set_quantity_message(user_message)
+                    if name is not None and qty is not None:
+                        cart, ok, item_name, _key = await context_manager.set_cart_item_quantity(
+                            session_key, qty, product_name=name
+                        )
+                        if ok:
+                            reply = (
+                                f"{cart_quantity_updated_message(item_name, qty)}\n\n"
+                                f"{format_cart_summary(cart, currency)}"
+                            )
+                        else:
+                            reply = (
+                                f"I couldn't find *{name}* in your cart.\n\n"
+                                f"{format_cart_summary(cart, currency)}"
+                            )
+                        await self._save_to_ccm(session_key, "assistant", reply)
+                        await self._send_cart_action_buttons(
+                            session_key, user, db, "Cart updated — what's next? 👇"
+                        )
+                        return {
+                            "response_text": reply,
+                            "image_urls": [],
+                            "cards": [],
+                            "order_created": False,
+                            "order_cancelled": False,
+                            "order_data": None,
+                            "order_notification": "",
+                            "actions_taken": [{"tool": "manage_cart", "result_summary": "set_quantity"}],
+                        }
 
             if not kb_id:
                 return self._fallback_response(
@@ -669,6 +865,7 @@ class ConversationalAgentService:
             collected_image_urls: List[str] = []
             collected_product_cards: List[Dict[str, Any]] = []
             sent_product_ids: set = set()  # Track product IDs already sent as cards this turn
+            send_cart_buttons_after_turn = False
             checkout_keywords = ("order", "cart", "checkout", "pay", "total", "confirm", "delivery")
             msg_lower = (user_message or "").lower()
             has_checkout_intent = any(k in msg_lower for k in checkout_keywords)
@@ -753,6 +950,11 @@ class ConversationalAgentService:
 
                     # Save assistant response to CCM
                     await self._save_to_ccm(session_key, "assistant", final_text)
+
+                    if send_cart_buttons_after_turn and not order_created:
+                        await self._send_cart_action_buttons(
+                            session_key, user, db, "Tap a button below 👇"
+                        )
 
                     return {
                         "response_text": final_text,
@@ -935,6 +1137,9 @@ class ConversationalAgentService:
                         except Exception as e:
                             logger.warning(f"[CONV_AGENT] pending_confirmation failed: {e}")
 
+                    if tool_name == "manage_cart" and tool_result.get("success"):
+                        send_cart_buttons_after_turn = True
+
                     if tool_name == "create_order" and tool_result.get("success"):
                         order_created = True
                         order_data = tool_result.get("order_data", tool_result)
@@ -1004,6 +1209,11 @@ class ConversationalAgentService:
             final_text = self._format_for_channel(final_text, platform)
 
             await self._save_to_ccm(session_key, "assistant", final_text)
+
+            if send_cart_buttons_after_turn and not order_created:
+                await self._send_cart_action_buttons(
+                    session_key, user, db, "Tap a button below 👇"
+                )
 
             return {
                 "response_text": final_text,
@@ -1172,6 +1382,12 @@ class ConversationalAgentService:
 11. If a customer wants to see their order history or check an order status, call `get_user_orders` then ALWAYS call `display_order_cards` with the results
 12. If the customer has items in their cart (see Cart section below), reference the cart when summarizing their order
 
+## Cart Management (IMPORTANT)
+- Customers can tap *View my cart*, *Clear cart*, or *Checkout* buttons, or type things like "my cart", "clear cart", "remove chicken", "change pilau to 2"
+- ALWAYS use `manage_cart` when they want to view, clear, remove, or change cart items — do not pretend the cart changed without calling the tool
+- `manage_cart` actions: view | clear | remove | set_quantity (quantity 0 removes)
+- After cart changes, keep replies short and friendly; mention they can tap the buttons below
+
 ## CRITICAL Product Display Rules
 - ALWAYS use `display_product_cards` when showing products with images/prices
 - NEVER list products as plain text with numbered lists — customers can't interact with text
@@ -1226,6 +1442,7 @@ class ConversationalAgentService:
                 f"\n## Current cart (persisted — do not ignore)\n{summary}\n"
                 "When the customer is ready to checkout, use these cart items for "
                 "`calculate_total`, `validate_order`, and `create_order`.\n"
+                "Use `manage_cart` if they want to view, clear, remove, or update quantities.\n"
             )
         except Exception as e:
             logger.warning(f"[CONV_AGENT] cart context block failed: {e}")
@@ -1283,8 +1500,8 @@ class ConversationalAgentService:
                 body_text=body,
                 buttons=[
                     {"id": "menu:browse", "title": "Browse menu"},
-                    {"id": "menu:orders", "title": "My orders"},
-                    {"id": "menu:human", "title": "Talk to us"},
+                    {"id": "menu:cart", "title": "My cart"},
+                    {"id": "menu:checkout", "title": "Checkout"},
                 ],
                 config={
                     "access_token": config.get("access_token"),
@@ -1295,6 +1512,53 @@ class ConversationalAgentService:
             await context_manager.save_session(session)
         except Exception as e:
             logger.warning(f"[CONV_AGENT] welcome quick replies failed: {e}")
+
+    async def _send_cart_action_buttons(
+        self,
+        session_key: str,
+        user: User,
+        db: AsyncSession,
+        body_text: str = "What would you like to do next?",
+    ) -> None:
+        """Send View cart / Clear cart / Checkout quick-reply buttons."""
+        if not session_key or not session_key.startswith("ccm:whatsapp:"):
+            return
+        try:
+            parts = session_key.split(":")
+            recipient = parts[3] if len(parts) >= 4 else ""
+            if not recipient:
+                return
+
+            from sqlalchemy import select
+            from ..models import Connection, ConnectionStatus
+            from .whatsapp_service import WhatsAppService
+            from .whatsapp_ordering_helpers import cart_action_buttons
+
+            result = await db.execute(
+                select(Connection).filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == "whatsapp",
+                    Connection.status == ConnectionStatus.ACTIVE,
+                )
+            )
+            connection = result.scalar_one_or_none()
+            if not connection:
+                return
+            config = connection.config or {}
+            if not config.get("access_token") or not config.get("phone_number_id"):
+                return
+
+            await WhatsAppService().send_quick_reply_buttons(
+                to_number=recipient,
+                body_text=body_text[:1024],
+                buttons=cart_action_buttons(),
+                config={
+                    "access_token": config.get("access_token"),
+                    "phone_number_id": config.get("phone_number_id"),
+                },
+            )
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] cart action buttons failed: {e}")
 
     # ═══════════════════════════════════════════════════════════
     # CONVERSATION HISTORY (CCM integration)
@@ -1400,6 +1664,13 @@ class ConversationalAgentService:
                 return await self._sub_validate_order(
                     arguments=arguments,
                     order_type=order_type,
+                    currency=currency,
+                )
+
+            elif tool_name == "manage_cart":
+                return await self._sub_manage_cart(
+                    arguments=arguments,
+                    session_key=session_key,
                     currency=currency,
                 )
 
@@ -1569,6 +1840,110 @@ class ConversationalAgentService:
             }
         except Exception as e:
             return {"success": False, "result": f"Validation error: {str(e)}"}
+
+    async def _sub_manage_cart(
+        self,
+        arguments: Dict[str, Any],
+        session_key: str,
+        currency: str,
+    ) -> Dict[str, Any]:
+        """View, clear, remove, or update quantities in the persisted cart."""
+        from .whatsapp_ordering_helpers import (
+            format_cart_summary,
+            cart_cleared_message,
+            cart_item_removed_message,
+            cart_quantity_updated_message,
+        )
+
+        action = (arguments.get("action") or "view").strip().lower()
+        product_id = arguments.get("product_id", "") or ""
+        product_name = arguments.get("product_name", "") or ""
+        quantity = arguments.get("quantity")
+
+        if not session_key:
+            return {"success": False, "result": "No active session for cart."}
+
+        try:
+            if action == "view":
+                session = await context_manager.get_session_by_key(session_key)
+                cart = context_manager.get_cart(session) if session else []
+                summary = format_cart_summary(cart, currency)
+                return {
+                    "success": True,
+                    "result": summary,
+                    "cart": cart,
+                    "cart_empty": len(cart) == 0,
+                }
+
+            if action == "clear":
+                await context_manager.clear_cart(session_key)
+                return {
+                    "success": True,
+                    "result": cart_cleared_message(),
+                    "cart": [],
+                    "cart_empty": True,
+                }
+
+            if action == "remove":
+                cart, removed, removed_name = await context_manager.remove_cart_item(
+                    session_key, product_id=product_id, product_name=product_name
+                )
+                if removed:
+                    msg = (
+                        f"{cart_item_removed_message(removed_name)}\n\n"
+                        f"{format_cart_summary(cart, currency)}"
+                    )
+                else:
+                    label = product_name or product_id or "that item"
+                    msg = (
+                        f"I couldn't find *{label}* in your cart.\n\n"
+                        f"{format_cart_summary(cart, currency)}"
+                    )
+                return {
+                    "success": True,
+                    "result": msg,
+                    "cart": cart,
+                    "removed": removed,
+                }
+
+            if action == "set_quantity":
+                if quantity is None:
+                    return {
+                        "success": False,
+                        "result": "Please specify quantity for set_quantity.",
+                    }
+                qty = float(quantity)
+                cart, ok, item_name, key = await context_manager.set_cart_item_quantity(
+                    session_key,
+                    qty,
+                    product_id=product_id,
+                    product_name=product_name,
+                )
+                if not ok:
+                    label = product_name or product_id or "that item"
+                    return {
+                        "success": False,
+                        "result": (
+                            f"I couldn't find *{label}* in your cart.\n\n"
+                            f"{format_cart_summary(cart, currency)}"
+                        ),
+                        "cart": cart,
+                    }
+                msg = (
+                    f"{cart_quantity_updated_message(item_name, qty)}\n\n"
+                    f"{format_cart_summary(cart, currency)}"
+                )
+                return {
+                    "success": True,
+                    "result": msg,
+                    "cart": cart,
+                }
+
+            return {"success": False, "result": f"Unknown cart action: {action}"}
+
+        except Exception as e:
+            logger.error(f"[CONV_AGENT] manage_cart error: {e}")
+            return {"success": False, "result": f"Cart error: {str(e)}"}
 
     async def _sub_create_order(
         self,
