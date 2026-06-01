@@ -153,13 +153,31 @@ def format_cart_summary(cart: List[Dict[str, Any]], currency: str = "KES") -> st
         total += line_total
         lines.append(f"{i}. {name} × {qty:g} — {currency} {line_total:,.0f}")
     lines.append(f"\n*Total:* {currency} {total:,.0f}")
-    lines.append(
-        "\n_To change your cart:_\n"
-        "• Tap *Clear cart* to start over\n"
-        "• Say *remove [item name]* or *change [item] to 2*\n"
-        "• Tap *Checkout* when you're ready"
-    )
+    lines.append("\n_Use the buttons below to checkout, add more, or clear your cart._")
+    if len(cart) > 0:
+        lines.append("_To remove one item, tap *Remove item* and pick from the list._")
     return "\n".join(lines)
+
+
+def build_cart_remove_list_rows(
+    cart: List[Dict[str, Any]],
+    currency: str = "KES",
+) -> List[Dict[str, str]]:
+    """Rows for WhatsApp list message — remove one line item (max 10)."""
+    rows = []
+    for item in cart[:10]:
+        item_id = sanitize_product_button_id(str(item.get("id") or item.get("name", "item")))
+        name = (item.get("name") or "Item")[:24]
+        qty = float(item.get("quantity", 1))
+        price = float(item.get("unit_price", 0) or item.get("price", 0))
+        line_total = qty * price
+        desc = f"Qty {qty:g} · {currency} {line_total:,.0f}"[:72]
+        rows.append({
+            "id": f"cart_rm:{item_id}",
+            "title": name,
+            "description": desc,
+        })
+    return rows
 
 
 _CART_CLEAR_PHRASES = (
@@ -282,12 +300,20 @@ def cart_quantity_updated_message(item_name: str, quantity: float) -> str:
     return f"✅ Updated *{item_name}* to ×{qty_label} in your cart."
 
 
-def cart_action_buttons() -> List[Dict[str, str]]:
-    """WhatsApp quick-reply buttons (max 3)."""
+def cart_action_buttons(cart_has_items: bool = True) -> List[Dict[str, str]]:
+    """
+    Cart screen actions (WhatsApp max 3 reply buttons).
+    Mirrors a typical cart: checkout, keep shopping, or empty cart.
+    """
+    if cart_has_items:
+        return [
+            {"id": "menu:checkout", "title": "Checkout"},
+            {"id": "menu:add_more", "title": "Add items"},
+            {"id": "menu:clear_cart", "title": "Clear cart"},
+        ]
     return [
-        {"id": "menu:cart", "title": "View my cart"},
-        {"id": "menu:clear_cart", "title": "Clear cart"},
-        {"id": "menu:checkout", "title": "Checkout"},
+        {"id": "menu:browse", "title": "Browse menu"},
+        {"id": "menu:cart", "title": "View cart"},
     ]
 
 

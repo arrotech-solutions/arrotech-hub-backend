@@ -3516,8 +3516,15 @@ class ToolExecutor:
                     if session_key:
                         try:
                             agent = ConversationalAgentService()
+                            currency = "KES"
+                            if isinstance(arguments.get("currency"), str):
+                                currency = arguments["currency"]
                             await agent._send_cart_action_buttons(
-                                session_key, user, db, "What would you like to do next?"
+                                session_key,
+                                user,
+                                db,
+                                body_text="",
+                                currency=currency,
                             )
                         except Exception as btn_err:
                             logger.warning(

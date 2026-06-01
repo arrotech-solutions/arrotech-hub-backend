@@ -261,6 +261,7 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                         menu_action = btn_id.split(":", 1)[1] if ":" in btn_id else ""
                         menu_messages = {
                             "browse": "I'd like to browse the menu. Please show me what you have.",
+                            "add_more": "I'd like to browse the menu and add more items to my cart.",
                             "cart": "view my cart",
                             "clear_cart": "clear cart",
                             "checkout": "checkout",
@@ -381,8 +382,14 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                 elif interactive.get("type") == "list_reply":
                     title = interactive.get("list_reply", {}).get("title", "")
                     list_id = interactive.get("list_reply", {}).get("id", "")
-                    content = f"{title}" if title else f"Selected: {list_id}"
-                    msg_type = "text"
+                    if list_id.startswith("cart_rm:"):
+                        product_ref = list_id.split(":", 1)[1]
+                        remove_label = title or product_ref
+                        content = f"remove {remove_label}"
+                        msg_type = "text"
+                    else:
+                        content = f"{title}" if title else f"Selected: {list_id}"
+                        msg_type = "text"
             
             logger.info(f"[WHATSAPP WEBHOOK] Message from {from_number}: {content[:50]}...")
             

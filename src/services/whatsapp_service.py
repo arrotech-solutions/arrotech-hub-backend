@@ -811,6 +811,89 @@ class WhatsAppService:
         from .whatsapp_ordering_helpers import sanitize_product_button_id
         return sanitize_product_button_id(product_id)
 
+    async def send_list_message(
+        self,
+        to_number: str,
+        body_text: str,
+        button_label: str,
+        sections: List[Dict[str, Any]],
+        config: Optional[Dict[str, Any]] = None,
+        footer_text: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Send WhatsApp interactive list (e.g. pick an item to remove from cart).
+        sections: [{"title": "Section", "rows": [{"id", "title", "description"}, ...]}]
+        """
+        try:
+            credentials = self._get_credentials()
+            if config:
+                phone_number_id = config.get("phone_number_id")
+                access_token = config.get("access_token")
+                base_url = config.get("base_url", credentials["base_url"])
+            else:
+                phone_number_id = credentials["phone_number_id"]
+                access_token = credentials["access_token"]
+                base_url = credentials["base_url"]
+
+            if not phone_number_id or not access_token:
+                return {"success": False, "error": "WhatsApp credentials not configured"}
+
+            wa_sections = []
+            for section in sections[:10]:
+                rows = []
+                for row in (section.get("rows") or [])[:10]:
+                    rows.append({
+                        "id": str(row.get("id", ""))[:200],
+                        "title": str(row.get("title", "Item"))[:24],
+                        "description": str(row.get("description", ""))[:72],
+                    })
+                if rows:
+                    wa_sections.append({
+                        "title": str(section.get("title", "Options"))[:24],
+                        "rows": rows,
+                    })
+
+            if not wa_sections:
+                return {"success": False, "error": "No list rows provided"}
+
+            formatted_number = self._format_phone_number(to_number)
+            url = f"{base_url}/{phone_number_id}/messages"
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            }
+            interactive: Dict[str, Any] = {
+                "type": "list",
+                "body": {"text": body_text[:1024]},
+                "action": {
+                    "button": (button_label or "Options")[:20],
+                    "sections": wa_sections,
+                },
+            }
+            if footer_text:
+                interactive["footer"] = {"text": footer_text[:60]}
+
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": formatted_number,
+                "type": "interactive",
+                "interactive": interactive,
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=headers) as response:
+                    result = await response.json()
+                    if response.status == 200:
+                        return {
+                            "success": True,
+                            "message_id": result.get("messages", [{}])[0].get("id"),
+                        }
+                    logger.warning(f"Failed to send list message: {result}")
+                    return {"success": False, "error": result}
+        except Exception as e:
+            logger.error(f"Error sending list message: {e}")
+            return {"success": False, "error": str(e)}
+
     async def send_quick_reply_buttons(
         self,
         to_number: str,

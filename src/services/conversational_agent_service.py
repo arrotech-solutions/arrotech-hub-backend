@@ -1474,8 +1474,9 @@ class ConversationalAgentService:
         user: User,
         db: AsyncSession,
         body_text: str = "What would you like to do next?",
+        currency: str = "KES",
     ) -> None:
-        """Send View cart / Clear cart / Checkout quick-reply buttons."""
+        """Cart screen: remove-item list (if not empty) + checkout / add / clear buttons."""
         if not session_key or not session_key.startswith("ccm:whatsapp:"):
             return
         try:
@@ -1487,7 +1488,10 @@ class ConversationalAgentService:
             from sqlalchemy import select
             from ..models import Connection, ConnectionStatus
             from .whatsapp_service import WhatsAppService
-            from .whatsapp_ordering_helpers import cart_action_buttons
+            from .whatsapp_ordering_helpers import (
+                build_cart_remove_list_rows,
+                cart_action_buttons,
+            )
 
             result = await db.execute(
                 select(Connection).filter(
@@ -1503,14 +1507,42 @@ class ConversationalAgentService:
             if not config.get("access_token") or not config.get("phone_number_id"):
                 return
 
-            await WhatsAppService().send_quick_reply_buttons(
+            wa_config = {
+                "access_token": config.get("access_token"),
+                "phone_number_id": config.get("phone_number_id"),
+            }
+            wa = WhatsAppService()
+
+            session = await context_manager.get_session_by_key(session_key)
+            cart = context_manager.get_cart(session) if session else []
+            has_items = len(cart) > 0
+
+            if has_items:
+                remove_rows = build_cart_remove_list_rows(cart, currency)
+                if remove_rows:
+                    await wa.send_list_message(
+                        to_number=recipient,
+                        body_text="Tap an item below to remove it from your cart 🗑️",
+                        button_label="Remove item",
+                        sections=[{"title": "Your items", "rows": remove_rows}],
+                        config=wa_config,
+                        footer_text="Up to 10 items shown",
+                    )
+
+            button_body = (
+                body_text[:1024]
+                if body_text and body_text != "What would you like to do next?"
+                else (
+                    "Ready to checkout or keep shopping? 🛒"
+                    if has_items
+                    else "Your cart is empty — browse the menu to add items."
+                )
+            )
+            await wa.send_quick_reply_buttons(
                 to_number=recipient,
-                body_text=body_text[:1024],
-                buttons=cart_action_buttons(),
-                config={
-                    "access_token": config.get("access_token"),
-                    "phone_number_id": config.get("phone_number_id"),
-                },
+                body_text=button_body,
+                buttons=cart_action_buttons(cart_has_items=has_items),
+                config=wa_config,
             )
         except Exception as e:
             logger.warning(f"[CONV_AGENT] cart action buttons failed: {e}")
