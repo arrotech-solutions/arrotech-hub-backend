@@ -319,14 +319,16 @@ AGENT_SUB_TOOLS = [
         "function": {
             "name": "cancel_order",
             "description": (
-                "Cancel an existing order. Use this when a customer explicitly requests to cancel their order. "
-                "You must ask for the Order ID. If you already have their phone number from the chat session, you can use it, "
-                "otherwise ask for the phone number used to place the order for verification."
+                "Cancel an existing order. Use this when a customer explicitly requests to cancel their order "
+                "OR when they tap a 'Cancel Order' button from their order history. "
+                "The order_id may already be provided from a button click — in that case do NOT ask the customer to type it. "
+                "If you already have their phone number from the chat session, use it. "
+                "Otherwise ask for the phone number used to place the order for verification."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "order_id": {"type": "string", "description": "The ID of the order to cancel"},
+                    "order_id": {"type": "string", "description": "The ID of the order to cancel (may come from button click)"},
                     "customer_phone": {"type": "string", "description": "Customer phone number for verification"},
                     "reason": {"type": "string", "description": "Reason for cancellation provided by customer"}
                 },
@@ -340,8 +342,10 @@ AGENT_SUB_TOOLS = [
             "name": "get_user_orders",
             "description": (
                 "Search and retrieve the customer's order history and details. Use this when a customer asks to see their past orders, "
-                "check an order status, or if they need to find their Order ID to cancel an order. "
-                "Requires the customer's phone number. If you already have their phone number from the chat session, you can use it."
+                "check an order status, or wants to cancel an order. "
+                "Requires the customer's phone number. If you already have their phone number from the chat session, you can use it. "
+                "IMPORTANT: After getting results, ALWAYS call `display_order_cards` to show orders as interactive cards with action buttons. "
+                "Never list orders as plain text."
             ),
             "parameters": {
                 "type": "object",
@@ -383,6 +387,39 @@ AGENT_SUB_TOOLS = [
                     }
                 },
                 "required": ["products"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "display_order_cards",
+            "description": (
+                "REQUIRED: Send order history to the customer as interactive cards with action buttons. "
+                "Each card shows the order ID, status, date, total, items, and contextual buttons like 'Cancel Order' and 'Order Details'. "
+                "You MUST call this tool after `get_user_orders` returns results. "
+                "NEVER list orders as plain text — always send them as interactive cards so the customer can take actions directly. "
+                "After this tool succeeds, respond with a brief message like 'Here are your orders! Tap any button to take action.'"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "orders": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "order_id": {"type": "string", "description": "The order ID (e.g. ORD-20260601-A1B2C3)"},
+                                "status": {"type": "string", "description": "Current order status (e.g. pending, confirmed, delivered)"},
+                                "date": {"type": "string", "description": "Order creation date"},
+                                "total": {"type": "string", "description": "Order total with currency (e.g. 1,500 KES)"},
+                                "items": {"type": "string", "description": "Brief summary of items ordered"}
+                            },
+                            "required": ["order_id", "status", "total", "items"]
+                        }
+                    }
+                },
+                "required": ["orders"]
             }
         }
     }
@@ -1003,8 +1040,8 @@ class ConversationalAgentService:
 6. Confirm the order summary with total price using `calculate_total`
 7. Create the order using `create_order`
 8. After order is created, offer M-Pesa payment using `initiate_mpesa_payment`
-9. If a customer wants to cancel an order, ask for the Order ID and their phone number (if not known), then call `cancel_order`
-10. If a customer wants to see their order history or check an order status, use `get_user_orders` with their phone number. Summarize the retrieved orders clearly.
+9. If a customer wants to cancel an order, FIRST call `get_user_orders` to show their orders with Cancel buttons — do NOT ask them to type an Order ID. If the order_id is already provided (from a button click), proceed directly with `cancel_order`
+10. If a customer wants to see their order history or check an order status, call `get_user_orders` then ALWAYS call `display_order_cards` with the results
 
 ## CRITICAL Product Display Rules
 - ALWAYS use `display_product_cards` when showing products with images/prices
@@ -1013,6 +1050,14 @@ class ConversationalAgentService:
 - After `display_product_cards` succeeds, just say something brief like "Here's what we have! 🛒 Tap a product to add it to your cart."
 - Do NOT repeat product names, prices, or descriptions in text after cards are sent
 - If `display_product_cards` fails, describe products briefly in text WITHOUT image URLs
+
+## CRITICAL Order Display Rules
+- ALWAYS use `display_order_cards` after `get_user_orders` returns orders
+- NEVER list orders as plain text — customers need buttons to take action
+- After `display_order_cards` succeeds, say something brief like "Here are your orders! Tap a button to take action. 📋"
+- Do NOT repeat order IDs, statuses, or totals in text after cards are sent
+- NEVER ask customers to type an Order ID — they should tap the Cancel button on the order card instead
+
 
 ## Response Style Rules
 - Keep responses brief and friendly (WhatsApp chat style, under 150 words)
@@ -1164,6 +1209,15 @@ class ConversationalAgentService:
                     storage_config=storage_config,
                     user=user,
                     db=db
+                )
+
+            elif tool_name == "display_order_cards":
+                return await self._sub_display_order_cards(
+                    orders=arguments.get("orders", []),
+                    session_key=session_key,
+                    currency=currency,
+                    user=user,
+                    db=db,
                 )
 
             else:
@@ -1372,18 +1426,32 @@ class ConversationalAgentService:
             if not orders:
                 return {"success": True, "result": f"No orders found for phone number {customer_phone}."}
 
-            # Format orders for the LLM
+            # Statuses that allow cancellation (from STATUS_TRANSITIONS in order_service.py)
+            CANCELLABLE_STATUSES = {"pending", "confirmed", "preparing", "ready", "shipped", "out_for_delivery"}
+
+            # Enrich orders with cancellability flag and format for the LLM
             formatted_orders = []
             for o in orders:
+                status_raw = (o.get("Status") or "").strip().lower().replace(" ", "_")
+                is_cancellable = status_raw in CANCELLABLE_STATUSES
+                o["is_cancellable"] = is_cancellable
+
                 formatted_orders.append(
                     f"- Order ID: {o.get('Order ID')}\n"
                     f"  Status: {o.get('Status')}\n"
                     f"  Date: {o.get('Created At')}\n"
                     f"  Total: {o.get('Subtotal')} {o.get('Currency', 'KES')}\n"
-                    f"  Items: {o.get('Items')}"
+                    f"  Items: {o.get('Items')}\n"
+                    f"  Can Cancel: {'Yes' if is_cancellable else 'No'}"
                 )
             
             summary = f"Found {len(orders)} order(s) for {customer_phone}:\n\n" + "\n\n".join(formatted_orders)
+            summary += (
+                "\n\nINSTRUCTION: You MUST now call `display_order_cards` with these orders. "
+                "Extract each order's order_id, status, date (Created At), total (Subtotal + Currency), "
+                "and items from the results above and pass them to `display_order_cards`. "
+                "Do NOT list orders in plain text."
+            )
             return {"success": True, "result": summary, "orders": orders}
 
         except Exception as e:
@@ -2002,6 +2070,314 @@ class ConversationalAgentService:
                 "success": True,
                 "result": f"Formatted {len(products)} products (Telegram send failed: {e})",
                 "cards": products
+            }
+
+    # ═══════════════════════════════════════════════════════════
+    # ORDER CARD DISPLAY (Interactive buttons for order history)
+    # ═══════════════════════════════════════════════════════════
+
+    async def _sub_display_order_cards(
+        self,
+        orders: List[Dict[str, Any]],
+        session_key: str,
+        currency: str,
+        user: User,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """
+        Send order history as native interactive messages with action buttons.
+
+        Each order card shows:
+        - Order ID and status with emoji
+        - Date, items summary, total
+        - Contextual buttons: Cancel Order (if cancellable), Order Details
+
+        Mirrors the display_product_cards pattern but for orders.
+        """
+        if not orders:
+            return {
+                "success": True,
+                "result": "No orders to display.",
+                "cards_sent": 0
+            }
+
+        # Cap at 10 orders to prevent message floods
+        MAX_ORDER_CARDS = 10
+        if len(orders) > MAX_ORDER_CARDS:
+            orders = orders[:MAX_ORDER_CARDS]
+
+        # Detect platform and extract recipient
+        platform = "whatsapp"
+        recipient = ""
+        if session_key:
+            if session_key.startswith("ccm:whatsapp:"):
+                platform = "whatsapp"
+                parts = session_key.split(":")
+                if len(parts) >= 4:
+                    recipient = parts[3]
+                elif len(parts) >= 3:
+                    recipient = parts[2]
+            elif session_key.startswith("ccm:telegram:"):
+                platform = "telegram"
+                parts = session_key.split(":")
+                if len(parts) >= 4:
+                    recipient = parts[3]
+                elif len(parts) >= 3:
+                    recipient = parts[2]
+
+        if not recipient:
+            logger.warning("[CONV_AGENT] Cannot extract recipient from session_key — falling back to text")
+            return {
+                "success": True,
+                "result": f"Formatted {len(orders)} order(s) as cards (no recipient).",
+                "cards_sent": 0
+            }
+
+        if platform == "whatsapp":
+            return await self._send_whatsapp_order_cards(
+                orders=orders,
+                recipient=recipient,
+                currency=currency,
+                user=user,
+                db=db,
+            )
+
+        if platform == "telegram":
+            return await self._send_telegram_order_cards(
+                orders=orders,
+                chat_id=recipient,
+                currency=currency,
+                user=user,
+                db=db,
+            )
+
+        return {
+            "success": True,
+            "result": f"Formatted {len(orders)} order(s) as cards (unsupported platform).",
+            "cards_sent": 0
+        }
+
+    async def _send_whatsapp_order_cards(
+        self,
+        orders: List[Dict[str, Any]],
+        recipient: str,
+        currency: str,
+        user: User,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Send each order as a WhatsApp interactive button message with action buttons."""
+        try:
+            from sqlalchemy import select
+            from ..models import Connection, ConnectionStatus
+            from .whatsapp_service import WhatsAppService
+
+            result = await db.execute(
+                select(Connection).filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == "whatsapp",
+                    Connection.status == ConnectionStatus.ACTIVE
+                )
+            )
+            connection = result.scalar_one_or_none()
+
+            if not connection:
+                return {
+                    "success": True,
+                    "result": f"Formatted {len(orders)} order(s) (WhatsApp not connected).",
+                    "cards_sent": 0
+                }
+
+            config = connection.config or {}
+            access_token = config.get("access_token")
+            phone_number_id = config.get("phone_number_id")
+
+            if not access_token or not phone_number_id:
+                return {
+                    "success": True,
+                    "result": f"Formatted {len(orders)} order(s) (WhatsApp credentials missing).",
+                    "cards_sent": 0
+                }
+
+            whatsapp = WhatsAppService()
+            wa_config = {"access_token": access_token, "phone_number_id": phone_number_id}
+
+            # Statuses that allow cancellation
+            CANCELLABLE_STATUSES = {"pending", "confirmed", "preparing", "ready", "shipped", "out_for_delivery"}
+
+            sent = 0
+            failed = 0
+
+            for order in orders:
+                order_id = order.get("order_id", order.get("Order ID", "N/A"))
+                status = order.get("status", order.get("Status", "unknown"))
+                status_lower = status.strip().lower().replace(" ", "_")
+                date = order.get("date", order.get("Created At", ""))
+                total = order.get("total", "")
+                items = order.get("items", order.get("Items", ""))
+
+                if not total:
+                    subtotal = order.get("Subtotal", "0")
+                    order_currency = order.get("Currency", currency)
+                    total = f"{order_currency} {subtotal}"
+
+                try:
+                    send_result = await whatsapp.send_order_card(
+                        to_number=recipient,
+                        order_id=order_id,
+                        status=status,
+                        date=date,
+                        total=total,
+                        items=items,
+                        is_cancellable=status_lower in CANCELLABLE_STATUSES,
+                        config=wa_config,
+                    )
+                    if send_result.get("success"):
+                        sent += 1
+                        logger.info(f"[CONV_AGENT] ✅ Sent order card: {order_id} → {recipient}")
+                    else:
+                        failed += 1
+                        logger.warning(f"[CONV_AGENT] ❌ Order card send failed for {order_id}: {send_result}")
+                except Exception as card_err:
+                    failed += 1
+                    logger.warning(f"[CONV_AGENT] ❌ Order card error for {order_id}: {card_err}")
+
+            summary = f"Sent {sent} order card(s) with action buttons to the customer"
+            if failed:
+                summary += f" ({failed} failed)"
+
+            return {
+                "success": sent > 0,
+                "result": summary,
+                "cards_sent": sent,
+                "cards_failed": failed,
+            }
+
+        except Exception as e:
+            logger.error(f"[CONV_AGENT] _send_whatsapp_order_cards error: {e}", exc_info=True)
+            return {
+                "success": True,
+                "result": f"Formatted {len(orders)} order(s) (WhatsApp send failed: {e})",
+                "cards_sent": 0
+            }
+
+    async def _send_telegram_order_cards(
+        self,
+        orders: List[Dict[str, Any]],
+        chat_id: str,
+        currency: str,
+        user: User,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Send each order as a Telegram message with inline keyboard buttons."""
+        try:
+            from sqlalchemy import select
+            from ..models import Connection, ConnectionStatus
+
+            result = await db.execute(
+                select(Connection).filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == "telegram",
+                    Connection.status == ConnectionStatus.ACTIVE
+                )
+            )
+            connection = result.scalar_one_or_none()
+
+            if not connection:
+                return {
+                    "success": True,
+                    "result": f"Formatted {len(orders)} order(s) (Telegram not connected).",
+                    "cards_sent": 0
+                }
+
+            bot_token = (connection.config or {}).get("bot_token", "")
+            if not bot_token:
+                return {
+                    "success": True,
+                    "result": f"Formatted {len(orders)} order(s) (Telegram token missing).",
+                    "cards_sent": 0
+                }
+
+            import aiohttp
+
+            # Statuses that allow cancellation
+            CANCELLABLE_STATUSES = {"pending", "confirmed", "preparing", "ready", "shipped", "out_for_delivery"}
+
+            STATUS_ICONS = {
+                "pending": "🕐", "confirmed": "✅", "preparing": "👨‍🍳",
+                "ready": "📦", "shipped": "🚚", "out_for_delivery": "🏍️",
+                "delivered": "✅", "cancelled": "❌", "refunded": "💰",
+            }
+
+            sent = 0
+
+            for order in orders:
+                order_id = order.get("order_id", order.get("Order ID", "N/A"))
+                status = order.get("status", order.get("Status", "unknown"))
+                status_lower = status.strip().lower().replace(" ", "_")
+                date = order.get("date", order.get("Created At", ""))
+                total = order.get("total", "")
+                items = order.get("items", order.get("Items", ""))
+
+                if not total:
+                    subtotal = order.get("Subtotal", "0")
+                    order_currency = order.get("Currency", currency)
+                    total = f"{order_currency} {subtotal}"
+
+                status_icon = STATUS_ICONS.get(status_lower, "📋")
+                status_display = status.replace("_", " ").title()
+
+                text = (
+                    f"{status_icon} *Order {order_id}*\n"
+                    f"Status: *{status_display}*\n"
+                    f"📅 {date}\n"
+                    f"💰 Total: *{total}*\n"
+                    f"📝 {items}"
+                )
+
+                # Build inline keyboard buttons
+                buttons = []
+                if status_lower in CANCELLABLE_STATUSES:
+                    buttons.append([
+                        {"text": "❌ Cancel Order", "callback_data": f"cancel_order:{order_id}"}
+                    ])
+                buttons.append([
+                    {"text": "📋 Order Details", "callback_data": f"order_details:{order_id}"}
+                ])
+
+                try:
+                    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                    payload = {
+                        "chat_id": chat_id,
+                        "text": text,
+                        "parse_mode": "Markdown",
+                        "reply_markup": {
+                            "inline_keyboard": buttons
+                        }
+                    }
+
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(url, json=payload) as resp:
+                            if resp.status == 200:
+                                sent += 1
+                                logger.info(f"[CONV_AGENT] ✅ Sent Telegram order card: {order_id} → {chat_id}")
+                            else:
+                                resp_text = await resp.text()
+                                logger.warning(f"[CONV_AGENT] ❌ Telegram order card failed: {resp_text[:200]}")
+                except Exception as tg_err:
+                    logger.warning(f"[CONV_AGENT] ❌ Telegram order card error for {order_id}: {tg_err}")
+
+            return {
+                "success": sent > 0,
+                "result": f"Sent {sent} order card(s) with action buttons via Telegram",
+                "cards_sent": sent,
+            }
+
+        except Exception as e:
+            logger.error(f"[CONV_AGENT] _send_telegram_order_cards error: {e}", exc_info=True)
+            return {
+                "success": True,
+                "result": f"Formatted {len(orders)} order(s) (Telegram send failed: {e})",
+                "cards_sent": 0
             }
 
     # ═══════════════════════════════════════════════════════════

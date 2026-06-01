@@ -157,26 +157,75 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                 if interactive.get("type") == "button_reply":
                     title = interactive.get("button_reply", {}).get("title", "")
                     btn_id = interactive.get("button_reply", {}).get("id", "")
+                    # ── Parse order card action button clicks ──
+                    # Format: "cancel_order:{order_id}", "order_details:{order_id}",
+                    #          "confirm_cancel:{order_id}", "keep_order:{order_id}"
+                    order_action = None
+                    order_id_from_btn = None
+
+                    if btn_id.startswith("cancel_order:"):
+                        order_action = "cancel"
+                        order_id_from_btn = btn_id.split(":", 1)[1]
+                    elif btn_id.startswith("order_details:"):
+                        order_action = "details"
+                        order_id_from_btn = btn_id.split(":", 1)[1]
+                    elif btn_id.startswith("confirm_cancel:"):
+                        order_action = "confirm_cancel"
+                        order_id_from_btn = btn_id.split(":", 1)[1]
+                    elif btn_id.startswith("keep_order:"):
+                        order_action = "keep"
+                        order_id_from_btn = btn_id.split(":", 1)[1]
+
+                    if order_action and order_id_from_btn:
+                        if order_action == "cancel":
+                            content = (
+                                f"I want to cancel order {order_id_from_btn}. "
+                                f"Please proceed with the cancellation."
+                            )
+                        elif order_action == "details":
+                            content = (
+                                f"Show me the full details of order {order_id_from_btn}."
+                            )
+                        elif order_action == "confirm_cancel":
+                            content = (
+                                f"Yes, please confirm the cancellation of order {order_id_from_btn}."
+                            )
+                        elif order_action == "keep":
+                            content = (
+                                f"No, I changed my mind. Please keep order {order_id_from_btn} active."
+                            )
+                        msg_type = "text"
 
                     # ── Parse product card button clicks ──
                     # New format: "cart:Chicken Stew:400" or "details:Chicken Stew:400"
                     # Old format: "add_to_cart_TG-0218" or "view_details_TG-0218"
-                    product_name = None
-                    product_price = ""
-                    is_add_to_cart = False
-
-                    if btn_id.startswith("cart:") or btn_id.startswith("details:"):
+                    elif btn_id.startswith("cart:") or btn_id.startswith("details:"):
                         # New self-contained format — name:price embedded in ID
                         is_add_to_cart = btn_id.startswith("cart:")
                         parts = btn_id.split(":", 2)  # ["cart", "Chicken Stew", "400"]
-                        if len(parts) >= 2:
-                            product_name = parts[1]
+                        product_name = parts[1] if len(parts) >= 2 else None
+                        product_price = ""
                         if len(parts) >= 3:
                             try:
                                 price_val = float(parts[2])
                                 product_price = f" (KES {price_val:,.0f})"
                             except (ValueError, TypeError):
                                 pass
+
+                        if product_name:
+                            if is_add_to_cart:
+                                content = (
+                                    f"I want to add {product_name}{product_price} to my cart. "
+                                    f"Please proceed with my order."
+                                )
+                            else:
+                                content = (
+                                    f"I want to see more details about {product_name}{product_price}. "
+                                    f"Please show me the full description, availability, and options."
+                                )
+                        else:
+                            content = f"{title}" if title else f"Button clicked: {btn_id}"
+                        msg_type = "text"
 
                     elif btn_id.startswith("add_to_cart_") or btn_id.startswith("view_details_"):
                         # Old format — try Redis cache for product name
@@ -195,7 +244,6 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                         except Exception as cache_err:
                             logger.warning(f"[WHATSAPP WEBHOOK] Product cache lookup failed: {cache_err}")
 
-                    if product_name:
                         if is_add_to_cart:
                             content = (
                                 f"I want to add {product_name}{product_price} to my cart. "
@@ -207,6 +255,7 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                                 f"Please show me the full description, availability, and options."
                             )
                         msg_type = "text"
+
                     else:
                         # Generic interactive button
                         content = f"{title}" if title else f"Button clicked: {btn_id}"

@@ -45,6 +45,54 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 # Process the trigger asynchronously via Celery
                 from ..tasks.webhook_tasks import process_telegram_message_task
                 process_telegram_message_task.delay(data)
+
+        # Handle callback_query from inline keyboard button presses (e.g. order action buttons)
+        elif "callback_query" in data:
+            callback = data["callback_query"]
+            callback_id = callback.get("id")
+            callback_data = callback.get("data", "")
+            cb_sender = callback.get("from", {})
+            cb_message = callback.get("message", {})
+            cb_chat = cb_message.get("chat", {})
+
+            chat_id = str(cb_chat.get("id"))
+            sender_id = str(cb_sender.get("id"))
+
+            # Translate callback_data to a natural language message
+            translated_message = ""
+            if callback_data.startswith("cancel_order:"):
+                order_id = callback_data.split(":", 1)[1]
+                translated_message = f"I want to cancel order {order_id}. Please proceed with the cancellation."
+            elif callback_data.startswith("order_details:"):
+                order_id = callback_data.split(":", 1)[1]
+                translated_message = f"Show me the full details of order {order_id}."
+            elif callback_data.startswith("confirm_cancel:"):
+                order_id = callback_data.split(":", 1)[1]
+                translated_message = f"Yes, please confirm the cancellation of order {order_id}."
+            elif callback_data.startswith("keep_order:"):
+                order_id = callback_data.split(":", 1)[1]
+                translated_message = f"No, I changed my mind. Please keep order {order_id} active."
+            else:
+                translated_message = callback_data
+
+            if translated_message and chat_id:
+                logger.info(f"[TELEGRAM_WEBHOOK] Callback query from {sender_id} in chat {chat_id}: {callback_data}")
+
+                # Build a synthetic message payload that the Celery task expects
+                synthetic_data = {
+                    "message": {
+                        "text": translated_message,
+                        "chat": cb_chat,
+                        "from": cb_sender,
+                        "message_id": cb_message.get("message_id"),
+                    }
+                }
+                from ..tasks.webhook_tasks import process_telegram_message_task
+                process_telegram_message_task.delay(synthetic_data)
+
+            # Answer the callback query to dismiss the loading indicator
+            if callback_id:
+                background_tasks.add_task(_answer_callback_query, callback_id)
         
         # Telegram requires a 200 OK response quickly
         return Response(content="OK", status_code=200, media_type="text/plain")
@@ -53,6 +101,21 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         logger.error(f"Error handling Telegram webhook: {str(e)}", exc_info=True)
         # Even on internal errors, we must return 200 so Telegram doesn't retry infinitely and block queue
         return Response(content="OK", status_code=200, media_type="text/plain")
+
+
+async def _answer_callback_query(callback_query_id: str):
+    """Answer a Telegram callback query to dismiss the loading indicator on the client."""
+    try:
+        import httpx
+        bot_token = settings.TELEGRAM_BOT_TOKEN
+        if not bot_token:
+            return
+        url = f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery"
+        async with httpx.AsyncClient() as client:
+            await client.post(url, json={"callback_query_id": callback_query_id}, timeout=5.0)
+    except Exception as e:
+        logger.warning(f"[TELEGRAM_WEBHOOK] Failed to answer callback query: {e}")
+
 
 @router.get("/auth-url")
 async def get_auth_url(user: User = Depends(get_current_user)):

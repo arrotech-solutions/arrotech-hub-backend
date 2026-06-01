@@ -134,6 +134,86 @@ class TelegramService:
                 logger.error(f"Unexpected error in Telegram send_photo: {e}")
                 return {"success": False, "error": str(e)}
 
+    async def send_order_card(
+        self,
+        chat_id: str,
+        order_id: str,
+        status: str,
+        date: str,
+        total: str,
+        items: str,
+        is_cancellable: bool = True,
+        config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Send an order card with inline keyboard action buttons.
+
+        Renders order details as a Telegram message with inline keyboard
+        buttons. The callback_data uses format 'cancel_order:{order_id}'
+        which gets parsed in the webhook handler.
+        """
+        bot_token = config.get("bot_token") if config else self.bot_token
+
+        if not bot_token:
+            return {"success": False, "error": "Telegram Bot Token is not configured"}
+
+        # Status emoji mapping
+        status_lower = status.strip().lower().replace(" ", "_")
+        status_icon = {
+            "pending": "🕐", "confirmed": "✅", "preparing": "👨‍🍳",
+            "ready": "📦", "shipped": "🚚", "out_for_delivery": "🏍️",
+            "delivered": "✅", "cancelled": "❌", "refunded": "💰",
+        }.get(status_lower, "📋")
+
+        status_display = status.replace("_", " ").title()
+
+        text = (
+            f"{status_icon} *Order {order_id}*\n"
+            f"Status: *{status_display}*\n"
+            f"📅 {date}\n"
+            f"💰 Total: *{total}*\n"
+            f"📝 {items}"
+        )
+
+        # Build inline keyboard buttons
+        buttons = []
+        if is_cancellable:
+            buttons.append([
+                {"text": "❌ Cancel Order", "callback_data": f"cancel_order:{order_id}"}
+            ])
+        buttons.append([
+            {"text": "📋 Order Details", "callback_data": f"order_details:{order_id}"}
+        ])
+
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "Markdown",
+            "reply_markup": {
+                "inline_keyboard": buttons
+            }
+        }
+
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(url, json=payload, timeout=10.0)
+                response.raise_for_status()
+                data = response.json()
+
+                if data.get("ok"):
+                    logger.info(f"Successfully sent Telegram order card {order_id} to {chat_id}")
+                    return {"success": True, "result": "Order card sent successfully"}
+                else:
+                    logger.error(f"Telegram API returned error for order card: {data}")
+                    return {"success": False, "error": data.get("description", "Unknown error")}
+
+            except httpx.HTTPError as e:
+                logger.error(f"HTTP Error sending Telegram order card: {e}")
+                return {"success": False, "error": str(e)}
+            except Exception as e:
+                logger.error(f"Unexpected error in Telegram send_order_card: {e}")
+                return {"success": False, "error": str(e)}
+
     def _format_markdown_for_telegram(self, text: str) -> str:
         """
         Convert standard Markdown to Telegram's Markdown (Legacy) format.

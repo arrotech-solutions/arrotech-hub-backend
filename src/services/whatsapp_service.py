@@ -288,6 +288,116 @@ class WhatsAppService:
             logger.error(f"Error sending product card: {e}")
             return {"success": False, "error": str(e)}
 
+    async def send_order_card(
+        self,
+        to_number: str,
+        order_id: str,
+        status: str,
+        date: str,
+        total: str,
+        items: str,
+        is_cancellable: bool = True,
+        config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Send an order card with interactive action buttons.
+
+        Renders order details as a WhatsApp interactive button message.
+        Buttons are contextual:
+        - Cancel Order: only shown if the order is in a cancellable status
+        - Order Details: always shown
+        Button IDs use the format 'cancel_order:{order_id}' for easy
+        webhook parsing without requiring a cache lookup.
+        """
+        try:
+            credentials = self._get_credentials()
+
+            if config:
+                phone_number_id = config.get("phone_number_id")
+                access_token = config.get("access_token")
+                base_url = config.get("base_url", credentials["base_url"])
+            else:
+                phone_number_id = credentials["phone_number_id"]
+                access_token = credentials["access_token"]
+                base_url = credentials["base_url"]
+
+            if not phone_number_id or not access_token:
+                return {"success": False, "error": "WhatsApp credentials not configured"}
+
+            formatted_number = self._format_phone_number(to_number)
+            url = f"{base_url}/{phone_number_id}/messages"
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
+
+            # Status emoji mapping
+            status_lower = status.strip().lower().replace(" ", "_")
+            status_icon = {
+                "pending": "🕐", "confirmed": "✅", "preparing": "👨‍🍳",
+                "ready": "📦", "shipped": "🚚", "out_for_delivery": "🏍️",
+                "delivered": "✅", "cancelled": "❌", "refunded": "💰",
+            }.get(status_lower, "📋")
+
+            status_display = status.replace("_", " ").title()
+
+            body_text = (
+                f"{status_icon} *Order {order_id}*\n"
+                f"Status: *{status_display}*\n"
+                f"📅 {date}\n"
+                f"💰 Total: *{total}*\n"
+                f"📝 {items}"
+            )
+            # Meta body text limit is 1024 characters
+            if len(body_text) > 1024:
+                body_text = body_text[:1021] + "..."
+
+            # Build contextual buttons (max 3 per WhatsApp interactive message)
+            buttons = []
+            if is_cancellable:
+                buttons.append({
+                    "type": "reply",
+                    "reply": {
+                        "id": f"cancel_order:{order_id}",
+                        "title": "❌ Cancel Order"
+                    }
+                })
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": f"order_details:{order_id}",
+                    "title": "📋 Order Details"
+                }
+            })
+
+            payload = {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": formatted_number,
+                "type": "interactive",
+                "interactive": {
+                    "type": "button",
+                    "body": {
+                        "text": body_text
+                    },
+                    "action": {
+                        "buttons": buttons
+                    }
+                }
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=headers) as response:
+                    result = await response.json()
+                    if response.status == 200:
+                        return {"success": True, "message_id": result.get("messages", [{}])[0].get("id")}
+                    else:
+                        logger.warning(f"Failed to send order card: {result}")
+                        return {"success": False, "error": result}
+
+        except Exception as e:
+            logger.error(f"Error sending order card: {e}")
+            return {"success": False, "error": str(e)}
+
     async def send_template_message(
         self,
         to_number: str,
