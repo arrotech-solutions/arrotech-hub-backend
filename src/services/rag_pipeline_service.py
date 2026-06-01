@@ -908,31 +908,17 @@ class RAGPipelineService:
             return {"success": False, "error": search_res.get("error")}
              
         matches = search_res.get("matches", [])
-        results = []
-        for match in matches:
-            metadata = match.get("metadata", {}) or {}
-            entry = {
+        results = [
+            {
                 "score": match.get("score"),
-                "text": metadata.get("text", ""),
-                "source": metadata.get("source_url", ""),
-                "file": metadata.get("source_file_name", ""),
-                "tool": metadata.get("source_tool", ""),
-                "modified": metadata.get("last_modified", ""),
+                "text": match.get("metadata", {}).get("text", ""),
+                "source": match.get("metadata", {}).get("source_url", ""),
+                "file": match.get("metadata", {}).get("source_file_name", ""),
+                "tool": match.get("metadata", {}).get("source_tool", ""),
+                "modified": match.get("metadata", {}).get("last_modified", "")
             }
-            for key in (
-                "image_url",
-                "image",
-                "thumbnail",
-                "photo_url",
-                "media_url",
-                "product_id",
-                "sku",
-                "name",
-                "price",
-            ):
-                if metadata.get(key) not in (None, ""):
-                    entry[key] = metadata[key]
-            results.append(entry)
+            for match in matches
+        ]
         
         # 3. Optional Cohere Reranking
         if rerank and results:

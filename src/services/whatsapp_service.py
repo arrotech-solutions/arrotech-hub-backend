@@ -238,9 +238,8 @@ class WhatsAppService:
             if len(body_text) > 1024:
                 body_text = body_text[:1021] + "..."
                 
-            from .whatsapp_ordering_helpers import sanitize_product_button_id
-
-            btn_product_id = sanitize_product_button_id(product_id or name)
+            safe_name = str(name).replace(":", "-")[:100]
+            stateless_id = f"{safe_name}:{price}"
             
             payload = {
                 "messaging_product": "whatsapp",
@@ -263,14 +262,14 @@ class WhatsAppService:
                             {
                                 "type": "reply",
                                 "reply": {
-                                    "id": f"cart:{btn_product_id}",
+                                    "id": f"cart:{stateless_id}",
                                     "title": "Add to Cart"
                                 }
                             },
                             {
                                 "type": "reply",
                                 "reply": {
-                                    "id": f"details:{btn_product_id}",
+                                    "id": f"details:{stateless_id}",
                                     "title": "View Details"
                                 }
                             }

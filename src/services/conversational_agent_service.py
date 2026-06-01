@@ -449,7 +449,7 @@ AGENT_SUB_TOOLS = [
                                 "name": {"type": "string", "description": "Product name exactly as shown in catalog"},
                                 "price": {"type": "number", "description": "Product price as a number (no currency symbol)"},
                                 "description": {"type": "string", "description": "Short product description (1-2 sentences)"},
-                                "image_url": {"type": "string", "description": "Always pass empty string — images are attached server-side from the catalog."}
+                                "image_url": {"type": "string", "description": "Full image URL from the catalog. Pass empty string if no image."}
                             },
                             "required": ["id", "name", "price", "description", "image_url"]
                         }
@@ -1036,19 +1036,9 @@ class ConversationalAgentService:
                     # Capture image URLs from product search payloads even when
                     # the model summary omits raw links in final text.
                     if tool_name == "search_products":
-                        parsed = (
-                            tool_result.get("data", {}).get("parsed_products")
-                            if isinstance(tool_result.get("data"), dict)
-                            else None
-                        )
-                        if not parsed:
-                            tool_images = self._extract_image_urls_from_search_result(
-                                tool_result
-                            )
-                            if tool_images:
-                                collected_image_urls = _dedupe_keep_order(
-                                    collected_image_urls + tool_images
-                                )
+                        tool_images = self._extract_image_urls_from_search_result(tool_result)
+                        if tool_images:
+                            collected_image_urls = _dedupe_keep_order(collected_image_urls + tool_images)
                             
                     if tool_name == "display_product_cards":
                         tool_cards = tool_result.get("cards", [])
@@ -1332,8 +1322,6 @@ class ConversationalAgentService:
 - ALWAYS use `display_product_cards` when showing products with images/prices
 - NEVER list products as plain text with numbered lists — customers can't interact with text
 - NEVER include raw image URLs (https://...) in your text responses
-- NEVER invent or guess product image URLs — pass `image_url` as "" in `display_product_cards`; the system attaches verified catalog photos
-- Use exact `id` and `name` from `search_products` catalog output
 - After `display_product_cards` succeeds, just say something brief like "Here's what we have! 🛒 Tap a product to add it to your cart."
 - Do NOT repeat product names, prices, or descriptions in text after cards are sent
 - If `display_product_cards` fails, describe products briefly in text WITHOUT image URLs
@@ -1652,9 +1640,7 @@ class ConversationalAgentService:
                     query=arguments.get("query", ""),
                     kb_id=kb_id,
                     user=user,
-                    db=db,
-                    session_key=session_key,
-                    currency=currency,
+                    db=db
                 )
 
             elif tool_name == "create_order":
@@ -1762,84 +1748,61 @@ class ConversationalAgentService:
             return {"success": False, "error": str(e)}
 
     async def _sub_search_products(
-        self,
-        query: str,
-        kb_id: str,
-        user: User,
-        db: AsyncSession,
-        session_key: str = "",
-        currency: str = "KES",
+        self, query: str, kb_id: str, user: User, db: AsyncSession
     ) -> Dict[str, Any]:
-        """Search KB via RAG and return structured catalog (images bound per chunk)."""
+        """Search the business knowledge base via RAG."""
         if not kb_id:
             return {"success": False, "result": "No knowledge base configured for this business."}
 
         try:
-            from .catalog_product_resolver import (
-                format_catalog_for_agent,
-                parse_products_from_rag_results,
-            )
-            from .rag_pipeline_service import RAGPipelineService
             from .whatsapp_ordering_helpers import normalize_search_query
+            from .tool_executor import ToolExecutor
+            executor = ToolExecutor()
 
             normalized_query = normalize_search_query(query)
-            rag = RAGPipelineService()
-
-            res = await rag.rag_search_query(
-                query=normalized_query,
-                kb_id=kb_id,
-                user_id=str(user.id),
-                top_k=8,
-                rerank=True,
-                rerank_top_n=5,
-                user=user,
-                db=db,
-                session_key=session_key,
+            result = await executor.execute_tool(
+                "rag_search",
+                {
+                    "query": normalized_query,
+                    "kb_id": kb_id,
+                    "top_k": 5,
+                    "rerank": True,
+                    "rerank_top_n": 3
+                },
+                user, db
             )
-            if not res.get("success") and normalized_query != query:
-                res = await rag.rag_search_query(
-                    query=query,
-                    kb_id=kb_id,
-                    user_id=str(user.id),
-                    top_k=8,
-                    rerank=True,
-                    rerank_top_n=5,
-                    user=user,
-                    db=db,
-                    session_key=session_key,
+            if not result.get("success") and normalized_query != query:
+                result = await executor.execute_tool(
+                    "rag_search",
+                    {
+                        "query": query,
+                        "kb_id": kb_id,
+                        "top_k": 5,
+                        "rerank": True,
+                        "rerank_top_n": 3,
+                    },
+                    user,
+                    db,
                 )
+            logger.info(f"[CONV_AGENT] search_products result length: {len(str(result.get('result', '')))} chars")
 
-            results = res.get("results", [])
-            catalog_products = parse_products_from_rag_results(results)
-
-            if session_key and catalog_products:
-                await context_manager.merge_search_catalog(session_key, catalog_products)
-
-            catalog_text = format_catalog_for_agent(catalog_products, currency)
-            logger.info(
-                f"[CONV_AGENT] search_products: {len(catalog_products)} catalog item(s) "
-                f"from {len(results)} chunk(s)"
-            )
-
-            if res.get("success"):
+            if result.get("success"):
+                search_text = result.get("result", "No results found")
                 return {
                     "success": True,
                     "result": (
-                        f"{catalog_text}\n\n"
-                        "INSTRUCTION: Call `display_product_cards` with the products listed above. "
-                        "Use the exact `id` and `name` fields. Set `image_url` to \"\" for every product — "
-                        "the system attaches verified catalog images automatically. "
-                        "Do NOT invent or copy image URLs. Do NOT list products as plain text."
+                        f"{search_text}\n\n"
+                        "INSTRUCTION: You MUST now call `display_product_cards` with the products found above. "
+                        "Extract each product's id, name, price, description, and image_url from the search results "
+                        "and pass them to `display_product_cards`. Do NOT list products in plain text."
                     ),
-                    "data": {
-                        **res,
-                        "parsed_products": catalog_products,
-                    },
+                    "data": result.get("data", {})
                 }
-            return {"success": False, "result": res.get("error", "Search failed")}
+            else:
+                return {"success": False, "result": result.get("error", "Search failed")}
 
         except Exception as e:
-            logger.error(f"[CONV_AGENT] RAG search error: {e}", exc_info=True)
+            logger.error(f"[CONV_AGENT] RAG search error: {e}")
             return {"success": False, "result": f"Search error: {str(e)}"}
 
     async def _sub_validate_order(
@@ -2497,21 +2460,6 @@ class ConversationalAgentService:
                 "cards": []
             }
 
-        from .catalog_product_resolver import resolve_products_for_cards
-
-        catalog: List[Dict[str, Any]] = []
-        if session_key:
-            session = await context_manager.get_session_by_key(session_key)
-            if session:
-                catalog = context_manager.get_search_catalog(session)
-        products = resolve_products_for_cards(products, catalog)
-        if not products:
-            return {
-                "success": True,
-                "result": "No verified catalog products to display.",
-                "cards": [],
-            }
-
         # Cap at 10 products to prevent:
         # 1) Token overflow in LLM tool call arguments (the JSON gets truncated)
         # 2) WhatsApp/Telegram message floods (too many cards annoy users)
@@ -2625,22 +2573,21 @@ class ConversationalAgentService:
             whatsapp = WhatsAppService()
             wa_config = {"access_token": access_token, "phone_number_id": phone_number_id}
 
+            import asyncio
+
             sent = 0
             failed = 0
             sent_image_urls = []
 
             # Pre-cache all product details for button click resolution
             card_products = products[:5]  # Cap at 5 cards for speed + UX
-            from .whatsapp_ordering_helpers import sanitize_product_button_id
-
-            seen_ids: set = set()
             for idx, product in enumerate(card_products):
-                base_id = str(product.get("id", "")).strip() or f"item_{idx}"
-                unique_id = sanitize_product_button_id(base_id)
-                if unique_id in seen_ids:
-                    unique_id = sanitize_product_button_id(f"{base_id}_{idx}")
-                seen_ids.add(unique_id)
-                product["id"] = unique_id
+                base_id = str(product.get("id", "")).strip()
+                # Append idx to guarantee uniqueness even if LLM hallucinates duplicate IDs
+                safe_id = f"{base_id}_{idx}" if base_id else f"item_{idx}"
+                from .whatsapp_ordering_helpers import sanitize_product_button_id
+                unique_id = sanitize_product_button_id(safe_id)
+                product["id"] = unique_id  # Update dict so _send_one_card uses the unique ID
                 
                 try:
                     cache_service.set(
@@ -2711,10 +2658,11 @@ class ConversationalAgentService:
                         logger.warning(f"[CONV_AGENT] ❌ Failed to send text for {name}: {text_err}")
                         return {"sent": False}
 
-            # Send sequentially so WhatsApp delivers cards in catalog order
-            results = []
-            for i, product in enumerate(card_products):
-                results.append(await _send_one_card(product, i))
+            # Fire all card sends in parallel
+            results = await asyncio.gather(
+                *[_send_one_card(p, i) for i, p in enumerate(card_products)],
+                return_exceptions=True
+            )
 
             for r in results:
                 if isinstance(r, dict) and r.get("sent"):
