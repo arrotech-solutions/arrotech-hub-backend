@@ -2202,10 +2202,16 @@ class ConversationalAgentService:
             # Pre-cache all product details for button click resolution
             card_products = products[:5]  # Cap at 5 cards for speed + UX
             for idx, product in enumerate(card_products):
-                product_id = product.get("id", str(idx + 1))
+                base_id = str(product.get("id", "")).strip()
+                # Append idx to guarantee uniqueness even if LLM hallucinates duplicate IDs
+                safe_id = f"{base_id}_{idx}" if base_id else f"item_{idx}"
+                from .whatsapp_ordering_helpers import sanitize_product_button_id
+                unique_id = sanitize_product_button_id(safe_id)
+                product["id"] = unique_id  # Update dict so _send_one_card uses the unique ID
+                
                 try:
                     cache_service.set(
-                        f"product_card:{phone_number_id}:{product_id}",
+                        f"product_card:{phone_number_id}:{unique_id}",
                         {
                             "name": product.get("name", "Product"),
                             "price": product.get("price", 0),
