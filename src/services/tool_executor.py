@@ -3505,14 +3505,24 @@ class ToolExecutor:
                         config={"access_token": access_token, "phone_number_id": phone_number_id}
                     )
 
-                # Cart UX: quick-reply buttons after the text (view / clear / checkout)
+                # Cart UX: list + reply buttons after the cart summary text
+                from .whatsapp_ordering_helpers import message_requests_cart_buttons
+
                 send_cart_buttons = arguments.get("send_cart_buttons", False)
                 if isinstance(send_cart_buttons, str):
                     send_cart_buttons = send_cart_buttons.strip().lower() in (
                         "true", "1", "yes"
                     )
+                if not send_cart_buttons and message_requests_cart_buttons(clean_message):
+                    send_cart_buttons = True
+
                 if send_cart_buttons and text_result and text_result.get("success"):
-                    session_key = arguments.get("session_key", "")
+                    session_key = (arguments.get("session_key") or "").strip()
+                    if session_key.startswith("{{"):
+                        session_key = ""
+                    if not session_key and to_number:
+                        phone_clean = str(to_number).strip().replace(" ", "")
+                        session_key = f"ccm:whatsapp:{user.id}:{phone_clean}"
                     if session_key:
                         try:
                             agent = ConversationalAgentService()
@@ -3525,11 +3535,18 @@ class ToolExecutor:
                                 db,
                                 body_text="",
                                 currency=currency,
+                                to_number=to_number,
                             )
                         except Exception as btn_err:
                             logger.warning(
-                                f"[WHATSAPP] Cart buttons after message failed: {btn_err}"
+                                f"[WHATSAPP] Cart buttons after message failed: {btn_err}",
+                                exc_info=True,
                             )
+                    else:
+                        logger.warning(
+                            "[WHATSAPP] send_cart_buttons=True but no session_key "
+                            f"(to_number={to_number!r})"
+                        )
 
                 result_summary = f"Message sent to {to_number}"
 

@@ -153,7 +153,7 @@ def format_cart_summary(cart: List[Dict[str, Any]], currency: str = "KES") -> st
         total += line_total
         lines.append(f"{i}. {name} × {qty:g} — {currency} {line_total:,.0f}")
     lines.append(f"\n*Total:* {currency} {total:,.0f}")
-    lines.append("\n_Use the buttons below to checkout, add more, or clear your cart._")
+    lines.append(f"\n_{CART_BUTTONS_TEXT_MARKER} to checkout, add more, or clear your cart._")
     if len(cart) > 0:
         lines.append("_To remove one item, tap *Remove item* and pick from the list._")
     return "\n".join(lines)
@@ -298,6 +298,14 @@ def cart_quantity_updated_message(item_name: str, quantity: float) -> str:
         return cart_item_removed_message(item_name)
     qty_label = int(quantity) if quantity == int(quantity) else quantity
     return f"✅ Updated *{item_name}* to ×{qty_label} in your cart."
+
+
+CART_BUTTONS_TEXT_MARKER = "Use the buttons below"
+
+
+def message_requests_cart_buttons(message: str) -> bool:
+    """True when agent cart summary expects follow-up interactive buttons."""
+    return bool(message and CART_BUTTONS_TEXT_MARKER in message)
 
 
 def cart_action_buttons(cart_has_items: bool = True) -> List[Dict[str, str]]:

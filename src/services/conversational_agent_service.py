@@ -659,7 +659,7 @@ class ConversationalAgentService:
                     return await self._cart_fast_path_result(
                         session_key, reply,
                         actions_taken=[{"tool": "manage_cart", "result_summary": "view"}],
-                        send_cart_buttons=bool(cart),
+                        send_cart_buttons=True,
                     )
                 if cart_cmd == "checkout":
                     session = await context_manager.get_session_by_key(session_key)
@@ -1475,6 +1475,7 @@ class ConversationalAgentService:
         db: AsyncSession,
         body_text: str = "What would you like to do next?",
         currency: str = "KES",
+        to_number: str = "",
     ) -> None:
         """Cart screen: remove-item list (if not empty) + checkout / add / clear buttons."""
         if not session_key or not session_key.startswith("ccm:whatsapp:"):
@@ -1482,7 +1483,12 @@ class ConversationalAgentService:
         try:
             parts = session_key.split(":")
             recipient = parts[3] if len(parts) >= 4 else ""
+            if not recipient and to_number:
+                recipient = str(to_number).strip().replace(" ", "")
             if not recipient:
+                logger.warning(
+                    f"[CONV_AGENT] cart buttons: no recipient (session_key={session_key!r})"
+                )
                 return
 
             from sqlalchemy import select
@@ -1502,9 +1508,13 @@ class ConversationalAgentService:
             )
             connection = result.scalar_one_or_none()
             if not connection:
+                logger.warning(
+                    f"[CONV_AGENT] cart buttons: no active WhatsApp connection for user {user.id}"
+                )
                 return
             config = connection.config or {}
             if not config.get("access_token") or not config.get("phone_number_id"):
+                logger.warning("[CONV_AGENT] cart buttons: missing WhatsApp credentials")
                 return
 
             wa_config = {
@@ -1520,7 +1530,7 @@ class ConversationalAgentService:
             if has_items:
                 remove_rows = build_cart_remove_list_rows(cart, currency)
                 if remove_rows:
-                    await wa.send_list_message(
+                    list_result = await wa.send_list_message(
                         to_number=recipient,
                         body_text="Tap an item below to remove it from your cart 🗑️",
                         button_label="Remove item",
@@ -1528,6 +1538,10 @@ class ConversationalAgentService:
                         config=wa_config,
                         footer_text="Up to 10 items shown",
                     )
+                    if not list_result.get("success"):
+                        logger.warning(
+                            f"[CONV_AGENT] cart remove list failed: {list_result.get('error')}"
+                        )
 
             button_body = (
                 body_text[:1024]
@@ -1538,14 +1552,18 @@ class ConversationalAgentService:
                     else "Your cart is empty — browse the menu to add items."
                 )
             )
-            await wa.send_quick_reply_buttons(
+            btn_result = await wa.send_quick_reply_buttons(
                 to_number=recipient,
                 body_text=button_body,
                 buttons=cart_action_buttons(cart_has_items=has_items),
                 config=wa_config,
             )
+            if not btn_result.get("success"):
+                logger.warning(
+                    f"[CONV_AGENT] cart action buttons failed: {btn_result.get('error')}"
+                )
         except Exception as e:
-            logger.warning(f"[CONV_AGENT] cart action buttons failed: {e}")
+            logger.warning(f"[CONV_AGENT] cart action buttons failed: {e}", exc_info=True)
 
     # ═══════════════════════════════════════════════════════════
     # CONVERSATION HISTORY (CCM integration)

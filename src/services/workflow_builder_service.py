@@ -599,7 +599,27 @@ class WorkflowBuilderService:
             
             # Substitute variables in parameters (now including any overrides)
             substituted_params = self._substitute_variables(effective_params, context or {})
-            
+
+            # WhatsApp cart buttons: inherit from prior conversational_agent step
+            # (workflows created before send_cart_buttons/session_key were added to step 2)
+            if step.tool_name in ("whatsapp_send_message", "whatsapp_messaging"):
+                prev_num = step.step_number - 1
+                if prev_num >= 1:
+                    prev_result = (context or {}).get(f"step_{prev_num}") or {}
+                    if isinstance(prev_result, dict):
+                        prev_scb = prev_result.get("send_cart_buttons")
+                        if prev_scb in (True, "True", "true", "1", 1, "yes"):
+                            substituted_params["send_cart_buttons"] = True
+                        else:
+                            inner = prev_result.get("data")
+                            if isinstance(inner, dict) and inner.get("send_cart_buttons") in (
+                                True, "True", "true", "1", 1, "yes"
+                            ):
+                                substituted_params["send_cart_buttons"] = True
+                sk = substituted_params.get("session_key") or (context or {}).get("session_key")
+                if sk and "{{" not in str(sk):
+                    substituted_params["session_key"] = sk
+
             # Update step execution with substituted parameters
             step_execution.input_data = substituted_params
             step_execution.status = WorkflowExecutionStatus.RUNNING.value if hasattr(WorkflowExecutionStatus.RUNNING, 'value') else "running"
