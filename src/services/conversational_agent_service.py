@@ -319,11 +319,11 @@ AGENT_SUB_TOOLS = [
         "function": {
             "name": "cancel_order",
             "description": (
-                "Cancel an existing order. Use this when a customer explicitly requests to cancel their order "
-                "OR when they tap a 'Cancel Order' button from their order history. "
-                "The order_id may already be provided from a button click — in that case do NOT ask the customer to type it. "
-                "If you already have their phone number from the chat session, use it. "
-                "Otherwise ask for the phone number used to place the order for verification."
+                "Cancel an existing order. ONLY call this tool if you already have the EXACT order_id "
+                "from a button click or explicitly provided by the user. "
+                "If the customer just says 'cancel my order' without specifying which order, "
+                "you MUST call `get_user_orders` first so they can see their orders and pick one to cancel. "
+                "Do NOT guess the order ID. Do NOT call this tool just to check if they have orders."
             ),
             "parameters": {
                 "type": "object",
@@ -342,8 +342,8 @@ AGENT_SUB_TOOLS = [
             "name": "get_user_orders",
             "description": (
                 "Search and retrieve the customer's order history and details. Use this when a customer asks to see their past orders, "
-                "check an order status, or wants to cancel an order. "
-                "Requires the customer's phone number. If you already have their phone number from the chat session, you can use it. "
+                "check an order status, or wants to cancel an order but hasn't provided the exact order ID yet. "
+                "Requires the customer's phone number. If you don't have it, ask them for their phone number so you can pull up their orders. "
                 "IMPORTANT: After getting results, ALWAYS call `display_order_cards` to show orders as interactive cards with action buttons. "
                 "Never list orders as plain text."
             ),
@@ -399,7 +399,8 @@ AGENT_SUB_TOOLS = [
                 "Each card shows the order ID, status, date, total, items, and contextual buttons like 'Cancel Order' and 'Order Details'. "
                 "You MUST call this tool after `get_user_orders` returns results. "
                 "NEVER list orders as plain text — always send them as interactive cards so the customer can take actions directly. "
-                "After this tool succeeds, respond with a brief message like 'Here are your orders! Tap any button to take action.'"
+                "After this tool succeeds, respond with a brief message like 'Here are your orders! Tap any button to take action.' "
+                "CRITICAL: Do NOT repeat the order details or list the orders in your text response."
             ),
             "parameters": {
                 "type": "object",
@@ -1040,7 +1041,7 @@ class ConversationalAgentService:
 6. Confirm the order summary with total price using `calculate_total`
 7. Create the order using `create_order`
 8. After order is created, offer M-Pesa payment using `initiate_mpesa_payment`
-9. If a customer wants to cancel an order, FIRST call `get_user_orders` to show their orders with Cancel buttons — do NOT ask them to type an Order ID. If the order_id is already provided (from a button click), proceed directly with `cancel_order`
+9. If a customer wants to cancel an order, FIRST call `get_user_orders` to show their orders with Cancel buttons — do NOT guess the Order ID and do NOT ask them to type it. If you don't know their phone number, ask for it so you can look up their orders. If the order_id is already provided (e.g. from a button click), proceed directly with `cancel_order`
 10. If a customer wants to see their order history or check an order status, call `get_user_orders` then ALWAYS call `display_order_cards` with the results
 
 ## CRITICAL Product Display Rules
@@ -1429,28 +1430,27 @@ class ConversationalAgentService:
             # Statuses that allow cancellation (from STATUS_TRANSITIONS in order_service.py)
             CANCELLABLE_STATUSES = {"pending", "confirmed", "preparing", "ready", "shipped", "out_for_delivery"}
 
-            # Enrich orders with cancellability flag and format for the LLM
-            formatted_orders = []
+            # Enrich orders with cancellability flag and format for the LLM as JSON
+            simplified_orders = []
             for o in orders:
                 status_raw = (o.get("Status") or "").strip().lower().replace(" ", "_")
                 is_cancellable = status_raw in CANCELLABLE_STATUSES
-                o["is_cancellable"] = is_cancellable
 
-                formatted_orders.append(
-                    f"- Order ID: {o.get('Order ID')}\n"
-                    f"  Status: {o.get('Status')}\n"
-                    f"  Date: {o.get('Created At')}\n"
-                    f"  Total: {o.get('Subtotal')} {o.get('Currency', 'KES')}\n"
-                    f"  Items: {o.get('Items')}\n"
-                    f"  Can Cancel: {'Yes' if is_cancellable else 'No'}"
-                )
+                simplified_orders.append({
+                    "order_id": o.get('Order ID'),
+                    "status": o.get('Status'),
+                    "date": o.get('Created At'),
+                    "total": f"{o.get('Subtotal')} {o.get('Currency', 'KES')}",
+                    "items": o.get('Items'),
+                    "can_cancel": is_cancellable
+                })
             
-            summary = f"Found {len(orders)} order(s) for {customer_phone}:\n\n" + "\n\n".join(formatted_orders)
-            summary += (
-                "\n\nINSTRUCTION: You MUST now call `display_order_cards` with these orders. "
-                "Extract each order's order_id, status, date (Created At), total (Subtotal + Currency), "
-                "and items from the results above and pass them to `display_order_cards`. "
-                "Do NOT list orders in plain text."
+            import json
+            summary = (
+                f"Found {len(orders)} order(s) for {customer_phone}.\n\n"
+                f"INSTRUCTION: You MUST now call `display_order_cards` and pass this exact JSON array as the 'orders' argument:\n"
+                f"{json.dumps(simplified_orders, indent=2)}\n\n"
+                "CRITICAL: Do NOT list these orders in text in your response to the user. The interactive cards are the ONLY way orders should be shown."
             )
             return {"success": True, "result": summary, "orders": orders}
 
