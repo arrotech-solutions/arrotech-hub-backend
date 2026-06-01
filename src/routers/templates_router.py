@@ -1940,7 +1940,9 @@ WORKFLOW_TEMPLATES = [
                     "operation": "send_message",
                     "to_number": "{{whatsapp_contact_phone}}",
                     "message": "{{step_1.response_text}}",
-                    "image_urls": "{{step_1.image_urls}}"
+                    "image_urls": "{{step_1.image_urls}}",
+                    "send_cart_buttons": "{{step_1.send_cart_buttons}}",
+                    "session_key": "{{session_key}}"
                 },
                 "description": "Send AI response back to customer"
             },

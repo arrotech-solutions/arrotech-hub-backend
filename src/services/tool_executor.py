@@ -3505,6 +3505,25 @@ class ToolExecutor:
                         config={"access_token": access_token, "phone_number_id": phone_number_id}
                     )
 
+                # Cart UX: quick-reply buttons after the text (view / clear / checkout)
+                send_cart_buttons = arguments.get("send_cart_buttons", False)
+                if isinstance(send_cart_buttons, str):
+                    send_cart_buttons = send_cart_buttons.strip().lower() in (
+                        "true", "1", "yes"
+                    )
+                if send_cart_buttons and text_result and text_result.get("success"):
+                    session_key = arguments.get("session_key", "")
+                    if session_key:
+                        try:
+                            agent = ConversationalAgentService()
+                            await agent._send_cart_action_buttons(
+                                session_key, user, db, "What would you like to do next?"
+                            )
+                        except Exception as btn_err:
+                            logger.warning(
+                                f"[WHATSAPP] Cart buttons after message failed: {btn_err}"
+                            )
+
                 result_summary = f"Message sent to {to_number}"
 
                 return {
@@ -7233,6 +7252,7 @@ Description: {payment.description or 'N/A'}"""
                 "order_data": result.get("order_data"),
                 "order_notification": result.get("order_notification", ""),
                 "actions_taken": result.get("actions_taken", []),
+                "send_cart_buttons": result.get("send_cart_buttons", False),
                 "data": result
             }
 
