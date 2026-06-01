@@ -384,6 +384,39 @@ class ConversationContextManager:
         cart = session.metadata.get("cart", [])
         return cart if isinstance(cart, list) else []
 
+    def get_search_catalog(self, session: ConversationSession) -> List[Dict[str, Any]]:
+        """Products parsed from recent KB search (id, name, price, image_url)."""
+        raw = session.metadata.get("search_catalog", {})
+        if isinstance(raw, dict):
+            return list(raw.values())
+        if isinstance(raw, list):
+            return raw
+        return []
+
+    async def merge_search_catalog(
+        self,
+        session_key: str,
+        products: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Merge parsed catalog products into session (used to verify card images)."""
+        from .catalog_product_resolver import dedupe_catalog_products
+
+        session = await self.get_session_by_key(session_key)
+        if not session:
+            return products or []
+
+        existing = session.metadata.get("search_catalog", {})
+        catalog: Dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
+        for product in dedupe_catalog_products(products or []):
+            if not product.get("name"):
+                continue
+            key = str(product.get("id") or product["name"]).strip().lower()
+            catalog[key] = product
+
+        session.metadata["search_catalog"] = catalog
+        await self.save_session(session)
+        return list(catalog.values())
+
     async def add_cart_item(
         self,
         session_key: str,
