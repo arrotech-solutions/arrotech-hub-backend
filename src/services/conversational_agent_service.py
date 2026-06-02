@@ -801,6 +801,7 @@ class ConversationalAgentService:
             order_notification = ""
             collected_image_urls: List[str] = []
             collected_product_cards: List[Dict[str, Any]] = []
+            latest_search_results: List[Dict[str, Any]] = []
             sent_product_ids: set = set()  # Track product IDs already sent as cards this turn
             send_cart_buttons_after_turn = False
             checkout_keywords = ("order", "cart", "checkout", "pay", "total", "confirm", "delivery")
@@ -994,6 +995,23 @@ class ConversationalAgentService:
                             )
                             tool_args = {**tool_args, "products": new_products}
 
+                    # Image safety: never trust LLM-provided product images blindly.
+                    # Resolve per-product image from latest raw search chunks only.
+                    if tool_name == "display_product_cards":
+                        incoming_products = tool_args.get("products", [])
+                        if isinstance(incoming_products, list) and incoming_products:
+                            safe_products: List[Dict[str, Any]] = []
+                            for p in incoming_products:
+                                if not isinstance(p, dict):
+                                    continue
+                                safe_p = dict(p)
+                                verified_url = self._resolve_verified_image_for_product(
+                                    safe_p, latest_search_results
+                                )
+                                safe_p["image_url"] = verified_url or ""
+                                safe_products.append(safe_p)
+                            tool_args = {**tool_args, "products": safe_products}
+
                     # Execute the sub-tool
                     tool_result = await self._execute_sub_tool(
                         tool_name=tool_name,
@@ -1036,6 +1054,11 @@ class ConversationalAgentService:
                     # Capture image URLs from product search payloads even when
                     # the model summary omits raw links in final text.
                     if tool_name == "search_products":
+                        data = tool_result.get("data", {})
+                        if isinstance(data, dict):
+                            raw_results = data.get("results", [])
+                            if isinstance(raw_results, list):
+                                latest_search_results = raw_results
                         tool_images = self._extract_image_urls_from_search_result(tool_result)
                         if tool_images:
                             collected_image_urls = _dedupe_keep_order(collected_image_urls + tool_images)
@@ -1233,6 +1256,59 @@ class ConversationalAgentService:
                     urls.extend(extract_image_urls(str(item.get(key))))
 
         return _dedupe_keep_order(urls)
+
+    def _resolve_verified_image_for_product(
+        self,
+        product: Dict[str, Any],
+        search_results: List[Dict[str, Any]],
+    ) -> str:
+        """
+        Return a product image URL only when it can be verified from raw RAG chunks.
+        If verification is ambiguous, return empty string to avoid mismatched images.
+        """
+        if not search_results or not isinstance(product, dict):
+            return ""
+
+        name = str(product.get("name") or "").strip().lower()
+        product_id = str(product.get("id") or "").strip().lower()
+        if not name and not product_id:
+            return ""
+
+        matched_urls: List[str] = []
+
+        for result in search_results:
+            if not isinstance(result, dict):
+                continue
+            text = str(result.get("text") or "")
+            text_lower = text.lower()
+            if not text:
+                continue
+
+            # Candidate match by id or exact-ish product name presence.
+            id_hit = bool(product_id and product_id in text_lower)
+            name_hit = bool(name and name in text_lower)
+            if not (id_hit or name_hit):
+                continue
+
+            # Highest confidence: same line contains product name + single URL.
+            for line in text.splitlines():
+                line_lower = line.lower()
+                if name and name not in line_lower:
+                    continue
+                line_urls = extract_image_urls(line)
+                if len(line_urls) == 1:
+                    matched_urls.append(line_urls[0])
+
+            # Fallback: metadata-style fields on search result entry
+            for key in ("image_url", "image", "thumbnail", "photo_url", "media_url"):
+                raw = result.get(key)
+                if raw:
+                    matched_urls.extend(extract_image_urls(str(raw)))
+
+        unique_urls = _dedupe_keep_order(matched_urls)
+        if len(unique_urls) == 1:
+            return unique_urls[0]
+        return ""
 
     # ═══════════════════════════════════════════════════════════
     # SYSTEM PROMPT BUILDER
