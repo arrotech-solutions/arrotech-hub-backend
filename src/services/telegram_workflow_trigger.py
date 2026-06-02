@@ -114,6 +114,18 @@ class TelegramWorkflowTrigger:
                         except Exception as ccm_err:
                             logger.warning(f"[TG_TRIGGER] CCM session init failed (non-blocking): {ccm_err}")
 
+                        if session_key:
+                            try:
+                                if await context_manager.is_human_handoff_active(session_key):
+                                    logger.info(
+                                        "[TG_TRIGGER] Human handoff active — skipping AI workflow"
+                                    )
+                                    continue
+                            except Exception as handoff_err:
+                                logger.warning(
+                                    f"[TG_TRIGGER] Handoff check failed: {handoff_err}"
+                                )
+
                         input_vars = {
                             "telegram_message": message or "",
                             "sender_id": sender_id,

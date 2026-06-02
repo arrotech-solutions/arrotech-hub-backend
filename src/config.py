@@ -287,6 +287,12 @@ class BaseConfig(BaseSettings):
     CCM_ENABLE_SUMMARIZATION: bool = False  # Auto-summarize old messages via LLM
     CCM_SUMMARY_THRESHOLD: int = 30        # Trigger summarization above this count
 
+    # Conversational agent — escalation & multilingual
+    AGENT_AUTO_ESCALATION_ENABLED: bool = True
+    AGENT_FRUSTRATION_ESCALATION_THRESHOLD: float = 0.65
+    AGENT_HUMAN_HANDOFF_TTL_HOURS: int = 24  # 0 = no auto-resume; else bot resumes after TTL
+    AGENT_DEFAULT_SUPPORTED_LANGUAGES: str = "en,sw,fr,ar,es"  # comma-separated ISO codes
+
     # Coding Agent Configuration
     GITHUB_TOKEN: Optional[str] = None
     CODING_AGENT_DOCKER_IMAGE: str = "node:20-alpine"

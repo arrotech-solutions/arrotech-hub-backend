@@ -2009,7 +2009,10 @@ WORKFLOW_TEMPLATES = [
                         "storage_spreadsheet_id": "{{variables.storage_spreadsheet_id}}",
                         "storage_airtable_base_id": "{{variables.storage_airtable_base_id}}",
                         "storage_airtable_orders_table": "{{variables.storage_airtable_orders_table}}",
-                        "storage_airtable_customers_table": "{{variables.storage_airtable_customers_table}}"
+                        "storage_airtable_customers_table": "{{variables.storage_airtable_customers_table}}",
+                        "auto_escalation_enabled": "{{variables.auto_escalation_enabled}}",
+                        "supported_languages": "{{variables.supported_languages}}",
+                        "human_handoff_ttl_hours": "{{variables.human_handoff_ttl_hours}}"
                     }
                 },
                 "description": "AI agent handles conversation and order creation"
@@ -2025,7 +2028,8 @@ WORKFLOW_TEMPLATES = [
                     "send_cart_buttons": "{{step_1.send_cart_buttons}}",
                     "session_key": "{{session_key}}"
                 },
-                "description": "Send AI response back to customer"
+                "description": "Send AI response back to customer",
+                "condition": {"if": "step_1.skip_customer_reply != True"}
             },
             {
                 "step_number": 3,
@@ -2048,6 +2052,17 @@ WORKFLOW_TEMPLATES = [
                 },
                 "description": "Notify business owner of cancelled order",
                 "condition": {"if": "step_1.order_cancelled == True"}
+            },
+            {
+                "step_number": 5,
+                "tool_name": "whatsapp_send_message",
+                "tool_parameters": {
+                    "operation": "send_message",
+                    "to_number": "{{variables.business_phone}}",
+                    "message": "{{step_1.escalation_notification}}"
+                },
+                "description": "Alert business owner — customer needs a human agent",
+                "condition": {"if": "step_1.escalation_triggered == True"}
             }
         ],
         "variables": {
@@ -2108,6 +2123,21 @@ WORKFLOW_TEMPLATES = [
                 "type": "string",
                 "default": "Customers",
                 "show_if": {"field": "storage_provider", "value": "airtable"}
+            },
+            "auto_escalation_enabled": {
+                "type": "boolean",
+                "default": True,
+                "description": "Automatically hand frustrated or complex chats to a human agent"
+            },
+            "supported_languages": {
+                "type": "string",
+                "default": "en,sw,fr,ar,es",
+                "description": "Comma-separated language codes the agent supports (e.g. en,sw,fr)"
+            },
+            "human_handoff_ttl_hours": {
+                "type": "number",
+                "default": 24,
+                "description": "Hours before the AI resumes automatically (0 = never auto-resume)"
             }
         }
     },

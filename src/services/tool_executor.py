@@ -7275,6 +7275,10 @@ Description: {payment.description or 'N/A'}"""
                 "order_cancelled": result.get("order_cancelled", False),
                 "order_data": result.get("order_data"),
                 "order_notification": result.get("order_notification", ""),
+                "escalation_triggered": result.get("escalation_triggered", False),
+                "escalation_notification": result.get("escalation_notification", ""),
+                "human_handoff": result.get("human_handoff", False),
+                "skip_customer_reply": result.get("skip_customer_reply", False),
                 "actions_taken": result.get("actions_taken", []),
                 "send_cart_buttons": result.get("send_cart_buttons", False),
                 "data": result

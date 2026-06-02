@@ -543,6 +543,101 @@ class ConversationContextManager:
         session.metadata.pop("order_confirmed", None)
         await self.save_session(session)
 
+    # ─── Human handoff & language preference ─────────────────────────────
+
+    def is_human_handoff(self, session: Optional[ConversationSession]) -> bool:
+        if not session:
+            return False
+        return bool(session.metadata.get("human_handoff"))
+
+    async def is_human_handoff_active(self, session_key: str) -> bool:
+        session = await self.get_session_by_key(session_key)
+        return self.is_human_handoff(session)
+
+    def get_preferred_language(self, session: Optional[ConversationSession]) -> str:
+        if not session:
+            return "en"
+        return (session.metadata.get("preferred_language") or "en").lower()[:2]
+
+    async def set_preferred_language(self, session_key: str, language_code: str) -> None:
+        session = await self.get_session_by_key(session_key)
+        if not session:
+            return
+        session.metadata["preferred_language"] = (language_code or "en").lower()[:2]
+        await self.save_session(session)
+
+    async def set_human_handoff(
+        self,
+        session_key: str,
+        reason: str,
+        escalated_by: str = "agent",
+    ) -> bool:
+        """Pause AI for this session; human agent handles replies."""
+        session = await self.get_session_by_key(session_key)
+        if not session:
+            return False
+        session.metadata["human_handoff"] = True
+        session.metadata["escalation_reason"] = reason
+        session.metadata["escalated_by"] = escalated_by
+        session.metadata["escalated_at"] = time.time()
+        session.metadata.pop("handoff_waiting_sent", None)
+        await self.save_session(session)
+        logger.info(
+            "[CCM] Human handoff set for %s (reason=%s, by=%s)",
+            session_key,
+            reason,
+            escalated_by,
+        )
+        return True
+
+    async def clear_human_handoff(self, session_key: str) -> bool:
+        session = await self.get_session_by_key(session_key)
+        if not session:
+            return False
+        for key in (
+            "human_handoff",
+            "escalation_reason",
+            "escalated_by",
+            "escalated_at",
+            "handoff_waiting_sent",
+            "negative_sentiment_streak",
+        ):
+            session.metadata.pop(key, None)
+        await self.save_session(session)
+        logger.info("[CCM] Human handoff cleared for %s", session_key)
+        return True
+
+    async def update_session_metadata(
+        self,
+        session_key: str,
+        updates: Dict[str, Any],
+    ) -> None:
+        session = await self.get_session_by_key(session_key)
+        if not session:
+            return
+        session.metadata.update(updates)
+        await self.save_session(session)
+
+    async def maybe_expire_human_handoff(
+        self,
+        session_key: str,
+        ttl_seconds: int,
+    ) -> bool:
+        """
+        Clear handoff if TTL elapsed. Returns True if handoff was cleared.
+        """
+        if ttl_seconds <= 0:
+            return False
+        session = await self.get_session_by_key(session_key)
+        if not session or not session.metadata.get("human_handoff"):
+            return False
+        from .agent_intelligence_service import agent_intelligence
+
+        if agent_intelligence.handoff_expired(session.metadata, ttl_seconds):
+            await self.clear_human_handoff(session_key)
+            return True
+        return False
+
     # ─── Redis Storage (synchronous — matches cache_service pattern) ──────
 
     def _load_from_redis(self, session_key: str) -> Optional[ConversationSession]:

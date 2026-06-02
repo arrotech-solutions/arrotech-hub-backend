@@ -198,6 +198,27 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "required": False,
                 "options": [],
                 "default": []
+            },
+            "auto_escalation_enabled": {
+                "label": "Smart Escalation",
+                "type": "boolean",
+                "description": "Automatically hand frustrated or complex chats to a human agent",
+                "required": False,
+                "default": True
+            },
+            "supported_languages": {
+                "label": "Supported Languages",
+                "type": "text",
+                "description": "Comma-separated codes: en,sw,fr,ar,es",
+                "required": False,
+                "default": "en,sw,fr,ar,es"
+            },
+            "human_handoff_ttl_hours": {
+                "label": "Handoff Auto-Resume (hours)",
+                "type": "number",
+                "description": "Resume AI after this many hours (0 = manual release only)",
+                "required": False,
+                "default": 24
             }
         },
         "steps": [
@@ -225,13 +246,22 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                         "storage_airtable_orders_table": "{{config.storage_airtable_orders_table}}",
                         "storage_airtable_customers_table": "{{config.storage_airtable_customers_table}}",
                         "storage_airtable_transactions_table": "{{config.storage_airtable_transactions_table}}",
-                        "enabled_mcp_tools": "{{config.enabled_mcp_tools}}"
+                        "enabled_mcp_tools": "{{config.enabled_mcp_tools}}",
+                        "auto_escalation_enabled": "{{config.auto_escalation_enabled}}",
+                        "supported_languages": "{{config.supported_languages}}",
+                        "human_handoff_ttl_hours": "{{config.human_handoff_ttl_hours}}"
                     }
                 }
             },
             {
                 "tool_name": "whatsapp_send_message",
                 "description": "Send AI response back to customer",
+                "condition": {
+                    "type": "if",
+                    "field": "step_1.skip_customer_reply",
+                    "operator": "not_equals",
+                    "value": True
+                },
                 "parameters": {
                     "operation": "send_message",
                     "to_number": "{{whatsapp_contact_phone}}",
@@ -269,6 +299,21 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                     "operation": "send_message",
                     "to_number": "{{config.business_phone}}",
                     "message": "{{step_1.order_notification}}"
+                }
+            },
+            {
+                "tool_name": "whatsapp_send_message",
+                "description": "Alert business owner — customer needs a human agent",
+                "condition": {
+                    "type": "if",
+                    "field": "step_1.escalation_triggered",
+                    "operator": "equals",
+                    "value": True
+                },
+                "parameters": {
+                    "operation": "send_message",
+                    "to_number": "{{config.business_phone}}",
+                    "message": "{{step_1.escalation_notification}}"
                 }
             }
         ]

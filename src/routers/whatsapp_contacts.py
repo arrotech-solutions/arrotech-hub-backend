@@ -474,10 +474,68 @@ async def send_message(
     
     await db.commit()
     await db.refresh(message)
+
+    # Implicit human takeover when the business replies from the dashboard
+    try:
+        from ..services.conversation_context_manager import (
+            context_manager,
+            _build_session_key,
+        )
+        sk = _build_session_key("whatsapp", str(user.id), contact.phone_number)
+        await context_manager.set_human_handoff(
+            sk, "business_replied", escalated_by="human"
+        )
+        tags = list(contact.tags or [])
+        for tag in ("human_handoff", "needs_attention"):
+            if tag not in tags:
+                tags.append(tag)
+        contact.tags = tags
+        await db.commit()
+    except Exception as e:
+        logger.warning(f"[WHATSAPP] Handoff on manual send failed: {e}")
     
     return {
         "success": True,
         "data": MessageResponse.model_validate(message)
+    }
+
+
+@router.post("/contacts/{contact_id}/release-agent")
+async def release_agent_for_contact(
+    contact_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return a contact conversation to the AI agent after human handoff."""
+    check_connection_access(user, "whatsapp_business")
+
+    result = await db.execute(
+        select(WhatsAppContact).filter(
+            WhatsAppContact.id == contact_id,
+            WhatsAppContact.user_id == user.id,
+        )
+    )
+    contact = result.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    from ..services.conversation_context_manager import (
+        context_manager,
+        _build_session_key,
+    )
+
+    sk = _build_session_key("whatsapp", str(user.id), contact.phone_number)
+    cleared = await context_manager.clear_human_handoff(sk)
+
+    tags = [t for t in (contact.tags or []) if t not in ("human_handoff", "needs_attention")]
+    contact.tags = tags
+    await db.commit()
+
+    return {
+        "success": True,
+        "released": cleared,
+        "session_key": sk,
+        "message": "AI agent resumed for this contact. Customer can continue ordering via chat.",
     }
 
 

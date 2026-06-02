@@ -30,6 +30,8 @@ from .llm_service import LLMService, LLMResponse
 from .order_service import OrderService
 from .conversation_context_manager import context_manager
 from .cache_service import cache_service
+from .agent_intelligence_service import agent_intelligence, LANGUAGE_PROFILES, DEFAULT_LANGUAGE
+from ..config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -492,7 +494,37 @@ AGENT_SUB_TOOLS = [
                 "required": ["orders"]
             }
         }
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "escalate_to_human",
+            "description": (
+                "Transfer the conversation to a live human agent. Use when: the customer explicitly "
+                "asks for a person/manager; you cannot resolve their issue after trying; the request is "
+                "too complex (bulk orders, special contracts, complaints); or the customer is clearly "
+                "frustrated or upset. After calling this, reassure the customer briefly — do not continue "
+                "trying to solve the issue yourself."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reason": {
+                        "type": "string",
+                        "description": (
+                            "Why escalation is needed: customer_requested, frustrated, "
+                            "complex_request, cannot_help, complaint"
+                        ),
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "One-sentence summary of the issue for the human agent",
+                    },
+                },
+                "required": ["reason", "summary"],
+            },
+        },
+    },
 ]
 
 
@@ -616,8 +648,92 @@ class ConversationalAgentService:
                     "order_cancelled": False,
                     "order_data": None,
                     "order_notification": "",
+                    "escalation_triggered": False,
+                    "escalation_notification": "",
+                    "human_handoff": False,
                     "actions_taken": [{"tool": "guard", "result_summary": "injection_blocked"}],
                 }
+
+            supported_languages = self._parse_supported_languages(
+                business_config.get("supported_languages")
+            )
+            auto_escalation_enabled = self._config_bool(
+                business_config.get("auto_escalation_enabled"),
+                getattr(settings, "AGENT_AUTO_ESCALATION_ENABLED", True),
+            )
+            frustration_threshold = float(
+                business_config.get("frustration_threshold")
+                or getattr(settings, "AGENT_FRUSTRATION_ESCALATION_THRESHOLD", 0.65)
+            )
+            handoff_ttl_hours = int(
+                business_config.get("human_handoff_ttl_hours")
+                or getattr(settings, "AGENT_HUMAN_HANDOFF_TTL_HOURS", 24)
+            )
+            handoff_ttl_seconds = handoff_ttl_hours * 3600 if handoff_ttl_hours > 0 else 0
+
+            preferred_language = DEFAULT_LANGUAGE
+            session = None
+            if session_key:
+                if handoff_ttl_seconds:
+                    await context_manager.maybe_expire_human_handoff(
+                        session_key, handoff_ttl_seconds
+                    )
+                session = await context_manager.get_session_by_key(session_key)
+
+                if agent_intelligence.is_release_bot_command(user_message):
+                    lang = context_manager.get_preferred_language(session) if session else "en"
+                    await context_manager.clear_human_handoff(session_key)
+                    reply = agent_intelligence.get_release_bot_message(lang)
+                    return {
+                        "response_text": reply,
+                        "image_urls": [],
+                        "cards": [],
+                        "order_created": False,
+                        "order_cancelled": False,
+                        "order_data": None,
+                        "order_notification": "",
+                        "escalation_triggered": False,
+                        "escalation_notification": "",
+                        "human_handoff": False,
+                        "actions_taken": [{"tool": "handoff", "result_summary": "released_to_bot"}],
+                    }
+
+                if session and context_manager.is_human_handoff(session):
+                    lang = context_manager.get_preferred_language(session)
+                    return {
+                        "response_text": agent_intelligence.get_handoff_waiting_message(lang),
+                        "image_urls": [],
+                        "cards": [],
+                        "order_created": False,
+                        "order_cancelled": False,
+                        "order_data": None,
+                        "order_notification": "",
+                        "escalation_triggered": False,
+                        "escalation_notification": "",
+                        "human_handoff": True,
+                        "skip_customer_reply": True,
+                        "actions_taken": [{"tool": "handoff", "result_summary": "human_active"}],
+                    }
+
+                lang_detection = agent_intelligence.detect_language(
+                    user_message, supported=supported_languages
+                )
+                preferred_language = lang_detection["language_code"]
+                if session:
+                    existing_lang = session.metadata.get("preferred_language")
+                    if not existing_lang or lang_detection["confidence"] >= 0.55:
+                        await context_manager.set_preferred_language(
+                            session_key, preferred_language
+                        )
+                    else:
+                        preferred_language = context_manager.get_preferred_language(session)
+                    streak = agent_intelligence.update_sentiment_streak(
+                        session.metadata, user_message
+                    )
+                    await context_manager.update_session_metadata(
+                        session_key, {"negative_sentiment_streak": streak}
+                    )
+                    session = await context_manager.get_session_by_key(session_key)
 
             if session_key and is_order_confirmation_message(user_message):
                 try:
@@ -757,6 +873,55 @@ class ConversationalAgentService:
                 "airtable_transactions_table": business_config.get("storage_airtable_transactions_table", "Transactions"),
             }
 
+            # Auto-escalation before LLM (frustration, human request, complexity)
+            escalation_triggered = False
+            escalation_notification = ""
+            if session_key and session:
+                should_escalate, esc_reason = agent_intelligence.should_auto_escalate(
+                    user_message,
+                    session.metadata,
+                    auto_escalation_enabled=auto_escalation_enabled,
+                    frustration_threshold=frustration_threshold,
+                )
+                if should_escalate:
+                    escalation_triggered = True
+                    await context_manager.set_human_handoff(
+                        session_key, esc_reason, escalated_by="auto"
+                    )
+                    lang_name = LANGUAGE_PROFILES.get(
+                        preferred_language, LANGUAGE_PROFILES[DEFAULT_LANGUAGE]
+                    )["name"]
+                    escalation_notification = agent_intelligence.format_escalation_notification(
+                        business_name=business_name,
+                        customer_name=customer_name,
+                        customer_phone=customer_phone,
+                        reason=esc_reason,
+                        last_message=user_message,
+                        language_name=lang_name,
+                    )
+                    handoff_msg = agent_intelligence.get_handoff_customer_message(
+                        preferred_language
+                    )
+                    await self._save_to_ccm(session_key, "assistant", handoff_msg)
+                    await self._tag_contact_for_handoff(
+                        user, customer_phone, db, reason=esc_reason
+                    )
+                    return {
+                        "response_text": handoff_msg,
+                        "image_urls": [],
+                        "cards": [],
+                        "order_created": False,
+                        "order_cancelled": False,
+                        "order_data": None,
+                        "order_notification": "",
+                        "escalation_triggered": True,
+                        "escalation_notification": escalation_notification,
+                        "human_handoff": True,
+                        "actions_taken": [
+                            {"tool": "escalate_to_human", "result_summary": f"auto:{esc_reason}"}
+                        ],
+                    }
+
             # Build the system prompt
             system_prompt = self._build_system_prompt(
                 business_name=business_name,
@@ -766,6 +931,8 @@ class ConversationalAgentService:
                 custom_prompt=custom_system_prompt,
                 customer_phone=customer_phone,
                 customer_name=customer_name,
+                preferred_language=preferred_language,
+                auto_escalation_enabled=auto_escalation_enabled,
             )
 
             cart_context = await self._build_cart_context_block(session_key, currency)
@@ -799,6 +966,9 @@ class ConversationalAgentService:
             order_cancelled = False
             order_data = None
             order_notification = ""
+            escalation_triggered = False
+            escalation_notification = ""
+            human_handoff = False
             collected_image_urls: List[str] = []
             collected_product_cards: List[Dict[str, Any]] = []
             sent_product_ids: set = set()  # Track product IDs already sent as cards this turn
@@ -896,6 +1066,9 @@ class ConversationalAgentService:
                         "order_cancelled": order_cancelled,
                         "order_data": order_data,
                         "order_notification": order_notification,
+                        "escalation_triggered": escalation_triggered,
+                        "escalation_notification": escalation_notification,
+                        "human_handoff": human_handoff,
                         "actions_taken": actions_taken,
                         "send_cart_buttons": send_cart_buttons_after_turn and not order_created,
                     }
@@ -1010,7 +1183,13 @@ class ConversationalAgentService:
                         user_message=user_message,
                         default_customer_phone=customer_phone,
                         default_customer_name=customer_name,
+                        preferred_language=preferred_language,
                     )
+
+                    if tool_name == "escalate_to_human" and tool_result.get("success"):
+                        escalation_triggered = True
+                        human_handoff = True
+                        escalation_notification = tool_result.get("escalation_notification", "")
 
                     # Harness: track tool call for quality evaluation
                     if self._harness_enabled:
@@ -1152,6 +1331,9 @@ class ConversationalAgentService:
                 "order_cancelled": order_cancelled,
                 "order_data": order_data,
                 "order_notification": order_notification,
+                "escalation_triggered": escalation_triggered,
+                "escalation_notification": escalation_notification,
+                "human_handoff": human_handoff,
                 "actions_taken": actions_taken,
                 "send_cart_buttons": send_cart_buttons_after_turn and not order_created,
             }
@@ -1247,6 +1429,8 @@ class ConversationalAgentService:
         custom_prompt: str = "",
         customer_phone: str = "",
         customer_name: str = "",
+        preferred_language: str = DEFAULT_LANGUAGE,
+        auto_escalation_enabled: bool = True,
     ) -> str:
         """Build the business-specific system prompt for the AI agent."""
 
@@ -1302,6 +1486,7 @@ class ConversationalAgentService:
 - Create orders when the customer is ready
 - Calculate order totals
 - Initiate M-Pesa payments
+- Escalate to a live human agent using `escalate_to_human` when needed
 
 ## Order Flow
 1. Greet the customer warmly and ask how you can help
@@ -1343,7 +1528,6 @@ class ConversationalAgentService:
 - Keep responses brief and friendly (WhatsApp chat style, under 150 words)
 - Always use {currency} for prices
 - Use emojis naturally but sparingly (1-3 per message)
-- Respond in the same language the customer uses
 - Never make up product information — always search the catalog first
 - If the customer's request is unclear, ask a simple clarifying question
 - Be conversational, not robotic. Sound like a helpful shop assistant, not a machine.
@@ -1353,6 +1537,17 @@ class ConversationalAgentService:
 - For M-Pesa: only initiate after order is confirmed and customer agrees to pay now
 """
 
+        prompt += agent_intelligence.build_language_instruction(preferred_language)
+
+        if auto_escalation_enabled:
+            prompt += (
+                "\n## Human escalation (IMPORTANT)\n"
+                "- If the customer asks for a person, manager, or human agent — call `escalate_to_human` immediately.\n"
+                "- If you cannot help after 2 attempts, or they are upset — call `escalate_to_human`.\n"
+                "- For bulk/corporate orders, serious complaints, or unusual requests — escalate.\n"
+                "- After escalating, send a short reassuring message in their language; do not keep troubleshooting.\n"
+            )
+
         if customer_context:
             prompt += customer_context
 
@@ -1360,6 +1555,80 @@ class ConversationalAgentService:
             prompt += f"\n## Additional Business Instructions\n{custom_prompt}\n"
 
         return prompt
+
+    def _parse_supported_languages(self, raw: Any) -> List[str]:
+        """Parse supported language codes from workflow config."""
+        default = getattr(
+            settings,
+            "AGENT_DEFAULT_SUPPORTED_LANGUAGES",
+            "en,sw,fr,ar,es",
+        )
+        if raw is None or raw == "":
+            raw = default
+        if isinstance(raw, list):
+            codes = [str(x).strip().lower()[:2] for x in raw if x]
+        else:
+            codes = [p.strip().lower()[:2] for p in str(raw).split(",") if p.strip()]
+        valid = [c for c in codes if c in LANGUAGE_PROFILES]
+        return valid or ["en", "sw"]
+
+    @staticmethod
+    def _config_bool(value: Any, default: bool) -> bool:
+        if value is None or value == "":
+            return default
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+    async def _tag_contact_for_handoff(
+        self,
+        user: User,
+        customer_phone: str,
+        db: AsyncSession,
+        reason: str = "",
+    ) -> None:
+        """Tag WhatsApp contact so the dashboard highlights human-handoff chats."""
+        if not customer_phone:
+            return
+        try:
+            from sqlalchemy import select, and_
+            from ..models import WhatsAppContact
+
+            phone_clean = re.sub(r"\D", "", str(customer_phone))
+            if not phone_clean:
+                return
+            result = await db.execute(
+                select(WhatsAppContact).where(
+                    and_(
+                        WhatsAppContact.user_id == user.id,
+                    )
+                )
+            )
+            contacts = result.scalars().all()
+            contact = None
+            for c in contacts:
+                c_digits = re.sub(r"\D", "", c.phone_number or "")
+                if c_digits and (
+                    c_digits == phone_clean
+                    or c_digits.endswith(phone_clean[-9:])
+                    or phone_clean.endswith(c_digits[-9:])
+                ):
+                    contact = c
+                    break
+            if not contact:
+                return
+            tags = list(contact.tags or [])
+            for tag in ("human_handoff", "needs_attention"):
+                if tag not in tags:
+                    tags.append(tag)
+            contact.tags = tags
+            notes = contact.notes or ""
+            marker = f"[Handoff: {reason}]"
+            if marker not in notes:
+                contact.notes = f"{notes}\n{marker}".strip() if notes else marker
+            await db.commit()
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] Contact handoff tag failed: {e}")
 
     async def _build_cart_context_block(self, session_key: str, currency: str) -> str:
         if not session_key:
@@ -1469,6 +1738,9 @@ class ConversationalAgentService:
             "order_cancelled": False,
             "order_data": None,
             "order_notification": "",
+            "escalation_triggered": False,
+            "escalation_notification": "",
+            "human_handoff": False,
             "actions_taken": actions_taken or [],
             "send_cart_buttons": send_cart_buttons,
         }
@@ -1636,10 +1908,24 @@ class ConversationalAgentService:
         user_message: str = "",
         default_customer_phone: str = "",
         default_customer_name: str = "",
+        preferred_language: str = DEFAULT_LANGUAGE,
     ) -> Dict[str, Any]:
         """Execute one of the agent's sub-tools."""
 
         try:
+            if tool_name == "escalate_to_human":
+                return await self._sub_escalate_to_human(
+                    arguments=arguments,
+                    session_key=session_key,
+                    business_name=business_name,
+                    customer_phone=default_customer_phone,
+                    customer_name=default_customer_name,
+                    preferred_language=preferred_language,
+                    user_message=user_message,
+                    user=user,
+                    db=db,
+                )
+
             if tool_name == "search_products":
                 return await self._sub_search_products(
                     query=arguments.get("query", ""),
@@ -1751,6 +2037,59 @@ class ConversationalAgentService:
         except Exception as e:
             logger.error(f"[CONV_AGENT] Sub-tool {tool_name} error: {e}")
             return {"success": False, "error": str(e)}
+
+    async def _sub_escalate_to_human(
+        self,
+        arguments: Dict[str, Any],
+        session_key: str,
+        business_name: str,
+        customer_phone: str,
+        customer_name: str,
+        preferred_language: str,
+        user_message: str,
+        user: User,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Pause AI and notify business owner for live human support."""
+        reason_raw = (arguments.get("reason") or "agent_escalation").strip().lower()
+        reason_map = {
+            "customer_requested": "customer_requested_human",
+            "customer_requested_human": "customer_requested_human",
+            "frustrated": "high_frustration",
+            "frustration": "high_frustration",
+            "complex_request": "complex_query",
+            "complex": "complex_query",
+            "cannot_help": "agent_escalation",
+            "complaint": "high_frustration",
+        }
+        reason = reason_map.get(reason_raw, "agent_escalation")
+
+        if session_key:
+            await context_manager.set_human_handoff(
+                session_key, reason, escalated_by="agent"
+            )
+
+        lang_name = LANGUAGE_PROFILES.get(
+            preferred_language, LANGUAGE_PROFILES[DEFAULT_LANGUAGE]
+        )["name"]
+        summary = (arguments.get("summary") or user_message or "")[:300]
+        escalation_notification = agent_intelligence.format_escalation_notification(
+            business_name=business_name,
+            customer_name=customer_name,
+            customer_phone=customer_phone,
+            reason=reason,
+            last_message=summary or user_message,
+            language_name=lang_name,
+        )
+
+        await self._tag_contact_for_handoff(user, customer_phone, db, reason=reason)
+
+        return {
+            "success": True,
+            "result": "Conversation escalated to human agent. AI paused for this customer.",
+            "escalation_notification": escalation_notification,
+            "human_handoff": True,
+        }
 
     async def _sub_search_products(
         self, query: str, kb_id: str, user: User, db: AsyncSession
@@ -4111,5 +4450,8 @@ class ConversationalAgentService:
             "order_cancelled": False,
             "order_data": None,
             "order_notification": "",
+            "escalation_triggered": False,
+            "escalation_notification": "",
+            "human_handoff": False,
             "actions_taken": []
         }

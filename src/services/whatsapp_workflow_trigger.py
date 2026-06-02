@@ -157,6 +157,19 @@ class WhatsAppWorkflowTrigger:
                     )
                 except Exception as ccm_err:
                     logger.warning(f"[WA_TRIGGER] CCM session init failed (non-blocking): {ccm_err}")
+
+                if session_key:
+                    try:
+                        if await context_manager.is_human_handoff_active(session_key):
+                            logger.info(
+                                "[WA_TRIGGER] Human handoff active for %s — skipping AI workflow",
+                                contact.phone_number,
+                            )
+                            return
+                    except Exception as handoff_err:
+                        logger.warning(
+                            f"[WA_TRIGGER] Handoff check failed (continuing): {handoff_err}"
+                        )
                 
                 # Find workflows with WhatsApp triggers
                 result = await db.execute(
