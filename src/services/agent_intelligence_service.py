@@ -38,12 +38,12 @@ HUMAN_REQUEST_PATTERNS = [
     r"\boperator\b",
     r"\b(nataka|nahitaji)\s+(mtu|mwakilishi|meneja)\b",  # Swahili
     r"\b(zungumza|ongea)\s+na\s+(mtu|mwakilishi)\b",
-    r"\b(parler\s+à\s+(une?\s+)?(personne|humain)\b",  # French
-    r"\b/agent\s+humain\b",
+    r"\b(parler\s+à\s+(une?\s+)?(personne|humain))\b",  # French
+    r"\bagent\s+humain\b",
     r"\bhablar\s+con\s+(una?\s+)?persona\b",  # Spanish
 ]
 
-HUMAN_REQUEST_RE = re.compile("|".join(HUMAN_REQUEST_PATTERNS), re.IGNORECASE)
+HUMAN_REQUEST_RE = re.compile("|".join(f"(?:{p})" for p in HUMAN_REQUEST_PATTERNS), re.IGNORECASE)
 
 # Frustration / negative sentiment markers
 FRUSTRATION_MARKERS_EN = [
@@ -66,7 +66,7 @@ COMPLEXITY_MARKERS = [
     r"\b(allerg(y|ies)|dietary|halal|kosher|vegan)\b.*\b(several|multiple|many)\b",
 ]
 
-COMPLEXITY_RE = re.compile("|".join(COMPLEXITY_MARKERS), re.IGNORECASE)
+COMPLEXITY_RE = re.compile("|".join(f"(?:{p})" for p in COMPLEXITY_MARKERS), re.IGNORECASE)
 
 # Swahili function-word hints for detection
 SWAHILI_HINTS = {
