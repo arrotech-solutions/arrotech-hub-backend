@@ -36,6 +36,7 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
         "icon": "🛒",
         "industry_tags": ["food", "retail", "clothing", "restaurant", "ecommerce"],
         "platform": "whatsapp",
+        
         "estimated_setup": "5 minutes",
         "trigger": {
             "type": "event",
@@ -78,7 +79,6 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                     {"value": "food", "label": "🍖 Food / Restaurant"},
                     {"value": "clothing", "label": "👕 Clothing / Fashion"},
                     {"value": "retail", "label": "🏪 General Retail"},
-                    {"value": "real_estate", "label": "🏠 Real Estate"},
                     {"value": "general", "label": "📦 Other"}
                 ],
                 "default": "food"
@@ -326,7 +326,6 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                     {"value": "food", "label": "🍖 Food / Restaurant"},
                     {"value": "clothing", "label": "👕 Clothing / Fashion"},
                     {"value": "retail", "label": "🏪 General Retail"},
-                    {"value": "real_estate", "label": "🏠 Real Estate"},
                     {"value": "general", "label": "📦 Other"}
                 ],
                 "default": "food"

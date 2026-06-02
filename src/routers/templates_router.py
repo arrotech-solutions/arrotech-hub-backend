@@ -23,6 +23,87 @@ router = APIRouter()
 # Pre-built workflow templates
 WORKFLOW_TEMPLATES = [
     {
+        "id": "whatsapp_real_estate_agent",
+        "name": "WhatsApp Real Estate Agent",
+        "description": "AI-powered WhatsApp real estate agent that answers property inquiries and captures leads.",
+        "icon": "🏠",
+        "category": "Customer Support",
+        "difficulty": "beginner",
+        "estimated_time": "5 mins",
+        "tags": ["whatsapp", "real estate", "ai", "leads"],
+        "required_connections": ["whatsapp", "rag_pipeline"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "conversational_agent",
+                "tool_parameters": {
+                    "session_key": "{{session_key}}",
+                    "user_message": "{{whatsapp_message_content}}",
+                    "business_config": {
+                        "kb_id": "{{variables.kb_id}}",
+                        "business_name": "{{variables.business_name}}",
+                        "business_phone": "{{variables.business_phone}}",
+                        "order_type": "real_estate",
+                        "currency": "{{variables.currency}}",
+                        "storage_provider": "{{variables.storage_provider}}",
+                        "storage_spreadsheet_id": "{{variables.storage_spreadsheet_id}}"
+                    }
+                },
+                "description": "AI handles conversation and answers property queries"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "whatsapp_send_message",
+                "tool_parameters": {
+                    "operation": "send_message",
+                    "to_number": "{{whatsapp_contact_phone}}",
+                    "message": "{{step_1.response_text}}",
+                    "image_urls": "{{step_1.image_urls}}",
+                    "send_cart_buttons": "{{step_1.send_cart_buttons}}",
+                    "session_key": "{{session_key}}"
+                },
+                "description": "Send AI response back to customer"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "whatsapp_send_message",
+                "tool_parameters": {
+                    "operation": "send_message",
+                    "to_number": "{{variables.business_phone}}",
+                    "message": "{{step_1.order_notification}}"
+                },
+                "description": "Notify agency of new inquiry",
+                "condition": {"if": "step_1.order_created == True"}
+            }
+        ],
+        "variables": {
+            "kb_id": {
+                "type": "string", "required": True, "description": "Knowledge Base ID containing properties", "connection_for": "rag_pipeline"
+            },
+            "business_name": {
+                "type": "string", "required": True, "description": "Agency name (shown to clients)"
+            },
+            "business_phone": {
+                "type": "string", "required": True, "description": "Phone number to receive lead notifications", "connection_for": "whatsapp"
+            },
+            "currency": {
+                "type": "string", "default": "KES"
+            },
+            "storage_provider": {
+                "type": "string",
+                "description": "Where to save inquiries",
+                "enum": ["none", "google_sheets", "airtable"],
+                "default": "none"
+            },
+            "storage_spreadsheet_id": {
+                "type": "string",
+                "description": "Google Sheets Spreadsheet ID",
+                "x-dynamic-ui": "google_workspace_drive.list_spreadsheets",
+                "ui_hint": "folder_picker"
+            }
+        }
+    },
+    {
         "id": "marketing-email-campaign",
         "name": "Email Marketing Campaign",
         "description": "Automate email campaign creation and sending with HubSpot integration",
@@ -1980,7 +2061,7 @@ WORKFLOW_TEMPLATES = [
                 "type": "string", "required": True, "description": "Phone number to receive order notifications", "connection_for": "whatsapp"
             },
             "order_type": {
-                "type": "string", "enum": ["food", "clothing", "retail", "real_estate", "general"], "default": "food"
+                "type": "string", "enum": ["food", "clothing", "retail", "general"], "default": "food"
             },
             "currency": {
                 "type": "string", "default": "KES"
@@ -2092,7 +2173,7 @@ WORKFLOW_TEMPLATES = [
                 "type": "string", "required": False, "description": "Phone number for notifications (optional)"
             },
             "order_type": {
-                "type": "string", "enum": ["food", "clothing", "retail", "real_estate", "general"], "default": "food"
+                "type": "string", "enum": ["food", "clothing", "retail", "general"], "default": "food"
             },
             "currency": {
                 "type": "string", "default": "KES"
