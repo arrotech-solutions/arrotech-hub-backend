@@ -1082,7 +1082,7 @@ class DynamicToolRegistry:
                                 "business_name": {"type": "string", "description": "Business name shown to customers"},
                                 "business_phone": {"type": "string", "description": "Business owner phone for notifications"},
                                 "business_email": {"type": "string", "description": "Business email for notifications"},
-                                "order_type": {"type": "string", "enum": ["food", "clothing", "retail", "general"]},
+                                "order_type": {"type": "string", "enum": ["food", "clothing", "retail", "real_estate", "general"]},
                                 "currency": {"type": "string", "default": "KES"},
                                 "delivery_methods": {"type": "array", "items": {"type": "string"}},
                                 "system_prompt": {"type": "string", "description": "Additional AI instructions"}

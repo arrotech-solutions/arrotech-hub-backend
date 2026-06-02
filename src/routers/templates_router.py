@@ -1980,7 +1980,7 @@ WORKFLOW_TEMPLATES = [
                 "type": "string", "required": True, "description": "Phone number to receive order notifications", "connection_for": "whatsapp"
             },
             "order_type": {
-                "type": "string", "enum": ["food", "clothing", "retail", "general"], "default": "food"
+                "type": "string", "enum": ["food", "clothing", "retail", "real_estate", "general"], "default": "food"
             },
             "currency": {
                 "type": "string", "default": "KES"
@@ -2092,7 +2092,7 @@ WORKFLOW_TEMPLATES = [
                 "type": "string", "required": False, "description": "Phone number for notifications (optional)"
             },
             "order_type": {
-                "type": "string", "enum": ["food", "clothing", "retail", "general"], "default": "food"
+                "type": "string", "enum": ["food", "clothing", "retail", "real_estate", "general"], "default": "food"
             },
             "currency": {
                 "type": "string", "default": "KES"

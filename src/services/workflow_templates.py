@@ -78,6 +78,7 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                     {"value": "food", "label": "🍖 Food / Restaurant"},
                     {"value": "clothing", "label": "👕 Clothing / Fashion"},
                     {"value": "retail", "label": "🏪 General Retail"},
+                    {"value": "real_estate", "label": "🏠 Real Estate"},
                     {"value": "general", "label": "📦 Other"}
                 ],
                 "default": "food"
@@ -325,6 +326,7 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                     {"value": "food", "label": "🍖 Food / Restaurant"},
                     {"value": "clothing", "label": "👕 Clothing / Fashion"},
                     {"value": "retail", "label": "🏪 General Retail"},
+                    {"value": "real_estate", "label": "🏠 Real Estate"},
                     {"value": "general", "label": "📦 Other"}
                 ],
                 "default": "food"
