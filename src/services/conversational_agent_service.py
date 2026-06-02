@@ -802,6 +802,7 @@ class ConversationalAgentService:
             collected_image_urls: List[str] = []
             collected_product_cards: List[Dict[str, Any]] = []
             latest_search_results: List[Dict[str, Any]] = []
+            latest_search_text: str = ""
             sent_product_ids: set = set()  # Track product IDs already sent as cards this turn
             send_cart_buttons_after_turn = False
             checkout_keywords = ("order", "cart", "checkout", "pay", "total", "confirm", "delivery")
@@ -1006,7 +1007,7 @@ class ConversationalAgentService:
                                     continue
                                 safe_p = dict(p)
                                 verified_url = self._resolve_verified_image_for_product(
-                                    safe_p, latest_search_results
+                                    safe_p, latest_search_results, latest_search_text
                                 )
                                 safe_p["image_url"] = verified_url or ""
                                 safe_products.append(safe_p)
@@ -1054,6 +1055,7 @@ class ConversationalAgentService:
                     # Capture image URLs from product search payloads even when
                     # the model summary omits raw links in final text.
                     if tool_name == "search_products":
+                        latest_search_text = str(tool_result.get("result") or "")
                         data = tool_result.get("data", {})
                         if isinstance(data, dict):
                             raw_results = data.get("results", [])
@@ -1261,12 +1263,13 @@ class ConversationalAgentService:
         self,
         product: Dict[str, Any],
         search_results: List[Dict[str, Any]],
+        search_text: str = "",
     ) -> str:
         """
         Return a product image URL only when it can be verified from raw RAG chunks.
         If verification is ambiguous, return empty string to avoid mismatched images.
         """
-        if not search_results or not isinstance(product, dict):
+        if not isinstance(product, dict):
             return ""
 
         name = str(product.get("name") or "").strip().lower()
@@ -1313,6 +1316,21 @@ class ConversationalAgentService:
             chunk_urls = extract_image_urls(text)
             if len(chunk_urls) == 1:
                 candidates.append((1, chunk_urls[0]))
+
+        # Fallback: parse search_products synthesized text where each item often
+        # looks like: "1. **Name** ... ![Image](url)"
+        if not candidates and search_text:
+            try:
+                blocks = [b for b in re.split(r"\n\s*\n", search_text) if b.strip()]
+                for block in blocks:
+                    block_lower = block.lower()
+                    if name and name not in block_lower:
+                        continue
+                    block_urls = extract_image_urls(block)
+                    if len(block_urls) == 1:
+                        candidates.append((1, block_urls[0]))
+            except Exception:
+                pass
 
         if not candidates:
             return ""
