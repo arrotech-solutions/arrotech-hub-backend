@@ -31,7 +31,7 @@ _CONFIRM_WORDS = frozenset({
     "ndiyo", "haya", "sawa sawa",
 })
 
-# Common menu typos (Kenya / food ordering)
+# Common menu and catalog typos (Kenya / food / real estate)
 _TYPO_MAP = {
     "chiken": "chicken",
     "chikcen": "chicken",
@@ -44,6 +44,14 @@ _TYPO_MAP = {
     "deliver": "delivery",
     "picup": "pickup",
     "pick up": "pickup",
+    "aprtment": "apartment",
+    "apartmant": "apartment",
+    "bedster": "bedsitter",
+    "bed sitta": "bedsitter",
+    "bedsitta": "bedsitter",
+    "maisonete": "maisonette",
+    "kodi": "rent",
+    "shamba": "plot",
 }
 
 

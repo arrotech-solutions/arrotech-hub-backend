@@ -1280,6 +1280,11 @@ class ConversationalAgentService:
                 "Help customers find products, check availability, and place orders. "
                 "Provide product details and pricing when available."
             ),
+            "real_estate": (
+                f"You are the real estate assistant for {business_name}, a property management or real estate company. "
+                "Help clients find properties for rent or sale, schedule viewings, report maintenance issues, and manage rent payments. "
+                "Always ask for their preferences such as location, budget, and number of bedrooms when they inquire about properties."
+            ),
             "general": (
                 f"You are the customer service assistant for {business_name}. "
                 "Help customers with inquiries, browse products/services, and place orders."
