@@ -1274,7 +1274,9 @@ class ConversationalAgentService:
         if not name and not product_id:
             return ""
 
-        matched_urls: List[str] = []
+        # Candidate tuples: (score, url)
+        # Higher score = stronger evidence that URL belongs to this product.
+        candidates: List[tuple[int, str]] = []
 
         for result in search_results:
             if not isinstance(result, dict):
@@ -1290,25 +1292,44 @@ class ConversationalAgentService:
             if not (id_hit or name_hit):
                 continue
 
-            # Highest confidence: same line contains product name + single URL.
+            # Highest confidence: same line contains full product name + single URL.
             for line in text.splitlines():
                 line_lower = line.lower()
                 if name and name not in line_lower:
                     continue
                 line_urls = extract_image_urls(line)
                 if len(line_urls) == 1:
-                    matched_urls.append(line_urls[0])
+                    candidates.append((3, line_urls[0]))
 
             # Fallback: metadata-style fields on search result entry
             for key in ("image_url", "image", "thumbnail", "photo_url", "media_url"):
                 raw = result.get(key)
                 if raw:
-                    matched_urls.extend(extract_image_urls(str(raw)))
+                    for url in extract_image_urls(str(raw)):
+                        candidates.append((2, url))
 
-        unique_urls = _dedupe_keep_order(matched_urls)
-        if len(unique_urls) == 1:
-            return unique_urls[0]
-        return ""
+            # Conservative fallback: if exactly one image exists in this matched chunk,
+            # use it with lower confidence (common for JSON row chunks from sheets).
+            chunk_urls = extract_image_urls(text)
+            if len(chunk_urls) == 1:
+                candidates.append((1, chunk_urls[0]))
+
+        if not candidates:
+            return ""
+
+        # Deduplicate by URL keeping the highest confidence score.
+        best_by_url: Dict[str, int] = {}
+        for score, url in candidates:
+            if not url:
+                continue
+            if score > best_by_url.get(url, -1):
+                best_by_url[url] = score
+
+        # Pick the highest-scoring URL; if tie, keep deterministic order from candidates.
+        max_score = max(best_by_url.values())
+        ordered_urls = [url for _, url in candidates if best_by_url.get(url) == max_score]
+        ordered_urls = _dedupe_keep_order(ordered_urls)
+        return ordered_urls[0] if ordered_urls else ""
 
     # ═══════════════════════════════════════════════════════════
     # SYSTEM PROMPT BUILDER
