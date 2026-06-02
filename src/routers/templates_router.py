@@ -2028,8 +2028,7 @@ WORKFLOW_TEMPLATES = [
                     "send_cart_buttons": "{{step_1.send_cart_buttons}}",
                     "session_key": "{{session_key}}"
                 },
-                "description": "Send AI response back to customer",
-                "condition": {"if": "step_1.skip_customer_reply != True"}
+                "description": "Send AI response back to customer"
             },
             {
                 "step_number": 3,

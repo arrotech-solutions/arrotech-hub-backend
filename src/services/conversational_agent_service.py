@@ -661,15 +661,14 @@ class ConversationalAgentService:
                 business_config.get("auto_escalation_enabled"),
                 getattr(settings, "AGENT_AUTO_ESCALATION_ENABLED", True),
             )
-            frustration_threshold = float(
-                business_config.get("frustration_threshold")
-                or getattr(settings, "AGENT_FRUSTRATION_ESCALATION_THRESHOLD", 0.65)
+            frustration_threshold = self._safe_float_config(
+                business_config.get("frustration_threshold"),
+                getattr(settings, "AGENT_FRUSTRATION_ESCALATION_THRESHOLD", 0.65),
             )
-            handoff_ttl_hours = int(
-                business_config.get("human_handoff_ttl_hours")
-                or getattr(settings, "AGENT_HUMAN_HANDOFF_TTL_HOURS", 24)
-            )
-            handoff_ttl_seconds = handoff_ttl_hours * 3600 if handoff_ttl_hours > 0 else 0
+            handoff_ttl_seconds = self._safe_int_config(
+                business_config.get("human_handoff_ttl_hours"),
+                getattr(settings, "AGENT_HUMAN_HANDOFF_TTL_HOURS", 24),
+            ) * 3600
 
             preferred_language = DEFAULT_LANGUAGE
             session = None
@@ -679,6 +678,9 @@ class ConversationalAgentService:
                         session_key, handoff_ttl_seconds
                     )
                 session = await context_manager.get_session_by_key(session_key)
+
+                if context_manager.is_reset_command(user_message):
+                    await context_manager.clear_human_handoff(session_key)
 
                 if agent_intelligence.is_release_bot_command(user_message):
                     lang = context_manager.get_preferred_language(session) if session else "en"
@@ -700,8 +702,10 @@ class ConversationalAgentService:
 
                 if session and context_manager.is_human_handoff(session):
                     lang = context_manager.get_preferred_language(session)
+                    waiting_msg = agent_intelligence.get_handoff_waiting_message(lang)
+                    await self._save_to_ccm(session_key, "assistant", waiting_msg)
                     return {
-                        "response_text": agent_intelligence.get_handoff_waiting_message(lang),
+                        "response_text": waiting_msg,
                         "image_urls": [],
                         "cards": [],
                         "order_created": False,
@@ -711,7 +715,7 @@ class ConversationalAgentService:
                         "escalation_triggered": False,
                         "escalation_notification": "",
                         "human_handoff": True,
-                        "skip_customer_reply": True,
+                        "skip_customer_reply": False,
                         "actions_taken": [{"tool": "handoff", "result_summary": "human_active"}],
                     }
 
@@ -1578,7 +1582,38 @@ class ConversationalAgentService:
             return default
         if isinstance(value, bool):
             return value
-        return str(value).strip().lower() in ("1", "true", "yes", "on")
+        s = str(value).strip()
+        if s.startswith("{{") or s.startswith("$"):
+            return default
+        return s.lower() in ("1", "true", "yes", "on")
+
+    @staticmethod
+    def _safe_int_config(value: Any, default: int) -> int:
+        if value is None or value == "":
+            return default
+        if isinstance(value, int):
+            return value
+        s = str(value).strip()
+        if s.startswith("{{") or s.startswith("$"):
+            return default
+        try:
+            return int(float(s))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _safe_float_config(value: Any, default: float) -> float:
+        if value is None or value == "":
+            return default
+        if isinstance(value, (int, float)):
+            return float(value)
+        s = str(value).strip()
+        if s.startswith("{{") or s.startswith("$"):
+            return default
+        try:
+            return float(s)
+        except (TypeError, ValueError):
+            return default
 
     async def _tag_contact_for_handoff(
         self,

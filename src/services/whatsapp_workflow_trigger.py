@@ -174,18 +174,11 @@ class WhatsAppWorkflowTrigger:
                                     "[WA_TRIGGER] Handoff TTL expired for %s — AI resumed",
                                     contact.phone_number,
                                 )
-
-                        if await context_manager.is_human_handoff_active(session_key):
-                            logger.info(
-                                "[WA_TRIGGER] Human handoff active for %s — skipping AI workflow",
-                                contact.phone_number,
-                            )
-                            return
                     except Exception as handoff_err:
                         logger.warning(
-                            f"[WA_TRIGGER] Handoff check failed (continuing): {handoff_err}"
+                            f"[WA_TRIGGER] Handoff TTL check failed (continuing): {handoff_err}"
                         )
-                
+
                 # Find workflows with WhatsApp triggers
                 result = await db.execute(
                     select(Workflow).where(

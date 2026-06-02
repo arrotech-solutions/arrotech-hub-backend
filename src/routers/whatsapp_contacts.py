@@ -475,25 +475,6 @@ async def send_message(
     await db.commit()
     await db.refresh(message)
 
-    # Implicit human takeover when the business replies from the dashboard
-    try:
-        from ..services.conversation_context_manager import (
-            context_manager,
-            _build_session_key,
-        )
-        sk = _build_session_key("whatsapp", str(user.id), contact.phone_number)
-        await context_manager.set_human_handoff(
-            sk, "business_replied", escalated_by="human"
-        )
-        tags = list(contact.tags or [])
-        for tag in ("human_handoff", "needs_attention"):
-            if tag not in tags:
-                tags.append(tag)
-        contact.tags = tags
-        await db.commit()
-    except Exception as e:
-        logger.warning(f"[WHATSAPP] Handoff on manual send failed: {e}")
-    
     return {
         "success": True,
         "data": MessageResponse.model_validate(message)

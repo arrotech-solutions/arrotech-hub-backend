@@ -256,12 +256,6 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
             {
                 "tool_name": "whatsapp_send_message",
                 "description": "Send AI response back to customer",
-                "condition": {
-                    "type": "if",
-                    "field": "step_1.skip_customer_reply",
-                    "operator": "not_equals",
-                    "value": True
-                },
                 "parameters": {
                     "operation": "send_message",
                     "to_number": "{{whatsapp_contact_phone}}",

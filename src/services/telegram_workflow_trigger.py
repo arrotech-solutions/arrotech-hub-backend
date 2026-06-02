@@ -125,14 +125,9 @@ class TelegramWorkflowTrigger:
                                     await context_manager.maybe_expire_human_handoff(
                                         session_key, ttl_hours * 3600
                                     )
-                                if await context_manager.is_human_handoff_active(session_key):
-                                    logger.info(
-                                        "[TG_TRIGGER] Human handoff active — skipping AI workflow"
-                                    )
-                                    continue
                             except Exception as handoff_err:
                                 logger.warning(
-                                    f"[TG_TRIGGER] Handoff check failed: {handoff_err}"
+                                    f"[TG_TRIGGER] Handoff TTL check failed: {handoff_err}"
                                 )
 
                         input_vars = {
