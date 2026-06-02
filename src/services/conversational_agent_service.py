@@ -697,6 +697,7 @@ class ConversationalAgentService:
                         "escalation_triggered": False,
                         "escalation_notification": "",
                         "human_handoff": False,
+                        "send_agent_mode_buttons": "assistant",
                         "actions_taken": [{"tool": "handoff", "result_summary": "released_to_bot"}],
                     }
 
@@ -716,6 +717,7 @@ class ConversationalAgentService:
                         "escalation_notification": "",
                         "human_handoff": True,
                         "skip_customer_reply": False,
+                        "send_agent_mode_buttons": "staff",
                         "actions_taken": [{"tool": "handoff", "result_summary": "human_active"}],
                     }
 
@@ -921,6 +923,7 @@ class ConversationalAgentService:
                         "escalation_triggered": True,
                         "escalation_notification": escalation_notification,
                         "human_handoff": True,
+                        "send_agent_mode_buttons": "staff",
                         "actions_taken": [
                             {"tool": "escalate_to_human", "result_summary": f"auto:{esc_reason}"}
                         ],
@@ -973,6 +976,7 @@ class ConversationalAgentService:
             escalation_triggered = False
             escalation_notification = ""
             human_handoff = False
+            send_agent_mode_buttons: Optional[str] = None
             collected_image_urls: List[str] = []
             collected_product_cards: List[Dict[str, Any]] = []
             sent_product_ids: set = set()  # Track product IDs already sent as cards this turn
@@ -1075,6 +1079,7 @@ class ConversationalAgentService:
                         "human_handoff": human_handoff,
                         "actions_taken": actions_taken,
                         "send_cart_buttons": send_cart_buttons_after_turn and not order_created,
+                        "send_agent_mode_buttons": send_agent_mode_buttons,
                     }
                     return result
 
@@ -1193,6 +1198,7 @@ class ConversationalAgentService:
                     if tool_name == "escalate_to_human" and tool_result.get("success"):
                         escalation_triggered = True
                         human_handoff = True
+                        send_agent_mode_buttons = "staff"
                         escalation_notification = tool_result.get("escalation_notification", "")
 
                     # Harness: track tool call for quality evaluation
@@ -1340,6 +1346,7 @@ class ConversationalAgentService:
                 "human_handoff": human_handoff,
                 "actions_taken": actions_taken,
                 "send_cart_buttons": send_cart_buttons_after_turn and not order_created,
+                "send_agent_mode_buttons": send_agent_mode_buttons,
             }
 
         except Exception as e:
@@ -1740,7 +1747,7 @@ class ConversationalAgentService:
                 buttons=[
                     {"id": "menu:browse", "title": "Browse menu"},
                     {"id": "menu:cart", "title": "My cart"},
-                    {"id": "menu:checkout", "title": "Checkout"},
+                    {"id": "agent:human", "title": "Talk to staff"},
                 ],
                 config={
                     "access_token": config.get("access_token"),
@@ -1778,6 +1785,7 @@ class ConversationalAgentService:
             "human_handoff": False,
             "actions_taken": actions_taken or [],
             "send_cart_buttons": send_cart_buttons,
+            "send_agent_mode_buttons": None,
         }
 
     async def _send_cart_action_buttons(
@@ -1876,6 +1884,65 @@ class ConversationalAgentService:
                 )
         except Exception as e:
             logger.warning(f"[CONV_AGENT] cart action buttons failed: {e}", exc_info=True)
+
+    async def _send_agent_mode_buttons(
+        self,
+        session_key: str,
+        user: User,
+        db: AsyncSession,
+        *,
+        handoff_active: bool,
+        to_number: str = "",
+    ) -> None:
+        """Send Talk to staff / Order with AI reply buttons after handoff or release."""
+        if not session_key or not session_key.startswith("ccm:whatsapp:"):
+            return
+        try:
+            parts = session_key.split(":")
+            recipient = parts[3] if len(parts) >= 4 else ""
+            if not recipient and to_number:
+                recipient = str(to_number).strip().replace(" ", "")
+            if not recipient:
+                return
+
+            from sqlalchemy import select
+            from ..models import Connection, ConnectionStatus
+            from .whatsapp_service import WhatsAppService
+            from .whatsapp_ordering_helpers import (
+                agent_mode_buttons,
+                agent_mode_button_body,
+            )
+
+            result = await db.execute(
+                select(Connection).filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == "whatsapp",
+                    Connection.status == ConnectionStatus.ACTIVE,
+                )
+            )
+            connection = result.scalar_one_or_none()
+            if not connection:
+                return
+            config = connection.config or {}
+            if not config.get("access_token") or not config.get("phone_number_id"):
+                return
+
+            wa = WhatsAppService()
+            btn_result = await wa.send_quick_reply_buttons(
+                to_number=recipient,
+                body_text=agent_mode_button_body(handoff_active),
+                buttons=agent_mode_buttons(handoff_active),
+                config={
+                    "access_token": config.get("access_token"),
+                    "phone_number_id": config.get("phone_number_id"),
+                },
+            )
+            if not btn_result.get("success"):
+                logger.warning(
+                    f"[CONV_AGENT] agent mode buttons failed: {btn_result.get('error')}"
+                )
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] agent mode buttons failed: {e}", exc_info=True)
 
     # ═══════════════════════════════════════════════════════════
     # CONVERSATION HISTORY (CCM integration)

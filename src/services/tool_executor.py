@@ -3548,6 +3548,41 @@ class ToolExecutor:
                             f"(to_number={to_number!r})"
                         )
 
+                # Staff ↔ AI toggle buttons after handoff / release messages
+                agent_mode = arguments.get("send_agent_mode_buttons")
+                if not agent_mode and isinstance(arguments.get("step_1"), dict):
+                    agent_mode = arguments["step_1"].get("send_agent_mode_buttons")
+                if isinstance(agent_mode, str) and agent_mode.startswith("{{"):
+                    agent_mode = None
+                if agent_mode and text_result and text_result.get("success"):
+                    session_key = (arguments.get("session_key") or "").strip()
+                    if session_key.startswith("{{"):
+                        session_key = ""
+                    if not session_key and to_number:
+                        phone_clean = str(to_number).strip().replace(" ", "")
+                        session_key = f"ccm:whatsapp:{user.id}:{phone_clean}"
+                    if session_key:
+                        try:
+                            handoff_active = str(agent_mode).lower() in (
+                                "staff",
+                                "human",
+                                "handoff",
+                                "human_handoff",
+                            )
+                            agent = ConversationalAgentService()
+                            await agent._send_agent_mode_buttons(
+                                session_key,
+                                user,
+                                db,
+                                handoff_active=handoff_active,
+                                to_number=to_number,
+                            )
+                        except Exception as btn_err:
+                            logger.warning(
+                                f"[WHATSAPP] Agent mode buttons failed: {btn_err}",
+                                exc_info=True,
+                            )
+
                 result_summary = f"Message sent to {to_number}"
 
                 return {
@@ -7281,6 +7316,7 @@ Description: {payment.description or 'N/A'}"""
                 "skip_customer_reply": result.get("skip_customer_reply", False),
                 "actions_taken": result.get("actions_taken", []),
                 "send_cart_buttons": result.get("send_cart_buttons", False),
+                "send_agent_mode_buttons": result.get("send_agent_mode_buttons"),
                 "data": result
             }
 

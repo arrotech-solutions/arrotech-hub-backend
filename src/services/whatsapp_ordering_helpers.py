@@ -316,6 +316,34 @@ def message_requests_cart_buttons(message: str) -> bool:
     return bool(message and CART_BUTTONS_TEXT_MARKER in message)
 
 
+# ── Agent / human handoff reply buttons (WhatsApp max 3, title max 20 chars) ──
+
+AGENT_BUTTON_TALK_TO_STAFF = "agent:human"
+AGENT_BUTTON_ORDER_WITH_AI = "agent:ai"
+
+
+def agent_mode_buttons(handoff_active: bool) -> List[Dict[str, str]]:
+    """
+    Reply buttons to switch between live staff and AI ordering assistant.
+
+    handoff_active=True  → customer is with staff; offer return to AI.
+    handoff_active=False → normal AI chat; offer escalation to staff.
+    """
+    if handoff_active:
+        return [{"id": AGENT_BUTTON_ORDER_WITH_AI, "title": "Order with AI"}]
+    return [
+        {"id": "menu:browse", "title": "Browse menu"},
+        {"id": AGENT_BUTTON_TALK_TO_STAFF, "title": "Talk to staff"},
+        {"id": "menu:cart", "title": "My cart"},
+    ]
+
+
+def agent_mode_button_body(handoff_active: bool) -> str:
+    if handoff_active:
+        return "Tap below when you'd like to order with our AI assistant again."
+    return "Quick options — tap below or just type your request."
+
+
 def cart_action_buttons(cart_has_items: bool = True) -> List[Dict[str, str]]:
     """
     Cart screen actions (WhatsApp max 3 reply buttons).

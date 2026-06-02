@@ -604,6 +604,7 @@ class WorkflowBuilderService:
             # (workflows created before send_cart_buttons/session_key were added to step 2)
             if step.tool_name in ("whatsapp_send_message", "whatsapp_messaging"):
                 prev_num = step.step_number - 1
+                prev_result: Dict[str, Any] = {}
                 if prev_num >= 1:
                     prev_result = (context or {}).get(f"step_{prev_num}") or {}
                     if isinstance(prev_result, dict):
@@ -616,6 +617,9 @@ class WorkflowBuilderService:
                                 True, "True", "true", "1", 1, "yes"
                             ):
                                 substituted_params["send_cart_buttons"] = True
+                        prev_amb = prev_result.get("send_agent_mode_buttons")
+                        if prev_amb and not substituted_params.get("send_agent_mode_buttons"):
+                            substituted_params["send_agent_mode_buttons"] = prev_amb
                 sk = substituted_params.get("session_key") or (context or {}).get("session_key")
                 if sk and "{{" not in str(sk):
                     substituted_params["session_key"] = sk

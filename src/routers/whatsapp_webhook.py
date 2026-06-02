@@ -256,6 +256,14 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                             )
                         msg_type = "text"
 
+                    # ── Staff ↔ AI assistant toggle buttons ──
+                    elif btn_id in ("agent:human", "agent:staff"):
+                        content = "I'd like to speak with a person, please."
+                        msg_type = "text"
+                    elif btn_id == "agent:ai":
+                        content = "/bot"
+                        msg_type = "text"
+
                     # ── Welcome / menu quick-reply buttons ──
                     elif btn_id.startswith("menu:"):
                         menu_action = btn_id.split(":", 1)[1] if ":" in btn_id else ""
