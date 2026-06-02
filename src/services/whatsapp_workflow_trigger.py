@@ -160,6 +160,21 @@ class WhatsAppWorkflowTrigger:
 
                 if session_key:
                     try:
+                        from ..config import settings
+
+                        ttl_hours = int(
+                            getattr(settings, "AGENT_HUMAN_HANDOFF_TTL_HOURS", 24) or 0
+                        )
+                        if ttl_hours > 0:
+                            expired = await context_manager.maybe_expire_human_handoff(
+                                session_key, ttl_hours * 3600
+                            )
+                            if expired:
+                                logger.info(
+                                    "[WA_TRIGGER] Handoff TTL expired for %s — AI resumed",
+                                    contact.phone_number,
+                                )
+
                         if await context_manager.is_human_handoff_active(session_key):
                             logger.info(
                                 "[WA_TRIGGER] Human handoff active for %s — skipping AI workflow",
