@@ -79,6 +79,7 @@ class OrderTrackingService:
             "status": (order_snapshot.get("status") or "pending"),
             "order": order_snapshot,
             "registered_at": datetime.utcnow().isoformat(),
+            "placement_notified": False,
         }
         cache_service.set(
             self._tracking_key(owner_user_id, order_id),
@@ -110,6 +111,15 @@ class OrderTrackingService:
         if not order_id or not customer_phone:
             return {"success": False, "error": "order_id and customer_phone required"}
 
+        existing = self.get_registered_order(str(user.id), order_id) or {}
+        if existing.get("placement_notified"):
+            return {
+                "success": True,
+                "order_id": order_id,
+                "skipped": True,
+                "reason": "placement_already_notified",
+            }
+
         self.register_order(
             str(user.id),
             order_id,
@@ -130,7 +140,7 @@ class OrderTrackingService:
         receipt_text = receipt_result.get("message", "") if receipt_result.get("success") else ""
 
         confirmation = (
-            f"✅ *Order confirmed!*\n\n"
+            f"✅ *Order received!*\n\n"
             f"Thanks for ordering from *{business_name}*. "
             f"Your order *{order_id}* is in our queue.\n\n"
             f"We'll message you here when the status changes. 🔔"
@@ -159,6 +169,15 @@ class OrderTrackingService:
                 config=wa_config,
             )
             sent.append("location_link" if r3.get("success") else "location_link_failed")
+
+        registry = self.get_registered_order(str(user.id), order_id) or {}
+        registry["placement_notified"] = True
+        registry["status"] = registry.get("status") or "pending"
+        cache_service.set(
+            self._tracking_key(str(user.id), order_id),
+            registry,
+            expire_seconds=TRACKING_TTL_SECONDS,
+        )
 
         return {"success": True, "order_id": order_id, "sent": sent}
 
@@ -194,6 +213,13 @@ class OrderTrackingService:
         prev = (previous_status or registry.get("status") or "pending").lower().replace(" ", "_")
         if prev == new_status:
             return {"success": True, "skipped": True, "reason": "status_unchanged"}
+
+        if new_status == "confirmed" and registry.get("placement_notified"):
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": "already_notified_on_placement",
+            }
 
         if new_status not in NOTIFY_STATUSES:
             return {"success": True, "skipped": True, "reason": "status_not_notifiable"}

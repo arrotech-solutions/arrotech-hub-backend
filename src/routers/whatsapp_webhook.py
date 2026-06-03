@@ -175,12 +175,37 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
             # Extract message details
             msg_id = msg.get("id")
             
-            # Check if message already exists (prevent duplicate inserts on Meta retries)
+            # Duplicate Meta retries: re-run pipeline if DB row exists (prior run may have failed)
             existing_msg = await db.execute(
                 select(WhatsAppMessage).filter(WhatsAppMessage.whatsapp_message_id == msg_id)
             )
-            if existing_msg.scalar_one_or_none():
-                logger.info(f"[WHATSAPP WEBHOOK] Message {msg_id} already exists, skipping duplicate.")
+            existing_row = existing_msg.scalar_one_or_none()
+            if existing_row:
+                try:
+                    from ..services.cache_service import cache_service
+                    reprocess_key = f"wa_webhook_reprocess:{msg_id}"
+                    if not cache_service.get(reprocess_key):
+                        cache_service.set(reprocess_key, "1", expire_seconds=300)
+                        logger.info(
+                            f"[WHATSAPP WEBHOOK] Message {msg_id} exists — re-running workflow"
+                        )
+                        if background_tasks:
+                            background_tasks.add_task(
+                                background_process_message,
+                                existing_row.user_id,
+                                existing_row.contact_id,
+                                existing_row.id,
+                            )
+                        else:
+                            await background_process_message(
+                                existing_row.user_id,
+                                existing_row.contact_id,
+                                existing_row.id,
+                            )
+                except Exception as reprocess_err:
+                    logger.warning(
+                        f"[WHATSAPP WEBHOOK] Reprocess failed for {msg_id}: {reprocess_err}"
+                    )
                 continue
 
             from_number = msg.get("from")  # Sender's phone number
@@ -366,6 +391,7 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                         is_add_to_cart = btn_id.startswith("add_to_cart_")
                         product_id = btn_id.replace("add_to_cart_", "").replace("view_details_", "")
                         product_name = product_id  # fallback to opaque ID
+                        product_price = ""
                         legacy_price = 0.0
                         try:
                             from ..services.cache_service import cache_service

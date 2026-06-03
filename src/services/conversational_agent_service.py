@@ -729,26 +729,6 @@ class ConversationalAgentService:
                         "actions_taken": [{"tool": "handoff", "result_summary": "released_to_bot"}],
                     }
 
-                if session and context_manager.is_human_handoff(session):
-                    lang = context_manager.get_preferred_language(session)
-                    waiting_msg = agent_intelligence.get_handoff_waiting_message(lang)
-                    await self._save_to_ccm(session_key, "assistant", waiting_msg)
-                    return {
-                        "response_text": waiting_msg,
-                        "image_urls": [],
-                        "cards": [],
-                        "order_created": False,
-                        "order_cancelled": False,
-                        "order_data": None,
-                        "order_notification": "",
-                        "escalation_triggered": False,
-                        "escalation_notification": "",
-                        "human_handoff": True,
-                        "skip_customer_reply": False,
-                        "send_agent_mode_buttons": "staff",
-                        "actions_taken": [{"tool": "handoff", "result_summary": "human_active"}],
-                    }
-
                 lang_detection = agent_intelligence.detect_language(
                     user_message, supported=supported_languages
                 )
@@ -872,6 +852,32 @@ class ConversationalAgentService:
                             send_cart_buttons=True,
                         )
 
+            # Human handoff — after self-serve cart/location paths
+            if session_key:
+                try:
+                    session = await context_manager.get_session_by_key(session_key)
+                except Exception:
+                    session = None
+                if session and context_manager.is_human_handoff(session):
+                    lang = context_manager.get_preferred_language(session)
+                    waiting_msg = agent_intelligence.get_handoff_waiting_message(lang)
+                    await self._save_to_ccm(session_key, "assistant", waiting_msg)
+                    return {
+                        "response_text": waiting_msg,
+                        "image_urls": [],
+                        "cards": [],
+                        "order_created": False,
+                        "order_cancelled": False,
+                        "order_data": None,
+                        "order_notification": "",
+                        "escalation_triggered": False,
+                        "escalation_notification": "",
+                        "human_handoff": True,
+                        "skip_customer_reply": False,
+                        "send_agent_mode_buttons": "staff",
+                        "actions_taken": [{"tool": "handoff", "result_summary": "human_active"}],
+                    }
+
             enabled_mcp_tool_names = business_config.get("enabled_mcp_tools", [])
             if isinstance(enabled_mcp_tool_names, str):
                 try:
@@ -910,6 +916,8 @@ class ConversationalAgentService:
             # Auto-escalation before LLM (frustration, human request, complexity)
             escalation_triggered = False
             escalation_notification = ""
+            if session_key:
+                session = await context_manager.get_session_by_key(session_key)
             if session_key and session:
                 should_escalate, esc_reason = agent_intelligence.should_auto_escalate(
                     user_message,
@@ -996,8 +1004,13 @@ class ConversationalAgentService:
                 system_prompt=system_prompt
             )
 
-            # Add the current user message
-            messages.append({"role": "user", "content": user_message})
+            # Add current user message unless trigger already persisted identical turn
+            user_stripped = (user_message or "").strip()
+            if messages and messages[-1].get("role") == "user":
+                if (messages[-1].get("content") or "").strip() != user_stripped:
+                    messages.append({"role": "user", "content": user_message})
+            elif user_stripped:
+                messages.append({"role": "user", "content": user_message})
 
             # Run the inner tool-calling loop (max 3 iterations)
             actions_taken = []
@@ -1302,8 +1315,9 @@ class ConversationalAgentService:
                         if session_key:
                             try:
                                 await context_manager.clear_cart(session_key)
+                                await context_manager.clear_pending_confirmation(session_key)
                             except Exception as e:
-                                logger.warning(f"[CONV_AGENT] clear_cart failed: {e}")
+                                logger.warning(f"[CONV_AGENT] post-order session cleanup failed: {e}")
                         order_notification = self._format_business_notification(
                             order_data, business_name, currency
                         )
@@ -1363,6 +1377,12 @@ class ConversationalAgentService:
                 image_urls = _dedupe_keep_order(collected_image_urls)
 
             final_text = self._format_for_channel(final_text, platform)
+
+            if order_created and getattr(settings, "ORDER_TRACKING_ENABLED", True):
+                final_text = (
+                    f"Thanks! Your order with *{business_name}* is placed. "
+                    "You'll get your receipt and status updates here on WhatsApp shortly."
+                )
 
             await self._save_to_ccm(session_key, "assistant", final_text)
 
@@ -1668,27 +1688,31 @@ class ConversationalAgentService:
         if not customer_phone:
             return
         try:
-            from sqlalchemy import select, and_
+            from sqlalchemy import select, and_, or_
             from ..models import WhatsAppContact
 
             phone_clean = re.sub(r"\D", "", str(customer_phone))
             if not phone_clean:
                 return
+            suffix = phone_clean[-9:] if len(phone_clean) >= 9 else phone_clean
             result = await db.execute(
                 select(WhatsAppContact).where(
                     and_(
                         WhatsAppContact.user_id == user.id,
+                        or_(
+                            WhatsAppContact.phone_number == customer_phone,
+                            WhatsAppContact.phone_number.like(f"%{suffix}"),
+                        ),
                     )
-                )
+                ).limit(5)
             )
-            contacts = result.scalars().all()
             contact = None
-            for c in contacts:
+            for c in result.scalars().all():
                 c_digits = re.sub(r"\D", "", c.phone_number or "")
                 if c_digits and (
                     c_digits == phone_clean
-                    or c_digits.endswith(phone_clean[-9:])
-                    or phone_clean.endswith(c_digits[-9:])
+                    or c_digits.endswith(suffix)
+                    or phone_clean.endswith(c_digits[-9:] if len(c_digits) >= 9 else c_digits)
                 ):
                     contact = c
                     break
@@ -2506,23 +2530,36 @@ class ConversationalAgentService:
 
             arguments = await self._apply_saved_delivery_address(arguments, session_key)
 
+            session = None
             if session_key:
                 session = await context_manager.get_session_by_key(session_key)
-                pending = (session.metadata.get("pending_confirmation") if session else None)
-                confirmed = (
-                    is_order_confirmation_message(user_message)
-                    or (session and session.metadata.get("order_confirmed"))
-                )
-                if pending and not confirmed:
-                    return {
-                        "success": False,
-                        "result": (
-                            "ORDER_NOT_CONFIRMED: The customer has not confirmed yet. "
-                            "Show them the order summary with total and ask them to reply "
-                            "YES (or Ndio) to confirm. Do NOT call create_order until they confirm."
-                        ),
-                        "error": "ORDER_NOT_CONFIRMED",
-                    }
+            pending = (
+                session.metadata.get("pending_confirmation") if session else None
+            )
+            confirmed = (
+                is_order_confirmation_message(user_message)
+                or (session and session.metadata.get("order_confirmed"))
+            )
+            if not pending:
+                return {
+                    "success": False,
+                    "result": (
+                        "CHECKOUT_REQUIRED: Call calculate_total first, show the customer "
+                        "the order summary with total, then ask them to reply YES (or Ndio) "
+                        "to confirm before create_order."
+                    ),
+                    "error": "CHECKOUT_REQUIRED",
+                }
+            if not confirmed:
+                return {
+                    "success": False,
+                    "result": (
+                        "ORDER_NOT_CONFIRMED: The customer has not confirmed yet. "
+                        "Show them the order summary with total and ask them to reply "
+                        "YES (or Ndio) to confirm. Do NOT call create_order until they confirm."
+                    ),
+                    "error": "ORDER_NOT_CONFIRMED",
+                }
 
             order_result = await self.order_service.handle_operation(
                 operation="create_order",
@@ -2573,6 +2610,12 @@ class ConversationalAgentService:
                         db=db,
                         background_tasks=background_tasks,
                     )
+
+                if session_key:
+                    try:
+                        await context_manager.clear_pending_confirmation(session_key)
+                    except Exception as e:
+                        logger.warning(f"[CONV_AGENT] clear_pending_confirmation: {e}")
 
                 if getattr(settings, "ORDER_TRACKING_ENABLED", True):
                     notify_phone = arguments.get("customer_phone", "")

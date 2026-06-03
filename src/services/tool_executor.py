@@ -3472,7 +3472,9 @@ class ToolExecutor:
         # Initialize the service with the user's credentials
         whatsapp_service.access_token = access_token
         whatsapp_service.phone_number_id = phone_number_id
-        print(f"🔧 Initialized WhatsApp service with user credentials for user {user.id}")
+        logger.debug(
+            "Initialized WhatsApp service with user credentials for user %s", user.id
+        )
 
         if tool_name in ("whatsapp_messaging", "whatsapp_send_message"):
             action = arguments.get("action", arguments.get("operation", "send_message"))

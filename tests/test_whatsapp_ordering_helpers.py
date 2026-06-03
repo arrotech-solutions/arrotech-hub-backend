@@ -18,6 +18,8 @@ def test_is_order_confirmation():
     assert is_order_confirmation_message("yes")
     assert is_order_confirmation_message("Ndio please")
     assert is_order_confirmation_message("CONFIRM")
+    assert not is_order_confirmation_message("ok")
+    assert not is_order_confirmation_message("sure")
     assert not is_order_confirmation_message("I want chicken")
 
 

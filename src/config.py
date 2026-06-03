@@ -69,7 +69,7 @@ class BaseConfig(BaseSettings):
     WHATSAPP_WEBHOOK_RATE_LIMIT: int = 15
     WHATSAPP_WEBHOOK_RATE_WINDOW: int = 60
     # Require X-Hub-Signature-256 when app secret is set
-    WHATSAPP_WEBHOOK_REQUIRE_SIGNATURE: bool = False
+    WHATSAPP_WEBHOOK_REQUIRE_SIGNATURE: bool = True
     # Queue webhook messages to Celery (set False to process in API process — good for local dev)
     WHATSAPP_USE_CELERY_WEBHOOK: bool = True
     # If Celery queue fails, fall back to FastAPI BackgroundTasks

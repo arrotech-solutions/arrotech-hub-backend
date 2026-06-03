@@ -25,8 +25,9 @@ except ImportError:
         r"\[\[SYSTEM\]\]",
     ]
 
+# Strict checkout confirmation only (exclude bare ok/sure — too ambiguous)
 _CONFIRM_WORDS = frozenset({
-    "yes", "y", "yeah", "yep", "confirm", "confirmed", "ok", "okay", "sure",
+    "yes", "y", "yeah", "yep", "confirm", "confirmed",
     "proceed", "go ahead", "place order", "place the order", "ndio", "sawa",
     "ndiyo", "haya", "sawa sawa",
 })

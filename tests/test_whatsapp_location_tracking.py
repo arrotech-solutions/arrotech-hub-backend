@@ -102,3 +102,25 @@ class TestOrderTrackingService:
         )
         assert "Ribeye" in text
         assert "Fries" in text
+
+    def test_skip_duplicate_confirmed_status_after_placement(self, monkeypatch):
+        store = {
+            "wa_order_track:owner:ORD-1": {
+                "order_id": "ORD-1",
+                "customer_phone": "254700",
+                "status": "pending",
+                "placement_notified": True,
+                "order": {},
+            }
+        }
+
+        def fake_get(key):
+            return store.get(key)
+
+        from src.services import order_tracking_service as ots_module
+
+        monkeypatch.setattr(ots_module.cache_service, "get", fake_get)
+
+        svc = OrderTrackingService()
+        reg = svc.get_registered_order("owner", "ORD-1")
+        assert reg.get("placement_notified") is True

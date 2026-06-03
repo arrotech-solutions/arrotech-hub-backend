@@ -10,8 +10,9 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List
 import uuid
 
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from ..database import get_session_maker
 from ..models import (
@@ -158,6 +159,21 @@ class WhatsAppWorkflowTrigger:
                 except Exception as ccm_err:
                     logger.warning(f"[WA_TRIGGER] CCM session init failed (non-blocking): {ccm_err}")
 
+                # Find workflows with WhatsApp triggers
+                result = await db.execute(
+                    select(Workflow)
+                    .options(selectinload(Workflow.steps))
+                    .where(
+                        and_(
+                            Workflow.user_id == user_id,
+                            Workflow.status == WorkflowStatus.ACTIVE,
+                            Workflow.trigger_type == WorkflowTriggerType.EVENT.value,
+                        )
+                    )
+                )
+                workflows = result.scalars().all()
+
+                # Handoff TTL from first active ordering workflow config (matches agent)
                 if session_key:
                     try:
                         from ..config import settings
@@ -165,6 +181,17 @@ class WhatsAppWorkflowTrigger:
                         ttl_hours = int(
                             getattr(settings, "AGENT_HUMAN_HANDOFF_TTL_HOURS", 24) or 0
                         )
+                        for wf in workflows:
+                            tc = wf.trigger_config or {}
+                            if tc.get("event_type") != "whatsapp_message_received":
+                                continue
+                            cfg = (wf.variables or {}).get("config") or {}
+                            if cfg.get("human_handoff_ttl_hours") is not None:
+                                try:
+                                    ttl_hours = int(cfg["human_handoff_ttl_hours"])
+                                except (TypeError, ValueError):
+                                    pass
+                                break
                         if ttl_hours > 0:
                             expired = await context_manager.maybe_expire_human_handoff(
                                 session_key, ttl_hours * 3600
@@ -179,33 +206,22 @@ class WhatsAppWorkflowTrigger:
                             f"[WA_TRIGGER] Handoff TTL check failed (continuing): {handoff_err}"
                         )
 
-                # Find workflows with WhatsApp triggers
-                result = await db.execute(
-                    select(Workflow).where(
-                        and_(
-                            Workflow.user_id == user_id,
-                            Workflow.status == WorkflowStatus.ACTIVE,
-                            Workflow.trigger_type == WorkflowTriggerType.EVENT.value
-                        )
+                def _workflow_has_conversational_agent(wf: Workflow) -> bool:
+                    return any(
+                        s.tool_name == "conversational_agent" for s in (wf.steps or [])
                     )
-                )
-                workflows = result.scalars().all()
-                
+
+                matched: List[tuple] = []
                 for workflow in workflows:
                     trigger_config = workflow.trigger_config or {}
                     event_type = trigger_config.get("event_type", "")
-                    
-                    # Check if this workflow should trigger
                     should_trigger = False
-                    
+
                     if event_type == "whatsapp_message_received":
                         should_trigger = True
-                        
                     elif event_type == "whatsapp_new_contact":
-                        # Only trigger if first message from contact
                         if contact.message_count == 1:
                             should_trigger = True
-                            
                     elif event_type == "whatsapp_keyword_detected":
                         keywords = trigger_config.get("keywords", [])
                         content = (message.content or "").lower()
@@ -213,57 +229,79 @@ class WhatsAppWorkflowTrigger:
                             if keyword.lower() in content:
                                 should_trigger = True
                                 break
-                    
-                    # Real estate specific triggers
                     elif re_event_type and event_type == re_event_type:
                         should_trigger = True
-                    
-                    if should_trigger:
-                        wf_config = dict((workflow.variables or {}).get("config", {}) or {})
-                        wf_config.setdefault("customer_phone", contact.phone_number)
-                        wf_config.setdefault(
-                            "customer_name",
-                            contact.name or contact.profile_name or "Customer",
-                        )
-                        wf_config.setdefault("platform", "whatsapp")
 
-                        # Build input variables for workflow
-                        input_vars = {
-                            "whatsapp_contact_id": str(contact.id) if contact.id else None,
-                            "whatsapp_contact_phone": contact.phone_number,
-                            "whatsapp_contact_name": contact.name or contact.profile_name or "Customer",
-                            "whatsapp_message_id": str(message.id) if message.id else None,
-                            "whatsapp_message_content": message.content or "",
-                            "whatsapp_message_type": message.message_type or "",
-                            "whatsapp_is_location": message.message_type == "location",
-                            "timestamp": datetime.utcnow().isoformat(),
-                            # ── CCM: Inject session key for context-aware tools ──
-                            "session_key": session_key,
-                            "platform": "whatsapp",
-                            # ── Inject workflow-level config for agent tools ──
-                            "config": wf_config,
-                        }
-                        
-                        # Add real estate context if detected
-                        if re_intent:
-                            input_vars["real_estate_intent"] = re_intent
-                            input_vars["real_estate_event"] = re_event_type
-                        
-                        # Execute workflow
-                        logger.info(f"[WA_TRIGGER] Firing workflow '{workflow.name}' for contact {contact.phone_number}" +
-                                   (f" (RE intent: {re_intent})" if re_intent else ""))
-                        
-                        try:
-                            builder = WorkflowBuilderService()
-                            await builder.execute_workflow(
-                                workflow_id=workflow.id,
-                                user_id=user_id,
-                                db=db,
-                                input_data=input_vars,
-                                trigger_type="whatsapp_message_received"
-                            )
-                        except Exception as e:
-                            logger.error(f"[WA_TRIGGER] Failed to execute workflow {workflow.id}: {e}")
+                    if should_trigger:
+                        matched.append((workflow, event_type))
+
+                # Run at most one whatsapp_message_received ordering workflow per message
+                wa_general = [
+                    (w, et) for w, et in matched if et == "whatsapp_message_received"
+                ]
+                others = [
+                    (w, et) for w, et in matched if et != "whatsapp_message_received"
+                ]
+                to_execute: List[tuple] = list(others)
+                if wa_general:
+                    preferred = next(
+                        (w for w, _ in wa_general if _workflow_has_conversational_agent(w)),
+                        wa_general[0][0],
+                    )
+                    to_execute.append((preferred, "whatsapp_message_received"))
+                    if len(wa_general) > 1:
+                        logger.warning(
+                            "[WA_TRIGGER] %s whatsapp_message_received workflows matched; "
+                            "running only '%s'",
+                            len(wa_general),
+                            preferred.name,
+                        )
+
+                for workflow, event_type in to_execute:
+                    wf_config = dict((workflow.variables or {}).get("config", {}) or {})
+                    wf_config.setdefault("customer_phone", contact.phone_number)
+                    wf_config.setdefault(
+                        "customer_name",
+                        contact.name or contact.profile_name or "Customer",
+                    )
+                    wf_config.setdefault("platform", "whatsapp")
+
+                    input_vars = {
+                        "whatsapp_contact_id": str(contact.id) if contact.id else None,
+                        "whatsapp_contact_phone": contact.phone_number,
+                        "whatsapp_contact_name": contact.name or contact.profile_name or "Customer",
+                        "whatsapp_message_id": str(message.id) if message.id else None,
+                        "whatsapp_message_content": message.content or "",
+                        "whatsapp_message_type": message.message_type or "",
+                        "whatsapp_is_location": message.message_type == "location",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "session_key": session_key,
+                        "platform": "whatsapp",
+                        "config": wf_config,
+                    }
+
+                    if re_intent:
+                        input_vars["real_estate_intent"] = re_intent
+                        input_vars["real_estate_event"] = re_event_type
+
+                    logger.info(
+                        f"[WA_TRIGGER] Firing workflow '{workflow.name}' for contact {contact.phone_number}"
+                        + (f" (RE intent: {re_intent})" if re_intent else "")
+                    )
+
+                    try:
+                        builder = WorkflowBuilderService()
+                        await builder.execute_workflow(
+                            workflow_id=workflow.id,
+                            user_id=user_id,
+                            db=db,
+                            input_data=input_vars,
+                            trigger_type=event_type or "whatsapp_message_received",
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"[WA_TRIGGER] Failed to execute workflow {workflow.id}: {e}"
+                        )
                             
             except Exception as e:
                 logger.error(f"[WA_TRIGGER] Error checking workflows: {e}")

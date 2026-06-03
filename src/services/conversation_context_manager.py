@@ -502,12 +502,14 @@ class ConversationContextManager:
             cart.pop(idx)
             session.metadata["cart"] = cart
             session.metadata.pop("pending_confirmation", None)
+            session.metadata.pop("order_confirmed", None)
             await self.save_session(session)
             return cart, True, item_name, "removed"
 
         cart[idx]["quantity"] = float(quantity)
         session.metadata["cart"] = cart
         session.metadata.pop("pending_confirmation", None)
+        session.metadata.pop("order_confirmed", None)
         await self.save_session(session)
         return cart, True, item_name, "updated"
 
@@ -529,8 +531,9 @@ class ConversationContextManager:
         await self.save_session(session)
 
     async def mark_order_confirmed(self, session_key: str) -> None:
+        """Set order_confirmed only when a checkout total is awaiting YES."""
         session = await self.get_session_by_key(session_key)
-        if not session:
+        if not session or not session.metadata.get("pending_confirmation"):
             return
         session.metadata["order_confirmed"] = True
         await self.save_session(session)
