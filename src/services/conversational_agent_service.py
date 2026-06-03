@@ -354,18 +354,19 @@ AGENT_SUB_TOOLS = [
         "function": {
             "name": "manage_cart",
             "description": (
-                "View or update the customer's persisted shopping cart. ALWAYS use this when they "
-                "want to see the cart, clear it, remove an item, or change quantities. "
-                "Actions: 'view' (show cart), 'clear' (empty cart), 'remove' (drop one item), "
+                "Add items to, view, or update the customer's persisted shopping cart. "
+                "Actions: 'add' (add a new item — ALWAYS search_products first to get the correct price), "
+                "'view' (show cart), 'clear' (empty cart), 'remove' (drop one item), "
                 "'set_quantity' (change qty; use quantity 0 to remove). "
-                "For remove/set_quantity provide product_name (or product_id from catalog)."
+                "For add: provide product_name, unit_price (from catalog), and quantity. "
+                "For remove/set_quantity: provide product_name (or product_id from catalog)."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["view", "clear", "remove", "set_quantity"],
+                        "enum": ["add", "view", "clear", "remove", "set_quantity"],
                         "description": "Cart operation to perform"
                     },
                     "product_id": {
@@ -378,7 +379,11 @@ AGENT_SUB_TOOLS = [
                     },
                     "quantity": {
                         "type": "number",
-                        "description": "New quantity for set_quantity (0 = remove item)"
+                        "description": "Quantity to add, or new quantity for set_quantity (0 = remove item)"
+                    },
+                    "unit_price": {
+                        "type": "number",
+                        "description": "Unit price from the catalog (required for 'add' action)"
                     }
                 },
                 "required": ["action"]
@@ -1570,8 +1575,10 @@ class ConversationalAgentService:
 
 ## Cart Management (IMPORTANT)
 - Customers can tap *View my cart*, *Clear cart*, or *Checkout* buttons, or type things like "my cart", "clear cart", "remove chicken", "change pilau to 2"
-- ALWAYS use `manage_cart` when they want to view, clear, remove, or change cart items — do not pretend the cart changed without calling the tool
-- `manage_cart` actions: view | clear | remove | set_quantity (quantity 0 removes)
+- Customers can also ASK to add items by typing things like "4 mutton biryani and 4 red bulls", "add chapati to my cart", etc.
+- ALWAYS use `manage_cart` for ALL cart operations — do NOT pretend the cart changed without calling the tool
+- `manage_cart` actions: add | view | clear | remove | set_quantity (quantity 0 removes)
+- **Adding items flow**: When a customer asks for items, FIRST call `search_products` to find the correct name and price, THEN call `manage_cart(action="add", product_name=..., unit_price=..., quantity=...)` for EACH item. You MUST call `manage_cart` with action `add` to actually add items — just saying "I've added them" is NOT enough.
 - After cart changes, keep replies short and friendly; mention they can tap the buttons below
 
 ## CRITICAL Product Display Rules
@@ -1794,7 +1801,7 @@ class ConversationalAgentService:
                 f"\n## Current cart (persisted — do not ignore)\n{summary}\n"
                 "When the customer is ready to checkout, use these cart items for "
                 "`calculate_total`, `validate_order`, and `create_order`.\n"
-                "Use `manage_cart` if they want to view, clear, remove, or update quantities.\n"
+                "Use `manage_cart` to add more items, view, clear, remove, or update quantities.\n"
             )
         except Exception as e:
             logger.warning(f"[CONV_AGENT] cart context block failed: {e}")
@@ -2352,7 +2359,10 @@ class ConversationalAgentService:
                         f"{search_text}\n\n"
                         "INSTRUCTION: You MUST now call `display_product_cards` with the products found above. "
                         "Extract each product's id, name, price, description, and image_url from the search results "
-                        "and pass them to `display_product_cards`. Do NOT list products in plain text."
+                        "and pass them to `display_product_cards`. Do NOT list products in plain text. "
+                        "If the customer explicitly asked to ADD items to their cart, also call "
+                        "`manage_cart(action='add', product_name=..., unit_price=..., quantity=...)` "
+                        "for each item they requested."
                     ),
                     "data": result.get("data", {})
                 }
@@ -2412,7 +2422,7 @@ class ConversationalAgentService:
         session_key: str,
         currency: str,
     ) -> Dict[str, Any]:
-        """View, clear, remove, or update quantities in the persisted cart."""
+        """Add items to, view, clear, remove, or update quantities in the persisted cart."""
         from .whatsapp_ordering_helpers import (
             format_cart_summary,
             cart_cleared_message,
@@ -2424,11 +2434,35 @@ class ConversationalAgentService:
         product_id = arguments.get("product_id", "") or ""
         product_name = arguments.get("product_name", "") or ""
         quantity = arguments.get("quantity")
+        unit_price = arguments.get("unit_price")
 
         if not session_key:
             return {"success": False, "result": "No active session for cart."}
 
         try:
+            if action == "add":
+                if not product_name:
+                    return {
+                        "success": False,
+                        "result": "product_name is required to add an item to the cart.",
+                    }
+                item = {
+                    "id": product_id or product_name[:50],
+                    "name": product_name,
+                    "quantity": float(quantity) if quantity else 1,
+                    "unit_price": float(unit_price) if unit_price else 0,
+                }
+                cart = await context_manager.add_cart_item(session_key, item)
+                summary = format_cart_summary(cart, currency)
+                return {
+                    "success": True,
+                    "result": (
+                        f"✅ Added *{product_name}* × {item['quantity']:g} to the cart.\n\n"
+                        f"{summary}"
+                    ),
+                    "cart": cart,
+                    "cart_empty": False,
+                }
             if action == "view":
                 session = await context_manager.get_session_by_key(session_key)
                 cart = context_manager.get_cart(session) if session else []

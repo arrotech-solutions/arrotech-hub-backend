@@ -258,8 +258,11 @@ def match_cart_command(message: str) -> Optional[str]:
     # "change chicken to 2" / "set chicken to 3" / "make it 2 chicken"
     if re.match(r"^(change|set|update)\s+.+\s+to\s+\d+", normalized):
         return "set_quantity"
-    if re.match(r"^\d+\s+.+", normalized):  # "2 chicken stew"
-        return "set_quantity"
+    # NOTE: Removed bare `^\d+\s+.+` regex that matched "4 mutton biryani"
+    # as set_quantity.  That pattern is too greedy — it hijacks new-item
+    # requests (e.g. "4 mutton biryani and 4 red bulls") and fails on an
+    # empty cart.  Let these flow to the LLM which can search the catalog
+    # and add items via manage_cart(action="add").
     return None
 
 
