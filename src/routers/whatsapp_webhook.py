@@ -170,6 +170,7 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
     
     for msg in messages:
         pending_cart_item = None
+        pending_delivery_location = None
         try:
             # Extract message details
             msg_id = msg.get("id")
@@ -208,8 +209,22 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                 media_url = doc.get("id")
                 media_mime_type = doc.get("mime_type", "application/pdf")
             elif msg_type == "location":
+                from ..services.whatsapp_location_service import (
+                    normalize_whatsapp_location_payload,
+                    enrich_location_with_reverse_geocode,
+                    build_location_agent_message,
+                )
+
                 loc = msg.get("location", {})
-                content = f"Location: {loc.get('latitude')}, {loc.get('longitude')}"
+                location_data = normalize_whatsapp_location_payload(loc)
+                if location_data:
+                    location_data = await enrich_location_with_reverse_geocode(
+                        location_data
+                    )
+                    pending_delivery_location = location_data
+                    content = build_location_agent_message(location_data)
+                else:
+                    content = "I shared my location but it could not be read."
             elif msg_type == "button":
                 content = msg.get("button", {}).get("text", "")
             elif msg_type == "interactive":
@@ -470,7 +485,25 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                     await context_manager.add_cart_item(sk, pending_cart_item)
                 except Exception as cart_err:
                     logger.warning(f"[WHATSAPP WEBHOOK] Cart update failed: {cart_err}")
-            
+
+            if pending_delivery_location:
+                try:
+                    from ..services.conversation_context_manager import (
+                        context_manager,
+                        _build_session_key,
+                    )
+
+                    sk = _build_session_key(
+                        "whatsapp", str(owner_user_id), from_number
+                    )
+                    await context_manager.set_delivery_location(
+                        sk, pending_delivery_location
+                    )
+                except Exception as loc_err:
+                    logger.warning(
+                        f"[WHATSAPP WEBHOOK] Delivery location save failed: {loc_err}"
+                    )
+
             # Trigger processing
             if background_tasks:
                 background_tasks.add_task(

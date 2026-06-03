@@ -9,7 +9,7 @@ from sqlalchemy import select, func, desc, or_
 from sqlalchemy.orm import selectinload
 from typing import Optional, List
 import uuid
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 
 from ..database import get_db
@@ -518,6 +518,91 @@ async def release_agent_for_contact(
         "session_key": sk,
         "message": "AI agent resumed for this contact. Customer can continue ordering via chat.",
     }
+
+
+class OrderStatusUpdate(BaseModel):
+    """Update order status and notify the customer on WhatsApp."""
+
+    status: str = Field(..., description="New order status (confirmed, preparing, shipped, etc.)")
+    customer_phone: Optional[str] = Field(
+        None,
+        description="Customer WhatsApp number; uses tracking registry if omitted",
+    )
+    notes: Optional[str] = Field(None, description="Optional note included in the customer alert")
+    business_name: Optional[str] = None
+    currency: Optional[str] = "KES"
+    notify_customer: bool = True
+
+
+@router.post("/orders/{order_id}/status")
+async def update_order_status_and_notify(
+    order_id: str,
+    body: OrderStatusUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Push an order status update to the customer via WhatsApp (shipping alerts, etc.).
+
+    Orders are registered in Redis when placed through the conversational ordering agent.
+    """
+    check_connection_access(user, "whatsapp_business")
+
+    if not getattr(settings, "ORDER_TRACKING_ENABLED", True):
+        raise HTTPException(
+            status_code=503,
+            detail="Order tracking notifications are disabled",
+        )
+
+    from ..services.order_service import ORDER_STATUSES
+    from ..services.order_tracking_service import order_tracking_service
+
+    new_status = (body.status or "").lower().replace(" ", "_")
+    if new_status not in ORDER_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status. Allowed: {', '.join(ORDER_STATUSES)}",
+        )
+
+    registry = order_tracking_service.get_registered_order(str(user.id), order_id)
+    if not registry and not body.customer_phone:
+        raise HTTPException(
+            status_code=404,
+            detail="Order not found in tracking registry. Provide customer_phone.",
+        )
+
+    result: dict = {"success": True, "order_id": order_id, "status": new_status}
+
+    if body.notify_customer:
+        notify_result = await order_tracking_service.notify_status_change(
+            user=user,
+            db=db,
+            order_id=order_id,
+            new_status=new_status,
+            customer_phone=body.customer_phone or "",
+            business_name=body.business_name or "",
+            currency=body.currency or "KES",
+            notes=body.notes or "",
+            previous_status=(registry or {}).get("status", ""),
+        )
+        result["notification"] = notify_result
+        if not notify_result.get("success") and not notify_result.get("skipped"):
+            raise HTTPException(
+                status_code=502,
+                detail=notify_result.get("error", "Failed to notify customer"),
+            )
+    else:
+        if registry:
+            registry["status"] = new_status
+            from ..services.cache_service import cache_service
+
+            cache_service.set(
+                order_tracking_service._tracking_key(str(user.id), order_id),
+                registry,
+                expire_seconds=60 * 60 * 24 * 45,
+            )
+
+    return result
 
 
 # ============================================================================

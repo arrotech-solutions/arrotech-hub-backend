@@ -234,7 +234,8 @@ class WhatsAppWorkflowTrigger:
                             "whatsapp_contact_name": contact.name or contact.profile_name or "Customer",
                             "whatsapp_message_id": str(message.id) if message.id else None,
                             "whatsapp_message_content": message.content or "",
-                            "whatsapp_message_type": message.message_type,
+                            "whatsapp_message_type": message.message_type or "",
+                            "whatsapp_is_location": message.message_type == "location",
                             "timestamp": datetime.utcnow().isoformat(),
                             # ── CCM: Inject session key for context-aware tools ──
                             "session_key": session_key,

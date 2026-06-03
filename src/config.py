@@ -293,6 +293,9 @@ class BaseConfig(BaseSettings):
     AGENT_HUMAN_HANDOFF_TTL_HOURS: int = 24  # 0 = no auto-resume; else bot resumes after TTL
     AGENT_DEFAULT_SUPPORTED_LANGUAGES: str = "en,sw,fr,ar,es"  # comma-separated ISO codes
 
+    # WhatsApp ordering — location & automated tracking
+    ORDER_TRACKING_ENABLED: bool = True  # confirmation, receipts, status push via WhatsApp
+
     # Coding Agent Configuration
     GITHUB_TOKEN: Optional[str] = None
     CODING_AGENT_DOCKER_IMAGE: str = "node:20-alpine"

@@ -638,6 +638,34 @@ class ConversationalAgentService:
                 parse_set_quantity_message,
             )
 
+            from .whatsapp_location_service import (
+                LOCATION_AGENT_PREFIX,
+                format_location_saved_reply,
+            )
+
+            if (
+                business_config.get("whatsapp_is_location")
+                or (user_message or "").startswith(LOCATION_AGENT_PREFIX)
+            ) and session_key:
+                try:
+                    session = await context_manager.get_session_by_key(session_key)
+                    loc = context_manager.get_delivery_location(session)
+                    if loc:
+                        reply = format_location_saved_reply(loc, business_name)
+                        return await self._cart_fast_path_result(
+                            session_key,
+                            reply,
+                            actions_taken=[
+                                {
+                                    "tool": "delivery_location",
+                                    "result_summary": "location_saved",
+                                }
+                            ],
+                            send_cart_buttons=True,
+                        )
+                except Exception as loc_err:
+                    logger.warning(f"[CONV_AGENT] Location fast path failed: {loc_err}")
+
             if check_user_message_injection(user_message):
                 logger.warning("[CONV_AGENT] Blocked suspected prompt injection in user message")
                 return {
@@ -946,6 +974,10 @@ class ConversationalAgentService:
             if cart_context:
                 system_prompt += cart_context
 
+            delivery_context = await self._build_delivery_location_block(session_key)
+            if delivery_context:
+                system_prompt += delivery_context
+
             # Harness: inject agent context into system prompt
             if self._harness_enabled:
                 try:
@@ -1193,6 +1225,7 @@ class ConversationalAgentService:
                         default_customer_phone=customer_phone,
                         default_customer_name=customer_name,
                         preferred_language=preferred_language,
+                        business_phone=business_phone,
                     )
 
                     if tool_name == "escalate_to_human" and tool_result.get("success"):
@@ -1504,14 +1537,16 @@ class ConversationalAgentService:
 2. When they browse: search the catalog, then ALWAYS use `display_product_cards` to show results
 3. When they want to order: collect name, phone number, items with quantities
 4. Ask about delivery method ({delivery_str})
-5. If delivery, collect the delivery address
-6. Confirm the order summary with total price using `calculate_total`
-7. Call `validate_order`, then show a clear summary and ask the customer to reply *YES* to confirm
-8. Only after they confirm, create the order using `create_order`
-9. After order is created, offer M-Pesa payment using `initiate_mpesa_payment`
-10. If a customer wants to cancel an order, FIRST call `get_user_orders` to show their orders with Cancel buttons — do NOT guess the Order ID and do NOT ask them to type it. If you don't know their phone number, ask for it so you can look up their orders. If the order_id is already provided (e.g. from a button click), proceed directly with `cancel_order`
-11. If a customer wants to see their order history or check an order status, call `get_user_orders` then ALWAYS call `display_order_cards` with the results
-12. If the customer has items in their cart (see Cart section below), reference the cart when summarizing their order
+5. If delivery, collect the delivery address — customers can *share their location pin* on WhatsApp (📍) instead of typing
+6. If a delivery location is already saved in context below, use it — do not ask them to type the address again
+7. Confirm the order summary with total price using `calculate_total`
+8. Call `validate_order`, then show a clear summary and ask the customer to reply *YES* to confirm
+9. Only after they confirm, create the order using `create_order`
+10. After order is created, offer M-Pesa payment using `initiate_mpesa_payment`
+11. If a customer wants to cancel an order, FIRST call `get_user_orders` to show their orders with Cancel buttons — do NOT guess the Order ID and do NOT ask them to type it. If you don't know their phone number, ask for it so you can look up their orders. If the order_id is already provided (e.g. from a button click), proceed directly with `cancel_order`
+12. If a customer wants to see their order history or check an order status, call `get_user_orders` then ALWAYS call `display_order_cards` with the results
+13. If the customer has items in their cart (see Cart section below), reference the cart when summarizing their order
+14. After placing an order, the customer automatically receives a receipt and status updates on WhatsApp — you do not need to send the receipt manually unless asked
 
 ## Cart Management (IMPORTANT)
 - Customers can tap *View my cart*, *Clear cart*, or *Checkout* buttons, or type things like "my cart", "clear cart", "remove chicken", "change pilau to 2"
@@ -1671,6 +1706,53 @@ class ConversationalAgentService:
             await db.commit()
         except Exception as e:
             logger.warning(f"[CONV_AGENT] Contact handoff tag failed: {e}")
+
+    async def _build_delivery_location_block(self, session_key: str) -> str:
+        if not session_key:
+            return ""
+        try:
+            session = await context_manager.get_session_by_key(session_key)
+            if not session:
+                return ""
+            loc = context_manager.get_delivery_location(session)
+            if not loc:
+                return ""
+            addr = context_manager.get_delivery_address(session)
+            maps_url = loc.get("maps_url", "")
+            block = (
+                f"\n## Saved delivery location (from WhatsApp 📍 — use for delivery)\n"
+                f"Address: {addr}\n"
+            )
+            if maps_url:
+                block += f"Map: {maps_url}\n"
+            block += (
+                "Include this in `delivery_address` for validate_order and create_order. "
+                "Set delivery_method to delivery.\n"
+            )
+            return block
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] delivery location block failed: {e}")
+            return ""
+
+    async def _apply_saved_delivery_address(
+        self,
+        arguments: Dict[str, Any],
+        session_key: str,
+    ) -> Dict[str, Any]:
+        """Fill delivery_address from CCM when the agent omitted it."""
+        if arguments.get("delivery_address") or not session_key:
+            return arguments
+        try:
+            session = await context_manager.get_session_by_key(session_key)
+            if session:
+                addr = context_manager.get_delivery_address(session)
+                if addr:
+                    arguments = {**arguments, "delivery_address": addr}
+                    if not arguments.get("delivery_method"):
+                        arguments["delivery_method"] = "delivery"
+        except Exception:
+            pass
+        return arguments
 
     async def _build_cart_context_block(self, session_key: str, currency: str) -> str:
         if not session_key:
@@ -2011,6 +2093,7 @@ class ConversationalAgentService:
         default_customer_phone: str = "",
         default_customer_name: str = "",
         preferred_language: str = DEFAULT_LANGUAGE,
+        business_phone: str = "",
     ) -> Dict[str, Any]:
         """Execute one of the agent's sub-tools."""
 
@@ -2052,6 +2135,7 @@ class ConversationalAgentService:
                     background_tasks=background_tasks,
                     session_key=session_key,
                     user_message=user_message,
+                    business_phone=business_phone,
                 )
 
             elif tool_name == "validate_order":
@@ -2063,6 +2147,7 @@ class ConversationalAgentService:
                     arguments=arguments,
                     order_type=order_type,
                     currency=currency,
+                    session_key=session_key,
                 )
 
             elif tool_name == "manage_cart":
@@ -2102,13 +2187,16 @@ class ConversationalAgentService:
                 )
 
             elif tool_name == "cancel_order":
+                if not arguments.get("customer_phone") and default_customer_phone:
+                    arguments["customer_phone"] = default_customer_phone
                 return await self._sub_cancel_order(
                     arguments=arguments,
                     storage_config=storage_config,
                     business_name=business_name,
+                    currency=currency,
                     user=user,
                     db=db,
-                    background_tasks=background_tasks
+                    background_tasks=background_tasks,
                 )
 
             elif tool_name == "get_user_orders":
@@ -2256,9 +2344,11 @@ class ConversationalAgentService:
         arguments: Dict[str, Any],
         order_type: str,
         currency: str,
+        session_key: str = "",
     ) -> Dict[str, Any]:
         """Validate order fields before confirmation."""
         try:
+            arguments = await self._apply_saved_delivery_address(arguments, session_key)
             order_data = {
                 "customer": {
                     "name": arguments.get("customer_name", ""),
@@ -2408,10 +2498,13 @@ class ConversationalAgentService:
         background_tasks: Optional['BackgroundTasks'] = None,
         session_key: str = "",
         user_message: str = "",
+        business_phone: str = "",
     ) -> Dict[str, Any]:
         """Create an order via OrderService, then persist to connected storage."""
         try:
             from .whatsapp_ordering_helpers import is_order_confirmation_message
+
+            arguments = await self._apply_saved_delivery_address(arguments, session_key)
 
             if session_key:
                 session = await context_manager.get_session_by_key(session_key)
@@ -2446,35 +2539,107 @@ class ConversationalAgentService:
             )
 
             if order_result.get("success"):
-                # Generate a receipt
+                order_obj = order_result.get("order") or order_result
+                if session_key:
+                    try:
+                        session = await context_manager.get_session_by_key(session_key)
+                        loc = (
+                            context_manager.get_delivery_location(session)
+                            if session
+                            else {}
+                        )
+                        if loc:
+                            order_obj["delivery_location"] = loc
+                            order_obj["delivery_latitude"] = loc.get("latitude")
+                            order_obj["delivery_longitude"] = loc.get("longitude")
+                    except Exception:
+                        pass
+
                 receipt = await self.order_service.handle_operation(
                     operation="format_order_receipt",
-                    order_data=order_result,
+                    order_data=order_obj,
                     business_name=business_name,
-                    currency=currency
+                    business_phone=business_phone,
+                    currency=currency,
                 )
                 order_result["receipt"] = receipt.get("result", "")
 
-                # ── Persist to connected storage (non-fatal) ──
                 if storage_config and storage_config.get("provider") not in (None, "", "none"):
                     await self._persist_to_storage(
-                        order_data=order_result.get("order", order_result),
+                        order_data=order_obj,
                         storage_config=storage_config,
                         business_name=business_name,
                         user=user,
                         db=db,
-                        background_tasks=background_tasks
+                        background_tasks=background_tasks,
                     )
+
+                if getattr(settings, "ORDER_TRACKING_ENABLED", True):
+                    notify_phone = arguments.get("customer_phone", "")
+                    if notify_phone and user:
+                        if background_tasks:
+                            background_tasks.add_task(
+                                self._bg_notify_order_placed,
+                                str(user.id),
+                                notify_phone,
+                                order_result,
+                                business_name,
+                                business_phone,
+                                currency,
+                            )
+                        else:
+                            await self._bg_notify_order_placed(
+                                str(user.id),
+                                notify_phone,
+                                order_result,
+                                business_name,
+                                business_phone,
+                                currency,
+                            )
 
             return {
                 "success": order_result.get("success", False),
                 "result": order_result.get("result", "Order creation failed"),
-                "order_data": order_result
+                "order_data": order_result,
             }
 
         except Exception as e:
             logger.error(f"[CONV_AGENT] Order creation error: {e}")
             return {"success": False, "result": f"Order error: {str(e)}"}
+
+    @staticmethod
+    async def _bg_notify_order_placed(
+        user_id: str,
+        customer_phone: str,
+        order_data: Dict[str, Any],
+        business_name: str,
+        business_phone: str,
+        currency: str,
+    ) -> None:
+        """Background task: confirmation, receipt, and tracking registry."""
+        try:
+            from ..database import get_session_maker
+            from ..models import User
+            from sqlalchemy import select
+            from .order_tracking_service import order_tracking_service
+
+            session_maker = get_session_maker()
+            async with session_maker() as db:
+                result = await db.execute(select(User).where(User.id == user_id))
+                user = result.scalar_one_or_none()
+                if not user:
+                    return
+                await order_tracking_service.notify_order_placed(
+                    user=user,
+                    db=db,
+                    customer_phone=customer_phone,
+                    order_data=order_data,
+                    business_name=business_name,
+                    business_phone=business_phone,
+                    currency=currency,
+                )
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] Order tracking notify failed: {e}")
 
     async def _sub_calculate_total(
         self,
@@ -2513,9 +2678,10 @@ class ConversationalAgentService:
         arguments: Dict[str, Any],
         storage_config: Dict[str, Any],
         business_name: str,
+        currency: str,
         user: User,
         db: AsyncSession,
-        background_tasks: Optional['BackgroundTasks'] = None
+        background_tasks: Optional['BackgroundTasks'] = None,
     ) -> Dict[str, Any]:
         """Cancel an order and update connected storage."""
         try:
@@ -2531,7 +2697,6 @@ class ConversationalAgentService:
             )
 
             if cancel_result.get("success"):
-                # Persist status update to storage
                 if storage_config and storage_config.get("provider") not in (None, "", "none"):
                     provider = storage_config.get("provider")
                     if background_tasks:
@@ -2544,6 +2709,29 @@ class ConversationalAgentService:
                             provider, order_id, "cancelled", storage_config, user
                         )
 
+                if getattr(settings, "ORDER_TRACKING_ENABLED", True) and customer_phone and user:
+                    if background_tasks:
+                        background_tasks.add_task(
+                            self._bg_notify_status_change,
+                            str(user.id),
+                            order_id,
+                            "cancelled",
+                            customer_phone,
+                            business_name,
+                            currency,
+                            "",
+                        )
+                    else:
+                        await self._bg_notify_status_change(
+                            str(user.id),
+                            order_id,
+                            "cancelled",
+                            customer_phone,
+                            business_name,
+                            currency,
+                            "",
+                        )
+
             return {
                 "success": cancel_result.get("success", False),
                 "result": cancel_result.get("message", "Order cancellation failed"),
@@ -2553,6 +2741,41 @@ class ConversationalAgentService:
         except Exception as e:
             logger.error(f"[CONV_AGENT] Order cancellation error: {e}")
             return {"success": False, "result": f"Cancellation error: {str(e)}"}
+
+    @staticmethod
+    async def _bg_notify_status_change(
+        user_id: str,
+        order_id: str,
+        new_status: str,
+        customer_phone: str,
+        business_name: str,
+        currency: str,
+        notes: str,
+    ) -> None:
+        try:
+            from ..database import get_session_maker
+            from ..models import User
+            from sqlalchemy import select
+            from .order_tracking_service import order_tracking_service
+
+            session_maker = get_session_maker()
+            async with session_maker() as db:
+                result = await db.execute(select(User).where(User.id == user_id))
+                user = result.scalar_one_or_none()
+                if not user:
+                    return
+                await order_tracking_service.notify_status_change(
+                    user=user,
+                    db=db,
+                    order_id=order_id,
+                    new_status=new_status,
+                    customer_phone=customer_phone,
+                    business_name=business_name,
+                    currency=currency,
+                    notes=notes,
+                )
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] Status tracking notify failed: {e}")
 
     async def _sub_get_user_orders(
         self,

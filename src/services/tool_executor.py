@@ -7287,6 +7287,12 @@ Description: {payment.description or 'N/A'}"""
                 business_config.setdefault("customer_name", parameters["whatsapp_contact_name"])
             if parameters.get("platform"):
                 business_config.setdefault("platform", parameters["platform"])
+            if parameters.get("whatsapp_message_type"):
+                business_config.setdefault(
+                    "whatsapp_message_type", parameters["whatsapp_message_type"]
+                )
+            if parameters.get("whatsapp_is_location"):
+                business_config["whatsapp_is_location"] = True
 
             if not user_message:
                 return {"success": False, "error": "No user message provided", "result": None}

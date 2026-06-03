@@ -543,6 +543,37 @@ class ConversationContextManager:
         session.metadata.pop("order_confirmed", None)
         await self.save_session(session)
 
+    # ─── Delivery location (WhatsApp location pin) ───────────────────────
+
+    def get_delivery_location(self, session: Optional[ConversationSession]) -> Dict[str, Any]:
+        if not session:
+            return {}
+        loc = session.metadata.get("delivery_location")
+        return loc if isinstance(loc, dict) else {}
+
+    def get_delivery_address(self, session: Optional[ConversationSession]) -> str:
+        loc = self.get_delivery_location(session)
+        if loc.get("delivery_address"):
+            return str(loc["delivery_address"])
+        if loc.get("formatted_address"):
+            return str(loc["formatted_address"])
+        return str(session.metadata.get("delivery_address", "") if session else "")
+
+    async def set_delivery_location(
+        self,
+        session_key: str,
+        location: Dict[str, Any],
+    ) -> None:
+        """Persist WhatsApp shared location as the session delivery address."""
+        session = await self.get_session_by_key(session_key)
+        if not session or not location:
+            return
+        session.metadata["delivery_location"] = location
+        session.metadata["delivery_address"] = location.get(
+            "delivery_address"
+        ) or location.get("formatted_address", "")
+        await self.save_session(session)
+
     # ─── Human handoff & language preference ─────────────────────────────
 
     def is_human_handoff(self, session: Optional[ConversationSession]) -> bool:
