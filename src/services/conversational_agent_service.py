@@ -756,6 +756,15 @@ class ConversationalAgentService:
 
             if session_key and is_order_confirmation_message(user_message):
                 try:
+                    # If cart has items but pending_confirmation is missing,
+                    # auto-create it so create_order isn't blocked
+                    session = await context_manager.get_session_by_key(session_key)
+                    if session and not session.metadata.get("pending_confirmation"):
+                        cart = context_manager.get_cart(session)
+                        if cart:
+                            await context_manager.set_pending_confirmation(
+                                session_key, cart, {"source": "auto_from_cart"}
+                            )
                     await context_manager.mark_order_confirmed(session_key)
                 except Exception as e:
                     logger.warning(f"[CONV_AGENT] mark_order_confirmed failed: {e}")
@@ -804,22 +813,44 @@ class ConversationalAgentService:
                             "Your cart is empty right now. 🛒\n"
                             "Browse the menu and tap *Add to Cart* on something you like!"
                         )
-                        send_btns = False
+                        return await self._cart_fast_path_result(
+                            session_key, reply,
+                            actions_taken=[{"tool": "manage_cart", "result_summary": "checkout"}],
+                            send_cart_buttons=True,
+                        )
+                    # If customer info is already known, skip the fast-path
+                    # and fall through to the LLM loop which will run
+                    # calculate_total → validate_order → create_order properly
+                    if customer_phone and customer_name:
+                        logger.info(
+                            "[CONV_AGENT] Checkout fast-path: customer info known, "
+                            "falling through to LLM loop"
+                        )
+                        pass  # Fall through to LLM loop below
                     else:
-                        # DO NOT include format_cart_summary(cart, currency) here because it includes the
-                        # buttons text marker, which would cause the checkout button to be sent again and loop.
+                        # Only ask for what's genuinely missing
+                        summary = format_cart_summary(cart, currency)
+                        missing = []
+                        if not customer_name:
+                            missing.append("1️⃣ Your name")
+                        if not customer_phone:
+                            missing.append("2️⃣ Your phone number")
+                        if len(delivery_methods) > 1:
+                            missing.append(
+                                f"{'3' if len(missing) == 2 else '2' if len(missing) == 1 else '1'}️⃣ "
+                                f"Delivery or pickup?"
+                            )
+                        missing_str = "\n".join(missing)
                         reply = (
-                            "Great! To checkout, please share:\n"
-                            "1️⃣ Your name\n"
-                            "2️⃣ Delivery or pickup?\n"
+                            f"{summary}\n\n"
+                            f"Great! To complete your order, please share:\n{missing_str}\n"
                             "(I'll use your WhatsApp number for contact.)"
                         )
-                        send_btns = False
-                    return await self._cart_fast_path_result(
-                        session_key, reply,
-                        actions_taken=[{"tool": "manage_cart", "result_summary": "checkout"}],
-                        send_cart_buttons=send_btns,
-                    )
+                        return await self._cart_fast_path_result(
+                            session_key, reply,
+                            actions_taken=[{"tool": "manage_cart", "result_summary": "checkout"}],
+                            send_cart_buttons=False,  # Don't re-send Checkout button!
+                        )
                 if cart_cmd == "remove":
                     name = parse_remove_item_name(user_message)
                     cart, removed, removed_name = await context_manager.remove_cart_item(
@@ -1651,7 +1682,7 @@ class ConversationalAgentService:
         delivery_str = ", ".join(delivery_methods) if delivery_methods else "delivery, pickup"
         customer_context = ""
         if customer_phone or customer_name:
-            customer_context = "\n## Known customer (from WhatsApp)\n"
+            customer_context = "\n## Known customer (from WhatsApp) — ALREADY IDENTIFIED\n"
             if customer_name:
                 customer_context += f"- Name on file: {customer_name}\n"
             if customer_phone:
@@ -1659,6 +1690,12 @@ class ConversationalAgentService:
                     f"- Phone on file: {customer_phone}\n"
                     "- Use this phone for order lookup and M-Pesa unless they ask to use a different number.\n"
                 )
+            customer_context += (
+                "- **IMPORTANT**: You already have this customer's name and phone. "
+                "Do NOT ask them to provide their name or phone number again. "
+                "Use these values directly when calling `validate_order` and `create_order`. "
+                "If the customer provides a different name or phone, use the new one instead.\n"
+            )
 
         # Industry-specific context
         industry_context = {
@@ -1705,11 +1742,11 @@ class ConversationalAgentService:
 ## Order Flow
 1. Greet the customer warmly and ask how you can help
 2. When they browse: search the catalog, then ALWAYS use `display_product_cards` to show results
-3. When they want to order: collect name, phone number, items with quantities
-4. Ask about delivery method ({delivery_str})
+3. When they want to order: check the "Known customer" section below — if name and phone are already there, DO NOT ask for them again. Only ask for info that is genuinely missing.
+4. Ask about delivery method ({delivery_str}) — if only one method is available, use it automatically without asking
 5. If delivery, collect the delivery address — customers can *share their location pin* on WhatsApp (📍) instead of typing
 6. If a delivery location is already saved in context below, use it — do not ask them to type the address again
-7. Confirm the order summary with total price using `calculate_total`
+7. IMPORTANT: Call `calculate_total` with the cart items to get the order total — this step is REQUIRED before creating the order
 8. Call `validate_order`, then show a clear summary and ask the customer to reply *YES* to confirm
 9. Only after they confirm, create the order using `create_order`
 10. After order is created, offer M-Pesa payment using `initiate_mpesa_payment`
@@ -1942,26 +1979,9 @@ class ConversationalAgentService:
                 return ""
             from .whatsapp_ordering_helpers import format_cart_summary
             summary = format_cart_summary(cart, currency)
-            
-            import json
-            items_json = []
-            for item in cart:
-                try:
-                    qty = float(item.get("quantity", 1))
-                    price = float(item.get("unit_price", 0) or item.get("price", 0))
-                except (ValueError, TypeError):
-                    qty = 1.0
-                    price = 0.0
-                items_json.append({
-                    "name": item.get("name", "Item"),
-                    "quantity": qty,
-                    "unit_price": price
-                })
-                
             return (
                 f"\n## Current cart (persisted — do not ignore)\n{summary}\n"
-                f"Cart Items JSON (for tool calls): {json.dumps(items_json)}\n"
-                "When the customer is ready to checkout, use these cart items exactly as structured above for "
+                "When the customer is ready to checkout, use these cart items for "
                 "`calculate_total`, `validate_order`, and `create_order`.\n"
                 "Use `manage_cart` to add more items, view, clear, remove, or update quantities.\n"
             )
@@ -2764,15 +2784,29 @@ class ConversationalAgentService:
                 or (session and session.metadata.get("order_confirmed"))
             )
             if not pending:
-                return {
-                    "success": False,
-                    "result": (
-                        "CHECKOUT_REQUIRED: Call calculate_total first, show the customer "
-                        "the order summary with total, then ask them to reply YES (or Ndio) "
-                        "to confirm before create_order."
-                    ),
-                    "error": "CHECKOUT_REQUIRED",
-                }
+                # Try to auto-create pending_confirmation from cart
+                if session_key:
+                    cart_session = await context_manager.get_session_by_key(session_key)
+                    cart = context_manager.get_cart(cart_session) if cart_session else []
+                    if cart:
+                        logger.info(
+                            "[CONV_AGENT] create_order: auto-creating pending_confirmation from cart (%d items)",
+                            len(cart),
+                        )
+                        await context_manager.set_pending_confirmation(
+                            session_key, cart, {"source": "auto_from_cart_at_create"}
+                        )
+                        pending = {"items": cart}
+                if not pending:
+                    return {
+                        "success": False,
+                        "result": (
+                            "CHECKOUT_REQUIRED: Call calculate_total first, show the customer "
+                            "the order summary with total, then ask them to reply YES (or Ndio) "
+                            "to confirm before create_order."
+                        ),
+                        "error": "CHECKOUT_REQUIRED",
+                    }
             if not confirmed:
                 return {
                     "success": False,
