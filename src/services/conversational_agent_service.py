@@ -804,19 +804,21 @@ class ConversationalAgentService:
                             "Your cart is empty right now. 🛒\n"
                             "Browse the menu and tap *Add to Cart* on something you like!"
                         )
+                        send_btns = False
                     else:
-                        summary = format_cart_summary(cart, currency)
+                        # DO NOT include format_cart_summary(cart, currency) here because it includes the
+                        # buttons text marker, which would cause the checkout button to be sent again and loop.
                         reply = (
-                            f"{summary}\n\n"
                             "Great! To checkout, please share:\n"
                             "1️⃣ Your name\n"
                             "2️⃣ Delivery or pickup?\n"
                             "(I'll use your WhatsApp number for contact.)"
                         )
+                        send_btns = False
                     return await self._cart_fast_path_result(
                         session_key, reply,
                         actions_taken=[{"tool": "manage_cart", "result_summary": "checkout"}],
-                        send_cart_buttons=bool(cart),
+                        send_cart_buttons=send_btns,
                     )
                 if cart_cmd == "remove":
                     name = parse_remove_item_name(user_message)
@@ -1940,9 +1942,26 @@ class ConversationalAgentService:
                 return ""
             from .whatsapp_ordering_helpers import format_cart_summary
             summary = format_cart_summary(cart, currency)
+            
+            import json
+            items_json = []
+            for item in cart:
+                try:
+                    qty = float(item.get("quantity", 1))
+                    price = float(item.get("unit_price", 0) or item.get("price", 0))
+                except (ValueError, TypeError):
+                    qty = 1.0
+                    price = 0.0
+                items_json.append({
+                    "name": item.get("name", "Item"),
+                    "quantity": qty,
+                    "unit_price": price
+                })
+                
             return (
                 f"\n## Current cart (persisted — do not ignore)\n{summary}\n"
-                "When the customer is ready to checkout, use these cart items for "
+                f"Cart Items JSON (for tool calls): {json.dumps(items_json)}\n"
+                "When the customer is ready to checkout, use these cart items exactly as structured above for "
                 "`calculate_total`, `validate_order`, and `create_order`.\n"
                 "Use `manage_cart` to add more items, view, clear, remove, or update quantities.\n"
             )
