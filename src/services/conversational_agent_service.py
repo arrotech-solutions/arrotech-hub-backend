@@ -1030,6 +1030,7 @@ class ConversationalAgentService:
             collected_image_urls: List[str] = []
             collected_product_cards: List[Dict[str, Any]] = []
             sent_product_ids: set = set()  # Track product IDs already sent as cards this turn
+            last_search_product_image_map: List[Dict[str, Any]] = []  # Per-chunk product→image data from latest search
             send_cart_buttons_after_turn = False
             checkout_keywords = ("order", "cart", "checkout", "pay", "total", "confirm", "delivery")
             msg_lower = (user_message or "").lower()
@@ -1226,6 +1227,17 @@ class ConversationalAgentService:
                             )
                             tool_args = {**tool_args, "products": new_products}
 
+                    # ── Programmatic image correction for display_product_cards ──
+                    # Even if the LLM assigned wrong images, fix them before
+                    # the cards are actually sent to the customer.
+                    if tool_name == "display_product_cards" and last_search_product_image_map:
+                        incoming_products = tool_args.get("products", [])
+                        corrected = self._correct_product_image_urls(
+                            incoming_products, last_search_product_image_map
+                        )
+                        if corrected:
+                            tool_args = {**tool_args, "products": corrected}
+
                     # Execute the sub-tool
                     tool_result = await self._execute_sub_tool(
                         tool_name=tool_name,
@@ -1279,6 +1291,11 @@ class ConversationalAgentService:
                         tool_images = self._extract_image_urls_from_search_result(tool_result)
                         if tool_images:
                             collected_image_urls = _dedupe_keep_order(collected_image_urls + tool_images)
+                        # Capture structured per-chunk product→image map for
+                        # programmatic correction of display_product_cards.
+                        chunks = self._extract_structured_products_from_chunks(tool_result)
+                        if chunks:
+                            last_search_product_image_map = chunks
                             
                     if tool_name == "display_product_cards":
                         tool_cards = tool_result.get("cards", [])
@@ -1484,6 +1501,132 @@ class ConversationalAgentService:
                     urls.extend(extract_image_urls(str(item.get(key))))
 
         return _dedupe_keep_order(urls)
+
+    def _extract_structured_products_from_chunks(
+        self, tool_result: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """
+        Extract per-chunk product data with strictly associated image URLs.
+
+        Unlike _extract_image_urls_from_search_result (which pools all images),
+        this method keeps each RAG chunk's images bound to that chunk's text.
+        This prevents image cross-contamination when the LLM later maps
+        products to image_urls for display_product_cards.
+
+        Returns a list of dicts:
+            [{"chunk_text": "...", "image_urls": ["https://..."]}, ...]
+        """
+        data = tool_result.get("data", {})
+        results = data.get("results", []) if isinstance(data, dict) else []
+        if not results:
+            return []
+
+        structured: List[Dict[str, Any]] = []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            chunk_text = item.get("text", "") or ""
+            if not chunk_text.strip():
+                continue
+
+            # Collect image URLs ONLY from this specific chunk
+            chunk_urls: List[str] = []
+            chunk_urls.extend(extract_image_urls(chunk_text))
+            chunk_urls.extend(extract_image_urls(str(item.get("source", ""))))
+            chunk_urls.extend(extract_image_urls(str(item.get("file", ""))))
+            for key in ("image_url", "image", "thumbnail", "photo_url", "media_url"):
+                val = item.get(key)
+                if val:
+                    chunk_urls.extend(extract_image_urls(str(val)))
+
+            chunk_urls = _dedupe_keep_order(chunk_urls)
+            structured.append({
+                "chunk_text": chunk_text[:500],  # Cap length to avoid token bloat
+                "image_urls": chunk_urls,
+            })
+
+        return structured
+
+    @staticmethod
+    def _correct_product_image_urls(
+        products: List[Dict[str, Any]],
+        chunk_map: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Programmatic safety net: correct image URLs in product cards by
+        matching each product name against the RAG chunks that actually
+        contain it.
+
+        This runs *after* the LLM builds the display_product_cards arguments
+        but *before* the cards are sent, so it catches any image mix-ups
+        regardless of whether the LLM followed instructions.
+
+        Algorithm:
+        1. For each product the LLM wants to display, find the RAG chunk
+           whose text best matches the product name (case-insensitive
+           substring search).
+        2. If the chunk has image URLs, use the first one as the product's
+           image_url — overriding whatever the LLM assigned.
+        3. If no chunk matches (rare), leave the LLM's choice untouched.
+        """
+        if not products or not chunk_map:
+            return products
+
+        corrected = []
+        for product in products:
+            product = dict(product)  # shallow copy to avoid mutating the original
+            name = (product.get("name") or "").strip().lower()
+            if not name:
+                corrected.append(product)
+                continue
+
+            # Find the best matching chunk for this product name.
+            # Score by: exact substring match in chunk_text (case-insensitive).
+            best_chunk = None
+            best_score = 0
+            for chunk in chunk_map:
+                chunk_text_lower = (chunk.get("chunk_text") or "").lower()
+                if not chunk_text_lower:
+                    continue
+
+                # Score 1: full product name found in chunk text
+                if name in chunk_text_lower:
+                    # Use length of matching name as a tiebreaker
+                    # (longer match = more specific)
+                    score = len(name)
+                    if score > best_score:
+                        best_score = score
+                        best_chunk = chunk
+                    continue
+
+                # Score 2: try individual significant words (3+ chars)
+                # e.g. product "Red Bull 250ml" → check "red", "bull", "250ml"
+                words = [w for w in name.split() if len(w) >= 3]
+                if words:
+                    word_hits = sum(1 for w in words if w in chunk_text_lower)
+                    word_score = word_hits / len(words)  # 0.0 to 1.0
+                    if word_score > 0.5:  # majority of words match
+                        score_val = word_score * len(name) * 0.8  # slightly lower than exact
+                        if score_val > best_score:
+                            best_score = score_val
+                            best_chunk = chunk
+
+            if best_chunk and best_chunk.get("image_urls"):
+                correct_url = best_chunk["image_urls"][0]
+                current_url = product.get("image_url", "")
+                if current_url != correct_url:
+                    logger.info(
+                        "[CONV_AGENT] 🔧 Image correction for '%s': "
+                        "'%s' → '%s'",
+                        product.get("name", "?"),
+                        (current_url or "")[:60],
+                        correct_url[:60],
+                    )
+                product["image_url"] = correct_url
+
+            corrected.append(product)
+
+        return corrected
 
     # ═══════════════════════════════════════════════════════════
     # SYSTEM PROMPT BUILDER
@@ -2353,13 +2496,40 @@ class ConversationalAgentService:
 
             if result.get("success"):
                 search_text = result.get("result", "No results found")
+
+                # ── Build structured product-image mapping ──
+                # Extract per-chunk image URLs so each product's image stays
+                # strictly bound to its own RAG chunk.  This prevents the LLM
+                # from accidentally swapping images between products.
+                structured_chunks = self._extract_structured_products_from_chunks(result)
+                structured_block = ""
+                if structured_chunks:
+                    # Only include chunks that actually have images — the LLM
+                    # already has the full text from the synthesis above.
+                    chunks_with_images = [
+                        c for c in structured_chunks if c.get("image_urls")
+                    ]
+                    if chunks_with_images:
+                        try:
+                            structured_block = (
+                                "\n\nSTRUCTURED_PRODUCT_IMAGE_MAP (use this to match images to products):\n"
+                                + json.dumps(chunks_with_images, ensure_ascii=False)
+                            )
+                        except (TypeError, ValueError):
+                            structured_block = ""
+
                 return {
                     "success": True,
                     "result": (
-                        f"{search_text}\n\n"
+                        f"{search_text}"
+                        f"{structured_block}\n\n"
                         "INSTRUCTION: You MUST now call `display_product_cards` with the products found above. "
                         "Extract each product's id, name, price, description, and image_url from the search results "
                         "and pass them to `display_product_cards`. Do NOT list products in plain text. "
+                        "CRITICAL IMAGE RULE: When setting each product's image_url, you MUST use ONLY the image URL "
+                        "that appears in the SAME chunk/entry as that product in the STRUCTURED_PRODUCT_IMAGE_MAP above. "
+                        "NEVER assign an image from one product's chunk to a different product. "
+                        "If a product has no image in its chunk, pass an empty string for image_url. "
                         "If the customer explicitly asked to ADD items to their cart, also call "
                         "`manage_cart(action='add', product_name=..., unit_price=..., quantity=...)` "
                         "for each item they requested."
