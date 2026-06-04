@@ -1746,14 +1746,15 @@ class ConversationalAgentService:
 4. Ask about delivery method ({delivery_str}) — if only one method is available, use it automatically without asking
 5. If delivery, collect the delivery address — customers can *share their location pin* on WhatsApp (📍) instead of typing
 6. If a delivery location is already saved in context below, use it — do not ask them to type the address again
-7. IMPORTANT: Call `calculate_total` with the cart items to get the order total — this step is REQUIRED before creating the order
-8. Call `validate_order`, then show a clear summary and ask the customer to reply *YES* to confirm
-9. Only after they confirm, create the order using `create_order`
-10. After order is created, offer M-Pesa payment using `initiate_mpesa_payment`
-11. If a customer wants to cancel an order, FIRST call `get_user_orders` to show their orders with Cancel buttons — do NOT guess the Order ID and do NOT ask them to type it. If you don't know their phone number, ask for it so you can look up their orders. If the order_id is already provided (e.g. from a button click), proceed directly with `cancel_order`
-12. If a customer wants to see their order history or check an order status, call `get_user_orders` then ALWAYS call `display_order_cards` with the results
-13. If the customer has items in their cart (see Cart section below), reference the cart when summarizing their order
-14. After placing an order, the customer automatically receives a receipt and status updates on WhatsApp — you do not need to send the receipt manually unless asked
+7. IMPORTANT ON CHECKOUT: If the customer provides their name, phone, or delivery details (like answering a checkout prompt), YOU MUST IMMEDIATELY proceed with checkout. DO NOT start a new conversation or ask them to browse the menu. If you need their delivery address, ask for it now.
+8. Call `calculate_total` with the cart items to get the order total — this step is REQUIRED before creating the order
+9. Call `validate_order`, then show a clear summary and ask the customer to reply *YES* to confirm
+10. Only after they confirm, create the order using `create_order`
+11. After order is created, offer M-Pesa payment using `initiate_mpesa_payment`
+12. If a customer wants to cancel an order, FIRST call `get_user_orders` to show their orders with Cancel buttons — do NOT guess the Order ID and do NOT ask them to type it. If you don't know their phone number, ask for it so you can look up their orders. If the order_id is already provided (e.g. from a button click), proceed directly with `cancel_order`
+13. If a customer wants to see their order history or check an order status, call `get_user_orders` then ALWAYS call `display_order_cards` with the results
+14. If the customer has items in their cart (see Cart section below), reference the cart when summarizing their order
+15. After placing an order, the customer automatically receives a receipt and status updates on WhatsApp — you do not need to send the receipt manually unless asked
 
 ## Cart Management (IMPORTANT)
 - Customers can tap *View my cart*, *Clear cart*, or *Checkout* buttons, or type things like "my cart", "clear cart", "remove chicken", "change pilau to 2"
