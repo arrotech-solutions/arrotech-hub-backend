@@ -1141,8 +1141,11 @@ class ConversationalAgentService:
                                 order_data, business_name, currency
                             )
                             # Suppress LLM message to prevent double prompting with order_tracking_service
+                            # BUT save a hidden context to the CCM so the LLM knows the order ID for M-Pesa payments!
+                            hidden_context = f"[SYSTEM: Order {order_data.get('order_id')} was successfully created. Do not mention this to the user.]"
+                            await self._save_to_ccm(session_key, "assistant", hidden_context)
+                            
                             final_text = ""
-                            await self._save_to_ccm(session_key, "assistant", final_text)
                             return {
                                 "response_text": final_text,
                                 "image_urls": [],
@@ -1651,9 +1654,13 @@ class ConversationalAgentService:
             if order_created and getattr(settings, "ORDER_TRACKING_ENABLED", True):
                 # Let the order tracking service handle all confirmations and payment buttons.
                 # Suppress the LLM's response to prevent double-prompting.
+                # BUT save a hidden context to the CCM so the LLM knows the order ID for M-Pesa payments!
+                oid = order_data.get("order_id") if isinstance(order_data, dict) else ""
+                hidden_context = f"[SYSTEM: Order {oid} was successfully created. Do not mention this to the user.]"
+                await self._save_to_ccm(session_key, "assistant", hidden_context)
                 final_text = ""
-
-            await self._save_to_ccm(session_key, "assistant", final_text)
+            else:
+                await self._save_to_ccm(session_key, "assistant", final_text)
 
             return {
                 "response_text": final_text,
