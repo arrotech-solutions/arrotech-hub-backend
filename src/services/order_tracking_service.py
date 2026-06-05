@@ -170,6 +170,18 @@ class OrderTrackingService:
             )
             sent.append("location_link" if r3.get("success") else "location_link_failed")
 
+        # Send payment options
+        payment_buttons = [
+            {"id": f"pay_mpesa:{order_id}", "title": "Pay with Mpesa"}
+        ]
+        r4 = await wa.send_quick_reply_buttons(
+            to_number=customer_phone,
+            body_text="How would you like to pay for your order?",
+            buttons=payment_buttons,
+            config=wa_config
+        )
+        sent.append("payment_prompt" if r4.get("success") else "payment_prompt_failed")
+
         registry = self.get_registered_order(str(user.id), order_id) or {}
         registry["placement_notified"] = True
         registry["status"] = registry.get("status") or "pending"

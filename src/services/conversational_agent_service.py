@@ -1654,10 +1654,9 @@ class ConversationalAgentService:
             final_text = self._format_for_channel(final_text, platform)
 
             if order_created and getattr(settings, "ORDER_TRACKING_ENABLED", True):
-                final_text = (
-                    f"Thanks! Your order with *{business_name}* is placed. "
-                    "You'll get your receipt and status updates here on WhatsApp shortly."
-                )
+                # Let the order tracking service handle all confirmations and payment buttons.
+                # Suppress the LLM's response to prevent double-prompting.
+                final_text = ""
 
             await self._save_to_ccm(session_key, "assistant", final_text)
 
