@@ -117,6 +117,97 @@ _LABELLED_PHONE_RE = re.compile(
     re.IGNORECASE,
 )
 _LABELLED_NAME_RE = re.compile(r"name\s*[:\-]\s*(.+)", re.IGNORECASE)
+_NAME_IS_RE = re.compile(
+    r"(?:here\s+is\s+)?(?:my\s+)?name\s*(?:is|:|,)\s*"
+    r"([A-Za-z][A-Za-z\s'\-]{1,60}?)"
+    r"(?:\s+and|\s*,|\s+my\s+(?:phone|number|mobile)|$)",
+    re.IGNORECASE,
+)
+_PHONE_IS_RE = re.compile(
+    r"(?:my\s+)?(?:phone\s*(?:number)?|mobile|number|simu|nambari)\s*(?:is|:)\s*"
+    r"(\+?[\d\s\-]{7,})",
+    re.IGNORECASE,
+)
+
+# Must not be treated as a person's name when parsing checkout replies
+_NOT_A_NAME_PHRASES = (
+    "checkout", "check out", "place order", "proceed with", "would like to",
+    "want to", "complete order", "finish order", "ready to", "order now",
+    "browse", "menu", "cart", "help", "hello", "hi", "hey", "thanks",
+    "thank you", "no you", "that's what", "assist you",
+)
+
+_CHECKOUT_INTENT_SUBSTRINGS = (
+    "checkout", "check out", "place order", "place my order", "place the order",
+    "complete order", "complete my order", "complete the order",
+    "finish order", "finish my order",
+    "proceed with order", "proceed with the order", "proceed with my order",
+    "would like to checkout", "want to checkout", "ready to checkout",
+    "ready to order", "order now", "make the order", "submit order",
+    "confirm order", "pay now", "lipa", "go ahead with the order",
+    "go ahead with order", "just checkout", "lets checkout", "let's checkout",
+)
+
+
+def _looks_like_phrase_not_name(text: str) -> bool:
+    lower = (text or "").lower().strip()
+    if not lower:
+        return True
+    return any(p in lower for p in _NOT_A_NAME_PHRASES)
+
+
+def is_checkout_intent_message(message: str) -> bool:
+    """True when the customer wants to checkout / place their order."""
+    if not message:
+        return False
+    normalized = message.strip().lower()
+    # Complaints / clarifications — not a fresh checkout request
+    if normalized.startswith(("no,", "no ", "nope")):
+        return False
+    if any(s in normalized for s in (
+        "you asked", "i already gave", "that's what", "i gave you",
+        "already gave", "already provided", "that's what i",
+    )):
+        return False
+    if normalized in _CART_CHECKOUT_PHRASES:
+        return True
+    return any(s in normalized for s in _CHECKOUT_INTENT_SUBSTRINGS)
+
+
+def assistant_requested_checkout_details(assistant_message: str) -> bool:
+    """True when the bot's last reply asked the customer for checkout details."""
+    if not assistant_message:
+        return False
+    lower = assistant_message.lower()
+    patterns = (
+        "name and phone",
+        "your name",
+        "phone number",
+        "confirm your name",
+        "complete the order",
+        "complete your order",
+        "provide your name",
+        "put on the order",
+        "confirm your details",
+        "need to confirm your details",
+        "could you please confirm",
+        "could you please provide",
+        "name should i put",
+        "before we proceed with the order",
+        "to complete the order",
+    )
+    return any(p in lower for p in patterns)
+
+
+def session_assistant_requested_checkout(session: Any) -> bool:
+    """Check recent assistant turns for a checkout-details prompt."""
+    if not session:
+        return False
+    assistant_msgs = [m for m in session.messages if m.get("role") == "assistant"]
+    for msg in reversed(assistant_msgs[-3:]):
+        if assistant_requested_checkout_details(msg.get("content") or ""):
+            return True
+    return False
 
 
 def parse_checkout_details(message: str) -> Dict[str, Optional[str]]:
@@ -126,6 +217,7 @@ def parse_checkout_details(message: str) -> Dict[str, Optional[str]]:
     Handles formats like:
         "Name: Harun\nPhone: 254711371265\nDelivery"
         "Harun Gachanja\n254711371265\npickup"
+        "Here is my name, Harun and my phone number is 254 711 371 265"
 
     Returns {"name": str|None, "phone": str|None, "delivery_method": str|None}.
     delivery_method is one of: delivery | pickup | dine_in.
@@ -145,45 +237,59 @@ def parse_checkout_details(message: str) -> Dict[str, Optional[str]]:
     elif any(w in lower for w in _DELIVERY_WORDS):
         result["delivery_method"] = "delivery"
 
-    # ── Phone ── prefer a labelled phone, otherwise first long digit run
+    # ── Phone ── "phone number is …", labelled, or first long digit run
     raw_phone = None
-    m_label = _LABELLED_PHONE_RE.search(text)
-    if m_label:
-        raw_phone = m_label.group(1)
+    m_phone_is = _PHONE_IS_RE.search(text)
+    if m_phone_is:
+        raw_phone = m_phone_is.group(1)
     else:
-        m_any = _PHONE_RE.search(text)
-        if m_any:
-            raw_phone = m_any.group(1)
+        m_label = _LABELLED_PHONE_RE.search(text)
+        if m_label:
+            raw_phone = m_label.group(1)
+        else:
+            m_any = _PHONE_RE.search(text)
+            if m_any:
+                raw_phone = m_any.group(1)
     if raw_phone:
         digits = re.sub(r"[^\d]", "", raw_phone)
         if len(digits) >= 9:
             result["phone"] = digits
 
-    # ── Name ── labelled first, else a clean alphabetic line
-    m_name = _LABELLED_NAME_RE.search(text)
-    if m_name:
-        cand = m_name.group(1).splitlines()[0].strip()
-        # Drop a trailing phone if name and phone share a line
-        cand = re.sub(r"\+?\d[\d\s\-]{6,}.*$", "", cand).strip(" ,;-")
-        if cand:
+    # ── Name ── "my name is …", labelled, else a clean alphabetic line
+    m_name_is = _NAME_IS_RE.search(text)
+    if m_name_is:
+        cand = m_name_is.group(1).strip(" ,.-")
+        if cand and not _looks_like_phrase_not_name(cand):
             result["name"] = cand[:80]
     else:
-        for line in text.splitlines():
-            s = line.strip()
-            if not s:
-                continue
-            sl = s.lower()
-            if any(w in sl for w in _DELIVERY_WORDS + _PICKUP_WORDS + _DINE_WORDS):
-                continue
-            if re.search(r"\d", s):
-                continue
-            if sl in ("name", "phone", "tel", "mobile"):
-                continue
-            letters = re.sub(r"[^a-zA-Z\s']", "", s).strip()
-            parts = letters.split()
-            if letters and 1 <= len(parts) <= 5 and len(letters) >= 2:
-                result["name"] = letters[:80]
-                break
+        m_name = _LABELLED_NAME_RE.search(text)
+        if m_name:
+            cand = m_name.group(1).splitlines()[0].strip()
+            cand = re.sub(r"\+?\d[\d\s\-]{6,}.*$", "", cand).strip(" ,;-")
+            if cand and not _looks_like_phrase_not_name(cand):
+                result["name"] = cand[:80]
+        else:
+            for line in text.splitlines():
+                s = line.strip()
+                if not s:
+                    continue
+                sl = s.lower()
+                if any(w in sl for w in _DELIVERY_WORDS + _PICKUP_WORDS + _DINE_WORDS):
+                    continue
+                if re.search(r"\d", s):
+                    continue
+                if sl in ("name", "phone", "tel", "mobile"):
+                    continue
+                letters = re.sub(r"[^a-zA-Z\s']", "", s).strip()
+                parts = letters.split()
+                if (
+                    letters
+                    and 1 <= len(parts) <= 6
+                    and len(letters) >= 2
+                    and not _looks_like_phrase_not_name(letters)
+                ):
+                    result["name"] = letters[:80]
+                    break
 
     return result
 
@@ -342,6 +448,7 @@ _CART_CLEAR_PHRASES = (
 )
 
 _CART_VIEW_PHRASES = (
+    "cart",
     "view cart",
     "view my cart",
     "my cart",
@@ -388,6 +495,8 @@ def match_cart_command(message: str) -> Optional[str]:
     if normalized in _CART_CHECKOUT_PHRASES or any(
         normalized == p or normalized.startswith(p) for p in _CART_CHECKOUT_PHRASES
     ):
+        return "checkout"
+    if is_checkout_intent_message(message):
         return "checkout"
     # "remove chicken" / "remove 1 chicken stew"
     if normalized.startswith("remove ") and "cart" not in normalized:

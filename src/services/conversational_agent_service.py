@@ -21,7 +21,7 @@ import json
 import logging
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -638,6 +638,7 @@ class ConversationalAgentService:
                 format_cart_summary,
                 format_checkout_confirmation,
                 parse_checkout_details,
+                session_assistant_requested_checkout,
                 cart_cleared_message,
                 cart_item_removed_message,
                 cart_quantity_updated_message,
@@ -787,6 +788,18 @@ class ConversationalAgentService:
             # ── Fast path: cart commands (no LLM) — reply sent via workflow step 2 ──
             if session_key:
                 cart_cmd = match_cart_command(user_message)
+                # YES / "proceed with the order" confirms an existing summary — don't restart checkout
+                if cart_cmd == "checkout":
+                    try:
+                        _sess = await context_manager.get_session_by_key(session_key)
+                        if (
+                            _sess
+                            and _sess.metadata.get("awaiting_order_confirmation")
+                            and is_order_confirmation_message(user_message)
+                        ):
+                            cart_cmd = None
+                    except Exception:
+                        pass
                 if cart_cmd == "reset":
                     try:
                         session = await context_manager.get_session_by_key(session_key)
@@ -833,54 +846,14 @@ class ConversationalAgentService:
                             actions_taken=[{"tool": "manage_cart", "result_summary": "checkout"}],
                             send_cart_buttons=True,
                         )
-                    # Resolve delivery method automatically when only one option exists
-                    resolved_delivery = (
-                        delivery_methods[0]
-                        if isinstance(delivery_methods, list) and len(delivery_methods) == 1
-                        else None
-                    )
-                    # If we already know the customer, drive checkout deterministically
-                    # (compute total + ask for a single YES) instead of relying on the LLM.
-                    if customer_phone and customer_name:
-                        logger.info(
-                            "[CONV_AGENT] Checkout fast-path: customer known, presenting confirmation"
-                        )
-                        return await self._present_checkout_confirmation(
-                            session_key=session_key,
-                            cart=cart,
-                            currency=currency,
-                            customer_name=customer_name,
-                            customer_phone=customer_phone,
-                            delivery_method=resolved_delivery,
-                            delivery_methods=delivery_methods,
-                            preferred_language=preferred_language,
-                        )
-                    # Otherwise ask only for what's genuinely missing and flag that we
-                    # are now awaiting the customer's checkout details.
-                    await context_manager.update_session_metadata(
-                        session_key, {"awaiting_checkout_details": True}
-                    )
-                    summary = format_cart_summary(cart, currency)
-                    missing = []
-                    if not customer_name:
-                        missing.append("1️⃣ Your name")
-                    if not customer_phone:
-                        missing.append("2️⃣ Your phone number")
-                    if len(delivery_methods) > 1:
-                        missing.append(
-                            f"{'3' if len(missing) == 2 else '2' if len(missing) == 1 else '1'}️⃣ "
-                            f"Delivery or pickup?"
-                        )
-                    missing_str = "\n".join(missing)
-                    reply = (
-                        f"{summary}\n\n"
-                        f"Great! To complete your order, please share:\n{missing_str}\n"
-                        "(I'll use your WhatsApp number for contact.)"
-                    )
-                    return await self._cart_fast_path_result(
-                        session_key, reply,
-                        actions_taken=[{"tool": "manage_cart", "result_summary": "checkout"}],
-                        send_cart_buttons=False,  # Don't re-send Checkout button!
+                    return await self._start_checkout_flow(
+                        session_key=session_key,
+                        cart=cart,
+                        currency=currency,
+                        customer_name=customer_name,
+                        customer_phone=customer_phone,
+                        delivery_methods=delivery_methods,
+                        preferred_language=preferred_language,
                     )
                 if cart_cmd == "remove":
                     name = parse_remove_item_name(user_message)
@@ -948,9 +921,6 @@ class ConversationalAgentService:
                     }
 
             # ── Deterministic checkout (Phase 1): capture name/phone/delivery ──
-            # When the customer answers our checkout prompt, parse their details
-            # and drive the order to confirmation WITHOUT relying on the LLM
-            # (the background model often ignores the checkout flow and loops).
             if session_key:
                 try:
                     session = await context_manager.get_session_by_key(session_key)
@@ -963,29 +933,31 @@ class ConversationalAgentService:
                     and not context_manager.is_human_handoff(session)
                     and not is_order_confirmation_message(user_message)
                 ):
-                    awaiting = bool(session.metadata.get("awaiting_checkout_details"))
                     parsed = parse_checkout_details(user_message)
                     draft = session.metadata.get("checkout_draft") or {}
-                    stage = draft.get("stage")
+                    awaiting = bool(session.metadata.get("awaiting_checkout_details"))
+                    bot_asked = session_assistant_requested_checkout(session)
 
-                    strong_signal = bool(parsed.get("phone")) and bool(parsed.get("delivery_method"))
-                    # A bare name only counts when we explicitly asked for the name,
-                    # so a stray "hi" never hijacks a stale awaiting flag.
-                    detail_signal = bool(
-                        parsed.get("phone")
-                        or parsed.get("delivery_method")
-                        or (stage == "need_name" and parsed.get("name"))
+                    eff_phone = parsed.get("phone") or draft.get("phone") or customer_phone
+                    eff_name = parsed.get("name") or draft.get("name") or customer_name
+                    eff_delivery = parsed.get("delivery_method") or draft.get("delivery_method")
+
+                    has_name_and_phone = bool(eff_phone and eff_name)
+                    bot_expecting_reply = awaiting or bot_asked
+                    customer_sent_details = bool(
+                        parsed.get("phone") or parsed.get("name") or parsed.get("delivery_method")
                     )
 
-                    if (awaiting or strong_signal) and detail_signal:
-                        eff_name = parsed.get("name") or draft.get("name") or customer_name
-                        eff_phone = parsed.get("phone") or draft.get("phone") or customer_phone
-                        eff_delivery = (
-                            parsed.get("delivery_method")
-                            or draft.get("delivery_method")
+                    should_capture = customer_sent_details and (
+                        has_name_and_phone
+                        or (bot_expecting_reply and parsed.get("phone"))
+                        or (bot_expecting_reply and parsed.get("name") and eff_phone)
+                    )
+
+                    if should_capture:
+                        eff_delivery, saved_addr = await self._resolve_checkout_delivery(
+                            session_key, eff_delivery, delivery_methods
                         )
-                        if not eff_delivery and isinstance(delivery_methods, list) and len(delivery_methods) == 1:
-                            eff_delivery = delivery_methods[0]
 
                         if not eff_phone:
                             await context_manager.update_session_metadata(
@@ -1043,6 +1015,33 @@ class ConversationalAgentService:
                             delivery_method=eff_delivery,
                             delivery_methods=delivery_methods,
                             preferred_language=preferred_language,
+                            delivery_address=saved_addr,
+                        )
+
+                    # Customer is correcting us after the bot (LLM) asked for details
+                    msg_lower = (user_message or "").lower()
+                    if bot_asked and any(
+                        s in msg_lower
+                        for s in ("you asked", "already gave", "that's what", "i gave")
+                    ):
+                        await context_manager.update_session_metadata(
+                            session_key, {"awaiting_checkout_details": True}
+                        )
+                        return await self._cart_fast_path_result(
+                            session_key,
+                            self._t(
+                                preferred_language,
+                                "You're right — let's finish your order. 🛒\n\n"
+                                "Please reply with your *name* and *phone number* "
+                                "(one message is fine), e.g.:\n"
+                                "Harun Gachanja\n254711371265",
+                                "Uko sahihi — tumalize oda yako. 🛒\n\n"
+                                "Tafadhali jibu na *jina* na *namba ya simu* "
+                                "(ujumbe mmoja unatosha), mfano:\n"
+                                "Harun Gachanja\n254711371265",
+                            ),
+                            actions_taken=[{"tool": "checkout", "result_summary": "reprompt_details"}],
+                            send_cart_buttons=False,
                         )
 
             enabled_mcp_tool_names = business_config.get("enabled_mcp_tools", [])
@@ -2281,6 +2280,107 @@ class ConversationalAgentService:
         """Tiny localization helper: Swahili when lang=='sw', else English."""
         return sw if (lang or "en").lower().startswith("sw") else en
 
+    async def _resolve_checkout_delivery(
+        self,
+        session_key: str,
+        explicit_method: Optional[str],
+        delivery_methods: list,
+    ) -> Tuple[Optional[str], str]:
+        """
+        Pick delivery method + address for checkout.
+        Uses saved WhatsApp location when available; falls back to single-option config.
+        """
+        delivery_address = ""
+        if explicit_method:
+            if explicit_method == "delivery" and session_key:
+                try:
+                    session = await context_manager.get_session_by_key(session_key)
+                    if session:
+                        delivery_address = context_manager.get_delivery_address(session)
+                except Exception:
+                    pass
+            return explicit_method, delivery_address
+
+        if session_key:
+            try:
+                session = await context_manager.get_session_by_key(session_key)
+                if session:
+                    delivery_address = context_manager.get_delivery_address(session)
+                    if delivery_address:
+                        return "delivery", delivery_address
+            except Exception:
+                pass
+
+        if isinstance(delivery_methods, list) and len(delivery_methods) == 1:
+            method = delivery_methods[0]
+            if method == "delivery" and session_key:
+                try:
+                    session = await context_manager.get_session_by_key(session_key)
+                    if session:
+                        delivery_address = context_manager.get_delivery_address(session)
+                except Exception:
+                    pass
+            return method, delivery_address
+
+        return None, delivery_address
+
+    async def _start_checkout_flow(
+        self,
+        session_key: str,
+        cart: List[Dict[str, Any]],
+        currency: str,
+        customer_name: str,
+        customer_phone: str,
+        delivery_methods: list,
+        preferred_language: str = DEFAULT_LANGUAGE,
+    ) -> Dict[str, Any]:
+        """Begin checkout: ask for missing details or jump straight to order summary."""
+        resolved_delivery, saved_addr = await self._resolve_checkout_delivery(
+            session_key, None, delivery_methods
+        )
+
+        if customer_phone and customer_name:
+            logger.info("[CONV_AGENT] Checkout: customer known, presenting confirmation")
+            return await self._present_checkout_confirmation(
+                session_key=session_key,
+                cart=cart,
+                currency=currency,
+                customer_name=customer_name,
+                customer_phone=customer_phone,
+                delivery_method=resolved_delivery,
+                delivery_methods=delivery_methods,
+                preferred_language=preferred_language,
+                delivery_address=saved_addr,
+            )
+
+        await context_manager.update_session_metadata(
+            session_key, {"awaiting_checkout_details": True}
+        )
+        from .whatsapp_ordering_helpers import format_cart_summary
+        summary = format_cart_summary(cart, currency)
+        missing = []
+        if not customer_name:
+            missing.append("1️⃣ Your name")
+        if not customer_phone:
+            missing.append("2️⃣ Your phone number")
+        if len(delivery_methods) > 1 and not resolved_delivery:
+            missing.append(
+                f"{'3' if len(missing) == 2 else '2' if len(missing) == 1 else '1'}️⃣ "
+                f"Delivery or pickup?"
+            )
+        missing_str = "\n".join(missing)
+        reply = (
+            f"{summary}\n\n"
+            f"Great! To complete your order, please share:\n{missing_str}\n"
+            "(I'll use your WhatsApp number for contact.)"
+        )
+        return await self._cart_fast_path_result(
+            session_key,
+            reply,
+            actions_taken=[{"tool": "manage_cart", "result_summary": "checkout"}],
+            send_cart_buttons=False,
+        )
+
     async def _present_checkout_confirmation(
         self,
         session_key: str,
@@ -2300,7 +2400,15 @@ class ConversationalAgentService:
         """
         from .whatsapp_ordering_helpers import format_checkout_confirmation
 
-        # Need a delivery method when more than one is offered
+        # Auto-pick delivery when a saved address exists or only one method is offered
+        if not delivery_method:
+            delivery_method, auto_addr = await self._resolve_checkout_delivery(
+                session_key, None, delivery_methods
+            )
+            if auto_addr and not delivery_address:
+                delivery_address = auto_addr
+
+        # Still need the customer to choose delivery vs pickup
         if not delivery_method:
             await context_manager.update_session_metadata(
                 session_key,
