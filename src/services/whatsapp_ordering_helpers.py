@@ -101,6 +101,143 @@ def is_order_confirmation_message(message: str) -> bool:
     return False
 
 
+# ── Checkout detail parsing (name / phone / delivery method) ──────────────
+
+_DELIVERY_WORDS = ("delivery", "deliver", "delivered", "delivary", "delevery", "letewa", "uletewe")
+_PICKUP_WORDS = (
+    "pickup", "pick up", "pick-up", "collect", "collection",
+    "self pickup", "self-pickup", "i'll pick", "ill pick", "nitachukua", "kuchukua",
+)
+_DINE_WORDS = ("dine in", "dine-in", "dinein", "eat in", "eat-in", "kula hapa")
+
+# Phone: optional +, then 9+ digits possibly separated by spaces/dashes
+_PHONE_RE = re.compile(r"(\+?\d[\d\s\-]{7,}\d)")
+_LABELLED_PHONE_RE = re.compile(
+    r"(?:phone|tel|telephone|mobile|cell|number|no|simu|nambari|namba)\s*[:\-]?\s*(\+?[\d\s\-]{7,})",
+    re.IGNORECASE,
+)
+_LABELLED_NAME_RE = re.compile(r"name\s*[:\-]\s*(.+)", re.IGNORECASE)
+
+
+def parse_checkout_details(message: str) -> Dict[str, Optional[str]]:
+    """
+    Extract checkout details from a free-text customer reply.
+
+    Handles formats like:
+        "Name: Harun\nPhone: 254711371265\nDelivery"
+        "Harun Gachanja\n254711371265\npickup"
+
+    Returns {"name": str|None, "phone": str|None, "delivery_method": str|None}.
+    delivery_method is one of: delivery | pickup | dine_in.
+    """
+    result: Dict[str, Optional[str]] = {"name": None, "phone": None, "delivery_method": None}
+    if not message:
+        return result
+
+    text = message.strip()
+    lower = text.lower()
+
+    # ── Delivery method ──
+    if any(w in lower for w in _PICKUP_WORDS):
+        result["delivery_method"] = "pickup"
+    elif any(w in lower for w in _DINE_WORDS):
+        result["delivery_method"] = "dine_in"
+    elif any(w in lower for w in _DELIVERY_WORDS):
+        result["delivery_method"] = "delivery"
+
+    # ── Phone ── prefer a labelled phone, otherwise first long digit run
+    raw_phone = None
+    m_label = _LABELLED_PHONE_RE.search(text)
+    if m_label:
+        raw_phone = m_label.group(1)
+    else:
+        m_any = _PHONE_RE.search(text)
+        if m_any:
+            raw_phone = m_any.group(1)
+    if raw_phone:
+        digits = re.sub(r"[^\d]", "", raw_phone)
+        if len(digits) >= 9:
+            result["phone"] = digits
+
+    # ── Name ── labelled first, else a clean alphabetic line
+    m_name = _LABELLED_NAME_RE.search(text)
+    if m_name:
+        cand = m_name.group(1).splitlines()[0].strip()
+        # Drop a trailing phone if name and phone share a line
+        cand = re.sub(r"\+?\d[\d\s\-]{6,}.*$", "", cand).strip(" ,;-")
+        if cand:
+            result["name"] = cand[:80]
+    else:
+        for line in text.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            sl = s.lower()
+            if any(w in sl for w in _DELIVERY_WORDS + _PICKUP_WORDS + _DINE_WORDS):
+                continue
+            if re.search(r"\d", s):
+                continue
+            if sl in ("name", "phone", "tel", "mobile"):
+                continue
+            letters = re.sub(r"[^a-zA-Z\s']", "", s).strip()
+            parts = letters.split()
+            if letters and 1 <= len(parts) <= 5 and len(letters) >= 2:
+                result["name"] = letters[:80]
+                break
+
+    return result
+
+
+def format_checkout_confirmation(
+    cart: List[Dict[str, Any]],
+    currency: str,
+    customer_name: str,
+    customer_phone: str,
+    delivery_method: str,
+    delivery_address: str = "",
+    lang: str = "en",
+) -> str:
+    """Deterministic order summary asking the customer to reply YES to confirm."""
+    total = 0.0
+    lines = []
+    for i, item in enumerate(cart, 1):
+        qty = float(item.get("quantity", 1))
+        price = float(item.get("unit_price", 0) or item.get("price", 0))
+        name = item.get("name", "Item")
+        line_total = qty * price
+        total += line_total
+        lines.append(f"{i}. {name} × {qty:g} — {currency} {line_total:,.0f}")
+    items_block = "\n".join(lines)
+
+    method_label = (delivery_method or "pickup").replace("_", " ").title()
+    method_icon = "🚚" if delivery_method == "delivery" else "🏬"
+
+    if lang == "sw":
+        body = (
+            f"🧾 *Muhtasari wa oda yako:*\n{items_block}\n\n"
+            f"*Jumla:* {currency} {total:,.0f}\n\n"
+            f"👤 Jina: {customer_name}\n"
+            f"📞 Simu: {customer_phone}\n"
+            f"{method_icon} {method_label}\n"
+        )
+        if delivery_method == "delivery" and delivery_address:
+            body += f"📍 Anwani: {delivery_address}\n"
+        body += "\nJibu *NDIO* kuthibitisha na kuweka oda, au *Cancel* kubadilisha."
+        return body
+
+    body = (
+        f"🧾 *Your order summary:*\n{items_block}\n\n"
+        f"*Total:* {currency} {total:,.0f}\n\n"
+        f"👤 Name: {customer_name}\n"
+        f"📞 Phone: {customer_phone}\n"
+        f"{method_icon} {method_label}\n"
+    )
+    if delivery_method == "delivery" and delivery_address:
+        body += f"📍 Address: {delivery_address}\n"
+    body += "\nReply *YES* to confirm and place your order, or *Cancel* to make changes."
+    return body
+
+
 def normalize_search_query(query: str) -> str:
     """Lightweight typo normalization before RAG search."""
     if not query:
