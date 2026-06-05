@@ -1140,13 +1140,8 @@ class ConversationalAgentService:
                             order_notification = self._format_business_notification(
                                 order_data, business_name, currency
                             )
-                            final_text = self._t(
-                                preferred_language,
-                                f"Thanks! Your order with *{business_name}* is placed. ✅\n"
-                                "You'll get your receipt and status updates here on WhatsApp shortly.",
-                                f"Asante! Oda yako na *{business_name}* imewekwa. ✅\n"
-                                "Utapata risiti na taarifa za hali ya oda hapa WhatsApp hivi punde.",
-                            )
+                            # Suppress LLM message to prevent double prompting with order_tracking_service
+                            final_text = ""
                             await self._save_to_ccm(session_key, "assistant", final_text)
                             return {
                                 "response_text": final_text,
@@ -3721,6 +3716,27 @@ class ConversationalAgentService:
                 return {"success": False, "error": "order_id is required"}
             if not phone_number:
                 return {"success": False, "error": "phone_number is required"}
+
+            # Try to fetch the actual amount from cached order to prevent LLM hallucinations
+            from ..services.order_tracking_service import OrderTrackingService
+            track_svc = OrderTrackingService()
+            cached_order = track_svc.get_registered_order(str(user.id), order_id)
+            if cached_order and cached_order.get("order"):
+                actual_amount = cached_order["order"].get("total_amount") or cached_order["order"].get("total")
+                if actual_amount:
+                    try:
+                        amount = float(actual_amount)
+                    except ValueError:
+                        pass
+
+            # Format phone number to 254XXXXXXXXX for M-Pesa
+            import re
+            phone_number = re.sub(r"\D", "", str(phone_number))
+            if phone_number.startswith("0"):
+                phone_number = "254" + phone_number[1:]
+            elif phone_number.startswith("7") or phone_number.startswith("1"):
+                if len(phone_number) == 9:
+                    phone_number = "254" + phone_number
 
             # Coerce amount to int KES
             try:
