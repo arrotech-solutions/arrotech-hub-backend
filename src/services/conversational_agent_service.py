@@ -820,6 +820,8 @@ class ConversationalAgentService:
                         session = await context_manager.get_session_by_key(session_key)
                         if session:
                             await context_manager.clear_session(session)
+                            session.metadata["welcome_sent"] = True
+                            await context_manager.save_session(session)
                     except Exception as e:
                         logger.warning(f"[CONV_AGENT] reset failed: {e}")
                     reply = (
@@ -1316,6 +1318,7 @@ class ConversationalAgentService:
                 customer_name=customer_name,
                 user=user,
                 db=db,
+                catalog_word=catalog_word,
             )
 
             # Assemble dynamic tools
@@ -2233,6 +2236,7 @@ class ConversationalAgentService:
         customer_name: str,
         user: User,
         db: AsyncSession,
+        catalog_word: str = "menu",
     ) -> None:
         if not session_key or not session_key.startswith("ccm:whatsapp:"):
             return
@@ -2277,8 +2281,8 @@ class ConversationalAgentService:
                 to_number=recipient,
                 body_text=body,
                 buttons=[
-                    {"id": "menu:browse", "title": "Browse menu"},
-                    {"id": "menu:cart", "title": "My cart"},
+                    {"id": "menu:browse", "title": f"Browse {catalog_word}"},
+                    {"id": "menu:cart", "title": "View cart"},
                     {"id": "agent:human", "title": "Talk to staff"},
                 ],
                 config={

@@ -608,6 +608,7 @@ def cart_action_buttons(cart_has_items: bool = True, catalog_word: str = "menu")
     return [
         {"id": "menu:browse", "title": f"Browse {catalog_word}"},
         {"id": "menu:cart", "title": "View cart"},
+        {"id": "agent:human", "title": "Talk to staff"},
     ]
 
 
