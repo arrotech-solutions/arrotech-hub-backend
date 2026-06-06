@@ -79,7 +79,7 @@ async def send_customer_whatsapp_text(
         await wa.send_quick_reply_buttons(
             to_number=contact.phone_number,
             body_text=(button_body or "What would you like to do next?")[:1024],
-            buttons=cart_action_buttons(),
+            buttons=cart_action_buttons(), # TODO pass catalog_word
             config={
                 "access_token": config.get("access_token"),
                 "phone_number_id": config.get("phone_number_id"),
@@ -94,6 +94,8 @@ async def build_cart_command_reply(
     session_key: str,
     currency: str = "KES",
     business_name: str = "Our Business",
+    catalog_word: str = "menu",
+    reset_intro: str = "what would you like today?",
 ) -> Tuple[str, bool]:
     """
     Execute cart command against CCM.
@@ -101,12 +103,12 @@ async def build_cart_command_reply(
     """
     if command == "clear":
         await context_manager.clear_cart(session_key)
-        return cart_cleared_message(), True
+        return cart_cleared_message(catalog_word), True
 
     if command == "view":
         session = await context_manager.get_session_by_key(session_key)
         cart = context_manager.get_cart(session) if session else []
-        return format_cart_summary(cart, currency), bool(cart)
+        return format_cart_summary(cart, currency, catalog_word), bool(cart)
 
     if command == "checkout":
         session = await context_manager.get_session_by_key(session_key)
@@ -114,10 +116,10 @@ async def build_cart_command_reply(
         if not cart:
             return (
                 "Your cart is empty right now. 🛒\n"
-                "Browse the menu and tap *Add to Cart* on something you like!",
+                f"Browse the {catalog_word} and tap *Add to Cart* on something you like!",
                 True,
             )
-        summary = format_cart_summary(cart, currency)
+        summary = format_cart_summary(cart, currency, catalog_word)
         return (
             f"{summary}\n\n"
             "Great! To checkout, please share:\n"
@@ -133,7 +135,7 @@ async def build_cart_command_reply(
             await context_manager.clear_session(session)
         return (
             f"🔄 Fresh start! Your cart and chat history are cleared.\n\n"
-            f"Welcome back to *{business_name}* — what would you like today?",
+            f"Welcome back to *{business_name}* — {reset_intro}",
             True,
         )
 
@@ -145,12 +147,12 @@ async def build_cart_command_reply(
         if removed:
             reply = (
                 f"{cart_item_removed_message(removed_name)}\n\n"
-                f"{format_cart_summary(cart, currency)}"
+                f"{format_cart_summary(cart, currency, catalog_word)}"
             )
         else:
             reply = (
                 f"I couldn't find *{name}* in your cart.\n\n"
-                f"{format_cart_summary(cart, currency)}"
+                f"{format_cart_summary(cart, currency, catalog_word)}"
             )
         return reply, True
 
@@ -167,12 +169,12 @@ async def build_cart_command_reply(
         if ok:
             reply = (
                 f"{cart_quantity_updated_message(item_name, qty)}\n\n"
-                f"{format_cart_summary(cart, currency)}"
+                f"{format_cart_summary(cart, currency, catalog_word)}"
             )
         else:
             reply = (
                 f"I couldn't find *{name}* in your cart.\n\n"
-                f"{format_cart_summary(cart, currency)}"
+                f"{format_cart_summary(cart, currency, catalog_word)}"
             )
         return reply, True
 
@@ -186,6 +188,7 @@ async def try_handle_cart_command(
     message_text: str,
     business_name: str = "Our Business",
     currency: str = "KES",
+    order_type: str = "general",
 ) -> bool:
     """
     If message is a cart/reset command, reply immediately on WhatsApp.
@@ -198,8 +201,14 @@ async def try_handle_cart_command(
     session_key = _build_session_key("whatsapp", str(user_id), contact.phone_number)
 
     try:
+        catalog_word = "menu" if order_type == "food" else "catalog"
+        reset_intro = "what would you like today?"
+        if order_type in ("retail", "clothing"):
+            reset_intro = "what are you looking for today?"
+        elif order_type != "food":
+            reset_intro = "how can we help you today?"
         reply, with_buttons = await build_cart_command_reply(
-            cmd, message_text or "", session_key, currency, business_name
+            cmd, message_text or "", session_key, currency, business_name, catalog_word, reset_intro
         )
         if not reply:
             return False

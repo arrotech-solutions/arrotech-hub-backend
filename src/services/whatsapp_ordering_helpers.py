@@ -392,9 +392,9 @@ def parse_product_button_id(btn_id: str) -> Tuple[Optional[str], Optional[str]]:
     return action, rest
 
 
-def format_cart_summary(cart: List[Dict[str, Any]], currency: str = "KES") -> str:
+def format_cart_summary(cart: List[Dict[str, Any]], currency: str = "KES", catalog_word: str = "menu") -> str:
     if not cart:
-        return "Your cart is empty. 🛒\nTap *Browse menu* to add items, or tell me what you'd like."
+        return f"Your cart is empty. 🛒\nTap *Browse {catalog_word}* to add items, or tell me what you'd like."
     lines = [f"🛒 *Your cart* ({len(cart)} item(s)):"]
     total = 0.0
     for i, item in enumerate(cart, 1):
@@ -540,10 +540,10 @@ def parse_set_quantity_message(message: str) -> Tuple[Optional[str], Optional[fl
     return None, None
 
 
-def cart_cleared_message() -> str:
+def cart_cleared_message(catalog_word: str = "menu") -> str:
     return (
         "✅ Your cart is now empty.\n\n"
-        "Tap *Browse menu* to add items, or tell me what you'd like. 🛒"
+        f"Tap *Browse {catalog_word}* to add items, or tell me what you'd like. 🛒"
     )
 
 
@@ -572,7 +572,7 @@ AGENT_BUTTON_TALK_TO_STAFF = "agent:human"
 AGENT_BUTTON_ORDER_WITH_AI = "agent:ai"
 
 
-def agent_mode_buttons(handoff_active: bool) -> List[Dict[str, str]]:
+def agent_mode_buttons(handoff_active: bool, catalog_word: str = "menu") -> List[Dict[str, str]]:
     """
     Reply buttons to switch between live staff and AI ordering assistant.
 
@@ -582,7 +582,7 @@ def agent_mode_buttons(handoff_active: bool) -> List[Dict[str, str]]:
     if handoff_active:
         return [{"id": AGENT_BUTTON_ORDER_WITH_AI, "title": "Order with AI"}]
     return [
-        {"id": "menu:browse", "title": "Browse menu"},
+        {"id": "menu:browse", "title": f"Browse {catalog_word}"},
         {"id": AGENT_BUTTON_TALK_TO_STAFF, "title": "Talk to staff"},
         {"id": "menu:cart", "title": "My cart"},
     ]
@@ -594,7 +594,7 @@ def agent_mode_button_body(handoff_active: bool) -> str:
     return "Quick options — tap below or just type your request."
 
 
-def cart_action_buttons(cart_has_items: bool = True) -> List[Dict[str, str]]:
+def cart_action_buttons(cart_has_items: bool = True, catalog_word: str = "menu") -> List[Dict[str, str]]:
     """
     Cart screen actions (WhatsApp max 3 reply buttons).
     Mirrors a typical cart: checkout, keep shopping, or empty cart.
@@ -606,7 +606,7 @@ def cart_action_buttons(cart_has_items: bool = True) -> List[Dict[str, str]]:
             {"id": "menu:clear_cart", "title": "Clear cart"},
         ]
     return [
-        {"id": "menu:browse", "title": "Browse menu"},
+        {"id": "menu:browse", "title": f"Browse {catalog_word}"},
         {"id": "menu:cart", "title": "View cart"},
     ]
 

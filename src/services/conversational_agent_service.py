@@ -626,6 +626,13 @@ class ConversationalAgentService:
             currency = business_config.get("currency", "KES")
             delivery_methods = business_config.get("delivery_methods", ["delivery", "pickup"])
             custom_system_prompt = business_config.get("system_prompt", "")
+
+            catalog_word = "menu" if order_type == "food" else "catalog"
+            reset_intro = "what would you like today?"
+            if order_type in ("retail", "clothing"):
+                reset_intro = "what are you looking for today?"
+            elif order_type != "food":
+                reset_intro = "how can we help you today?"
             customer_phone = business_config.get("customer_phone", "")
             customer_name = business_config.get("customer_name", "")
             business_phone = business_config.get("business_phone", "")
@@ -809,7 +816,7 @@ class ConversationalAgentService:
                         logger.warning(f"[CONV_AGENT] reset failed: {e}")
                     reply = (
                         f"🔄 Fresh start! Your cart and chat history are cleared.\n\n"
-                        f"Welcome back to *{business_name}* — what would you like today?"
+                        f"Welcome back to *{business_name}* — {reset_intro}"
                     )
                     return await self._cart_fast_path_result(
                         session_key, reply,
@@ -818,7 +825,7 @@ class ConversationalAgentService:
                     )
                 if cart_cmd == "clear":
                     await context_manager.clear_cart(session_key)
-                    reply = cart_cleared_message()
+                    reply = cart_cleared_message(catalog_word)
                     return await self._cart_fast_path_result(
                         session_key, reply,
                         actions_taken=[{"tool": "manage_cart", "result_summary": "clear"}],
@@ -827,7 +834,7 @@ class ConversationalAgentService:
                 if cart_cmd == "view":
                     session = await context_manager.get_session_by_key(session_key)
                     cart = context_manager.get_cart(session) if session else []
-                    reply = format_cart_summary(cart, currency)
+                    reply = format_cart_summary(cart, currency, catalog_word)
                     return await self._cart_fast_path_result(
                         session_key, reply,
                         actions_taken=[{"tool": "manage_cart", "result_summary": "view"}],
@@ -839,7 +846,7 @@ class ConversationalAgentService:
                     if not cart:
                         reply = (
                             "Your cart is empty right now. 🛒\n"
-                            "Browse the menu and tap *Add to Cart* on something you like!"
+                            f"Browse the {catalog_word} and tap *Add to Cart* on something you like!"
                         )
                         return await self._cart_fast_path_result(
                             session_key, reply,
@@ -861,11 +868,11 @@ class ConversationalAgentService:
                         session_key, product_name=name
                     )
                     if removed:
-                        reply = f"{cart_item_removed_message(removed_name)}\n\n{format_cart_summary(cart, currency)}"
+                        reply = f"{cart_item_removed_message(removed_name)}\n\n{format_cart_summary(cart, currency, catalog_word)}"
                     else:
                         reply = (
                             f"I couldn't find *{name}* in your cart.\n\n"
-                            f"{format_cart_summary(cart, currency)}"
+                            f"{format_cart_summary(cart, currency, catalog_word)}"
                         )
                     return await self._cart_fast_path_result(
                         session_key, reply,
@@ -881,12 +888,12 @@ class ConversationalAgentService:
                         if ok:
                             reply = (
                                 f"{cart_quantity_updated_message(item_name, qty)}\n\n"
-                                f"{format_cart_summary(cart, currency)}"
+                                f"{format_cart_summary(cart, currency, catalog_word)}"
                             )
                         else:
                             reply = (
                                 f"I couldn't find *{name}* in your cart.\n\n"
-                                f"{format_cart_summary(cart, currency)}"
+                                f"{format_cart_summary(cart, currency, catalog_word)}"
                             )
                         return await self._cart_fast_path_result(
                             session_key, reply,
@@ -2189,7 +2196,7 @@ class ConversationalAgentService:
             pass
         return arguments
 
-    async def _build_cart_context_block(self, session_key: str, currency: str) -> str:
+    async def _build_cart_context_block(self, session_key: str, currency: str, catalog_word: str = "menu") -> str:
         if not session_key:
             return ""
         try:
@@ -2200,7 +2207,7 @@ class ConversationalAgentService:
             if not cart:
                 return ""
             from .whatsapp_ordering_helpers import format_cart_summary
-            summary = format_cart_summary(cart, currency)
+            summary = format_cart_summary(cart, currency, catalog_word)
             return (
                 f"\n## Current cart (persisted — do not ignore)\n{summary}\n"
                 "When the customer is ready to checkout, use these cart items for "
@@ -2358,7 +2365,7 @@ class ConversationalAgentService:
             session_key, {"awaiting_checkout_details": True}
         )
         from .whatsapp_ordering_helpers import format_cart_summary
-        summary = format_cart_summary(cart, currency)
+        summary = format_cart_summary(cart, currency, catalog_word)
         missing = []
         if not customer_name:
             missing.append("1️⃣ Your name")
@@ -3060,6 +3067,7 @@ class ConversationalAgentService:
         arguments: Dict[str, Any],
         session_key: str,
         currency: str,
+        catalog_word: str = "menu",
     ) -> Dict[str, Any]:
         """Add items to, view, clear, remove, or update quantities in the persisted cart."""
         from .whatsapp_ordering_helpers import (
@@ -3092,7 +3100,7 @@ class ConversationalAgentService:
                     "unit_price": float(unit_price) if unit_price else 0,
                 }
                 cart = await context_manager.add_cart_item(session_key, item)
-                summary = format_cart_summary(cart, currency)
+                summary = format_cart_summary(cart, currency, catalog_word)
                 return {
                     "success": True,
                     "result": (
@@ -3105,7 +3113,7 @@ class ConversationalAgentService:
             if action == "view":
                 session = await context_manager.get_session_by_key(session_key)
                 cart = context_manager.get_cart(session) if session else []
-                summary = format_cart_summary(cart, currency)
+                summary = format_cart_summary(cart, currency, catalog_word)
                 return {
                     "success": True,
                     "result": summary,
@@ -3117,7 +3125,7 @@ class ConversationalAgentService:
                 await context_manager.clear_cart(session_key)
                 return {
                     "success": True,
-                    "result": cart_cleared_message(),
+                    "result": cart_cleared_message(catalog_word),
                     "cart": [],
                     "cart_empty": True,
                 }
@@ -3129,13 +3137,13 @@ class ConversationalAgentService:
                 if removed:
                     msg = (
                         f"{cart_item_removed_message(removed_name)}\n\n"
-                        f"{format_cart_summary(cart, currency)}"
+                        f"{format_cart_summary(cart, currency, catalog_word)}"
                     )
                 else:
                     label = product_name or product_id or "that item"
                     msg = (
                         f"I couldn't find *{label}* in your cart.\n\n"
-                        f"{format_cart_summary(cart, currency)}"
+                        f"{format_cart_summary(cart, currency, catalog_word)}"
                     )
                 return {
                     "success": True,
@@ -3163,13 +3171,13 @@ class ConversationalAgentService:
                         "success": False,
                         "result": (
                             f"I couldn't find *{label}* in your cart.\n\n"
-                            f"{format_cart_summary(cart, currency)}"
+                            f"{format_cart_summary(cart, currency, catalog_word)}"
                         ),
                         "cart": cart,
                     }
                 msg = (
                     f"{cart_quantity_updated_message(item_name, qty)}\n\n"
-                    f"{format_cart_summary(cart, currency)}"
+                    f"{format_cart_summary(cart, currency, catalog_word)}"
                 )
                 return {
                     "success": True,
