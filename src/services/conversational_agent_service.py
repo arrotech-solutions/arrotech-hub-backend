@@ -1423,7 +1423,18 @@ class ConversationalAgentService:
 
                 for i, tool_call in enumerate(response.tools_called):
                     tool_name = tool_call["name"]
-                    tool_args = tool_call["arguments"]
+                    raw_args = tool_call.get("arguments", {})
+                    if isinstance(raw_args, str):
+                        try:
+                            tool_args = json.loads(raw_args)
+                        except Exception:
+                            tool_args = {}
+                    elif isinstance(raw_args, dict):
+                        tool_args = dict(raw_args)
+                    else:
+                        tool_args = {}
+                    
+                    tool_call["arguments"] = tool_args
                     call_id = f"call_{iteration}_{i}"
 
                     logger.info(f"[CONV_AGENT] Sub-tool call: {tool_name}({json.dumps(tool_args)[:200]})")
@@ -3104,6 +3115,31 @@ class ConversationalAgentService:
         quantity = arguments.get("quantity")
         unit_price = arguments.get("unit_price")
 
+        # Clean unit_price and quantity
+        clean_price = 0.0
+        if unit_price is not None:
+            try:
+                if isinstance(unit_price, str):
+                    import re
+                    cleaned = re.sub(r'[^\d.]', '', unit_price)
+                    clean_price = float(cleaned) if cleaned else 0.0
+                else:
+                    clean_price = float(unit_price)
+            except (ValueError, TypeError):
+                clean_price = 0.0
+
+        clean_qty = 1.0
+        if quantity is not None:
+            try:
+                if isinstance(quantity, str):
+                    import re
+                    cleaned = re.sub(r'[^\d.]', '', str(quantity))
+                    clean_qty = float(cleaned) if cleaned else 1.0
+                else:
+                    clean_qty = float(quantity)
+            except (ValueError, TypeError):
+                clean_qty = 1.0
+
         if not session_key:
             return {"success": False, "result": "No active session for cart."}
 
@@ -3117,8 +3153,8 @@ class ConversationalAgentService:
                 item = {
                     "id": product_id or product_name[:50],
                     "name": product_name,
-                    "quantity": float(quantity) if quantity else 1,
-                    "unit_price": float(unit_price) if unit_price else 0,
+                    "quantity": clean_qty,
+                    "unit_price": clean_price,
                 }
                 cart = await context_manager.add_cart_item(session_key, item)
                 summary = format_cart_summary(cart, currency, catalog_word)
@@ -3179,7 +3215,7 @@ class ConversationalAgentService:
                         "success": False,
                         "result": "Please specify quantity for set_quantity.",
                     }
-                qty = float(quantity)
+                qty = clean_qty
                 cart, ok, item_name, key = await context_manager.set_cart_item_quantity(
                     session_key,
                     qty,

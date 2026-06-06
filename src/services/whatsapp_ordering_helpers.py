@@ -398,8 +398,27 @@ def format_cart_summary(cart: List[Dict[str, Any]], currency: str = "KES", catal
     lines = [f"🛒 *Your cart* ({len(cart)} item(s)):"]
     total = 0.0
     for i, item in enumerate(cart, 1):
-        qty = float(item.get("quantity", 1))
-        price = float(item.get("unit_price", 0) or item.get("price", 0))
+        raw_qty = item.get("quantity", 1)
+        try:
+            if isinstance(raw_qty, str):
+                import re
+                cleaned = re.sub(r'[^\d.]', '', raw_qty)
+                qty = float(cleaned) if cleaned else 1.0
+            else:
+                qty = float(raw_qty)
+        except (ValueError, TypeError):
+            qty = 1.0
+
+        raw_price = item.get("unit_price", 0) or item.get("price", 0)
+        try:
+            if isinstance(raw_price, str):
+                import re
+                cleaned = re.sub(r'[^\d.]', '', raw_price)
+                price = float(cleaned) if cleaned else 0.0
+            else:
+                price = float(raw_price)
+        except (ValueError, TypeError):
+            price = 0.0
         name = item.get("name", "Item")
         line_total = qty * price
         total += line_total
