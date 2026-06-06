@@ -633,6 +633,14 @@ class ConversationalAgentService:
                 reset_intro = "what are you looking for today?"
             elif order_type != "food":
                 reset_intro = "how can we help you today?"
+
+            if session_key:
+                try:
+                    await context_manager.update_session_metadata(
+                        session_key, {"catalog_word": catalog_word}
+                    )
+                except Exception:
+                    pass
             customer_phone = business_config.get("customer_phone", "")
             customer_name = business_config.get("customer_name", "")
             business_phone = business_config.get("business_phone", "")
@@ -2579,6 +2587,10 @@ class ConversationalAgentService:
             cart = context_manager.get_cart(session) if session else []
             has_items = len(cart) > 0
 
+            catalog_word = "menu"
+            if session and session.metadata:
+                catalog_word = session.metadata.get("catalog_word", "menu")
+
             if has_items:
                 remove_rows = build_cart_remove_list_rows(cart, currency)
                 if remove_rows:
@@ -2601,13 +2613,13 @@ class ConversationalAgentService:
                 else (
                     "Ready to checkout or keep shopping? 🛒"
                     if has_items
-                    else "Your cart is empty — browse the menu to add items."
+                    else f"Your cart is empty — browse the {catalog_word} to add items."
                 )
             )
             btn_result = await wa.send_quick_reply_buttons(
                 to_number=recipient,
                 body_text=button_body,
-                buttons=cart_action_buttons(cart_has_items=has_items),
+                buttons=cart_action_buttons(cart_has_items=has_items, catalog_word=catalog_word),
                 config=wa_config,
             )
             if not btn_result.get("success"):
@@ -2659,11 +2671,16 @@ class ConversationalAgentService:
             if not config.get("access_token") or not config.get("phone_number_id"):
                 return
 
+            catalog_word = "menu"
+            session = await context_manager.get_session_by_key(session_key)
+            if session and session.metadata:
+                catalog_word = session.metadata.get("catalog_word", "menu")
+
             wa = WhatsAppService()
             btn_result = await wa.send_quick_reply_buttons(
                 to_number=recipient,
                 body_text=agent_mode_button_body(handoff_active),
-                buttons=agent_mode_buttons(handoff_active),
+                buttons=agent_mode_buttons(handoff_active, catalog_word=catalog_word),
                 config={
                     "access_token": config.get("access_token"),
                     "phone_number_id": config.get("phone_number_id"),
