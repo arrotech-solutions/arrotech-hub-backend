@@ -603,6 +603,126 @@ class WhatsAppService:
                 "error": str(e)
             }
 
+    async def download_media(
+        self, media_id: str, config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Download inbound media (e.g. a voice note) from Meta.
+
+        Two steps: GET /{media-id} → returns a short-lived download URL, then
+        GET that URL with the bearer token to fetch the binary content.
+        """
+        try:
+            credentials = self._get_credentials()
+            if config:
+                access_token = config.get("access_token")
+                base_url = config.get("base_url", credentials["base_url"])
+            else:
+                access_token = credentials["access_token"]
+                base_url = credentials["base_url"]
+
+            if not access_token or not media_id:
+                return {"success": False, "error": "Missing access token or media id"}
+
+            headers = {"Authorization": f"Bearer {access_token}"}
+            async with aiohttp.ClientSession() as session:
+                meta_url = f"{base_url}/{media_id}"
+                async with session.get(meta_url, headers=headers) as resp:
+                    info = await resp.json()
+                    if resp.status != 200 or not info.get("url"):
+                        return {
+                            "success": False,
+                            "error": f"Media lookup failed: {info.get('error', {}).get('message', info)}",
+                        }
+                    download_url = info["url"]
+                    mime_type = info.get("mime_type", "")
+
+                # The CDN URL still requires the bearer token
+                async with session.get(download_url, headers=headers) as media_resp:
+                    if media_resp.status != 200:
+                        return {"success": False, "error": f"Media download failed: HTTP {media_resp.status}"}
+                    content = await media_resp.read()
+                    return {"success": True, "content": content, "mime_type": mime_type}
+        except Exception as e:
+            logger.error(f"Error downloading WhatsApp media: {str(e)}")
+            return {"success": False, "error": str(e)}
+
+    async def upload_and_send_document(
+        self,
+        to_number: str,
+        file_bytes: bytes,
+        filename: str,
+        mime_type: str = "application/pdf",
+        caption: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Upload a binary document to Meta and send it as a WhatsApp document
+        message (by media id). Avoids the need to host the file publicly.
+        """
+        try:
+            credentials = self._get_credentials()
+            if config:
+                phone_number_id = config.get("phone_number_id")
+                access_token = config.get("access_token")
+                base_url = config.get("base_url", credentials["base_url"])
+            else:
+                phone_number_id = credentials["phone_number_id"]
+                access_token = credentials["access_token"]
+                base_url = credentials["base_url"]
+
+            if not phone_number_id or not access_token:
+                return {"success": False, "error": "WhatsApp credentials not configured"}
+
+            formatted_number = self._format_phone_number(to_number)
+            headers = {"Authorization": f"Bearer {access_token}"}
+
+            # 1. Upload media → media id
+            upload_url = f"{base_url}/{phone_number_id}/media"
+            async with aiohttp.ClientSession() as session:
+                form = aiohttp.FormData()
+                form.add_field("messaging_product", "whatsapp")
+                form.add_field("type", mime_type)
+                form.add_field(
+                    "file", file_bytes, filename=filename, content_type=mime_type
+                )
+                async with session.post(upload_url, data=form, headers=headers) as resp:
+                    up = await resp.json()
+                    if resp.status != 200 or not up.get("id"):
+                        return {
+                            "success": False,
+                            "error": f"Media upload failed: {up.get('error', {}).get('message', up)}",
+                        }
+                    media_id = up["id"]
+
+                # 2. Send document message by media id
+                msg_url = f"{base_url}/{phone_number_id}/messages"
+                doc_payload: Dict[str, Any] = {"id": media_id, "filename": filename}
+                if caption:
+                    doc_payload["caption"] = caption[:1024]
+                payload = {
+                    "messaging_product": "whatsapp",
+                    "to": formatted_number,
+                    "type": "document",
+                    "document": doc_payload,
+                }
+                json_headers = {**headers, "Content-Type": "application/json"}
+                async with session.post(msg_url, json=payload, headers=json_headers) as response:
+                    result = await response.json()
+                    if response.status == 200:
+                        return {
+                            "success": True,
+                            "message_id": result.get("messages", [{}])[0].get("id"),
+                            "media_id": media_id,
+                        }
+                    return {
+                        "success": False,
+                        "error": f"WhatsApp API error: {result.get('error', {}).get('message', 'Unknown error')}",
+                    }
+        except Exception as e:
+            logger.error(f"Error uploading/sending WhatsApp document: {str(e)}")
+            return {"success": False, "error": str(e)}
+
     async def send_location_message(
         self,
         to_number: str,

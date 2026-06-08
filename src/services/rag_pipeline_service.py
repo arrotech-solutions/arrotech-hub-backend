@@ -5,6 +5,7 @@ Fully dynamic — routes to the correct vector DB, embedding model, and parser
 based on each KnowledgeBase's stored configuration.
 """
 import logging
+import re
 import uuid
 import tiktoken
 from typing import Dict, Any, List, Optional
@@ -18,6 +19,50 @@ from .unstructured_service import UnstructuredService
 from .cohere_service import CohereService
 
 logger = logging.getLogger(__name__)
+
+# ── Image URL extraction (catalog ingestion) ──────────────────────────────
+# Self-contained so the RAG layer never imports the heavier agent module.
+# Keep these patterns in sync with services.conversational_agent_service.
+_RAG_MARKDOWN_IMAGE_PATTERN = re.compile(
+    r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)', re.IGNORECASE
+)
+_RAG_IMAGE_EXT_PATTERN = re.compile(
+    r'https?://\S+\.(?:jpg|jpeg|png|webp|gif|bmp|svg|tiff)(?:\?\S*)?', re.IGNORECASE
+)
+_RAG_IMAGE_HOST_DOMAINS = [
+    'images.unsplash.com', 'unsplash.com/photos', 'i.imgur.com', 'imgur.com',
+    'res.cloudinary.com', 'cloudinary.com', 'lh3.googleusercontent.com',
+    'drive.google.com/uc', 'pbs.twimg.com', 'scontent.cdninstagram.com',
+    'img.freepik.com', 'media.istockphoto.com', 'cdn.pixabay.com',
+    'images.pexels.com', 'storage.googleapis.com',
+    'firebasestorage.googleapis.com', 's3.amazonaws.com', 'maps.googleapis.com',
+]
+_RAG_IMAGE_HOST_PATTERN = re.compile(
+    r'https?://(?:' + '|'.join(re.escape(d) for d in _RAG_IMAGE_HOST_DOMAINS) + r')[^\s\)\]]*',
+    re.IGNORECASE,
+)
+
+
+def extract_image_urls(text: str) -> List[str]:
+    """Extract unique image URLs from text (markdown, file-extension, known hosts)."""
+    if not text:
+        return []
+    seen = set()
+    urls: List[str] = []
+
+    def _add(url: str):
+        url = url.rstrip('.,;:!?)"\'>]')
+        if url and url not in seen:
+            seen.add(url)
+            urls.append(url)
+
+    for match in _RAG_MARKDOWN_IMAGE_PATTERN.finditer(text):
+        _add(match.group(2))
+    for match in _RAG_IMAGE_EXT_PATTERN.finditer(text):
+        _add(match.group(0))
+    for match in _RAG_IMAGE_HOST_PATTERN.finditer(text):
+        _add(match.group(0))
+    return urls
 
 
 class RAGPipelineService:
@@ -505,7 +550,14 @@ class RAGPipelineService:
         now = datetime.now(timezone.utc).isoformat()
         for i, (chunk_data, embedding) in enumerate(zip(all_chunks, embeddings_list)):
             vector_id = f"chunk_{uuid.uuid4().hex[:12]}_{i}"
-            
+
+            # Bind product images to the exact chunk they appear in, so retrieval
+            # can pair the right image with the right product instead of guessing.
+            try:
+                chunk_image_urls = extract_image_urls(chunk_data["text"]) or []
+            except Exception:
+                chunk_image_urls = []
+
             meta = {
                 "text": chunk_data["text"][:8192],  # Protect against metadata size limits
                 "source_url": chunk_data["url"],
@@ -514,7 +566,9 @@ class RAGPipelineService:
                 "kb_id": kb_id,
                 "customer_id": user_id,
                 "chunk_index": chunk_data["index"],
-                "last_modified": now
+                "last_modified": now,
+                # Images bound to this specific chunk (empty for non-catalog content)
+                "image_urls": chunk_image_urls[:10],
             }
             if metadata:
                 meta.update(metadata)
@@ -915,7 +969,9 @@ class RAGPipelineService:
                 "source": match.get("metadata", {}).get("source_url", ""),
                 "file": match.get("metadata", {}).get("source_file_name", ""),
                 "tool": match.get("metadata", {}).get("source_tool", ""),
-                "modified": match.get("metadata", {}).get("last_modified", "")
+                "modified": match.get("metadata", {}).get("last_modified", ""),
+                # Images bound to this chunk at ingestion (reliable product↔image link)
+                "image_urls": match.get("metadata", {}).get("image_urls", []) or []
             }
             for match in matches
         ]

@@ -287,6 +287,188 @@ class OrderTrackingService:
             "error": result.get("error"),
         }
 
+    async def notify_payment_received(
+        self,
+        *,
+        user: User,
+        db: AsyncSession,
+        order_id: str,
+        mpesa_receipt: str = "",
+        amount_paid: float = 0.0,
+        currency: str = "KES",
+    ) -> Dict[str, Any]:
+        """
+        Generate a downloadable PDF receipt on confirmed payment and send it
+        to BOTH the customer and the business as a WhatsApp document.
+        Idempotent per order (guarded by `payment_notified`).
+        """
+        registry = self.get_registered_order(str(user.id), order_id) or {}
+        if registry.get("payment_notified"):
+            return {"success": True, "order_id": order_id, "skipped": True, "reason": "already_notified"}
+
+        order = dict(registry.get("order") or {})
+        order["order_id"] = order_id
+        customer_phone = registry.get("customer_phone") or order.get("customer_phone", "")
+        business_name = registry.get("business_name", "Our Business")
+        business_phone = registry.get("business_phone", "")
+        currency = currency or registry.get("currency", "KES")
+        if not amount_paid:
+            amount_paid = float(order.get("subtotal") or order.get("grand_total") or 0)
+
+        html = self._build_receipt_html(
+            order=order,
+            order_id=order_id,
+            business_name=business_name,
+            business_phone=business_phone,
+            mpesa_receipt=mpesa_receipt,
+            amount_paid=amount_paid,
+            currency=currency,
+        )
+
+        # Generate the PDF (base64) then decode to bytes for upload
+        import base64
+        pdf_bytes = None
+        try:
+            from .file_management_service import FileManagementService
+            fms = FileManagementService()
+            pdf_res = await fms.generate_pdf_from_html(html, filename=f"receipt_{order_id}.pdf")
+            if pdf_res.get("success") and pdf_res.get("content"):
+                pdf_bytes = base64.b64decode(pdf_res["content"])
+        except Exception as pdf_err:
+            logger.warning(f"[ORDER_TRACK] Receipt PDF generation failed: {pdf_err}")
+
+        wa_config = await self._get_whatsapp_config(user, db)
+        if not wa_config:
+            return {"success": False, "error": "WhatsApp not connected"}
+
+        from .whatsapp_service import WhatsAppService
+
+        wa = WhatsAppService()
+        filename = f"Receipt-{order_id}.pdf"
+        sent: List[str] = []
+
+        if pdf_bytes:
+            if customer_phone:
+                r = await wa.upload_and_send_document(
+                    to_number=customer_phone,
+                    file_bytes=pdf_bytes,
+                    filename=filename,
+                    caption=f"🧾 Thank you! Here's your receipt for order {order_id}.",
+                    config=wa_config,
+                )
+                sent.append("customer_receipt" if r.get("success") else "customer_receipt_failed")
+            if business_phone:
+                r = await wa.upload_and_send_document(
+                    to_number=business_phone,
+                    file_bytes=pdf_bytes,
+                    filename=filename,
+                    caption=f"💰 Payment received for order {order_id} ({currency} {amount_paid:,.0f}).",
+                    config=wa_config,
+                )
+                sent.append("business_receipt" if r.get("success") else "business_receipt_failed")
+        else:
+            # PDF unavailable — fall back to a text receipt so the customer is still served
+            text_receipt = await self.order_service.format_order_receipt(
+                order_data=order,
+                format_type="whatsapp",
+                business_name=business_name,
+                business_phone=business_phone,
+                currency=currency,
+            )
+            body = text_receipt.get("message", "") if text_receipt.get("success") else ""
+            paid_line = f"\n✅ *PAID* via M-Pesa{(' · ' + mpesa_receipt) if mpesa_receipt else ''}"
+            if customer_phone and body:
+                await wa.send_message(customer_phone, body + paid_line, config=wa_config)
+                sent.append("customer_text_receipt")
+            if business_phone and body:
+                await wa.send_message(business_phone, body + paid_line, config=wa_config)
+                sent.append("business_text_receipt")
+
+        registry["status"] = "paid"
+        registry["payment_notified"] = True
+        registry["mpesa_receipt"] = mpesa_receipt
+        registry["amount_paid"] = amount_paid
+        cache_service.set(
+            self._tracking_key(str(user.id), order_id),
+            registry,
+            expire_seconds=TRACKING_TTL_SECONDS,
+        )
+
+        return {"success": True, "order_id": order_id, "sent": sent}
+
+    def _build_receipt_html(
+        self,
+        *,
+        order: Dict[str, Any],
+        order_id: str,
+        business_name: str,
+        business_phone: str,
+        mpesa_receipt: str,
+        amount_paid: float,
+        currency: str,
+    ) -> str:
+        """Build a clean, printable HTML receipt for PDF rendering."""
+        from html import escape
+
+        items = order.get("items") or []
+        rows = ""
+        for item in items:
+            name = escape(str(item.get("name", "Item")))
+            qty = item.get("quantity", 1)
+            unit = float(item.get("unit_price", 0) or item.get("price", 0) or 0)
+            line_total = float(item.get("total", 0) or (float(qty) * unit))
+            rows += (
+                f"<tr><td>{name}</td><td style='text-align:center'>{qty}</td>"
+                f"<td style='text-align:right'>{currency} {unit:,.0f}</td>"
+                f"<td style='text-align:right'>{currency} {line_total:,.0f}</td></tr>"
+            )
+
+        customer_name = escape(str(order.get("customer_name", "")))
+        customer_phone = escape(str(order.get("customer_phone", "")))
+        delivery_method = escape(str(order.get("delivery_method", "")))
+        delivery_address = escape(str(order.get("delivery_address", "")))
+        paid_at = datetime.utcnow().strftime("%d %b %Y, %H:%M UTC")
+
+        return f"""
+        <!DOCTYPE html>
+        <html><head><meta charset="utf-8"><style>
+            body {{ font-family: Arial, Helvetica, sans-serif; color: #1a1a1a; margin: 32px; }}
+            .header {{ text-align: center; border-bottom: 2px solid #16a34a; padding-bottom: 12px; }}
+            .header h1 {{ margin: 0; font-size: 22px; }}
+            .paid {{ display: inline-block; background: #16a34a; color: #fff;
+                     padding: 4px 12px; border-radius: 6px; font-weight: bold; margin-top: 8px; }}
+            .meta {{ margin: 16px 0; font-size: 13px; line-height: 1.6; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }}
+            th, td {{ padding: 8px; border-bottom: 1px solid #e5e5e5; }}
+            th {{ text-align: left; background: #f5f5f5; }}
+            .total {{ text-align: right; font-size: 16px; font-weight: bold; margin-top: 14px; }}
+            .footer {{ margin-top: 24px; text-align: center; font-size: 12px; color: #666; }}
+        </style></head><body>
+            <div class="header">
+                <h1>{escape(business_name)}</h1>
+                <div class="paid">PAID</div>
+            </div>
+            <div class="meta">
+                <strong>Receipt</strong><br/>
+                Order: <strong>{escape(order_id)}</strong><br/>
+                Date: {paid_at}<br/>
+                {f"M-Pesa Receipt: <strong>{escape(str(mpesa_receipt))}</strong><br/>" if mpesa_receipt else ""}
+                {f"Customer: {customer_name}<br/>" if customer_name else ""}
+                {f"Phone: {customer_phone}<br/>" if customer_phone else ""}
+                {f"Delivery: {delivery_method}<br/>" if delivery_method else ""}
+                {f"Address: {delivery_address}<br/>" if delivery_address else ""}
+                {f"Business contact: {escape(str(business_phone))}<br/>" if business_phone else ""}
+            </div>
+            <table>
+                <thead><tr><th>Item</th><th style="text-align:center">Qty</th>
+                    <th style="text-align:right">Unit</th><th style="text-align:right">Total</th></tr></thead>
+                <tbody>{rows}</tbody>
+            </table>
+            <div class="total">Total Paid: {currency} {amount_paid:,.0f}</div>
+            <div class="footer">Thank you for your business! 🙏<br/>This is a computer-generated receipt.</div>
+        </body></html>
+        """
+
     @staticmethod
     def _summarize_items(items: List[Dict[str, Any]]) -> str:
         parts = []

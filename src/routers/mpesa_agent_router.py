@@ -467,6 +467,21 @@ async def _handle_mpesa_callback_background(webhook_secret: str, body: bytes):
                         from ..services.whatsapp_service import WhatsAppService
                         from ..services.telegram_service import TelegramService
                         from ..services.conversational_agent_service import ConversationalAgentService
+                        from ..services.order_tracking_service import order_tracking_service
+
+                        # Resolve the business owner so customer notifications use the
+                        # tenant's own WhatsApp credentials (not global settings).
+                        owner_stmt = select(User).where(User.id == config.user_id)
+                        owner_res = await db.execute(owner_stmt)
+                        owner_user = owner_res.scalar_one_or_none()
+                        wa_config = None
+                        if owner_user and platform == "whatsapp":
+                            try:
+                                wa_config = await order_tracking_service._get_whatsapp_config(
+                                    owner_user, db
+                                )
+                            except Exception as cfg_err:
+                                logger.warning(f"Failed to resolve tenant WhatsApp config: {cfg_err}")
 
                         msg_ok = (
                             f"✅ Payment received for order {order_id}. "
@@ -477,16 +492,30 @@ async def _handle_mpesa_callback_background(webhook_secret: str, body: bytes):
 
                         if platform == "whatsapp":
                             wa = WhatsAppService()
-                            await wa.send_message(to_number=sender_id, message=msg_ok)
+                            await wa.send_message(
+                                to_number=sender_id, message=msg_ok, config=wa_config
+                            )
                         elif platform == "telegram":
                             tg = TelegramService()
                             await tg.send_message(chat_id=sender_id, message=msg_ok)
 
+                        # On confirmed payment, generate a PDF receipt and send it
+                        # to both the customer and the business.
+                        if is_paid and owner_user and order_id:
+                            try:
+                                await order_tracking_service.notify_payment_received(
+                                    user=owner_user,
+                                    db=db,
+                                    order_id=order_id,
+                                    mpesa_receipt=(parsed or {}).get("transaction_id") or "",
+                                    amount_paid=float((parsed or {}).get("amount") or 0),
+                                    currency="KES",
+                                )
+                            except Exception as receipt_err:
+                                logger.warning(f"Failed to send payment receipt: {receipt_err}")
+
                         # Only record successful transaction rows
                         if is_paid and payment:
-                            user_stmt = select(User).where(User.id == config.user_id)
-                            user_res = await db.execute(user_stmt)
-                            owner_user = user_res.scalar_one_or_none()
                             if owner_user and storage_config and storage_config.get("provider") not in (None, "", "none"):
                                 tx_data = {
                                     "order_id": order_id,

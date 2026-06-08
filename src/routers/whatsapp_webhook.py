@@ -233,6 +233,13 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                 content = doc.get("caption", "") or doc.get("filename", "")
                 media_url = doc.get("id")
                 media_mime_type = doc.get("mime_type", "application/pdf")
+            elif msg_type == "audio":
+                # Voice notes & audio. Store the Meta media id; the background
+                # processor downloads and transcribes it before the agent runs.
+                audio = msg.get("audio", {})
+                media_url = audio.get("id")
+                media_mime_type = audio.get("mime_type", "audio/ogg")
+                content = ""  # filled with the transcript in background_process_message
             elif msg_type == "location":
                 from ..services.whatsapp_location_service import (
                     normalize_whatsapp_location_payload,
@@ -294,6 +301,17 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                             content = (
                                 f"No, I changed my mind. Please keep order {order_id_from_btn} active."
                             )
+                        msg_type = "text"
+
+                    # ── Pay with M-Pesa button → deterministic STK push ──
+                    # Format: "pay_mpesa:{order_id}". Convert to an internal marker
+                    # the conversational agent recognises and acts on without the LLM.
+                    elif btn_id.startswith("pay_mpesa:"):
+                        from ..services.whatsapp_ordering_helpers import (
+                            PAY_MPESA_AGENT_PREFIX,
+                        )
+                        pay_order_id = btn_id.split(":", 1)[1].strip()
+                        content = f"{PAY_MPESA_AGENT_PREFIX}{pay_order_id}"
                         msg_type = "text"
 
                     # ── Staff ↔ AI assistant toggle buttons ──
@@ -595,6 +613,63 @@ async def background_process_message(user_id: uuid.UUID, contact_id: uuid.UUID, 
                     )
             except Exception as e:
                 logger.error(f"[WHATSAPP WEBHOOK BG] Failed to send typing indicator: {e}")
+
+            # Transcribe inbound voice notes so they flow through the normal
+            # text ordering pipeline (the agent reads message.content).
+            if message.message_type == "audio" and message.media_url and not (message.content or "").strip():
+                try:
+                    from ..services.whatsapp_service import WhatsAppService
+                    from ..services.voice_transcription_service import voice_transcription_service
+
+                    if voice_transcription_service.enabled:
+                        dl = await WhatsAppService().download_media(
+                            message.media_url, config=wa_config
+                        )
+                        if dl.get("success"):
+                            tr = await voice_transcription_service.transcribe(
+                                dl["content"],
+                                dl.get("mime_type") or message.media_mime_type or "audio/ogg",
+                            )
+                            if tr.get("success") and tr.get("text"):
+                                message.content = tr["text"]
+                                # Persist detected language for the agent to honor
+                                detected_lang = tr.get("language") or ""
+                                if detected_lang:
+                                    try:
+                                        from ..services.conversation_context_manager import (
+                                            context_manager,
+                                            _build_session_key,
+                                        )
+                                        sk = _build_session_key(
+                                            "whatsapp", str(user_id), contact.phone_number
+                                        )
+                                        await context_manager.set_preferred_language(
+                                            sk, detected_lang
+                                        )
+                                    except Exception as lang_err:
+                                        logger.warning(f"[WHATSAPP WEBHOOK BG] voice language save failed: {lang_err}")
+                                await db.commit()
+                                logger.info(f"[WHATSAPP WEBHOOK BG] Transcribed voice note ({detected_lang or 'unknown'})")
+                            else:
+                                logger.warning(f"[WHATSAPP WEBHOOK BG] Voice transcription empty/failed: {tr.get('error')}")
+                        else:
+                            logger.warning(f"[WHATSAPP WEBHOOK BG] Voice media download failed: {dl.get('error')}")
+                    else:
+                        logger.info("[WHATSAPP WEBHOOK BG] Voice transcription disabled (no OPENAI_API_KEY)")
+                except Exception as voice_err:
+                    logger.error(f"[WHATSAPP WEBHOOK BG] Voice note handling error: {voice_err}")
+
+                # If we still have no transcript, give the agent something actionable
+                # so it can politely ask the customer to retry or type their request.
+                if not (message.content or "").strip():
+                    message.content = (
+                        "[The customer sent a voice note that could not be transcribed. "
+                        "Politely ask them to send it again or type their request.]"
+                    )
+                    try:
+                        await db.commit()
+                    except Exception:
+                        pass
 
             # Per-sender rate limit
             try:

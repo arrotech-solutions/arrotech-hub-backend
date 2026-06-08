@@ -75,6 +75,7 @@ app.config_from_object({
         # Low priority — background maintenance, RAG ingestion
         "src.tasks.maintenance_tasks.*": {"queue": "low"},
         "src.tasks.rag_tasks.*": {"queue": "low"},
+        "src.tasks.drive_sync_tasks.*": {"queue": "low"},
     },
 
     # ── Retry Defaults ──
@@ -91,6 +92,7 @@ app.autodiscover_tasks([
     "src.tasks.maintenance_tasks",
     "src.tasks.rag_tasks",
     "src.tasks.broadcast_tasks",
+    "src.tasks.drive_sync_tasks",
 ])
 
 
@@ -111,6 +113,14 @@ app.conf.beat_schedule = {
     "check-tiktok-schedules-every-60s": {
         "task": "src.tasks.maintenance_tasks.check_tiktok_schedules_task",
         "schedule": 60.0,
+        "options": {"queue": "low"},
+    },
+
+    # ── Google Drive Auto-Sync poller (every 120s) ──
+    # Re-ingests changed RAG Drive sources and fires Drive-triggered workflows
+    "poll-drive-sources-every-120s": {
+        "task": "src.tasks.drive_sync_tasks.poll_drive_sources_task",
+        "schedule": 120.0,
         "options": {"queue": "low"},
     },
 

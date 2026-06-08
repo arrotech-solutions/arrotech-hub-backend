@@ -10,6 +10,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Internal marker the webhook uses when a customer taps the "Pay with Mpesa"
+# interactive button. The agent detects this prefix and deterministically
+# triggers an M-Pesa STK push (no reliance on the LLM choosing the tool).
+PAY_MPESA_AGENT_PREFIX = "__PAY_MPESA__:"
+
 # Reuse harness injection patterns for inbound user messages
 try:
     from .harness.guardrails import INJECTION_PATTERNS

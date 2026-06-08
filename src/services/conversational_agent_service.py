@@ -659,6 +659,7 @@ class ConversationalAgentService:
                 cart_quantity_updated_message,
                 parse_remove_item_name,
                 parse_set_quantity_message,
+                PAY_MPESA_AGENT_PREFIX,
             )
 
             from .whatsapp_location_service import (
@@ -757,6 +758,19 @@ class ConversationalAgentService:
                 )
                 detected_language = lang_detection["language_code"]
                 detected_confidence = lang_detection["confidence"]
+                # When the keyword heuristic is unsure on a substantial message,
+                # refine with a cheap LLM classification (catches Sheng/code-mix).
+                if (
+                    detected_confidence < 0.6
+                    and len((user_message or "").split()) >= 2
+                    and not user_message.startswith(PAY_MPESA_AGENT_PREFIX)
+                ):
+                    llm_lang = await self._detect_language_llm(
+                        user_message, supported_languages
+                    )
+                    if llm_lang:
+                        detected_language = llm_lang
+                        detected_confidence = 0.85
                 preferred_language = detected_language
                 if session:
                     existing_lang = session.metadata.get("preferred_language")
@@ -863,15 +877,24 @@ class ConversationalAgentService:
                             actions_taken=[{"tool": "manage_cart", "result_summary": "checkout"}],
                             send_cart_buttons=True,
                         )
-                    return await self._start_checkout_flow(
-                        session_key=session_key,
-                        cart=cart,
-                        currency=currency,
-                        customer_name=customer_name,
-                        customer_phone=customer_phone,
-                        delivery_methods=delivery_methods,
-                        preferred_language=preferred_language,
-                    )
+                    try:
+                        return await self._start_checkout_flow(
+                            session_key=session_key,
+                            cart=cart,
+                            currency=currency,
+                            customer_name=customer_name,
+                            customer_phone=customer_phone,
+                            delivery_methods=delivery_methods,
+                            preferred_language=preferred_language,
+                            catalog_word=catalog_word,
+                        )
+                    except Exception as checkout_err:
+                        # Degrade gracefully to the LLM path instead of returning the
+                        # scary generic "experiencing a brief issue" fallback.
+                        logger.error(
+                            f"[CONV_AGENT] checkout fast-path failed, falling back to LLM: {checkout_err}",
+                            exc_info=True,
+                        )
                 if cart_cmd == "remove":
                     name = parse_remove_item_name(user_message)
                     cart, removed, removed_name = await context_manager.remove_cart_item(
@@ -1095,6 +1118,84 @@ class ConversationalAgentService:
                 "airtable_customers_table": business_config.get("storage_airtable_customers_table", "Customers"),
                 "airtable_transactions_table": business_config.get("storage_airtable_transactions_table", "Transactions"),
             }
+
+            # ── Fast path: "Pay with Mpesa" button → deterministic STK push ──
+            # The webhook converts a pay_mpesa:{order_id} button tap into a marker
+            # message. Trigger the STK push directly instead of depending on the LLM.
+            if (user_message or "").startswith(PAY_MPESA_AGENT_PREFIX):
+                pay_order_id = user_message[len(PAY_MPESA_AGENT_PREFIX):].strip()
+                pay_phone = customer_phone
+                if not pay_phone and session_key and session_key.startswith("ccm:"):
+                    _parts = session_key.split(":")
+                    if len(_parts) >= 4:
+                        pay_phone = _parts[3]
+                lang = (
+                    context_manager.get_preferred_language(session)
+                    if session else preferred_language
+                )
+                if not pay_order_id:
+                    reply = self._t(
+                        lang,
+                        "I couldn't find which order to pay for. Please try again or type the order number.",
+                        "Sikuweza kupata oda ya kulipia. Tafadhali jaribu tena au andika nambari ya oda.",
+                    )
+                    return await self._cart_fast_path_result(
+                        session_key, reply,
+                        actions_taken=[{"tool": "initiate_mpesa_payment", "result_summary": "missing_order_id"}],
+                        send_cart_buttons=False,
+                    )
+                try:
+                    pay_res = await self._sub_initiate_mpesa_payment(
+                        order_id=pay_order_id,
+                        phone_number=pay_phone,
+                        amount=0,  # _sub_initiate looks up the real amount from the registered order
+                        description=f"Order {pay_order_id}",
+                        session_key=session_key,
+                        storage_config=storage_config,
+                        business_name=business_name,
+                        user=user,
+                        db=db,
+                    )
+                except Exception as pay_err:
+                    logger.error(f"[CONV_AGENT] pay_mpesa fast-path failed: {pay_err}", exc_info=True)
+                    pay_res = {"success": False, "error": str(pay_err)}
+
+                if pay_res.get("success"):
+                    reply = self._t(
+                        lang,
+                        (
+                            f"📲 I've sent an M-Pesa payment request to {pay_phone or 'your phone'}.\n"
+                            "Please check your phone and enter your M-Pesa PIN to complete the payment. "
+                            "You'll get a receipt here once it's confirmed. 🙏"
+                        ),
+                        (
+                            f"📲 Nimetuma ombi la malipo ya M-Pesa kwa {pay_phone or 'simu yako'}.\n"
+                            "Tafadhali angalia simu yako na uweke PIN yako ya M-Pesa kukamilisha malipo. "
+                            "Utapokea risiti hapa mara malipo yatakapothibitishwa. 🙏"
+                        ),
+                    )
+                    summary = "stk_initiated"
+                else:
+                    err = pay_res.get("error", "")
+                    reply = self._t(
+                        lang,
+                        (
+                            "Sorry, I couldn't start the M-Pesa payment right now. "
+                            + (f"({err}) " if err else "")
+                            + "Please try again shortly or contact us for help."
+                        ),
+                        (
+                            "Samahani, sikuweza kuanzisha malipo ya M-Pesa kwa sasa. "
+                            + (f"({err}) " if err else "")
+                            + "Tafadhali jaribu tena baadaye au wasiliana nasi kwa usaidizi."
+                        ),
+                    )
+                    summary = "stk_failed"
+                return await self._cart_fast_path_result(
+                    session_key, reply,
+                    actions_taken=[{"tool": "initiate_mpesa_payment", "result_summary": summary}],
+                    send_cart_buttons=False,
+                )
 
             # ── Deterministic checkout (Phase 2): create the order on YES ──
             # If we previously captured checkout details (Phase 1) and the customer
@@ -1812,8 +1913,13 @@ class ConversationalAgentService:
             if not chunk_text.strip():
                 continue
 
-            # Collect image URLs ONLY from this specific chunk
+            # Collect image URLs ONLY from this specific chunk.
+            # Prefer the image_urls bound to the chunk at ingestion (most reliable
+            # product↔image link); fall back to parsing the chunk text.
             chunk_urls: List[str] = []
+            meta_image_urls = item.get("image_urls")
+            if isinstance(meta_image_urls, list):
+                chunk_urls.extend([u for u in meta_image_urls if isinstance(u, str) and u])
             chunk_urls.extend(extract_image_urls(chunk_text))
             chunk_urls.extend(extract_image_urls(str(item.get("source", ""))))
             chunk_urls.extend(extract_image_urls(str(item.get("file", ""))))
@@ -1831,26 +1937,72 @@ class ConversationalAgentService:
         return structured
 
     @staticmethod
+    def _normalize_product_name(value: str) -> str:
+        """Lowercase, trim, and collapse whitespace for reliable name matching."""
+        return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+    @staticmethod
+    def _select_chunk_image_for_product(
+        name_norm: str, chunk: Dict[str, Any]
+    ) -> Optional[str]:
+        """
+        Pick the image URL within a chunk that belongs to the given product.
+
+        - 0 images → None.
+        - 1 image → that image (the chunk maps to a single product image).
+        - many images → choose the URL whose position in the chunk text is
+          closest to the product name occurrence. If we cannot localize the
+          name, return None (ambiguous) rather than guessing.
+        """
+        urls = chunk.get("image_urls") or []
+        if not urls:
+            return None
+        if len(urls) == 1:
+            return urls[0]
+
+        text = chunk.get("chunk_text") or ""
+        text_lower = text.lower()
+        name_pos = text_lower.find(name_norm)
+        if name_pos < 0:
+            return None  # cannot localize within a multi-image chunk → ambiguous
+
+        best_url = None
+        best_dist: Optional[int] = None
+        for url in urls:
+            pos = text.find(url)
+            if pos < 0:
+                pos = text_lower.find(url.lower())
+            if pos < 0:
+                continue
+            dist = abs(pos - name_pos)
+            if best_dist is None or dist < best_dist:
+                best_dist = dist
+                best_url = url
+        return best_url
+
+    @classmethod
     def _correct_product_image_urls(
+        cls,
         products: List[Dict[str, Any]],
         chunk_map: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         """
-        Programmatic safety net: correct image URLs in product cards by
-        matching each product name against the RAG chunks that actually
-        contain it.
+        Programmatic safety net that binds each product card to the CORRECT
+        image, or no image at all.
 
         This runs *after* the LLM builds the display_product_cards arguments
-        but *before* the cards are sent, so it catches any image mix-ups
-        regardless of whether the LLM followed instructions.
+        but *before* the cards are sent, so it catches image mix-ups (e.g.
+        showing a water photo for a soda) regardless of what the LLM did.
 
-        Algorithm:
-        1. For each product the LLM wants to display, find the RAG chunk
-           whose text best matches the product name (case-insensitive
-           substring search).
-        2. If the chunk has image URLs, use the first one as the product's
-           image_url — overriding whatever the LLM assigned.
-        3. If no chunk matches (rare), leave the LLM's choice untouched.
+        Conservative algorithm (correctness over coverage):
+        1. Normalize the product name and find RAG chunks whose text contains
+           that full name (no loose word-overlap matching — that was the main
+           source of cross-product image hallucination).
+        2. If exactly one chunk (or exactly one image-bearing chunk) matches,
+           pick the image URL nearest the product name inside that chunk.
+        3. If there is no confident match, DROP the image (set it to "")
+           rather than keep the LLM's possibly-wrong URL — the card is then
+           sent as text. We never fall back to "first URL of a shared chunk".
         """
         if not products or not chunk_map:
             return products
@@ -1858,54 +2010,45 @@ class ConversationalAgentService:
         corrected = []
         for product in products:
             product = dict(product)  # shallow copy to avoid mutating the original
-            name = (product.get("name") or "").strip().lower()
+            name = cls._normalize_product_name(product.get("name"))
             if not name:
                 corrected.append(product)
                 continue
 
-            # Find the best matching chunk for this product name.
-            # Score by: exact substring match in chunk_text (case-insensitive).
-            best_chunk = None
-            best_score = 0
-            for chunk in chunk_map:
-                chunk_text_lower = (chunk.get("chunk_text") or "").lower()
-                if not chunk_text_lower:
-                    continue
+            # Confident matches only: the full normalized product name must
+            # appear in the chunk text.
+            matched = [
+                chunk
+                for chunk in chunk_map
+                if name and name in cls._normalize_product_name(chunk.get("chunk_text"))
+            ]
 
-                # Score 1: full product name found in chunk text
-                if name in chunk_text_lower:
-                    # Use length of matching name as a tiebreaker
-                    # (longer match = more specific)
-                    score = len(name)
-                    if score > best_score:
-                        best_score = score
-                        best_chunk = chunk
-                    continue
+            chosen_url: Optional[str] = None
+            if len(matched) == 1:
+                chosen_url = cls._select_chunk_image_for_product(name, matched[0])
+            elif len(matched) > 1:
+                with_imgs = [c for c in matched if c.get("image_urls")]
+                if len(with_imgs) == 1:
+                    chosen_url = cls._select_chunk_image_for_product(name, with_imgs[0])
+                # else: ambiguous (multiple image-bearing chunks) → drop
 
-                # Score 2: try individual significant words (3+ chars)
-                # e.g. product "Red Bull 250ml" → check "red", "bull", "250ml"
-                words = [w for w in name.split() if len(w) >= 3]
-                if words:
-                    word_hits = sum(1 for w in words if w in chunk_text_lower)
-                    word_score = word_hits / len(words)  # 0.0 to 1.0
-                    if word_score > 0.5:  # majority of words match
-                        score_val = word_score * len(name) * 0.8  # slightly lower than exact
-                        if score_val > best_score:
-                            best_score = score_val
-                            best_chunk = chunk
-
-            if best_chunk and best_chunk.get("image_urls"):
-                correct_url = best_chunk["image_urls"][0]
-                current_url = product.get("image_url", "")
-                if current_url != correct_url:
+            current_url = product.get("image_url", "") or ""
+            if chosen_url:
+                if current_url != chosen_url:
                     logger.info(
-                        "[CONV_AGENT] 🔧 Image correction for '%s': "
-                        "'%s' → '%s'",
+                        "[CONV_AGENT] 🔧 Image correction for '%s': '%s' → '%s'",
                         product.get("name", "?"),
-                        (current_url or "")[:60],
-                        correct_url[:60],
+                        current_url[:60],
+                        chosen_url[:60],
                     )
-                product["image_url"] = correct_url
+                product["image_url"] = chosen_url
+            else:
+                if current_url:
+                    logger.info(
+                        "[CONV_AGENT] 🔧 Dropping unverified image for '%s' (no confident match)",
+                        product.get("name", "?"),
+                    )
+                product["image_url"] = ""
 
             corrected.append(product)
 
@@ -2061,6 +2204,45 @@ class ConversationalAgentService:
             prompt += f"\n## Additional Business Instructions\n{custom_prompt}\n"
 
         return prompt
+
+    async def _detect_language_llm(
+        self, text: str, supported: List[str]
+    ) -> Optional[str]:
+        """
+        Refine language detection with a cheap LLM call for ambiguous messages
+        (e.g. code-mixed Sheng) where the keyword heuristic is unreliable.
+        Returns a language code from the allowed set, or None.
+        """
+        try:
+            options = list(dict.fromkeys(list(supported) + (["sheng"] if "sw" in supported else [])))
+            if not options:
+                return None
+            labels = ", ".join(options)
+            resp = await self.llm_service.chat_completion(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a language detector. Identify the language of the user's "
+                            f"message and respond with ONLY one code from: {labels}. "
+                            "Use 'sheng' for Kenyan Swahili-English street slang. "
+                            "Return just the code, nothing else."
+                        ),
+                    },
+                    {"role": "user", "content": (text or "")[:500]},
+                ],
+                temperature=0,
+                max_tokens=5,
+                provider="openai",
+                use_background_model=True,
+            )
+            if resp and not getattr(resp, "error", None) and getattr(resp, "content", ""):
+                code = re.sub(r"[^a-z]", "", resp.content.strip().lower())
+                if code in options:
+                    return code
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] LLM language detect failed: {e}")
+        return None
 
     def _parse_supported_languages(self, raw: Any) -> List[str]:
         """Parse supported language codes from workflow config."""
@@ -2364,6 +2546,7 @@ class ConversationalAgentService:
         customer_phone: str,
         delivery_methods: list,
         preferred_language: str = DEFAULT_LANGUAGE,
+        catalog_word: str = "menu",
     ) -> Dict[str, Any]:
         """Begin checkout: ask for missing details or jump straight to order summary."""
         resolved_delivery, saved_addr = await self._resolve_checkout_delivery(
@@ -3157,13 +3340,19 @@ class ConversationalAgentService:
                     "unit_price": clean_price,
                 }
                 cart = await context_manager.add_cart_item(session_key, item)
-                summary = format_cart_summary(cart, currency, catalog_word)
+                # The item is now persisted. Never let a formatting error turn a
+                # successful add into a failure the customer sees as an error.
+                try:
+                    summary = format_cart_summary(cart, currency, catalog_word)
+                except Exception as fmt_err:
+                    logger.warning(f"[CONV_AGENT] cart summary format failed: {fmt_err}")
+                    summary = ""
+                result_text = f"✅ Added *{product_name}* × {item['quantity']:g} to the cart."
+                if summary:
+                    result_text += f"\n\n{summary}"
                 return {
                     "success": True,
-                    "result": (
-                        f"✅ Added *{product_name}* × {item['quantity']:g} to the cart.\n\n"
-                        f"{summary}"
-                    ),
+                    "result": result_text,
                     "cart": cart,
                     "cart_empty": False,
                 }
@@ -3794,11 +3983,19 @@ class ConversationalAgentService:
             track_svc = OrderTrackingService()
             cached_order = track_svc.get_registered_order(str(user.id), order_id)
             if cached_order and cached_order.get("order"):
-                actual_amount = cached_order["order"].get("total_amount") or cached_order["order"].get("total")
+                _order = cached_order["order"]
+                # OrderService.create_order persists `subtotal`; calculate_order_total
+                # adds `grand_total`. Check all known amount fields so we never charge 0.
+                actual_amount = (
+                    _order.get("total_amount")
+                    or _order.get("grand_total")
+                    or _order.get("total")
+                    or _order.get("subtotal")
+                )
                 if actual_amount:
                     try:
                         amount = float(actual_amount)
-                    except ValueError:
+                    except (ValueError, TypeError):
                         pass
 
             # Format phone number to 254XXXXXXXXX for M-Pesa

@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 LANGUAGE_PROFILES: Dict[str, Dict[str, str]] = {
     "en": {"name": "English", "native": "English"},
     "sw": {"name": "Swahili", "native": "Kiswahili"},
+    "sheng": {"name": "Sheng", "native": "Sheng"},  # Kenyan Swahili-English slang
     "fr": {"name": "French", "native": "Français"},
     "ar": {"name": "Arabic", "native": "العربية"},
     "es": {"name": "Spanish", "native": "Español"},
@@ -81,6 +82,13 @@ FRENCH_HINTS = {
 SPANISH_HINTS = {
     "hola", "gracias", "por favor", "quiero", "pedido", "entrega", "precio",
     "hoy", "mañana", "sí", "no",
+}
+# Sheng (Kenyan slang) markers — Swahili/English code-mix
+SHENG_HINTS = {
+    "niaje", "sasa", "mambo", "poa", "fiti", "buda", "manze", "maze", "doo",
+    "chums", "rongo", "noma", "form", "vipi", "msee", "wadau", "mtaa", "kuja",
+    "fanya", "nare", "githeri", "ngata", "mob", "sare", "kakitu", "uko", "niko",
+    "sema", "tu", "bro", "uki", "umeona",
 }
 
 ARABIC_SCRIPT_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F]")
@@ -156,6 +164,7 @@ class AgentIntelligenceService:
         sw_hits = len(words & SWAHILI_HINTS)
         fr_hits = len(words & FRENCH_HINTS)
         es_hits = len(words & SPANISH_HINTS)
+        sheng_hits = len(words & SHENG_HINTS)
 
         if sw_hits:
             scores["sw"] = 0.4 + min(sw_hits * 0.15, 0.5)
@@ -163,6 +172,12 @@ class AgentIntelligenceService:
             scores["fr"] = 0.35 + min(fr_hits * 0.12, 0.45)
         if es_hits:
             scores["es"] = 0.35 + min(es_hits * 0.12, 0.45)
+        if sheng_hits:
+            # Sheng outscores plain Swahili when its distinctive slang appears.
+            scores["sheng"] = 0.45 + min(sheng_hits * 0.18, 0.5)
+            # Sheng is acceptable when the business supports Swahili or Sheng.
+            if "sheng" not in supported_set and "sw" in supported_set:
+                supported_set = supported_set | {"sheng"}
 
         # Default English boost when Latin script and no strong other signal
         if max(scores.values()) <= 0.2:
@@ -196,18 +211,35 @@ class AgentIntelligenceService:
         profile = LANGUAGE_PROFILES.get(language_code, LANGUAGE_PROFILES[DEFAULT_LANGUAGE])
         name = profile["name"]
         native = profile.get("native", name)
+        mirror_rule = (
+            "- ALWAYS mirror the customer's language on every reply. If they write in one "
+            "language now and switch to another later, switch with them.\n"
+            "- Only change language when the customer's own message changes language, or "
+            "when they explicitly ask you to use a specific language.\n"
+        )
+        if language_code == "sheng":
+            return (
+                "\n## Language (CRITICAL)\n"
+                "- The customer is speaking **Sheng** (Kenyan Swahili-English street slang).\n"
+                "- Reply in natural, friendly Sheng — mix Swahili and English the way young "
+                "Kenyans chat (e.g. 'Niaje! Iko poa, nimekuget. Total ni KES 500, uko fiti?'). "
+                "Keep it respectful and clear.\n"
+                + mirror_rule
+            )
         if language_code == "en":
             return (
                 "\n## Language (CRITICAL)\n"
                 "- The customer's preferred language is **English**.\n"
-                "- Reply entirely in English unless they switch languages.\n"
+                "- Reply entirely in English.\n"
+                + mirror_rule
             )
         return (
             f"\n## Language (CRITICAL)\n"
             f"- The customer's preferred language is **{name}** ({native}).\n"
             f"- Reply entirely in {name}. Use natural, conversational {name} — not word-for-word translation.\n"
-            f"- Keep product names and {language_code.upper()} brand terms as appropriate for the locale.\n"
+            f"- Keep product names and brand terms as appropriate for the locale.\n"
             f"- If you are unsure of a term, prefer simple {name} the customer will understand.\n"
+            + mirror_rule
         )
 
     def analyze_customer_sentiment(self, text: str) -> Dict[str, Any]:

@@ -87,7 +87,8 @@ async def process_drive_change_async(
             for workflow in workflows:
                 trigger_config = workflow.trigger_config or {}
                 platform = trigger_config.get("platform", "")
-                event_type = trigger_config.get("event_type", "")
+                # Accept either `event_type` or `trigger` (frontend key inconsistency)
+                event_type = trigger_config.get("event_type") or trigger_config.get("trigger", "")
                 
                 if platform == "google_drive" and event_type == "google_drive_folder_changed":
                     logger.info(f"[DRIVE_TRIGGER] Firing workflow '{workflow.name}' for user {workflow.user_id}")

@@ -588,16 +588,22 @@ class ConversationContextManager:
         session = await self.get_session_by_key(session_key)
         return self.is_human_handoff(session)
 
+    @staticmethod
+    def _normalize_language_code(code: str) -> str:
+        """Normalize a language code: keep 'sheng' intact, else first 2 chars (e.g. 'en-US' -> 'en')."""
+        c = (code or "en").lower().strip()
+        return "sheng" if c.startswith("sheng") else c[:2]
+
     def get_preferred_language(self, session: Optional[ConversationSession]) -> str:
         if not session:
             return "en"
-        return (session.metadata.get("preferred_language") or "en").lower()[:2]
+        return self._normalize_language_code(session.metadata.get("preferred_language") or "en")
 
     async def set_preferred_language(self, session_key: str, language_code: str) -> None:
         session = await self.get_session_by_key(session_key)
         if not session:
             return
-        session.metadata["preferred_language"] = (language_code or "en").lower()[:2]
+        session.metadata["preferred_language"] = self._normalize_language_code(language_code)
         await self.save_session(session)
 
     async def set_human_handoff(
