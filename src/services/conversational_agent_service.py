@@ -660,6 +660,7 @@ class ConversationalAgentService:
                 parse_remove_item_name,
                 parse_set_quantity_message,
                 PAY_MPESA_AGENT_PREFIX,
+                CONFIRM_PAY_AGENT_MARKER,
             )
 
             from .whatsapp_location_service import (
@@ -887,6 +888,8 @@ class ConversationalAgentService:
                             delivery_methods=delivery_methods,
                             preferred_language=preferred_language,
                             catalog_word=catalog_word,
+                            user=user,
+                            db=db,
                         )
                     except Exception as checkout_err:
                         # Degrade gracefully to the LLM path instead of returning the
@@ -1056,6 +1059,8 @@ class ConversationalAgentService:
                             delivery_methods=delivery_methods,
                             preferred_language=preferred_language,
                             delivery_address=saved_addr,
+                            user=user,
+                            db=db,
                         )
 
                     # Customer is correcting us after the bot (LLM) asked for details
@@ -1196,6 +1201,175 @@ class ConversationalAgentService:
                     actions_taken=[{"tool": "initiate_mpesa_payment", "result_summary": summary}],
                     send_cart_buttons=False,
                 )
+
+            # ── Fast path: "Pay with M-Pesa" tapped on the checkout screen ──
+            # One tap: create the order (it's already confirmed by tapping) AND
+            # trigger the STK push immediately. No reliance on typed "YES".
+            if (user_message or "").strip() == CONFIRM_PAY_AGENT_MARKER:
+                try:
+                    session = await context_manager.get_session_by_key(session_key)
+                except Exception:
+                    session = None
+                lang = (
+                    context_manager.get_preferred_language(session)
+                    if session else preferred_language
+                )
+                checkout_customer = session.metadata.get("checkout_customer") if session else None
+                pending = session.metadata.get("pending_confirmation") if session else None
+                cart_items = (pending or {}).get("items") if pending else None
+                if not cart_items and session:
+                    cart_items = context_manager.get_cart(session)
+
+                if not checkout_customer or not cart_items:
+                    reply = self._t(
+                        lang,
+                        "I couldn't find your order details. Please type *checkout* to start again.",
+                        "Sikuweza kupata maelezo ya oda yako. Tafadhali andika *checkout* kuanza upya.",
+                    )
+                    return await self._cart_fast_path_result(
+                        session_key, reply,
+                        actions_taken=[{"tool": "checkout", "result_summary": "confirm_pay_no_details"}],
+                        send_cart_buttons=False,
+                    )
+
+                create_args = {
+                    "customer_name": checkout_customer.get("name", "") or customer_name,
+                    "customer_phone": checkout_customer.get("phone", "") or customer_phone,
+                    "items": cart_items,
+                    "delivery_method": checkout_customer.get("delivery_method", "") or "pickup",
+                    "delivery_address": checkout_customer.get("delivery_address", ""),
+                }
+                try:
+                    await context_manager.mark_order_confirmed(session_key)
+                except Exception:
+                    pass
+
+                tool_result = await self._sub_create_order(
+                    arguments=create_args,
+                    order_type=order_type,
+                    currency=currency,
+                    business_name=business_name,
+                    storage_config=storage_config,
+                    user=user,
+                    db=db,
+                    background_tasks=background_tasks,
+                    session_key=session_key,
+                    user_message="yes",
+                    business_phone=business_phone,
+                )
+
+                if not tool_result.get("success"):
+                    logger.warning(
+                        "[CONV_AGENT] confirm_pay: order creation failed: %s",
+                        tool_result.get("result"),
+                    )
+                    reply = self._t(
+                        lang,
+                        "Sorry, I couldn't place your order just now. Please try again shortly.",
+                        "Samahani, sikuweza kuweka oda yako kwa sasa. Tafadhali jaribu tena baadaye.",
+                    )
+                    return await self._cart_fast_path_result(
+                        session_key, reply,
+                        actions_taken=[{"tool": "create_order", "result_summary": "confirm_pay_failed"}],
+                        send_cart_buttons=False,
+                    )
+
+                order_data = tool_result.get("order_data", tool_result)
+                _order = order_data.get("order") if isinstance(order_data.get("order"), dict) else order_data
+                new_order_id = _order.get("order_id") or order_data.get("order_id", "")
+                pay_amount = (
+                    _order.get("total_amount") or _order.get("grand_total")
+                    or _order.get("total") or _order.get("subtotal") or 0
+                )
+                pay_phone = create_args["customer_phone"]
+
+                try:
+                    await context_manager.clear_cart(session_key)
+                    await context_manager.clear_pending_confirmation(session_key)
+                    await context_manager.update_session_metadata(
+                        session_key,
+                        {
+                            "checkout_customer": None,
+                            "checkout_draft": {},
+                            "awaiting_checkout_details": False,
+                            "awaiting_order_confirmation": False,
+                        },
+                    )
+                except Exception as e:
+                    logger.warning(f"[CONV_AGENT] confirm_pay cleanup failed: {e}")
+
+                try:
+                    pay_res = await self._sub_initiate_mpesa_payment(
+                        order_id=new_order_id,
+                        phone_number=pay_phone,
+                        amount=pay_amount,
+                        description=f"Order {new_order_id}",
+                        session_key=session_key,
+                        storage_config=storage_config,
+                        business_name=business_name,
+                        user=user,
+                        db=db,
+                    )
+                except Exception as pay_err:
+                    logger.error(f"[CONV_AGENT] confirm_pay STK failed: {pay_err}", exc_info=True)
+                    pay_res = {"success": False, "error": str(pay_err)}
+
+                order_notification = self._format_business_notification(
+                    order_data, business_name, currency
+                )
+
+                if pay_res.get("success"):
+                    reply = self._t(
+                        lang,
+                        (
+                            f"✅ Order *{new_order_id}* placed!\n\n"
+                            f"📲 I've sent an M-Pesa request to {pay_phone}. "
+                            "Enter your M-Pesa PIN to complete payment. "
+                            "You'll get a receipt here once it's confirmed. 🙏"
+                        ),
+                        (
+                            f"✅ Oda *{new_order_id}* imewekwa!\n\n"
+                            f"📲 Nimetuma ombi la M-Pesa kwa {pay_phone}. "
+                            "Weka PIN yako ya M-Pesa kukamilisha malipo. "
+                            "Utapokea risiti hapa mara itakapothibitishwa. 🙏"
+                        ),
+                    )
+                    summary = "confirm_pay_stk_initiated"
+                else:
+                    err = pay_res.get("error", "")
+                    reply = self._t(
+                        lang,
+                        (
+                            f"✅ Order *{new_order_id}* placed!\n\n"
+                            "But I couldn't start the M-Pesa payment automatically"
+                            + (f" ({err})" if err else "")
+                            + ". Please tap *Pay with Mpesa* below to try again."
+                        ),
+                        (
+                            f"✅ Oda *{new_order_id}* imewekwa!\n\n"
+                            "Lakini sikuweza kuanzisha malipo ya M-Pesa kiotomatiki"
+                            + (f" ({err})" if err else "")
+                            + ". Tafadhali bonyeza *Pay with Mpesa* hapa chini kujaribu tena."
+                        ),
+                    )
+                    summary = "confirm_pay_stk_failed"
+
+                await self._save_to_ccm(session_key, "assistant", reply)
+                return {
+                    "response_text": reply,
+                    "image_urls": [],
+                    "cards": [],
+                    "order_created": True,
+                    "order_cancelled": False,
+                    "order_data": order_data,
+                    "order_notification": order_notification,
+                    "escalation_triggered": False,
+                    "escalation_notification": "",
+                    "human_handoff": False,
+                    "actions_taken": [{"tool": "initiate_mpesa_payment", "result_summary": summary}],
+                    "send_cart_buttons": False,
+                    "send_agent_mode_buttons": None,
+                }
 
             # ── Deterministic checkout (Phase 2): create the order on YES ──
             # If we previously captured checkout details (Phase 1) and the customer
@@ -2547,6 +2721,8 @@ class ConversationalAgentService:
         delivery_methods: list,
         preferred_language: str = DEFAULT_LANGUAGE,
         catalog_word: str = "menu",
+        user: Optional[User] = None,
+        db: Optional[AsyncSession] = None,
     ) -> Dict[str, Any]:
         """Begin checkout: ask for missing details or jump straight to order summary."""
         resolved_delivery, saved_addr = await self._resolve_checkout_delivery(
@@ -2565,6 +2741,8 @@ class ConversationalAgentService:
                 delivery_methods=delivery_methods,
                 preferred_language=preferred_language,
                 delivery_address=saved_addr,
+                user=user,
+                db=db,
             )
 
         await context_manager.update_session_metadata(
@@ -2606,6 +2784,8 @@ class ConversationalAgentService:
         delivery_methods: list,
         preferred_language: str = DEFAULT_LANGUAGE,
         delivery_address: str = "",
+        user: Optional[User] = None,
+        db: Optional[AsyncSession] = None,
     ) -> Dict[str, Any]:
         """
         Deterministic checkout step: if the delivery method is still ambiguous,
@@ -2690,12 +2870,86 @@ class ConversationalAgentService:
             delivery_address=delivery_address,
             lang=preferred_language,
         )
+
+        # Show a tappable "Pay with M-Pesa" button (after the summary text) so the
+        # customer can confirm + pay in one tap — no need to type "YES". The button
+        # is dispatched by the whatsapp_send_message step, after this reply.
         return await self._cart_fast_path_result(
             session_key,
             reply,
             actions_taken=[{"tool": "checkout", "result_summary": "awaiting_confirmation"}],
             send_cart_buttons=False,
+            send_checkout_pay_button=True,
         )
+
+    async def _send_checkout_pay_button(
+        self,
+        session_key: str,
+        user: Optional[User],
+        db: Optional[AsyncSession],
+        to_number: str = "",
+        preferred_language: Optional[str] = None,
+    ) -> None:
+        """Send the 'Pay with M-Pesa' confirm button on the checkout screen."""
+        if not user or not db or not session_key or not session_key.startswith("ccm:whatsapp:"):
+            return
+        try:
+            parts = session_key.split(":")
+            recipient = parts[3] if len(parts) >= 4 else ""
+            if not recipient and to_number:
+                recipient = str(to_number).strip().replace(" ", "")
+            if not recipient:
+                return
+
+            from sqlalchemy import select
+            from ..models import Connection, ConnectionStatus
+            from .whatsapp_service import WhatsAppService
+
+            if not preferred_language:
+                try:
+                    _sess = await context_manager.get_session_by_key(session_key)
+                    preferred_language = (
+                        context_manager.get_preferred_language(_sess)
+                        if _sess else DEFAULT_LANGUAGE
+                    )
+                except Exception:
+                    preferred_language = DEFAULT_LANGUAGE
+
+            result = await db.execute(
+                select(Connection).filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == "whatsapp",
+                    Connection.status == ConnectionStatus.ACTIVE,
+                )
+            )
+            connection = result.scalar_one_or_none()
+            if not connection:
+                return
+            config = connection.config or {}
+            if not config.get("access_token") or not config.get("phone_number_id"):
+                return
+
+            body_text = self._t(
+                preferred_language,
+                "Ready to pay? Tap *Pay with M-Pesa* and I'll send a prompt to your phone. 📲",
+                "Uko tayari kulipa? Bonyeza *Pay with M-Pesa* nitatuma ombi kwa simu yako. 📲",
+            )
+            pay_label = self._t(preferred_language, "Pay with M-Pesa", "Lipa na M-Pesa")
+            btn_result = await WhatsAppService().send_quick_reply_buttons(
+                to_number=recipient,
+                body_text=body_text,
+                buttons=[{"id": "checkout_confirm_pay", "title": pay_label}],
+                config={
+                    "access_token": config.get("access_token"),
+                    "phone_number_id": config.get("phone_number_id"),
+                },
+            )
+            if not btn_result.get("success"):
+                logger.warning(
+                    f"[CONV_AGENT] checkout pay button failed: {btn_result.get('error')}"
+                )
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] checkout pay button failed: {e}", exc_info=True)
 
     async def _cart_fast_path_result(
         self,
@@ -2703,6 +2957,7 @@ class ConversationalAgentService:
         reply: str,
         actions_taken: Optional[List[Dict[str, Any]]] = None,
         send_cart_buttons: bool = False,
+        send_checkout_pay_button: bool = False,
     ) -> Dict[str, Any]:
         """
         Cart command result — text goes out via workflow whatsapp_send_message step
@@ -2723,6 +2978,7 @@ class ConversationalAgentService:
             "human_handoff": False,
             "actions_taken": actions_taken or [],
             "send_cart_buttons": send_cart_buttons,
+            "send_checkout_pay_button": send_checkout_pay_button,
             "send_agent_mode_buttons": None,
         }
 

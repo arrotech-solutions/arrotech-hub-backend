@@ -3585,6 +3585,34 @@ class ToolExecutor:
                                 exc_info=True,
                             )
 
+                # Checkout: "Pay with M-Pesa" button after the order summary text
+                send_checkout_pay = arguments.get("send_checkout_pay_button", False)
+                if isinstance(send_checkout_pay, str):
+                    send_checkout_pay = send_checkout_pay.strip().lower() in (
+                        "true", "1", "yes"
+                    )
+                if send_checkout_pay and text_result and text_result.get("success"):
+                    session_key = (arguments.get("session_key") or "").strip()
+                    if session_key.startswith("{{"):
+                        session_key = ""
+                    if not session_key and to_number:
+                        phone_clean = str(to_number).strip().replace(" ", "")
+                        session_key = f"ccm:whatsapp:{user.id}:{phone_clean}"
+                    if session_key:
+                        try:
+                            agent = ConversationalAgentService()
+                            await agent._send_checkout_pay_button(
+                                session_key=session_key,
+                                user=user,
+                                db=db,
+                                to_number=to_number,
+                            )
+                        except Exception as btn_err:
+                            logger.warning(
+                                f"[WHATSAPP] Checkout pay button failed: {btn_err}",
+                                exc_info=True,
+                            )
+
                 result_summary = f"Message sent to {to_number}"
 
                 return {
@@ -7325,6 +7353,7 @@ Description: {payment.description or 'N/A'}"""
                 "actions_taken": result.get("actions_taken", []),
                 "send_cart_buttons": result.get("send_cart_buttons", False),
                 "send_agent_mode_buttons": result.get("send_agent_mode_buttons"),
+                "send_checkout_pay_button": result.get("send_checkout_pay_button", False),
                 "data": result
             }
 

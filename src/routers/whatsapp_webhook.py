@@ -314,6 +314,15 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                         content = f"{PAY_MPESA_AGENT_PREFIX}{pay_order_id}"
                         msg_type = "text"
 
+                    # ── "Pay with M-Pesa" on the checkout confirmation screen ──
+                    # One tap confirms + creates the order AND triggers STK push.
+                    elif btn_id == "checkout_confirm_pay":
+                        from ..services.whatsapp_ordering_helpers import (
+                            CONFIRM_PAY_AGENT_MARKER,
+                        )
+                        content = CONFIRM_PAY_AGENT_MARKER
+                        msg_type = "text"
+
                     # ── Staff ↔ AI assistant toggle buttons ──
                     elif btn_id in ("agent:human", "agent:staff"):
                         content = "I'd like to speak with a person, please."

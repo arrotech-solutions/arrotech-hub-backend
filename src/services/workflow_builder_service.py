@@ -620,6 +620,13 @@ class WorkflowBuilderService:
                         prev_amb = prev_result.get("send_agent_mode_buttons")
                         if prev_amb and not substituted_params.get("send_agent_mode_buttons"):
                             substituted_params["send_agent_mode_buttons"] = prev_amb
+                        prev_cpb = prev_result.get("send_checkout_pay_button")
+                        if prev_cpb not in (True, "True", "true", "1", 1, "yes"):
+                            inner = prev_result.get("data")
+                            if isinstance(inner, dict):
+                                prev_cpb = inner.get("send_checkout_pay_button")
+                        if prev_cpb in (True, "True", "true", "1", 1, "yes"):
+                            substituted_params["send_checkout_pay_button"] = True
                 sk = substituted_params.get("session_key") or (context or {}).get("session_key")
                 if sk and "{{" not in str(sk):
                     substituted_params["session_key"] = sk

@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 # triggers an M-Pesa STK push (no reliance on the LLM choosing the tool).
 PAY_MPESA_AGENT_PREFIX = "__PAY_MPESA__:"
 
+# Internal marker for the "Pay with M-Pesa" button shown on the checkout
+# confirmation screen. One tap confirms the order (creating it) AND triggers
+# the STK push — so customers never have to type "YES" to proceed to payment.
+CONFIRM_PAY_AGENT_MARKER = "__CONFIRM_PAY__"
+
 # Reuse harness injection patterns for inbound user messages
 try:
     from .harness.guardrails import INJECTION_PATTERNS
