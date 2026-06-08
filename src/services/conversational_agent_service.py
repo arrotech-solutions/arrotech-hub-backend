@@ -667,6 +667,15 @@ class ConversationalAgentService:
             customer_name = business_config.get("customer_name", "")
             business_phone = business_config.get("business_phone", "")
 
+            # The WhatsApp sender's phone is always encoded in the session key
+            # (ccm:{platform}:{owner_user_id}:{sender}). Treat it as the
+            # authoritative, trusted number so order/payment tools always have
+            # the correct phone even when business_config doesn't carry it.
+            if session_key and session_key.startswith("ccm:"):
+                _sk_parts = session_key.split(":")
+                if len(_sk_parts) >= 4 and _sk_parts[3].strip():
+                    customer_phone = _sk_parts[3].strip()
+
             from .whatsapp_ordering_helpers import (
                 check_user_message_injection,
                 injection_safe_reply,
