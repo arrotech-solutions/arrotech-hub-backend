@@ -116,13 +116,12 @@ app.conf.beat_schedule = {
         "options": {"queue": "low"},
     },
 
-    # ── Google Drive Auto-Sync poller (every 120s) ──
-    # Re-ingests changed RAG Drive sources and fires Drive-triggered workflows.
-    # Runs on the default queue so it fires even when only the main worker is up.
-    "poll-drive-sources-every-120s": {
-        "task": "src.tasks.drive_sync_tasks.poll_drive_sources_task",
-        "schedule": 120.0,
-        "options": {"queue": "default"},
+    # ── Google Drive push channel renewal (every 6 hours) ──
+    # Drive webhooks expire after ~7 days; renew before expiration.
+    "renew-drive-watches-every-6h": {
+        "task": "src.tasks.drive_sync_tasks.renew_drive_watches_task",
+        "schedule": crontab(minute=0, hour="*/6"),
+        "options": {"queue": "low"},
     },
 
     # ── WhatsApp Token Refresh (daily at 03:00 UTC) ──

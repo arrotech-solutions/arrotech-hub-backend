@@ -266,6 +266,9 @@ class BaseConfig(BaseSettings):
     # URLs
     API_BASE_URL: str = "http://localhost:8000"
     FRONTEND_URL: str = "http://localhost:3000"
+    # Google Drive push notifications (must be public HTTPS in production)
+    GOOGLE_DRIVE_WEBHOOK_URL: Optional[str] = None  # defaults to {API_BASE_URL}/api/google-drive/events
+    GOOGLE_DRIVE_USE_CELERY_WEBHOOK: bool = True
 
     # CORS - Allow Railway, local development, and production domain
     ALLOWED_ORIGINS: list = [

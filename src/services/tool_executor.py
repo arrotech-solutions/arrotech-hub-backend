@@ -4221,6 +4221,24 @@ class ToolExecutor:
                     return await service.list_folders()
                 elif operation == "list_spreadsheets":
                     return await service.list_spreadsheets()
+                elif operation == "watch_changes":
+                    return await service.watch_changes(
+                        channel_id=arguments.get("channel_id"),
+                        webhook_url=arguments.get("webhook_url"),
+                        page_token=arguments.get("page_token"),
+                        expiration_ms=arguments.get("expiration_ms"),
+                    )
+                elif operation == "stop_channel":
+                    return await service.stop_channel(
+                        channel_id=arguments.get("channel_id"),
+                        resource_id=arguments.get("resource_id"),
+                    )
+                elif operation == "get_start_page_token":
+                    return await service.get_start_page_token()
+                elif operation == "list_changes":
+                    return await service.list_changes(
+                        page_token=arguments.get("page_token"),
+                    )
             
             elif tool_name == "google_workspace_sheets":
                 service = SheetsService(base_client)
@@ -7023,9 +7041,9 @@ Description: {payment.description or 'N/A'}"""
         source_type: str,
     ) -> None:
         """
-        Register (or refresh) a DataSource row so the Drive poller re-ingests
-        when the folder changes. Called when rag_ingest_source runs with
-        auto_sync enabled on a workflow step.
+        Register (or refresh) a DataSource row so Drive push webhooks can
+        re-ingest when the folder changes. Called when rag_ingest_source runs
+        with auto_sync enabled on a workflow step.
         """
         import uuid as _uuid
         from sqlalchemy import select
@@ -7119,7 +7137,7 @@ Description: {payment.description or 'N/A'}"""
                 user=user,
                 db=db
             )
-            # Persist auto-sync so the Drive poller can re-ingest on folder changes.
+            # Persist auto-sync and register Drive push watch for webhook-driven re-ingest.
             auto_sync = arguments.get("auto_sync") in (True, "true", "True", 1, "1", "yes")
             if auto_sync and res.get("status") == "success" and kb_id and url_or_id:
                 try:
@@ -7130,6 +7148,9 @@ Description: {payment.description or 'N/A'}"""
                         url_or_id=str(url_or_id),
                         source_type=str(source_type),
                     )
+                    from .drive_watch_service import ensure_drive_watch
+
+                    await ensure_drive_watch(user, db)
                 except Exception as autosync_err:
                     logger.warning(f"[RAG] auto_sync DataSource upsert failed: {autosync_err}")
             return {"success": res.get("status") == "success", "result": res.get("message"), "data": res}

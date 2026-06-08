@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 from ..database import get_db
 from ..models import (User, Workflow, WorkflowExecution,
                       WorkflowExecutionStatus, WorkflowStatus, WorkflowStep,
@@ -442,10 +443,10 @@ async def update_workflow(
                 detail="Workflow not found"
             )
         
-        # Auto-activate Gmail watch_inbox when email-related workflow is enabled
-        watch_result = None
+        # Auto-activate push watches when relevant workflows are enabled
         if data.status == "active":
-            watch_result = await _auto_activate_gmail_watch(workflow, user, db)
+            await _auto_activate_gmail_watch(workflow, user, db)
+            await _auto_activate_drive_watch(workflow, user, db)
         
         return {
             "success": True,
@@ -882,6 +883,14 @@ async def create_workflow_from_steps(
         for step in created_steps:
             await db.refresh(step)
         
+        wf_reload = await db.execute(
+            select(Workflow)
+            .options(selectinload(Workflow.steps))
+            .where(Workflow.id == workflow.id)
+        )
+        workflow = wf_reload.scalar_one()
+        await _auto_activate_drive_watch(workflow, user, db)
+        
         workflow_data = {
             "id": workflow.id,
             "name": workflow.name,
@@ -994,6 +1003,41 @@ async def get_conversation_tool_calls(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get conversation tool calls: {str(e)}"
         )
+
+
+async def _auto_activate_drive_watch(workflow: Workflow, user: User, db: AsyncSession) -> dict:
+    """
+    Register Google Drive Changes push notifications when a Drive auto-sync
+    workflow is activated. Best-effort; does not block workflow activation.
+    """
+    try:
+        from ..tasks.drive_sync_tasks import (
+            _is_drive_folder_event_workflow,
+            _folder_id_from_workflow,
+        )
+        from ..services.drive_watch_service import ensure_drive_watch
+
+        status = (
+            workflow.status.value
+            if hasattr(workflow.status, "value")
+            else str(workflow.status or "")
+        )
+        if status != WorkflowStatus.ACTIVE.value:
+            return None
+        if workflow.trigger_type != WorkflowTriggerType.EVENT.value:
+            return None
+        if not _is_drive_folder_event_workflow(workflow):
+            return None
+        if not _folder_id_from_workflow(workflow):
+            return None
+
+        logger.info(
+            f"Drive sync workflow '{workflow.name}' activated — registering push watch"
+        )
+        return await ensure_drive_watch(user, db)
+    except Exception as e:
+        logger.error(f"Auto-activate Drive watch failed (non-blocking): {e}")
+        return {"watch_activated": False, "error": str(e)}
 
 
 async def _auto_activate_gmail_watch(workflow: Workflow, user: User, db: AsyncSession) -> dict:

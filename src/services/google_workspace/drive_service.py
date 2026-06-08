@@ -2,11 +2,18 @@
 Drive Service for Google Workspace Integration
 Handles file and folder operations in Google Drive.
 """
+import logging
+import time
 from typing import Dict, List, Any, Optional
 import io
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
 from .base_client import GoogleWorkspaceBaseClient
+
+logger = logging.getLogger(__name__)
+
+# Google Drive push channels expire after at most 7 days (ms since epoch).
+_DRIVE_CHANNEL_MAX_MS = 6 * 24 * 60 * 60 * 1000  # renew a day before the cap
 
 
 class DriveService:
@@ -468,10 +475,98 @@ class DriveService:
                 'count': len(options)
             }
         except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"Error listing Google Sheets: {e}")
             return {
                 'success': False,
                 'error': str(e)
             }
+
+    async def get_start_page_token(self) -> Dict[str, Any]:
+        """Return the current Drive changes page token for push-notification setup."""
+        try:
+            service = self.base_client.get_service(self.service_name, self.version)
+            result = service.changes().getStartPageToken().execute()
+            token = result.get("startPageToken")
+            if not token:
+                return {"success": False, "error": "Drive API returned no startPageToken"}
+            return {"success": True, "page_token": token}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def watch_changes(
+        self,
+        *,
+        channel_id: str,
+        webhook_url: str,
+        page_token: str,
+        expiration_ms: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Register a Drive Changes API push channel.
+
+        Notifications are sent to ``webhook_url`` when any file in the user's
+        Drive changes. Callers filter by watched folder IDs.
+        """
+        try:
+            service = self.base_client.get_service(self.service_name, self.version)
+            if expiration_ms is None:
+                expiration_ms = int(time.time() * 1000) + _DRIVE_CHANNEL_MAX_MS
+            body = {
+                "id": channel_id,
+                "type": "web_hook",
+                "address": webhook_url,
+                "expiration": expiration_ms,
+            }
+            result = service.changes().watch(pageToken=page_token, body=body).execute()
+            return {
+                "success": True,
+                "channel_id": result.get("id", channel_id),
+                "resource_id": result.get("resourceId"),
+                "expiration": result.get("expiration"),
+                "page_token": page_token,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def stop_channel(self, channel_id: str, resource_id: str) -> Dict[str, Any]:
+        """Stop an active Drive push notification channel."""
+        try:
+            service = self.base_client.get_service(self.service_name, self.version)
+            service.channels().stop(
+                body={"id": channel_id, "resourceId": resource_id}
+            ).execute()
+            return {"success": True, "message": "Drive push channel stopped"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def list_changes(self, page_token: str) -> Dict[str, Any]:
+        """List Drive changes since ``page_token``; returns a new start page token."""
+        try:
+            service = self.base_client.get_service(self.service_name, self.version)
+            all_changes: List[Dict[str, Any]] = []
+            token: Optional[str] = page_token
+            new_start: Optional[str] = None
+
+            while token:
+                result = service.changes().list(
+                    pageToken=token,
+                    spaces="drive",
+                    pageSize=100,
+                    fields=(
+                        "nextPageToken,newStartPageToken,"
+                        "changes(fileId,removed,file(id,parents,mimeType,modifiedTime))"
+                    ),
+                ).execute()
+                all_changes.extend(result.get("changes", []))
+                token = result.get("nextPageToken")
+                if result.get("newStartPageToken"):
+                    new_start = result["newStartPageToken"]
+
+            return {
+                "success": True,
+                "changes": all_changes,
+                "new_start_page_token": new_start or page_token,
+                "count": len(all_changes),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}

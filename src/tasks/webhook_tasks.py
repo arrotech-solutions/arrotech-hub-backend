@@ -141,3 +141,32 @@ def process_gmail_notification_task(self, notification_data: Dict[str, Any]):
 
     _run_async(_process())
     return {"status": "processed", "type": "gmail"}
+
+
+@app.task(
+    name="src.tasks.webhook_tasks.process_drive_webhook_task",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=30,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    acks_late=True,
+)
+def process_drive_webhook_task(self, payload: Dict[str, Any]):
+    """Process a Google Drive Changes API push notification."""
+    logger.info(
+        f"[CeleryWebhook] Processing Drive notification "
+        f"channel={payload.get('channel_id')}"
+    )
+
+    async def _process():
+        from src.services.drive_watch_service import process_drive_notification
+
+        result = await process_drive_notification(
+            channel_id=payload.get("channel_id"),
+            resource_state=payload.get("state"),
+        )
+        logger.info(f"[CeleryWebhook] Drive result: {result}")
+
+    _run_async(_process())
+    return {"status": "processed", "type": "google_drive"}
