@@ -579,8 +579,51 @@ class RAGPipelineService:
                 "metadata": meta
             })
             
-        # 4. Dynamic Vector DB Upsert (with resolved credentials)
+        # 4. Remove stale chunks for the same source(s) before upserting.
+        # Re-ingest used to append random-id vectors, leaving old prices/data
+        # in Pinecone — search then returned outdated catalog entries.
         vector_service = self._get_vector_service_with_creds(effective_vector_db, credentials)
+        def _source_url_variants(url: str) -> set:
+            """Google files may have been ingested under Docs or Drive URL forms."""
+            urls = {url}
+            for pat in (
+                r"docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)",
+                r"drive\.google\.com/file/d/([a-zA-Z0-9_-]+)",
+            ):
+                m = re.search(pat, url or "")
+                if m:
+                    fid = m.group(1)
+                    urls.add(f"https://docs.google.com/spreadsheets/d/{fid}")
+                    urls.add(f"https://drive.google.com/file/d/{fid}/view")
+            return urls
+
+        stale_urls: set = set()
+        for c in all_chunks:
+            if c.get("url") and c["url"] not in ("custom_workflow", ""):
+                stale_urls.update(_source_url_variants(c["url"]))
+        if source_url and source_url not in ("custom_workflow", ""):
+            stale_urls.update(_source_url_variants(source_url))
+
+        chunks_deleted = 0
+        if effective_vector_db == "pinecone" and stale_urls:
+            for url in stale_urls:
+                del_res = await vector_service.pinecone_delete_by_filter(
+                    index_host=None,
+                    namespace=namespace,
+                    metadata_filter={"source_url": {"$eq": url}},
+                )
+                if del_res.get("success"):
+                    chunks_deleted += 1
+                    logger.info(
+                        f"RAG Ingestion: cleared stale vectors for source_url={url[:80]}"
+                    )
+                else:
+                    logger.warning(
+                        f"RAG Ingestion: stale vector delete failed for {url[:80]}: "
+                        f"{del_res.get('error')}"
+                    )
+
+        # 5. Dynamic Vector DB Upsert (with resolved credentials)
         if effective_vector_db == "pinecone":
             upsert_res = await vector_service.pinecone_upsert_vectors(
                 index_host=None, namespace=namespace, vectors=all_vectors
@@ -601,6 +644,7 @@ class RAGPipelineService:
             "status": "success",
             "count": len(items_to_process),
             "chunks_added": upsert_res.get("upserted_count", upsert_res.get("upserted", upsert_res.get("added", len(all_vectors)))),
+            "chunks_deleted": chunks_deleted,
             "namespace": namespace,
             "vector_db": effective_vector_db,
             "embedding_model": embed_operation,

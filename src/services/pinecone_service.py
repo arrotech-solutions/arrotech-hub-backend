@@ -73,6 +73,35 @@ class PineconeService:
             logger.error(f"Error querying Pinecone: {e}")
             return {"success": False, "error": str(e)}
 
+    async def pinecone_delete_by_filter(
+        self,
+        index_host: str,
+        namespace: str,
+        metadata_filter: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Delete vectors in a namespace that match a metadata filter."""
+        target_host = index_host or self.host
+        if not self.api_key or not target_host:
+            return {"success": False, "error": "Pinecone API Key or Index Host not configured"}
+
+        clean_host = target_host.replace("https://", "").replace("http://", "").rstrip("/")
+        url = f"https://{clean_host}/vectors/delete"
+        payload = {
+            "namespace": namespace,
+            "filter": metadata_filter,
+        }
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    url, headers=self._get_headers(), json=payload, timeout=30.0
+                )
+                response.raise_for_status()
+                return {"success": True, "deleted": True, "namespace": namespace}
+        except Exception as e:
+            logger.error(f"Error deleting Pinecone vectors by filter: {e}")
+            return {"success": False, "error": str(e)}
+
     async def pinecone_delete_namespace(self, index_host: str, namespace: str) -> Dict[str, Any]:
         """Deletes an entire customer's namespace data upon offboarding."""
         target_host = index_host or self.host
