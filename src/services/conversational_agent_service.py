@@ -2141,43 +2141,88 @@ class ConversationalAgentService:
         return re.sub(r"\s+", " ", (value or "").strip().lower())
 
     @staticmethod
-    def _select_chunk_image_for_product(
-        name_norm: str, chunk: Dict[str, Any]
-    ) -> Optional[str]:
+    def _image_positions(text: str) -> List[Tuple[int, str]]:
+        """Return [(position, url)] for every image URL in the text, in order."""
+        out: List[Tuple[int, str]] = []
+        seen = set()
+        if not text:
+            return out
+        for m in _MARKDOWN_IMAGE_PATTERN.finditer(text):
+            url = (m.group(2) or "").strip().rstrip('.,;:!?)"\'>]')
+            if url and url not in seen:
+                seen.add(url)
+                out.append((m.start(), url))
+        for pat in (_IMAGE_EXT_PATTERN, _IMAGE_HOST_PATTERN):
+            for m in pat.finditer(text):
+                url = (m.group(0) or "").rstrip('.,;:!?)"\'>]')
+                if url and url not in seen:
+                    seen.add(url)
+                    out.append((m.start(), url))
+        out.sort(key=lambda t: t[0])
+        return out
+
+    @classmethod
+    def _bind_images_to_products(
+        cls,
+        products: List[Dict[str, Any]],
+        chunk_map: List[Dict[str, Any]],
+    ) -> Dict[str, str]:
         """
-        Pick the image URL within a chunk that belongs to the given product.
+        Build {normalized_product_name: image_url} using two deterministic rules:
 
-        - 0 images → None.
-        - 1 image → that image (the chunk maps to a single product image).
-        - many images → choose the URL whose position in the chunk text is
-          closest to the product name occurrence. If we cannot localize the
-          name, return None (ambiguous) rather than guessing.
+        1. Exact alt-text: an image written as ``![Product Name](url)`` whose
+           alt-text equals a product name (highest confidence).
+        2. Positional: every image belongs to the product whose name most
+           recently precedes it in the chunk text. Product catalogs list each
+           item immediately followed by its own image (e.g. ``![Image](url)``),
+           so the image after "Latte Macchiato" is the Latte Macchiato photo.
+
+        Works whether the catalog is one big blob chunk or one chunk per product.
         """
-        urls = chunk.get("image_urls") or []
-        if not urls:
-            return None
-        if len(urls) == 1:
-            return urls[0]
+        target_names: List[str] = []
+        for p in products:
+            n = cls._normalize_product_name(p.get("name"))
+            if n and n not in target_names:
+                target_names.append(n)
+        if not target_names:
+            return {}
 
-        text = chunk.get("chunk_text") or ""
-        text_lower = text.lower()
-        name_pos = text_lower.find(name_norm)
-        if name_pos < 0:
-            return None  # cannot localize within a multi-image chunk → ambiguous
+        result: Dict[str, str] = {}
 
-        best_url = None
-        best_dist: Optional[int] = None
-        for url in urls:
-            pos = text.find(url)
-            if pos < 0:
-                pos = text_lower.find(url.lower())
-            if pos < 0:
+        for chunk in chunk_map:
+            text = chunk.get("chunk_text") or ""
+            if not text:
                 continue
-            dist = abs(pos - name_pos)
-            if best_dist is None or dist < best_dist:
-                best_dist = dist
-                best_url = url
-        return best_url
+            text_lower = text.lower()
+
+            # Rule 1: alt-text exactly equals a product name.
+            for alt_norm, url in (chunk.get("image_alt_map") or {}).items():
+                if alt_norm in target_names and url:
+                    result.setdefault(alt_norm, url)
+
+            # Locate each product name's position within this chunk.
+            name_positions: List[Tuple[int, str]] = []
+            for n in target_names:
+                pos = text_lower.find(n)
+                if pos >= 0:
+                    name_positions.append((pos, n))
+            if not name_positions:
+                continue
+            name_positions.sort(key=lambda t: t[0])
+
+            # Rule 2: assign each image to the closest product name preceding it.
+            for img_pos, url in cls._image_positions(text):
+                owner = None
+                for pos, n in name_positions:
+                    if pos <= img_pos:
+                        owner = n
+                    else:
+                        break
+                if owner is None:
+                    owner = name_positions[0][1]  # image before any name → first product
+                result.setdefault(owner, url)  # first image per product wins
+
+        return result
 
     @classmethod
     def _correct_product_image_urls(
@@ -2189,73 +2234,29 @@ class ConversationalAgentService:
         Programmatic safety net that binds each product card to the CORRECT
         image, or no image at all.
 
-        This runs *after* the LLM builds the display_product_cards arguments
-        but *before* the cards are sent, so it catches image mix-ups (e.g.
-        showing a water photo for a soda) regardless of what the LLM did.
-
-        Conservative algorithm (correctness over coverage):
-        1. Normalize the product name and find RAG chunks whose text contains
-           that full name (no loose word-overlap matching — that was the main
-           source of cross-product image hallucination).
-        2. If exactly one chunk (or exactly one image-bearing chunk) matches,
-           pick the image URL nearest the product name inside that chunk.
-        3. If there is no confident match, DROP the image (set it to "")
-           rather than keep the LLM's possibly-wrong URL — the card is then
-           sent as text. We never fall back to "first URL of a shared chunk".
+        Runs *after* the LLM builds display_product_cards but *before* the cards
+        are sent, so it catches image mix-ups (e.g. a soda showing a water photo)
+        regardless of what the LLM did. Binding is deterministic and positional
+        (see _bind_images_to_products): the image that follows a product in the
+        catalog text is that product's image.
         """
         if not products or not chunk_map:
             return products
 
-        # If any chunk carries alt-text-labeled images, the catalog uses
-        # ``![Product Name](url)``. In that case we trust ONLY exact alt-text
-        # matches and never guess by position — an unlabeled product simply has
-        # no image (text-only card) rather than borrowing a neighbour's photo.
-        any_alt_labeled = any(chunk.get("image_alt_map") for chunk in chunk_map)
+        name_to_url = cls._bind_images_to_products(products, chunk_map)
 
         corrected = []
         for product in products:
             product = dict(product)  # shallow copy to avoid mutating the original
             name = cls._normalize_product_name(product.get("name"))
-            if not name:
-                corrected.append(product)
-                continue
-
-            chosen_url: Optional[str] = None
-
-            # Strategy 0 (highest confidence): the product name matches the
-            # alt-text of a markdown image ``![Product Name](url)``. This is an
-            # exact, position-independent binding and works even when many
-            # products share one blob chunk.
-            for chunk in chunk_map:
-                alt_map = chunk.get("image_alt_map") or {}
-                if name in alt_map and alt_map[name]:
-                    chosen_url = alt_map[name]
-                    break
-
-            # Strategy 1: confident name-in-chunk match (single image-bearing
-            # chunk). Only used when the catalog does NOT label images with
-            # alt-text — otherwise a missing alt match means "no image".
-            if not chosen_url and not any_alt_labeled:
-                matched = [
-                    chunk
-                    for chunk in chunk_map
-                    if name and name in cls._normalize_product_name(chunk.get("chunk_text"))
-                ]
-                if len(matched) == 1:
-                    chosen_url = cls._select_chunk_image_for_product(name, matched[0])
-                elif len(matched) > 1:
-                    with_imgs = [c for c in matched if c.get("image_urls")]
-                    if len(with_imgs) == 1:
-                        chosen_url = cls._select_chunk_image_for_product(name, with_imgs[0])
-                    # else: ambiguous (multiple image-bearing chunks) → drop
-
+            chosen_url = name_to_url.get(name) if name else None
             current_url = product.get("image_url", "") or ""
+
             if chosen_url:
                 if current_url != chosen_url:
                     logger.info(
-                        "[CONV_AGENT] 🔧 Image correction for '%s': '%s' → '%s'",
+                        "[CONV_AGENT] 🔧 Image bound for '%s' → '%s'",
                         product.get("name", "?"),
-                        current_url[:60],
                         chosen_url[:60],
                     )
                 product["image_url"] = chosen_url
