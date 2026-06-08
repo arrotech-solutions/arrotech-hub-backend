@@ -26,6 +26,7 @@ from .utils import run_async as _run_async
 logger = logging.getLogger(__name__)
 
 _DRIVE_SOURCE_TYPES = ("google_drive", "google_workspace_drive")
+_DRIVE_STEP_SOURCE_TYPES = frozenset({"google_drive", "google_workspace_drive"})
 
 
 def _parse_iso(value: Any) -> Optional[datetime]:
@@ -71,6 +72,49 @@ def _folder_id_from_config(config: Dict[str, Any]) -> str:
         val = config.get(key)
         if val:
             return str(val)
+    return ""
+
+
+def _literal_folder_id(value: Any) -> str:
+    """Return a folder ID only when it is a concrete value (not a Jinja template)."""
+    s = str(value or "").strip()
+    if not s or "{{" in s or "}}" in s:
+        return ""
+    return s
+
+
+def _is_drive_folder_event_workflow(wf) -> bool:
+    """True when workflow listens for Google Drive folder change events."""
+    tcfg = wf.trigger_config or {}
+    platform = (tcfg.get("platform") or "").lower()
+    event_type = (tcfg.get("event_type") or tcfg.get("trigger") or "").lower()
+    return platform == "google_drive" and event_type == "google_drive_folder_changed"
+
+
+def _folder_id_from_workflow(wf) -> str:
+    """
+    Resolve the Drive folder to watch for a workflow.
+
+    The frontend stores the folder on the ``rag_ingest_source`` step
+    (``url_or_id``), not in ``trigger_config`` — so we fall back to steps
+    when the trigger block has no folder id.
+    """
+    tcfg = wf.trigger_config or {}
+    fid = _literal_folder_id(_folder_id_from_config(tcfg))
+    if fid:
+        return fid
+
+    steps = sorted(wf.steps or [], key=lambda s: getattr(s, "step_number", 0))
+    for step in steps:
+        if step.tool_name != "rag_ingest_source":
+            continue
+        params = step.tool_parameters or {}
+        st = (params.get("source_type") or "").lower()
+        if st not in _DRIVE_STEP_SOURCE_TYPES:
+            continue
+        fid = _literal_folder_id(_folder_id_from_config(params))
+        if fid:
+            return fid
     return ""
 
 
@@ -137,6 +181,7 @@ async def _poll_rag_sources(db) -> int:
 async def _poll_drive_workflows(db) -> int:
     """Fire active workflows listening for Drive changes on their watched folder."""
     from sqlalchemy import select, and_
+    from sqlalchemy.orm import selectinload
     from src.models import Workflow, WorkflowStatus, WorkflowTriggerType
     from src.services.tool_executor import ToolExecutor
     from src.services.workflow_builder_service import WorkflowBuilderService
@@ -145,7 +190,9 @@ async def _poll_drive_workflows(db) -> int:
 
     triggered = 0
     result = await db.execute(
-        select(Workflow).where(
+        select(Workflow)
+        .options(selectinload(Workflow.steps))
+        .where(
             and_(
                 Workflow.status == WorkflowStatus.ACTIVE,
                 Workflow.trigger_type == WorkflowTriggerType.EVENT.value,
@@ -157,15 +204,15 @@ async def _poll_drive_workflows(db) -> int:
     builder = WorkflowBuilderService()
 
     for wf in workflows:
-        tcfg = wf.trigger_config or {}
-        platform = (tcfg.get("platform") or "").lower()
-        # Accept either `event_type` or `trigger` (frontend key inconsistency)
-        event_type = (tcfg.get("event_type") or tcfg.get("trigger") or "").lower()
-        if platform != "google_drive" or event_type != "google_drive_folder_changed":
+        if not _is_drive_folder_event_workflow(wf):
             continue
-        folder_id = _folder_id_from_config(tcfg)
+
+        folder_id = _folder_id_from_workflow(wf)
         if not folder_id:
-            logger.info(f"[DRIVE_SYNC] Workflow {wf.id} has no folder_id in trigger_config — skipping")
+            logger.warning(
+                f"[DRIVE_SYNC] Workflow '{wf.name}' ({wf.id}) is a Drive event workflow "
+                "but has no folder id on trigger_config or rag_ingest_source step — skipping"
+            )
             continue
 
         user_res = await db.execute(select(User).where(User.id == wf.user_id))
@@ -175,15 +222,37 @@ async def _poll_drive_workflows(db) -> int:
 
         latest = await _latest_modified_time(executor, folder_id, user, db)
         if latest is None:
+            logger.info(
+                f"[DRIVE_SYNC] Workflow {wf.id}: could not read folder {folder_id} "
+                "(check Google connection / folder access)"
+            )
             continue
 
         watermark_key = f"drive_wf_watermark:{wf.id}:{folder_id}"
         prev = _parse_iso(cache_service.get(watermark_key))
+        should_fire = False
+
         if prev is None:
-            # First observation — record baseline, don't fire retroactively
-            cache_service.set(watermark_key, latest.isoformat(), expire_seconds=60 * 60 * 24 * 60)
-            continue
-        if latest <= prev:
+            # First poll after deploy/enable: fire if the folder changed AFTER the
+            # workflow was last saved (catches edits made right after activation).
+            wf_updated = _parse_iso(wf.updated_at)
+            if wf_updated and latest > wf_updated:
+                should_fire = True
+                logger.info(
+                    f"[DRIVE_SYNC] Workflow {wf.id}: first poll, folder changed "
+                    f"since workflow update ({latest.isoformat()} > {wf_updated.isoformat()})"
+                )
+            else:
+                cache_service.set(
+                    watermark_key, latest.isoformat(), expire_seconds=60 * 60 * 24 * 60
+                )
+                logger.info(
+                    f"[DRIVE_SYNC] Workflow {wf.id}: baseline watermark set for folder {folder_id}"
+                )
+        elif latest > prev:
+            should_fire = True
+
+        if not should_fire:
             continue
 
         logger.info(f"[DRIVE_SYNC] Workflow {wf.id} folder {folder_id} changed → executing")
@@ -194,6 +263,7 @@ async def _poll_drive_workflows(db) -> int:
                 db=db,
                 input_data={
                     "google_drive_folder_id": folder_id,
+                    "drive_folder_id": folder_id,
                     "google_drive_state": "change",
                     "google_drive_modified_time": latest.isoformat(),
                 },

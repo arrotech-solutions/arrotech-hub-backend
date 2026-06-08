@@ -117,11 +117,12 @@ app.conf.beat_schedule = {
     },
 
     # ── Google Drive Auto-Sync poller (every 120s) ──
-    # Re-ingests changed RAG Drive sources and fires Drive-triggered workflows
+    # Re-ingests changed RAG Drive sources and fires Drive-triggered workflows.
+    # Runs on the default queue so it fires even when only the main worker is up.
     "poll-drive-sources-every-120s": {
         "task": "src.tasks.drive_sync_tasks.poll_drive_sources_task",
         "schedule": 120.0,
-        "options": {"queue": "low"},
+        "options": {"queue": "default"},
     },
 
     # ── WhatsApp Token Refresh (daily at 03:00 UTC) ──

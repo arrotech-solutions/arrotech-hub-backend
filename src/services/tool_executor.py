@@ -4185,7 +4185,8 @@ class ToolExecutor:
                     return await service.list_files(
                         folder_id=arguments.get("folder_id"),
                         query=arguments.get("query"),
-                        max_results=arguments.get("max_results", 100)
+                        max_results=arguments.get("max_results", 100),
+                        order_by=arguments.get("order_by", "modifiedTime desc"),
                     )
                 elif operation == "create_folder":
                     return await service.create_folder(
@@ -7012,6 +7013,82 @@ Description: {payment.description or 'N/A'}"""
         
         return {"success": False, "error": f"Unknown Airtable tool: {tool_name}", "result": None}
 
+    async def _upsert_drive_autosync_source(
+        self,
+        *,
+        user: User,
+        db: AsyncSession,
+        kb_id: str,
+        url_or_id: str,
+        source_type: str,
+    ) -> None:
+        """
+        Register (or refresh) a DataSource row so the Drive poller re-ingests
+        when the folder changes. Called when rag_ingest_source runs with
+        auto_sync enabled on a workflow step.
+        """
+        import uuid as _uuid
+        from sqlalchemy import select
+        from ..models import DataSource, KnowledgeBase
+
+        drive_types = {"google_drive", "google_workspace_drive"}
+        if (source_type or "").lower() not in drive_types:
+            return
+
+        try:
+            kb_uuid = _uuid.UUID(str(kb_id))
+        except (ValueError, TypeError):
+            return
+
+        kb_res = await db.execute(
+            select(KnowledgeBase).where(
+                KnowledgeBase.id == kb_uuid,
+                KnowledgeBase.user_id == user.id,
+            )
+        )
+        if not kb_res.scalar_one_or_none():
+            return
+
+        folder_id = str(url_or_id).strip()
+        config = {
+            "url_or_id": folder_id,
+            "folder_id": folder_id,
+            "auto_sync": True,
+        }
+        name = f"Drive auto-sync ({folder_id[:12]}…)" if len(folder_id) > 12 else f"Drive auto-sync ({folder_id})"
+
+        src_res = await db.execute(
+            select(DataSource).where(
+                DataSource.kb_id == kb_uuid,
+                DataSource.source_type.in_(tuple(drive_types)),
+            )
+        )
+        existing = None
+        for row in src_res.scalars().all():
+            row_cfg = row.config or {}
+            if str(row_cfg.get("url_or_id") or row_cfg.get("folder_id") or "") == folder_id:
+                existing = row
+                break
+
+        if existing:
+            existing.sync_mode = "realtime"
+            existing.status = "active"
+            existing.config = {**(existing.config or {}), **config}
+            logger.info(f"[RAG] Refreshed auto-sync DataSource {existing.id} for folder {folder_id}")
+        else:
+            db.add(
+                DataSource(
+                    kb_id=kb_uuid,
+                    source_type=source_type,
+                    name=name,
+                    config=config,
+                    status="active",
+                    sync_mode="realtime",
+                )
+            )
+            logger.info(f"[RAG] Created auto-sync DataSource for folder {folder_id}")
+        await db.commit()
+
     async def _execute_rag_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
         """Execute RAG-related tools with correct signatures."""
         service = self.services["rag"]
@@ -7031,14 +7108,30 @@ Description: {payment.description or 'N/A'}"""
             return {"success": res.get("status") == "success", "result": res.get("message"), "data": res}
             
         elif tool_name == "rag_ingest_source":
+            url_or_id = arguments.get("url_or_id", arguments.get("url", arguments.get("id", "")))
+            source_type = arguments.get("source_type", "website")
+            kb_id = arguments.get("kb_id")
             res = await service.rag_ingest_source(
-                url_or_id=arguments.get("url_or_id", arguments.get("url", arguments.get("id", ""))),
-                kb_id=arguments.get("kb_id"),
+                url_or_id=url_or_id,
+                kb_id=kb_id,
                 user_id=user_id,
-                source_type=arguments.get("source_type", "website"),
+                source_type=source_type,
                 user=user,
                 db=db
             )
+            # Persist auto-sync so the Drive poller can re-ingest on folder changes.
+            auto_sync = arguments.get("auto_sync") in (True, "true", "True", 1, "1", "yes")
+            if auto_sync and res.get("status") == "success" and kb_id and url_or_id:
+                try:
+                    await self._upsert_drive_autosync_source(
+                        user=user,
+                        db=db,
+                        kb_id=str(kb_id),
+                        url_or_id=str(url_or_id),
+                        source_type=str(source_type),
+                    )
+                except Exception as autosync_err:
+                    logger.warning(f"[RAG] auto_sync DataSource upsert failed: {autosync_err}")
             return {"success": res.get("status") == "success", "result": res.get("message"), "data": res}
             
         elif tool_name == "rag_search":
