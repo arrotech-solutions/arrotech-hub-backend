@@ -27,7 +27,7 @@ from .routers import (access_router, agent_router, analytics_router, api_router,
                       mcp_router, mpesa_agent_router, notification_router, payment_router, preferences_router,
                       security_router, settings_router, slack_agent_router, slack_router, subscription_router, templates_router, whatsapp_router, workflow_router, facebook_router, instagram_router, telegram_router, twitter_router, clickup_router, teams_router, zoom_router,
                       outlook_router, notion_router, trello_router, jira_router, whatsapp_webhook, whatsapp_contacts, whatsapp_broadcast, tiktok_router, ai_router, support_router, kra_router, productivity_router, asana_router,
-                       blog_router, employee_router, gmail_webhook, hubspot_router, ws_router, organization_router, quickbooks_router, airtable_router, xero_router, zoho_router, zoho_webhook, linkedin_router, rag_router, public_forms_router, github_router)
+                       blog_router, employee_router, gmail_webhook, google_drive_webhook, hubspot_router, ws_router, organization_router, quickbooks_router, airtable_router, xero_router, zoho_router, zoho_webhook, linkedin_router, rag_router, public_forms_router, github_router)
 from .services import (BillingService, ContentCreationService,
                        FileManagementService, HubSpotService,
                        RateLimitService, SlackService, SocialMediaService, TelegramService,
@@ -324,6 +324,7 @@ main_router.include_router(tiktok_router.router)
 main_router.include_router(ai_router.router)
 main_router.include_router(support_router.router)
 main_router.include_router(gmail_webhook.router)
+main_router.include_router(google_drive_webhook.router)
 # Note: kra_router is already included via api_router
 main_router.include_router(productivity_router.router)
 main_router.include_router(ws_router.router)
