@@ -612,6 +612,50 @@ class RAGPipelineService:
     # SOURCE INGESTION — fetches from MCP tools, then ingests
     # ================================================================
 
+    @staticmethod
+    def _rows_to_product_records(rows: List[List[Any]]) -> List[str]:
+        """
+        Convert a catalog spreadsheet's rows (first row = headers) into one
+        self-contained text record per product row.
+
+        Ingesting one product per chunk is the key to reliable image binding:
+        each product's name, price, description and image URL stay together in
+        the same chunk, so retrieval can never pair a product with another
+        product's image.
+        """
+        records: List[str] = []
+        if not rows or len(rows) < 2:
+            return records
+
+        header = [str(h).strip() for h in rows[0]]
+
+        def _norm(h: str) -> str:
+            return re.sub(r"[^a-z0-9]", "", (h or "").lower())
+
+        norm_header = [_norm(h) for h in header]
+        name_aliases = {
+            "name", "productname", "product", "item", "itemname",
+            "title", "menuitem", "dish", "service",
+        }
+        name_idx = next((i for i, h in enumerate(norm_header) if h in name_aliases), None)
+
+        for row in rows[1:]:
+            if not any(str(c).strip() for c in row):
+                continue  # skip blank rows
+            lines: List[str] = []
+            # Lead with the product name so name-in-chunk matching is reliable
+            if name_idx is not None and name_idx < len(row) and str(row[name_idx]).strip():
+                lines.append(str(row[name_idx]).strip())
+            for i, cell in enumerate(row):
+                val = str(cell).strip()
+                if not val or i == name_idx:
+                    continue
+                label = header[i] if i < len(header) and header[i] else f"Column {i + 1}"
+                lines.append(f"{label}: {val}")
+            if lines:
+                records.append("\n".join(lines))
+        return records
+
     async def rag_ingest_source(
         self, 
         url_or_id: str, 
@@ -711,6 +755,35 @@ class RAGPipelineService:
                         "message": msg
                     }
 
+                # Native Google Sheet in Drive → ingest one product per row so
+                # each product keeps its own image (same path as a Sheets source).
+                file_mime = meta_res.get("file", {}).get("mimeType", "") if meta_res.get("success") else ""
+                if file_mime == "application/vnd.google-apps.spreadsheet":
+                    sheet_res = await executor.execute_tool(
+                        "google_workspace_sheets",
+                        {"operation": "read_range", "spreadsheet_id": url_or_id, "range_name": "A:Z"},
+                        user, db
+                    )
+                    if sheet_res.get("success"):
+                        rows = sheet_res.get("values")
+                        if rows is None and isinstance(sheet_res.get("data"), dict):
+                            rows = sheet_res["data"].get("values")
+                        product_records = self._rows_to_product_records(rows or [])
+                        if product_records:
+                            logger.info(
+                                f"RAG Ingestion: Drive sheet {url_or_id} → {len(product_records)} per-product chunks"
+                            )
+                            return await self.rag_ingest_content(
+                                content=product_records,
+                                kb_id=kb_id,
+                                user_id=user_id,
+                                source_url=f"https://docs.google.com/spreadsheets/d/{url_or_id}",
+                                source_name=meta_res.get("file", {}).get("name", url_or_id),
+                                source_tool="google_workspace_sheets",
+                                user=user,
+                                db=db,
+                            )
+
                 # If not a folder, download as file
                 res = await executor.execute_tool(
                     "google_workspace_drive", 
@@ -786,9 +859,36 @@ class RAGPipelineService:
                 )
                 if not res.get("success"):
                     return {"status": "error", "message": f"Sheets fetch failed: {res.get('error')}"}
-                raw_text = str(res.get("data", res.get("result", "")))
+
+                # read_range returns a 2D `values` array (header row + data rows).
+                rows = res.get("values")
+                if rows is None and isinstance(res.get("data"), dict):
+                    rows = res["data"].get("values")
+                rows = rows or []
+
                 source_url = f"https://docs.google.com/spreadsheets/d/{url_or_id}"
                 source_name = f"Google Sheet {url_or_id}"
+
+                # Ingest ONE product per row → one chunk per product. This keeps
+                # each product's image URL bound to that product (no mismatches).
+                product_records = self._rows_to_product_records(rows)
+                if product_records:
+                    logger.info(
+                        f"RAG Ingestion: catalog sheet {url_or_id} → {len(product_records)} per-product chunks"
+                    )
+                    return await self.rag_ingest_content(
+                        content=product_records,
+                        kb_id=kb_id,
+                        user_id=user_id,
+                        source_url=source_url,
+                        source_name=source_name,
+                        source_tool=source_type,
+                        user=user,
+                        db=db,
+                    )
+
+                # Fallback: flatten rows to text (e.g. header-less or single row)
+                raw_text = "\n".join(" | ".join(str(c) for c in r) for r in rows) if rows else ""
                 
             # ---- Slack ----
             elif source_type == "slack":
