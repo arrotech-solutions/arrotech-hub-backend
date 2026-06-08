@@ -420,16 +420,17 @@ AGENT_SUB_TOOLS = [
                 "from a button click or explicitly provided by the user. "
                 "If the customer just says 'cancel my order' without specifying which order, "
                 "you MUST call `get_user_orders` first so they can see their orders and pick one to cancel. "
-                "Do NOT guess the order ID. Do NOT call this tool just to check if they have orders."
+                "Do NOT guess the order ID. Do NOT call this tool just to check if they have orders. "
+                "NEVER ask the customer for their phone number — it is taken automatically and securely "
+                "from the WhatsApp number they are messaging from."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "order_id": {"type": "string", "description": "The ID of the order to cancel (may come from button click)"},
-                    "customer_phone": {"type": "string", "description": "Customer phone number for verification"},
                     "reason": {"type": "string", "description": "Reason for cancellation provided by customer"}
                 },
-                "required": ["order_id", "customer_phone", "reason"]
+                "required": ["order_id", "reason"]
             }
         }
     },
@@ -439,17 +440,17 @@ AGENT_SUB_TOOLS = [
             "name": "get_user_orders",
             "description": (
                 "Search and retrieve the customer's order history and details. Use this when a customer asks to see their past orders, "
-                "check an order status, or wants to cancel an order but hasn't provided the exact order ID yet. "
-                "Requires the customer's phone number. If you don't have it, ask them for their phone number so you can pull up their orders. "
+                "check an order status, track an order, or wants to cancel an order but hasn't provided the exact order ID yet. "
+                "NEVER ask the customer for their phone number — orders are looked up automatically and securely using the "
+                "WhatsApp number they are messaging from. Asking for or accepting a typed phone number is forbidden, because it "
+                "would expose another person's orders. Just call this tool with no arguments. "
                 "IMPORTANT: After getting results, ALWAYS call `display_order_cards` to show orders as interactive cards with action buttons. "
                 "Never list orders as plain text."
             ),
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "customer_phone": {"type": "string", "description": "Customer phone number to search by"}
-                },
-                "required": ["customer_phone"]
+                "properties": {},
+                "required": []
             }
         }
     },
@@ -2362,8 +2363,8 @@ class ConversationalAgentService:
 9. Call `validate_order`, then show a clear summary and ask the customer to reply *YES* to confirm
 10. Only after they confirm, create the order using `create_order`
 11. After order is created, offer M-Pesa payment using `initiate_mpesa_payment`
-12. If a customer wants to cancel an order, FIRST call `get_user_orders` to show their orders with Cancel buttons — do NOT guess the Order ID and do NOT ask them to type it. If you don't know their phone number, ask for it so you can look up their orders. If the order_id is already provided (e.g. from a button click), proceed directly with `cancel_order`
-13. If a customer wants to see their order history or check an order status, call `get_user_orders` then ALWAYS call `display_order_cards` with the results
+12. If a customer wants to cancel an order, FIRST call `get_user_orders` to show their orders with Cancel buttons — do NOT guess the Order ID and do NOT ask them to type it. NEVER ask the customer for their phone number — their orders are looked up automatically and securely from the WhatsApp number they are messaging from. If the order_id is already provided (e.g. from a button click), proceed directly with `cancel_order`
+13. If a customer wants to see their order history, check, or track an order status, call `get_user_orders` (with no arguments — NEVER ask for or accept a typed phone number) then ALWAYS call `display_order_cards` with the results
 14. If the customer has items in their cart (see Cart section below), reference the cart when summarizing their order
 15. After placing an order, the customer automatically receives a receipt and status updates on WhatsApp — you do not need to send the receipt manually unless asked
 
@@ -3263,6 +3264,27 @@ class ConversationalAgentService:
         """Execute one of the agent's sub-tools."""
 
         try:
+            # ── SECURITY: order & payment tools must ALWAYS use the phone number
+            # that sent this WhatsApp message. Never trust a phone the LLM or the
+            # customer typed — otherwise someone could view, track, or cancel
+            # another person's orders (and trigger their payment) simply by
+            # entering a different number (IDOR / data leak). ──
+            if default_customer_phone:
+                if tool_name in ("create_order", "validate_order", "cancel_order", "get_user_orders"):
+                    if arguments.get("customer_phone") and arguments.get("customer_phone") != default_customer_phone:
+                        logger.warning(
+                            "[CONV_AGENT] 🔒 Overriding %s customer_phone %r → sender %r",
+                            tool_name, arguments.get("customer_phone"), default_customer_phone,
+                        )
+                    arguments["customer_phone"] = default_customer_phone
+                elif tool_name == "initiate_mpesa_payment":
+                    if arguments.get("phone_number") and arguments.get("phone_number") != default_customer_phone:
+                        logger.warning(
+                            "[CONV_AGENT] 🔒 Overriding STK phone_number %r → sender %r",
+                            arguments.get("phone_number"), default_customer_phone,
+                        )
+                    arguments["phone_number"] = default_customer_phone
+
             if tool_name == "escalate_to_human":
                 return await self._sub_escalate_to_human(
                     arguments=arguments,
@@ -3957,6 +3979,59 @@ class ConversationalAgentService:
         except Exception as e:
             return {"success": False, "result": f"Calculation error: {str(e)}"}
 
+    async def _customer_owns_order(
+        self,
+        order_id: str,
+        customer_phone: str,
+        storage_config: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+    ) -> bool:
+        """
+        Return True only if ``order_id`` belongs to ``customer_phone``.
+
+        Checks the ephemeral order-tracking registry first (fast), then the
+        connected storage (orders are looked up filtered by the customer's
+        phone, so a match proves ownership). Used to gate cancellation so a
+        customer can never act on another person's order.
+        """
+        oid = str(order_id or "").strip().lower()
+        if not oid or not customer_phone:
+            return False
+
+        # 1) Tracking registry (records the phone the order was placed from)
+        try:
+            from .order_tracking_service import order_tracking_service
+            reg = order_tracking_service.get_registered_order(str(user.id), order_id)
+            if reg and reg.get("customer_phone"):
+                reg_digits = re.sub(r"\D", "", str(reg.get("customer_phone")))
+                snd_digits = re.sub(r"\D", "", str(customer_phone))
+                if reg_digits and (reg_digits == snd_digits or reg_digits.endswith(snd_digits[-9:]) or snd_digits.endswith(reg_digits[-9:])):
+                    return True
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] ownership registry check failed: {e}")
+
+        # 2) Connected storage — list THIS customer's orders and look for the id
+        provider = (storage_config or {}).get("provider", "none")
+        if provider in (None, "", "none"):
+            # No persistent store to verify against; rely on the registry result
+            # above (already returned True if matched). Be safe → deny.
+            return False
+        try:
+            from .tool_executor import ToolExecutor
+            executor = ToolExecutor()
+            orders = []
+            if provider == "google_sheets":
+                orders = await self._get_orders_from_google_sheets(executor, customer_phone, storage_config, user, db)
+            elif provider == "airtable":
+                orders = await self._get_orders_from_airtable(executor, customer_phone, storage_config, user, db)
+            for o in orders or []:
+                if str(o.get("Order ID", "")).strip().lower() == oid:
+                    return True
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] ownership storage check failed: {e}")
+        return False
+
     async def _sub_cancel_order(
         self,
         arguments: Dict[str, Any],
@@ -3972,7 +4047,24 @@ class ConversationalAgentService:
             order_id = arguments.get("order_id", "")
             reason = arguments.get("reason", "Customer requested cancellation via chat")
             customer_phone = arguments.get("customer_phone", "")
-            
+
+            # SECURITY: only allow cancelling an order that actually belongs to
+            # this customer (the WhatsApp sender). Prevents anyone from cancelling
+            # another person's order by typing/guessing an order ID.
+            if customer_phone:
+                owns = await self._customer_owns_order(
+                    order_id, customer_phone, storage_config, user, db
+                )
+                if not owns:
+                    return {
+                        "success": False,
+                        "result": (
+                            "I couldn't find that order under your number. You can only "
+                            "cancel your own orders — tap *My Orders* to see them and use "
+                            "the Cancel button on the one you want."
+                        ),
+                    }
+
             cancel_result = await self.order_service.handle_operation(
                 operation="cancel_order",
                 order_id=order_id,
