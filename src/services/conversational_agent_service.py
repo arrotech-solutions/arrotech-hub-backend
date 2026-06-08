@@ -120,6 +120,27 @@ def extract_image_urls(text: str) -> List[str]:
     return urls
 
 
+def extract_markdown_image_map(text: str) -> Dict[str, str]:
+    """
+    Build a map of normalized image alt-text → URL from markdown images.
+
+    Product catalogs are rendered as ``![Product Name](https://image)`` where the
+    alt-text is the product name. Matching a product to the image whose alt-text
+    equals its name is the most reliable product↔image binding — far better than
+    guessing by position inside a blob chunk.
+    """
+    out: Dict[str, str] = {}
+    if not text:
+        return out
+    for m in _MARKDOWN_IMAGE_PATTERN.finditer(text):
+        alt = (m.group(1) or "").strip()
+        url = (m.group(2) or "").strip().rstrip('.,;:!?)"\'>]')
+        if alt and url:
+            key = re.sub(r"\s+", " ", alt.lower())
+            out.setdefault(key, url)
+    return out
+
+
 def strip_image_urls(text: str, image_urls: List[str]) -> str:
     """
     Remove image URLs and Markdown image tags from text.
@@ -2104,8 +2125,12 @@ class ConversationalAgentService:
 
             chunk_urls = _dedupe_keep_order(chunk_urls)
             structured.append({
-                "chunk_text": chunk_text[:500],  # Cap length to avoid token bloat
+                # Keep enough text to locate every product (this map is used only
+                # for programmatic image correction, never sent to the LLM).
+                "chunk_text": chunk_text[:8000],
                 "image_urls": chunk_urls,
+                # Highest-confidence binding: alt-text → URL from markdown images.
+                "image_alt_map": extract_markdown_image_map(chunk_text),
             })
 
         return structured
@@ -2181,6 +2206,12 @@ class ConversationalAgentService:
         if not products or not chunk_map:
             return products
 
+        # If any chunk carries alt-text-labeled images, the catalog uses
+        # ``![Product Name](url)``. In that case we trust ONLY exact alt-text
+        # matches and never guess by position — an unlabeled product simply has
+        # no image (text-only card) rather than borrowing a neighbour's photo.
+        any_alt_labeled = any(chunk.get("image_alt_map") for chunk in chunk_map)
+
         corrected = []
         for product in products:
             product = dict(product)  # shallow copy to avoid mutating the original
@@ -2189,22 +2220,34 @@ class ConversationalAgentService:
                 corrected.append(product)
                 continue
 
-            # Confident matches only: the full normalized product name must
-            # appear in the chunk text.
-            matched = [
-                chunk
-                for chunk in chunk_map
-                if name and name in cls._normalize_product_name(chunk.get("chunk_text"))
-            ]
-
             chosen_url: Optional[str] = None
-            if len(matched) == 1:
-                chosen_url = cls._select_chunk_image_for_product(name, matched[0])
-            elif len(matched) > 1:
-                with_imgs = [c for c in matched if c.get("image_urls")]
-                if len(with_imgs) == 1:
-                    chosen_url = cls._select_chunk_image_for_product(name, with_imgs[0])
-                # else: ambiguous (multiple image-bearing chunks) → drop
+
+            # Strategy 0 (highest confidence): the product name matches the
+            # alt-text of a markdown image ``![Product Name](url)``. This is an
+            # exact, position-independent binding and works even when many
+            # products share one blob chunk.
+            for chunk in chunk_map:
+                alt_map = chunk.get("image_alt_map") or {}
+                if name in alt_map and alt_map[name]:
+                    chosen_url = alt_map[name]
+                    break
+
+            # Strategy 1: confident name-in-chunk match (single image-bearing
+            # chunk). Only used when the catalog does NOT label images with
+            # alt-text — otherwise a missing alt match means "no image".
+            if not chosen_url and not any_alt_labeled:
+                matched = [
+                    chunk
+                    for chunk in chunk_map
+                    if name and name in cls._normalize_product_name(chunk.get("chunk_text"))
+                ]
+                if len(matched) == 1:
+                    chosen_url = cls._select_chunk_image_for_product(name, matched[0])
+                elif len(matched) > 1:
+                    with_imgs = [c for c in matched if c.get("image_urls")]
+                    if len(with_imgs) == 1:
+                        chosen_url = cls._select_chunk_image_for_product(name, with_imgs[0])
+                    # else: ambiguous (multiple image-bearing chunks) → drop
 
             current_url = product.get("image_url", "") or ""
             if chosen_url:
