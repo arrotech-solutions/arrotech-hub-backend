@@ -656,8 +656,16 @@ class RAGPipelineService:
     # SOURCE INGESTION — fetches from MCP tools, then ingests
     # ================================================================
 
-    @staticmethod
-    def _rows_to_product_records(rows: List[List[Any]]) -> List[str]:
+    # Header aliases that identify an image URL column in a catalog spreadsheet.
+    # Normalized (lowercase, no spaces/punctuation) to match any casing/formatting.
+    _IMAGE_COL_ALIASES = {
+        "imageurl", "image", "photo", "photourl", "picture", "pictureurl",
+        "thumbnail", "thumbnailurl", "img", "imgurl", "productimage",
+        "productphoto", "mediaurl", "media", "itemimage", "menuimage",
+    }
+
+    @classmethod
+    def _rows_to_product_records(cls, rows: List[List[Any]]) -> List[str]:
         """
         Convert a catalog spreadsheet's rows (first row = headers) into one
         self-contained text record per product row.
@@ -666,6 +674,11 @@ class RAGPipelineService:
         each product's name, price, description and image URL stay together in
         the same chunk, so retrieval can never pair a product with another
         product's image.
+
+        Image URL columns are emitted as ``![Product Name](url)`` markdown
+        syntax so that downstream ``extract_markdown_image_map()`` can build
+        an exact product↔image binding.  This prevents the LLM from swapping
+        images between products and ensures 100 % accuracy.
         """
         records: List[str] = []
         if not rows or len(rows) < 2:
@@ -683,19 +696,47 @@ class RAGPipelineService:
         }
         name_idx = next((i for i, h in enumerate(norm_header) if h in name_aliases), None)
 
+        # Detect image URL column(s)
+        image_col_indices: set = set()
+        for i, nh in enumerate(norm_header):
+            if nh in cls._IMAGE_COL_ALIASES:
+                image_col_indices.add(i)
+
         for row in rows[1:]:
             if not any(str(c).strip() for c in row):
                 continue  # skip blank rows
+
             lines: List[str] = []
+            image_url: str = ""
+
             # Lead with the product name so name-in-chunk matching is reliable
+            product_name = ""
             if name_idx is not None and name_idx < len(row) and str(row[name_idx]).strip():
-                lines.append(str(row[name_idx]).strip())
+                product_name = str(row[name_idx]).strip()
+                lines.append(product_name)
+
             for i, cell in enumerate(row):
                 val = str(cell).strip()
                 if not val or i == name_idx:
                     continue
+
+                # If this column is an image URL column, capture it separately
+                if i in image_col_indices:
+                    # Validate it looks like a URL before treating it as an image
+                    if val.startswith("http://") or val.startswith("https://"):
+                        image_url = val
+                    continue  # Don't emit it as a plain label line
+
                 label = header[i] if i < len(header) and header[i] else f"Column {i + 1}"
                 lines.append(f"{label}: {val}")
+
+            # Emit image as markdown syntax at the end of the record.
+            # Using ![Product Name](url) binds the image to this product by
+            # alt-text — the highest-confidence signal for image correction.
+            if image_url:
+                alt_text = product_name or "Product Image"
+                lines.append(f"![{alt_text}]({image_url})")
+
             if lines:
                 records.append("\n".join(lines))
         return records

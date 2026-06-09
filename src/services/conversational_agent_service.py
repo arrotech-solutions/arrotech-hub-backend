@@ -2145,6 +2145,15 @@ class ConversationalAgentService:
 
         return structured
 
+    # Matches lines like "Image URL: https://..." or "Photo: https://..." in
+    # legacy chunk text where images were not stored as markdown syntax.
+    _LABELED_IMAGE_LINE_PATTERN = re.compile(
+        r'^\s*(?:image\s*(?:url)?|photo(?:\s*url)?|picture(?:\s*url)?'
+        r'|thumbnail(?:\s*url)?|img(?:\s*url)?|media(?:\s*url)?)'
+        r'\s*[:=]\s*(https?://\S+)',
+        re.IGNORECASE | re.MULTILINE,
+    )
+
     @staticmethod
     def _normalize_product_name(value: str) -> str:
         """Lowercase, trim, and collapse whitespace for reliable name matching."""
@@ -2178,14 +2187,16 @@ class ConversationalAgentService:
         chunk_map: List[Dict[str, Any]],
     ) -> Dict[str, str]:
         """
-        Build {normalized_product_name: image_url} using two deterministic rules:
+        Build {normalized_product_name: image_url} using three deterministic rules:
 
-        1. Exact alt-text: an image written as ``![Product Name](url)`` whose
-           alt-text equals a product name (highest confidence).
-        2. Positional: every image belongs to the product whose name most
-           recently precedes it in the chunk text. Product catalogs list each
-           item immediately followed by its own image (e.g. ``![Image](url)``),
-           so the image after "Latte Macchiato" is the Latte Macchiato photo.
+        1. **Exact alt-text** (highest confidence): an image written as
+           ``![Product Name](url)`` whose alt-text equals a product name.
+        2. **Positional**: every image belongs to the product whose name most
+           recently precedes it in the chunk text.
+        3. **Labeled URL** (legacy fallback): lines like
+           ``Image URL: https://...`` are matched to the product whose name
+           most recently precedes the line.  This handles chunks ingested
+           before the markdown-image format was introduced.
 
         Works whether the catalog is one big blob chunk or one chunk per product.
         """
@@ -2232,6 +2243,33 @@ class ConversationalAgentService:
                     owner = name_positions[0][1]  # image before any name → first product
                 result.setdefault(owner, url)  # first image per product wins
 
+            # Rule 3 (legacy fallback): labeled URL lines like
+            # "Image URL: https://...", "Photo: https://...", etc.
+            # These exist in chunks ingested before the markdown format fix.
+            for m in cls._LABELED_IMAGE_LINE_PATTERN.finditer(text):
+                url = (m.group(1) or "").strip().rstrip('.,;:!?)"\'>[\]')
+                if not url:
+                    continue
+                label_pos = m.start()
+                owner = None
+                for pos, n in name_positions:
+                    if pos <= label_pos:
+                        owner = n
+                    else:
+                        break
+                if owner is None:
+                    owner = name_positions[0][1]
+                result.setdefault(owner, url)
+
+            # Rule 3b: single-product chunk with a single metadata image_url.
+            # Per-row ingestion creates one chunk per product. If the chunk
+            # mentions exactly one of our target products and carries exactly
+            # one image in its metadata, we can safely bind them.
+            chunk_image_urls = chunk.get("image_urls") or []
+            if len(name_positions) == 1 and len(chunk_image_urls) == 1:
+                sole_name = name_positions[0][1]
+                result.setdefault(sole_name, chunk_image_urls[0])
+
         return result
 
     @classmethod
@@ -2265,18 +2303,36 @@ class ConversationalAgentService:
             if chosen_url:
                 if current_url != chosen_url:
                     logger.info(
-                        "[CONV_AGENT] 🔧 Image bound for '%s' → '%s'",
+                        "[CONV_AGENT] 🔧 Image corrected for '%s': '%s' → '%s'",
                         product.get("name", "?"),
+                        current_url[:40] or "(none)",
                         chosen_url[:60],
                     )
                 product["image_url"] = chosen_url
             else:
-                if current_url:
+                # Last resort: if the LLM assigned an image URL that DOES appear
+                # in the chunk map (just not matched by name), allow it through.
+                # This prevents dropping valid images that the LLM correctly
+                # extracted but our name-matching couldn't verify.
+                all_chunk_urls: set = set()
+                for c in chunk_map:
+                    for u in (c.get("image_urls") or []):
+                        if isinstance(u, str) and u:
+                            all_chunk_urls.add(u)
+                if current_url and current_url in all_chunk_urls:
                     logger.info(
-                        "[CONV_AGENT] 🔧 Dropping unverified image for '%s' (no confident match)",
+                        "[CONV_AGENT] 🔧 Keeping LLM image for '%s' (found in chunk data): '%s'",
                         product.get("name", "?"),
+                        current_url[:60],
                     )
-                product["image_url"] = ""
+                    # Keep current_url — it came from the knowledge base
+                else:
+                    if current_url:
+                        logger.info(
+                            "[CONV_AGENT] 🔧 Dropping unverified image for '%s' (no confident match)",
+                            product.get("name", "?"),
+                        )
+                    product["image_url"] = ""
 
             corrected.append(product)
 
