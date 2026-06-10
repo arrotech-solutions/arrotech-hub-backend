@@ -86,7 +86,6 @@ class ContactUpdate(BaseModel):
     tags: Optional[List[str]] = None
     notes: Optional[str] = None
     is_blocked: Optional[bool] = None
-    assigned_to_id: Optional[uuid.UUID] = None
 
 class ContactResponse(BaseModel):
     id: uuid.UUID
@@ -99,7 +98,6 @@ class ContactResponse(BaseModel):
     first_message_at: Optional[datetime]
     last_message_at: Optional[datetime]
     is_blocked: bool
-    assigned_to_id: Optional[uuid.UUID]
     created_at: datetime
 
     class Config:
@@ -108,7 +106,6 @@ class ContactResponse(BaseModel):
 class MessageCreate(BaseModel):
     content: str
     message_type: str = "text"
-    is_internal_note: bool = False
 
 class MessageResponse(BaseModel):
     id: uuid.UUID
@@ -118,7 +115,6 @@ class MessageResponse(BaseModel):
     media_url: Optional[str]
     status: str
     is_auto_reply: bool
-    is_internal_note: bool
     created_at: datetime
     delivered_at: Optional[datetime]
     read_at: Optional[datetime]
@@ -320,8 +316,6 @@ async def update_contact(
         contact.notes = data.notes
     if data.is_blocked is not None:
         contact.is_blocked = data.is_blocked
-    if "assigned_to_id" in data.model_fields_set:
-        contact.assigned_to_id = data.assigned_to_id
     
     await db.commit()
     await db.refresh(contact)
@@ -447,25 +441,6 @@ async def send_message(
     if not connection:
         raise HTTPException(status_code=400, detail="WhatsApp not connected")
     
-    # Handle internal notes
-    if data.is_internal_note:
-        message = WhatsAppMessage(
-            user_id=user.id,
-            contact_id=contact.id,
-            direction=WhatsAppMessageDirection.OUTGOING,
-            message_type="text",
-            content=data.content,
-            status=WhatsAppMessageStatus.SENT,
-            is_internal_note=True
-        )
-        db.add(message)
-        await db.commit()
-        await db.refresh(message)
-        return {
-            "success": True,
-            "data": MessageResponse.model_validate(message)
-        }
-    
     # Send via WhatsApp API
     config = connection.config or {}
     send_result = await whatsapp_service.send_message(
@@ -489,8 +464,7 @@ async def send_message(
         message_type=data.message_type,
         content=data.content,
         whatsapp_message_id=send_result.get("message_id"),
-        status=WhatsAppMessageStatus.SENT,
-        is_internal_note=False
+        status=WhatsAppMessageStatus.SENT
     )
     db.add(message)
     
