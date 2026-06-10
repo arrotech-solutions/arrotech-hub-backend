@@ -2754,7 +2754,7 @@ class ConversationalAgentService:
                 "Tap an option below or tell me what you'd like."
             )
             wa = WhatsAppService()
-            await wa.send_quick_reply_buttons(
+            btn_result = await wa.send_quick_reply_buttons(
                 to_number=recipient,
                 body_text=body,
                 buttons=[
@@ -2767,6 +2767,12 @@ class ConversationalAgentService:
                     "phone_number_id": config.get("phone_number_id"),
                 },
             )
+            
+            if btn_result and btn_result.get("success"):
+                from .whatsapp_ordering_helpers import save_outgoing_agent_message
+                await save_outgoing_agent_message(
+                    db, user.id, recipient, "interactive", body, btn_result.get("message_id")
+                )
             session.metadata["welcome_sent"] = True
             await context_manager.save_session(session)
         except Exception as e:
@@ -3054,7 +3060,12 @@ class ConversationalAgentService:
                     "phone_number_id": config.get("phone_number_id"),
                 },
             )
-            if not btn_result.get("success"):
+            if btn_result and btn_result.get("success"):
+                from .whatsapp_ordering_helpers import save_outgoing_agent_message
+                await save_outgoing_agent_message(
+                    db, user.id, recipient, "interactive", body_text, btn_result.get("message_id")
+                )
+            else:
                 logger.warning(
                     f"[CONV_AGENT] checkout pay button failed: {btn_result.get('error')}"
                 )
@@ -3166,7 +3177,12 @@ class ConversationalAgentService:
                         config=wa_config,
                         footer_text="Up to 10 items shown",
                     )
-                    if not list_result.get("success"):
+                    if list_result and list_result.get("success"):
+                        from .whatsapp_ordering_helpers import save_outgoing_agent_message
+                        await save_outgoing_agent_message(
+                            db, user.id, recipient, "interactive", "Tap an item below to remove it from your cart 🗑️", list_result.get("message_id")
+                        )
+                    else:
                         logger.warning(
                             f"[CONV_AGENT] cart remove list failed: {list_result.get('error')}"
                         )
@@ -3186,7 +3202,12 @@ class ConversationalAgentService:
                 buttons=cart_action_buttons(cart_has_items=has_items, catalog_word=catalog_word),
                 config=wa_config,
             )
-            if not btn_result.get("success"):
+            if btn_result and btn_result.get("success"):
+                from .whatsapp_ordering_helpers import save_outgoing_agent_message
+                await save_outgoing_agent_message(
+                    db, user.id, recipient, "interactive", button_body, btn_result.get("message_id")
+                )
+            else:
                 logger.warning(
                     f"[CONV_AGENT] cart action buttons failed: {btn_result.get('error')}"
                 )
@@ -3250,7 +3271,12 @@ class ConversationalAgentService:
                     "phone_number_id": config.get("phone_number_id"),
                 },
             )
-            if not btn_result.get("success"):
+            if btn_result and btn_result.get("success"):
+                from .whatsapp_ordering_helpers import save_outgoing_agent_message
+                await save_outgoing_agent_message(
+                    db, user.id, recipient, "interactive", agent_mode_button_body(handoff_active), btn_result.get("message_id")
+                )
+            else:
                 logger.warning(
                     f"[CONV_AGENT] agent mode buttons failed: {btn_result.get('error')}"
                 )
@@ -4764,13 +4790,17 @@ class ConversationalAgentService:
                         )
                         if card_result.get("success"):
                             logger.info(f"[CONV_AGENT] ✅ Sent product card: {name} → {recipient}")
+                            from .whatsapp_ordering_helpers import save_outgoing_agent_message
+                            await save_outgoing_agent_message(
+                                db, user.id, recipient, "interactive", f"Product Card: {name}", card_result.get("message_id")
+                            )
                             return {"sent": True, "image_url": image_url}
                         else:
                             # Fallback to image + caption
                             caption = f"*{name}*\n💰 {currency} {price:,.0f}\n\n{description}"
                             if len(caption) > 1024:
                                 caption = caption[:1021] + "..."
-                            await whatsapp.send_media_message(
+                            media_res = await whatsapp.send_media_message(
                                 to_number=recipient,
                                 media_url=image_url,
                                 media_type="image",
@@ -4778,6 +4808,13 @@ class ConversationalAgentService:
                                 config=wa_config,
                             )
                             logger.info(f"[CONV_AGENT] ✅ Sent product as image+caption: {name} → {recipient}")
+                            
+                            if media_res and media_res.get("success"):
+                                from .whatsapp_ordering_helpers import save_outgoing_agent_message
+                                await save_outgoing_agent_message(
+                                    db, user.id, recipient, "image", caption, media_res.get("message_id")
+                                )
+                                
                             return {"sent": True, "image_url": image_url}
                     except Exception as card_err:
                         logger.warning(f"[CONV_AGENT] ❌ Failed to send card for {name}: {card_err}")
@@ -4786,12 +4823,18 @@ class ConversationalAgentService:
                     # No image — send as text
                     text = f"*{name}*\n💰 {currency} {price:,.0f}\n\n{description}"
                     try:
-                        await whatsapp.send_message(
+                        text_res = await whatsapp.send_message(
                             to_number=recipient,
                             message=text,
                             config=wa_config,
                         )
                         logger.info(f"[CONV_AGENT] ✅ Sent product as text: {name} → {recipient}")
+                        
+                        if text_res and text_res.get("success"):
+                            from .whatsapp_ordering_helpers import save_outgoing_agent_message
+                            await save_outgoing_agent_message(
+                                db, user.id, recipient, "text", text, text_res.get("message_id")
+                            )
                         return {"sent": True}
                     except Exception as text_err:
                         logger.warning(f"[CONV_AGENT] ❌ Failed to send text for {name}: {text_err}")
@@ -5091,6 +5134,10 @@ class ConversationalAgentService:
                     if send_result.get("success"):
                         sent += 1
                         logger.info(f"[CONV_AGENT] ✅ Sent order card: {order_id} → {recipient}")
+                        from .whatsapp_ordering_helpers import save_outgoing_agent_message
+                        await save_outgoing_agent_message(
+                            db, user.id, recipient, "interactive", f"Order Card: {order_id} ({status})", send_result.get("message_id")
+                        )
                     else:
                         failed += 1
                         logger.warning(f"[CONV_AGENT] ❌ Order card send failed for {order_id}: {send_result}")

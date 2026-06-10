@@ -3506,6 +3506,12 @@ class ToolExecutor:
                         to_number, clean_message,
                         config={"access_token": access_token, "phone_number_id": phone_number_id}
                     )
+                    
+                    if text_result and text_result.get("success"):
+                        from .whatsapp_ordering_helpers import save_outgoing_agent_message
+                        await save_outgoing_agent_message(
+                            db, user.id, to_number, "text", clean_message, text_result.get("message_id")
+                        )
 
                 # Cart UX: list + reply buttons after the cart summary text
                 from .whatsapp_ordering_helpers import message_requests_cart_buttons
@@ -3642,6 +3648,13 @@ class ToolExecutor:
                     to_number, media_url, media_type, caption,
                     config={"access_token": access_token, "phone_number_id": phone_number_id}
                 )
+                
+                if result and result.get("success"):
+                    from .whatsapp_ordering_helpers import save_outgoing_agent_message
+                    await save_outgoing_agent_message(
+                        db, user.id, to_number, media_type, caption or media_url, result.get("message_id")
+                    )
+                
                 return {
                     "success": True,
                     "result": f"Media message sent to {to_number}",
@@ -3668,6 +3681,14 @@ class ToolExecutor:
                 result = await whatsapp_service.send_location_message(
                     to_number, latitude, longitude, name, address, config=connection.config
                 )
+                
+                if result and result.get("success"):
+                    from .whatsapp_ordering_helpers import save_outgoing_agent_message
+                    content_str = f"📍 {name} ({address})" if name else f"📍 Location ({latitude}, {longitude})"
+                    await save_outgoing_agent_message(
+                        db, user.id, to_number, "location", content_str, result.get("message_id")
+                    )
+                    
                 return {
                     "success": True,
                     "result": f"Location message sent to {to_number}",
@@ -3703,6 +3724,13 @@ class ToolExecutor:
                 result = await whatsapp_service.send_template_message(
                     to_number, template_name, language_code, config=connection.config
                 )
+                
+                if result and result.get("success"):
+                    from .whatsapp_ordering_helpers import save_outgoing_agent_message
+                    await save_outgoing_agent_message(
+                        db, user.id, to_number, "template", f"Template: {template_name}", result.get("message_id")
+                    )
+                    
                 return {
                     "success": True,
                     "result": f"Template message sent to {to_number}",
