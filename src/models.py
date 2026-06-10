@@ -995,6 +995,7 @@ class WhatsAppContact(Base):
     tags = Column(JSON, nullable=True)  # ["vip", "new-customer", "lead"]
     notes = Column(Text, nullable=True)
     metadata_ = Column(JSON, nullable=True)  # Custom fields
+    assigned_to_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     
     # Engagement tracking
     first_message_at = Column(DateTime(timezone=True), nullable=True)
@@ -1006,7 +1007,8 @@ class WhatsAppContact(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
     # Relationships
-    user = relationship("User", backref="whatsapp_contacts")
+    user = relationship("User", foreign_keys=[user_id], backref="whatsapp_contacts")
+    assigned_to = relationship("User", foreign_keys=[assigned_to_id])
     messages = relationship("WhatsAppMessage", back_populates="contact", order_by="WhatsAppMessage.created_at.desc()")
     
     # Unique constraint: one phone per user
@@ -1038,6 +1040,9 @@ class WhatsAppMessage(Base):
     # Delivery status
     status = Column(String, default=WhatsAppMessageStatus.PENDING)
     error_message = Column(Text, nullable=True)
+    
+    # Internal Note flag
+    is_internal_note = Column(Boolean, default=False)
     
     # Auto-reply tracking
     is_auto_reply = Column(Boolean, default=False)
