@@ -135,6 +135,70 @@ class WhatsAppService:
                 "error": str(e)
             }
 
+    async def send_media_message(
+        self,
+        to_number: str,
+        media_url: str,
+        media_type: str = "image",
+        caption: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Send a media message (image, document, video, audio) via WhatsApp."""
+        try:
+            credentials = self._get_credentials()
+
+            if config:
+                phone_number_id = config.get("phone_number_id")
+                access_token = config.get("access_token")
+                base_url = config.get("base_url", credentials["base_url"])
+            else:
+                phone_number_id = credentials["phone_number_id"]
+                access_token = credentials["access_token"]
+                base_url = credentials["base_url"]
+
+            if not phone_number_id or not access_token:
+                return {"success": False, "error": "WhatsApp credentials not configured"}
+
+            formatted_number = self._format_phone_number(to_number)
+            url = f"{base_url}/{phone_number_id}/messages"
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
+
+            # Build media payload per WhatsApp Cloud API spec
+            media_object: Dict[str, Any] = {"link": media_url}
+            if caption and media_type in ("image", "video", "document"):
+                media_object["caption"] = caption
+            if media_type == "document":
+                media_object["filename"] = media_url.split("/")[-1]
+
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": formatted_number,
+                "type": media_type,
+                media_type: media_object
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=headers) as response:
+                    result = await response.json()
+                    if response.status == 200:
+                        return {
+                            "success": True,
+                            "message_id": result.get("messages", [{}])[0].get("id"),
+                            "result": f"Media message sent to {formatted_number}",
+                        }
+                    else:
+                        return {
+                            "success": False,
+                            "error": f"WhatsApp API error: {result.get('error', {}).get('message', 'Unknown error')}"
+                        }
+
+        except Exception as e:
+            logger.error(f"Error sending WhatsApp media message: {str(e)}")
+            return {"success": False, "error": str(e)}
+
     async def mark_message_read(
         self,
         message_id: str,

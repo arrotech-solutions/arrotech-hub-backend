@@ -15,7 +15,8 @@ from datetime import datetime
 from ..database import get_db
 from ..models import (
     User, WhatsAppContact, WhatsAppMessage, WhatsAppMessageDirection,
-    WhatsAppMessageStatus, WhatsAppAutoReply, WhatsAppBusinessProfile
+    WhatsAppMessageStatus, WhatsAppAutoReply, WhatsAppBusinessProfile,
+    WhatsAppQuickReply, Connection
 )
 from ..routers.auth_router import get_current_user
 from ..services import WhatsAppService
@@ -86,6 +87,9 @@ class ContactUpdate(BaseModel):
     tags: Optional[List[str]] = None
     notes: Optional[str] = None
     is_blocked: Optional[bool] = None
+    assigned_to_id: Optional[str] = None
+    status: Optional[str] = None  # open, pending, resolved, closed
+    is_starred: Optional[bool] = None
 
 class ContactResponse(BaseModel):
     id: uuid.UUID
@@ -94,7 +98,11 @@ class ContactResponse(BaseModel):
     profile_name: Optional[str]
     tags: Optional[List[str]]
     notes: Optional[str]
+    assigned_to_id: Optional[uuid.UUID] = None
+    status: Optional[str] = "open"
+    is_starred: Optional[bool] = False
     message_count: int
+    unread_count: int = 0
     first_message_at: Optional[datetime]
     last_message_at: Optional[datetime]
     is_blocked: bool
@@ -106,6 +114,7 @@ class ContactResponse(BaseModel):
 class MessageCreate(BaseModel):
     content: str
     message_type: str = "text"
+    is_internal_note: bool = False
 
 class MessageResponse(BaseModel):
     id: uuid.UUID
@@ -115,6 +124,7 @@ class MessageResponse(BaseModel):
     media_url: Optional[str]
     status: str
     is_auto_reply: bool
+    is_internal_note: bool = False
     created_at: datetime
     delivered_at: Optional[datetime]
     read_at: Optional[datetime]
@@ -170,6 +180,10 @@ class BusinessProfileUpdate(BaseModel):
 async def list_contacts(
     search: Optional[str] = Query(None, description="Search by name or phone"),
     tag: Optional[str] = Query(None, description="Filter by tag"),
+    status: Optional[str] = Query(None, description="Filter by status: open, pending, resolved, closed"),
+    assigned_to: Optional[str] = Query(None, description="Filter by assigned agent ID"),
+    is_starred: Optional[bool] = Query(None, description="Filter starred conversations"),
+    has_unread: Optional[bool] = Query(None, description="Filter conversations with unread messages"),
     limit: int = Query(50, le=100),
     offset: int = Query(0),
     user: User = Depends(get_current_user),
@@ -196,8 +210,33 @@ async def list_contacts(
     if tag:
         query = query.filter(WhatsAppContact.tags.contains([tag]))
     
-    # Order by last message (most recent first)
-    query = query.order_by(desc(WhatsAppContact.last_message_at))
+    # Status filter
+    if status:
+        query = query.filter(WhatsAppContact.status == status)
+    
+    # Assigned agent filter
+    if assigned_to:
+        if assigned_to == "unassigned":
+            query = query.filter(WhatsAppContact.assigned_to_id.is_(None))
+        else:
+            query = query.filter(WhatsAppContact.assigned_to_id == assigned_to)
+    
+    # Starred filter
+    if is_starred is not None:
+        query = query.filter(WhatsAppContact.is_starred == is_starred)
+    
+    # Unread filter
+    if has_unread is not None:
+        if has_unread:
+            query = query.filter(WhatsAppContact.unread_count > 0)
+        else:
+            query = query.filter(WhatsAppContact.unread_count == 0)
+    
+    # Order: starred first, then by last message (most recent first)
+    query = query.order_by(
+        desc(WhatsAppContact.is_starred),
+        desc(WhatsAppContact.last_message_at)
+    )
     
     # Get total count
     count_query = select(func.count()).select_from(query.subquery())
@@ -316,6 +355,14 @@ async def update_contact(
         contact.notes = data.notes
     if data.is_blocked is not None:
         contact.is_blocked = data.is_blocked
+    if data.assigned_to_id is not None:
+        contact.assigned_to_id = uuid.UUID(data.assigned_to_id) if data.assigned_to_id else None
+    if data.status is not None:
+        if data.status not in ("open", "pending", "resolved", "closed"):
+            raise HTTPException(status_code=400, detail="Invalid status. Must be: open, pending, resolved, closed")
+        contact.status = data.status
+    if data.is_starred is not None:
+        contact.is_starred = data.is_starred
     
     await db.commit()
     await db.refresh(contact)
@@ -427,8 +474,28 @@ async def send_message(
     if contact.is_blocked:
         raise HTTPException(status_code=400, detail="Cannot send message to blocked contact")
     
+    # Internal notes: store locally without sending to WhatsApp
+    if data.is_internal_note:
+        message = WhatsAppMessage(
+            user_id=user.id,
+            contact_id=contact.id,
+            direction=WhatsAppMessageDirection.OUTGOING,
+            message_type="text",
+            content=data.content,
+            status=WhatsAppMessageStatus.SENT,
+            is_internal_note=True
+        )
+        db.add(message)
+        contact.last_message_at = datetime.utcnow()
+        contact.message_count = (contact.message_count or 0) + 1
+        await db.commit()
+        await db.refresh(message)
+        return {
+            "success": True,
+            "data": MessageResponse.model_validate(message)
+        }
+    
     # Get user's WhatsApp connection config
-    from ..models import Connection
     result = await db.execute(
         select(Connection).filter(
             Connection.user_id == user.id,
@@ -1010,4 +1077,313 @@ async def get_whatsapp_analytics(
             "new_contacts": new_contacts,
             "busiest_hours": busiest_hours
         }
+    }
+
+
+# ============================================================================
+# Conversation Lifecycle
+# ============================================================================
+
+@router.patch("/contacts/{contact_id}/read")
+async def mark_conversation_read(
+    contact_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Mark all unread messages in a conversation as read and reset unread count."""
+    check_connection_access(user, "whatsapp_business")
+    
+    result = await db.execute(
+        select(WhatsAppContact).filter(
+            WhatsAppContact.id == contact_id,
+            WhatsAppContact.user_id == user.id
+        )
+    )
+    contact = result.scalar_one_or_none()
+    
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    
+    # Reset unread count
+    contact.unread_count = 0
+    await db.commit()
+    
+    return {"success": True, "message": "Conversation marked as read"}
+
+
+# ============================================================================
+# Quick Replies API
+# ============================================================================
+
+class QuickReplyCreate(BaseModel):
+    title: str
+    shortcut: str
+    content: str
+    category: Optional[str] = None
+
+class QuickReplyResponse(BaseModel):
+    id: uuid.UUID
+    title: str
+    shortcut: str
+    content: str
+    category: Optional[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/quick-replies")
+async def list_quick_replies(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """List all quick reply templates."""
+    check_connection_access(user, "whatsapp_business")
+    
+    result = await db.execute(
+        select(WhatsAppQuickReply).filter(
+            WhatsAppQuickReply.user_id == user.id
+        ).order_by(WhatsAppQuickReply.title)
+    )
+    replies = result.scalars().all()
+    
+    return {
+        "success": True,
+        "data": [QuickReplyResponse.model_validate(r) for r in replies]
+    }
+
+
+@router.post("/quick-replies")
+async def create_quick_reply(
+    data: QuickReplyCreate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Create a new quick reply template."""
+    check_connection_access(user, "whatsapp_business")
+    
+    # Ensure shortcut starts with /
+    shortcut = data.shortcut if data.shortcut.startswith("/") else f"/{data.shortcut}"
+    
+    # Check for duplicate shortcut
+    result = await db.execute(
+        select(WhatsAppQuickReply).filter(
+            WhatsAppQuickReply.user_id == user.id,
+            WhatsAppQuickReply.shortcut == shortcut
+        )
+    )
+    if result.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail=f"Shortcut '{shortcut}' already exists")
+    
+    reply = WhatsAppQuickReply(
+        user_id=user.id,
+        title=data.title,
+        shortcut=shortcut,
+        content=data.content,
+        category=data.category
+    )
+    db.add(reply)
+    await db.commit()
+    await db.refresh(reply)
+    
+    return {
+        "success": True,
+        "data": QuickReplyResponse.model_validate(reply)
+    }
+
+
+@router.put("/quick-replies/{reply_id}")
+async def update_quick_reply(
+    reply_id: uuid.UUID,
+    data: QuickReplyCreate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update a quick reply template."""
+    check_connection_access(user, "whatsapp_business")
+    
+    result = await db.execute(
+        select(WhatsAppQuickReply).filter(
+            WhatsAppQuickReply.id == reply_id,
+            WhatsAppQuickReply.user_id == user.id
+        )
+    )
+    reply = result.scalar_one_or_none()
+    
+    if not reply:
+        raise HTTPException(status_code=404, detail="Quick reply not found")
+    
+    shortcut = data.shortcut if data.shortcut.startswith("/") else f"/{data.shortcut}"
+    reply.title = data.title
+    reply.shortcut = shortcut
+    reply.content = data.content
+    reply.category = data.category
+    
+    await db.commit()
+    await db.refresh(reply)
+    
+    return {
+        "success": True,
+        "data": QuickReplyResponse.model_validate(reply)
+    }
+
+
+@router.delete("/quick-replies/{reply_id}")
+async def delete_quick_reply(
+    reply_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete a quick reply template."""
+    check_connection_access(user, "whatsapp_business")
+    
+    result = await db.execute(
+        select(WhatsAppQuickReply).filter(
+            WhatsAppQuickReply.id == reply_id,
+            WhatsAppQuickReply.user_id == user.id
+        )
+    )
+    reply = result.scalar_one_or_none()
+    
+    if not reply:
+        raise HTTPException(status_code=404, detail="Quick reply not found")
+    
+    await db.delete(reply)
+    await db.commit()
+    
+    return {"success": True, "message": "Quick reply deleted"}
+
+
+# ============================================================================
+# Team Members API
+# ============================================================================
+
+@router.get("/team-members")
+async def get_team_members(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get team members for agent assignment (from organization membership)."""
+    from ..models import OrganizationMember, Organization
+
+    # Find organizations the user belongs to
+    result = await db.execute(
+        select(OrganizationMember).filter(
+            OrganizationMember.user_id == user.id
+        )
+    )
+    memberships = result.scalars().all()
+    
+    members = []
+    if memberships:
+        # Get all members from the user's organizations
+        org_ids = [m.org_id for m in memberships]
+        result = await db.execute(
+            select(OrganizationMember, User).join(
+                User, OrganizationMember.user_id == User.id
+            ).filter(
+                OrganizationMember.org_id.in_(org_ids)
+            )
+        )
+        for member, member_user in result.fetchall():
+            members.append({
+                "id": str(member_user.id),
+                "name": member_user.name,
+                "email": member_user.email,
+                "role": member.role
+            })
+    else:
+        # Solo user — just return themselves
+        members.append({
+            "id": str(user.id),
+            "name": user.name,
+            "email": user.email,
+            "role": "owner"
+        })
+    
+    return {"success": True, "data": members}
+
+
+# ============================================================================
+# Media Messages API
+# ============================================================================
+
+@router.post("/contacts/{contact_id}/media")
+async def send_media_message(
+    contact_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    media_url: str = Query(..., description="URL of media to send"),
+    media_type: str = Query("image", description="Type: image, document, video, audio"),
+    caption: Optional[str] = Query(None, description="Optional caption"),
+):
+    """Send a media message (image, document, etc.) to a contact."""
+    check_connection_access(user, "whatsapp_business")
+    
+    # Verify contact belongs to user
+    result = await db.execute(
+        select(WhatsAppContact).filter(
+            WhatsAppContact.id == contact_id,
+            WhatsAppContact.user_id == user.id
+        )
+    )
+    contact = result.scalar_one_or_none()
+    
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    
+    if contact.is_blocked:
+        raise HTTPException(status_code=400, detail="Cannot send message to blocked contact")
+    
+    # Get connection
+    result = await db.execute(
+        select(Connection).filter(
+            Connection.user_id == user.id,
+            Connection.platform == "whatsapp",
+            Connection.status == "active"
+        )
+    )
+    connection = result.scalar_one_or_none()
+    
+    if not connection:
+        raise HTTPException(status_code=400, detail="WhatsApp not connected")
+    
+    config = connection.config or {}
+    send_result = await whatsapp_service.send_media_message(
+        to_number=contact.phone_number,
+        media_url=media_url,
+        media_type=media_type,
+        caption=caption,
+        config=config
+    )
+    
+    if not send_result.get("success"):
+        raise HTTPException(
+            status_code=500,
+            detail=send_result.get("error", "Failed to send media message")
+        )
+    
+    # Save outgoing message
+    message = WhatsAppMessage(
+        user_id=user.id,
+        contact_id=contact.id,
+        direction=WhatsAppMessageDirection.OUTGOING,
+        message_type=media_type,
+        content=caption,
+        media_url=media_url,
+        whatsapp_message_id=send_result.get("message_id"),
+        status=WhatsAppMessageStatus.SENT
+    )
+    db.add(message)
+    
+    contact.last_message_at = datetime.utcnow()
+    contact.message_count = (contact.message_count or 0) + 1
+    
+    await db.commit()
+    await db.refresh(message)
+    
+    return {
+        "success": True,
+        "data": MessageResponse.model_validate(message)
     }

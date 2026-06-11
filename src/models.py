@@ -996,17 +996,24 @@ class WhatsAppContact(Base):
     notes = Column(Text, nullable=True)
     metadata_ = Column(JSON, nullable=True)  # Custom fields
     
+    # Assignment & lifecycle
+    assigned_to_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True)
+    status = Column(String, default="open")  # open, pending, resolved, closed
+    is_starred = Column(Boolean, default=False)
+    
     # Engagement tracking
     first_message_at = Column(DateTime(timezone=True), nullable=True)
     last_message_at = Column(DateTime(timezone=True), nullable=True)
     message_count = Column(Integer, default=0)
+    unread_count = Column(Integer, default=0)  # Unread incoming messages
     is_blocked = Column(Boolean, default=False)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
     # Relationships
-    user = relationship("User", backref="whatsapp_contacts")
+    user = relationship("User", backref="whatsapp_contacts", foreign_keys=[user_id])
+    assigned_to = relationship("User", foreign_keys=[assigned_to_id], backref="assigned_whatsapp_contacts")
     messages = relationship("WhatsAppMessage", back_populates="contact", order_by="WhatsAppMessage.created_at.desc()")
     
     # Unique constraint: one phone per user
@@ -1042,6 +1049,9 @@ class WhatsAppMessage(Base):
     # Auto-reply tracking
     is_auto_reply = Column(Boolean, default=False)
     auto_reply_rule_id = Column(PG_UUID(as_uuid=True), ForeignKey("whatsapp_auto_replies.id"), nullable=True)
+    
+    # Internal notes (visible only to team, not sent to customer)
+    is_internal_note = Column(Boolean, default=False)
     
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -1254,6 +1264,29 @@ class WhatsAppBroadcastRecipient(Base):
     __table_args__ = (
         UniqueConstraint("broadcast_id", "contact_id", name="uq_broadcast_contact"),
         Index("ix_broadcast_recipients_status", "broadcast_id", "status"),
+    )
+
+
+class WhatsAppQuickReply(Base):
+    """Canned/quick reply templates for fast messaging."""
+    __tablename__ = "whatsapp_quick_replies"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    
+    title = Column(String, nullable=False)  # Display name, e.g. "Thank You"
+    shortcut = Column(String, nullable=False)  # Trigger, e.g. "/thanks"
+    content = Column(Text, nullable=False)  # Full message body
+    category = Column(String, nullable=True)  # Optional grouping, e.g. "support", "sales"
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    user = relationship("User", backref="whatsapp_quick_replies")
+    
+    __table_args__ = (
+        UniqueConstraint("user_id", "shortcut", name="uq_user_quick_reply_shortcut"),
     )
 
 
