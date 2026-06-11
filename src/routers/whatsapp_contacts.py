@@ -547,6 +547,74 @@ async def send_message(
         "data": MessageResponse.model_validate(message)
     }
 
+@router.post("/contacts/{contact_id}/media")
+async def send_media_message(
+    contact_id: uuid.UUID,
+    media_url: str = Query(...),
+    media_type: str = Query(...),
+    caption: Optional[str] = Query(None),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Send a media message to a contact."""
+    check_connection_access(user, "whatsapp_business")
+    
+    result = await db.execute(
+        select(WhatsAppContact).filter(
+            WhatsAppContact.id == contact_id,
+            WhatsAppContact.user_id == user.id
+        )
+    )
+    contact = result.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+        
+    result = await db.execute(
+        select(Connection).filter(
+            Connection.user_id == user.id,
+            Connection.platform == "whatsapp",
+            Connection.status == "active"
+        )
+    )
+    connection = result.scalar_one_or_none()
+    if not connection:
+        raise HTTPException(status_code=400, detail="WhatsApp not connected")
+        
+    config = connection.config or {}
+    send_result = await whatsapp_service.send_media_message(
+        to_number=contact.phone_number,
+        media_url=media_url,
+        media_type=media_type,
+        caption=caption,
+        config=config
+    )
+    
+    if not send_result.get("success"):
+        raise HTTPException(status_code=500, detail=send_result.get("error", "Failed to send media"))
+        
+    message = WhatsAppMessage(
+        user_id=user.id,
+        contact_id=contact.id,
+        direction=WhatsAppMessageDirection.OUTGOING,
+        message_type=media_type,
+        content=caption or "",
+        media_url=media_url,
+        whatsapp_message_id=send_result.get("message_id"),
+        status=WhatsAppMessageStatus.SENT
+    )
+    db.add(message)
+    
+    contact.last_message_at = datetime.utcnow()
+    contact.message_count = (contact.message_count or 0) + 1
+    
+    await db.commit()
+    await db.refresh(message)
+
+    return {
+        "success": True,
+        "data": MessageResponse.model_validate(message)
+    }
+
 
 @router.post("/contacts/{contact_id}/release-agent")
 async def release_agent_for_contact(

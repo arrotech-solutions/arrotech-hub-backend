@@ -520,6 +520,7 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
             # Update contact's last message timestamp and count
             contact.last_message_at = datetime.utcnow()
             contact.message_count = (contact.message_count or 0) + 1
+            contact.unread_count = (contact.unread_count or 0) + 1
             if not contact.first_message_at:
                 contact.first_message_at = datetime.utcnow()
             
