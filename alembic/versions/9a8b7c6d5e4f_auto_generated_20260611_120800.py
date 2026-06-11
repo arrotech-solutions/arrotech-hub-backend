@@ -33,14 +33,10 @@ def upgrade() -> None:
     op.create_index(op.f('ix_whatsapp_quick_replies_id'), 'whatsapp_quick_replies', ['id'], unique=False)
     op.create_index(op.f('ix_whatsapp_quick_replies_user_id'), 'whatsapp_quick_replies', ['user_id'], unique=False)
 
-    # WhatsAppContact columns
-    op.add_column('whatsapp_contacts', sa.Column('assigned_to_id', postgresql.UUID(as_uuid=True), nullable=True))
+    # WhatsAppContact columns (assigned_to_id already added by migration a1b2c3d4e5f6)
     op.add_column('whatsapp_contacts', sa.Column('status', sa.String(), nullable=True, server_default='open'))
     op.add_column('whatsapp_contacts', sa.Column('is_starred', sa.Boolean(), nullable=True, server_default='false'))
     op.add_column('whatsapp_contacts', sa.Column('unread_count', sa.Integer(), nullable=True, server_default='0'))
-    
-    op.create_index(op.f('ix_whatsapp_contacts_assigned_to_id'), 'whatsapp_contacts', ['assigned_to_id'], unique=False)
-    op.create_foreign_key('fk_whatsapp_contacts_assigned_to_id_users', 'whatsapp_contacts', 'users', ['assigned_to_id'], ['id'])
 
     # WhatsAppMessage column
     op.add_column('whatsapp_messages', sa.Column('is_internal_note', sa.Boolean(), nullable=True, server_default='false'))
@@ -50,13 +46,10 @@ def downgrade() -> None:
     # WhatsAppMessage
     op.drop_column('whatsapp_messages', 'is_internal_note')
 
-    # WhatsAppContact
-    op.drop_constraint('fk_whatsapp_contacts_assigned_to_id_users', 'whatsapp_contacts', type_='foreignkey')
-    op.drop_index(op.f('ix_whatsapp_contacts_assigned_to_id'), table_name='whatsapp_contacts')
+    # WhatsAppContact (assigned_to_id is managed by migration a1b2c3d4e5f6)
     op.drop_column('whatsapp_contacts', 'unread_count')
     op.drop_column('whatsapp_contacts', 'is_starred')
     op.drop_column('whatsapp_contacts', 'status')
-    op.drop_column('whatsapp_contacts', 'assigned_to_id')
 
     # WhatsAppQuickReply
     op.drop_index(op.f('ix_whatsapp_quick_replies_user_id'), table_name='whatsapp_quick_replies')
