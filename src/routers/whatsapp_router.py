@@ -245,26 +245,11 @@ async def _exchange_code_and_discover(
         token_expires_in = exchange_data.get("expires_in")  # seconds until expiry
         
         # 3. Discover WhatsApp Business data
-        # Fetch the user's Meta Business Account
-        me_resp = await client.get(
-            f"{FACEBOOK_GRAPH_URL}/me",
-            params={"fields": "businesses", "access_token": access_token}
-        )
-        me_data = me_resp.json()
-        
-        businesses = me_data.get("businesses", {}).get("data", [])
-        if not businesses:
-            raise HTTPException(
-                status_code=400,
-                detail="No Meta Business Account found. Please ensure your Facebook account is linked to a Business account."
-            )
-        
-        business_id = businesses[0].get("id")
-        
-        # If we already have hints from Embedded Signup, use them
+        # If we already have hints from Embedded Signup, use them directly
         if hint_waba_id and hint_phone_number_id:
             waba_id = hint_waba_id
             phone_number_id = hint_phone_number_id
+            business_id = ""  # We can leave this empty or fetch it later if needed
             
             # Fetch the display phone number for the hinted phone_number_id
             phone_resp = await client.get(
@@ -276,8 +261,25 @@ async def _exchange_code_and_discover(
             )
             phone_data = phone_resp.json()
             display_phone_number = phone_data.get("display_phone_number", "Unknown")
+            
         else:
-            # Fallback: discover WABAs and phone numbers across ALL user businesses
+            # Fallback: Fetch the user's Meta Business Account to discover WABAs
+            me_resp = await client.get(
+                f"{FACEBOOK_GRAPH_URL}/me",
+                params={"fields": "businesses", "access_token": access_token}
+            )
+            me_data = me_resp.json()
+            
+            businesses = me_data.get("businesses", {}).get("data", [])
+            if not businesses:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No Meta Business Account found. Please ensure your Facebook account is linked to a Business account."
+                )
+            
+            business_id = businesses[0].get("id")
+            
+            # discover WABAs and phone numbers across ALL user businesses
             wabas = []
             
             for b in businesses:
