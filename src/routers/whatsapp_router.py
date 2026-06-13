@@ -263,23 +263,66 @@ async def _exchange_code_and_discover(
             display_phone_number = phone_data.get("display_phone_number", "Unknown")
             
         else:
-            # Fallback: Fetch the user's Meta Business Account to discover WABAs
-            me_resp = await client.get(
-                f"{FACEBOOK_GRAPH_URL}/me",
-                params={"fields": "businesses", "access_token": access_token}
+            # Fallback 1: Use debug_token to discover WABA ID from granular scopes
+            debug_token_url = f"{FACEBOOK_GRAPH_URL}/debug_token"
+            app_access_token = f"{settings.WHATSAPP_APP_ID}|{settings.WHATSAPP_APP_SECRET}"
+            debug_resp = await client.get(
+                debug_token_url,
+                params={
+                    "input_token": access_token,
+                    "access_token": app_access_token
+                }
             )
-            me_data = me_resp.json()
+            debug_data = debug_resp.json()
             
-            businesses = me_data.get("businesses", {}).get("data", [])
-            if not businesses:
-                raise HTTPException(
-                    status_code=400,
-                    detail="No Meta Business Account found. Please ensure your Facebook account is linked to a Business account."
+            waba_id = None
+            granular_scopes = debug_data.get("data", {}).get("granular_scopes", [])
+            for scope in granular_scopes:
+                if scope.get("scope") == "whatsapp_business_management":
+                    target_ids = scope.get("target_ids", [])
+                    if target_ids:
+                        waba_id = target_ids[0]
+                        break
+            
+            business_id = ""
+            
+            if waba_id:
+                # We found the WABA ID via debug_token! Now fetch its phone numbers
+                phones_resp = await client.get(
+                    f"{FACEBOOK_GRAPH_URL}/{waba_id}/phone_numbers",
+                    params={
+                        "access_token": access_token,
+                        "fields": "id,display_phone_number,quality_rating,name_status,status"
+                    }
                 )
-            
-            business_id = businesses[0].get("id")
-            
-            # discover WABAs and phone numbers across ALL user businesses
+                phones_data = phones_resp.json()
+                phones = phones_data.get("data", [])
+                if not phones:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="No phone numbers found in your WhatsApp Business Account. Please add one in Meta Business Suite."
+                    )
+                phone_number_id = phones[0].get("id")
+                display_phone_number = phones[0].get("display_phone_number")
+                
+            else:
+                # Fallback 2: Fetch the user's Meta Business Account to discover WABAs
+                me_resp = await client.get(
+                    f"{FACEBOOK_GRAPH_URL}/me",
+                    params={"fields": "businesses", "access_token": access_token}
+                )
+                me_data = me_resp.json()
+                
+                businesses = me_data.get("businesses", {}).get("data", [])
+                if not businesses:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="No Meta Business Account found. Please ensure your Facebook account is linked to a Business account."
+                    )
+                
+                business_id = businesses[0].get("id")
+                
+                # discover WABAs and phone numbers across ALL user businesses
             wabas = []
             
             for b in businesses:
