@@ -150,10 +150,12 @@ async def embedded_oauth_callback(
     code = request_data.code
     user_id = user.id
     
+    logger.info(f"Embedded callback: code={'present' if code else 'missing'}, waba_id={request_data.waba_id}, phone_number_id={request_data.phone_number_id}")
+    
     try:
         access_token, waba_id, phone_number_id, display_phone_number, business_id = await _exchange_code_and_discover(
             code=code,
-            redirect_uri="",  # Empty for JS SDK
+            redirect_uri="",  # Empty string — will be omitted from the token exchange request
             hint_waba_id=request_data.waba_id,
             hint_phone_number_id=request_data.phone_number_id
         )
@@ -209,16 +211,22 @@ async def _exchange_code_and_discover(
         params = {
             "client_id": settings.WHATSAPP_APP_ID,
             "client_secret": settings.WHATSAPP_APP_SECRET,
-            "redirect_uri": redirect_uri,
             "code": code
         }
+        # Only include redirect_uri when it's a real URL (i.e. redirect OAuth).
+        # The JS SDK embedded-signup flow issues codes without a redirect_uri,
+        # so sending an empty string causes Meta to reject the request.
+        if redirect_uri:
+            params["redirect_uri"] = redirect_uri
         
+        logger.info(f"Exchanging code with params (excluding secrets): client_id={settings.WHATSAPP_APP_ID}, redirect_uri={'<set>' if redirect_uri else '<omitted>'}")
         response = await client.get(token_url, params=params)
         data = response.json()
         
         if response.status_code != 200:
-            logger.error(f"Failed to exchange code: {data}")
-            raise HTTPException(status_code=400, detail="Failed to exchange authorization code. Please try again.")
+            logger.error(f"Failed to exchange code: status={response.status_code}, response={data}")
+            error_msg = data.get('error', {}).get('message', '') if isinstance(data.get('error'), dict) else str(data)
+            raise HTTPException(status_code=400, detail=f"Failed to exchange authorization code: {error_msg}")
         
         short_lived_token = data.get("access_token")
         
