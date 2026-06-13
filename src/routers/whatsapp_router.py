@@ -125,6 +125,7 @@ async def oauth_callback(
             waba_id=waba_id,
             phone_number_id=phone_number_id,
             display_phone_number=display_phone_number,
+            phone_status=phone_status,
             auth_type="oauth_redirect"
         )
         
@@ -182,6 +183,7 @@ async def embedded_oauth_callback(
             waba_id=waba_id,
             phone_number_id=phone_number_id,
             display_phone_number=display_phone_number,
+            phone_status=phone_status,
             auth_type="embedded_signup"
         )
         
@@ -190,8 +192,8 @@ async def embedded_oauth_callback(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in WhatsApp embedded callback: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error linking WhatsApp")
+        logger.error(f"Error in WhatsApp embedded callback: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error linking WhatsApp: {str(e)}")
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -309,6 +311,7 @@ async def _exchange_code_and_discover(
                     )
                 phone_number_id = phones[0].get("id")
                 display_phone_number = phones[0].get("display_phone_number")
+                phone_status = phones[0].get("status", "PENDING")
                 
             else:
                 # Fallback 2: Fetch the user's Meta Business Account to discover WABAs
