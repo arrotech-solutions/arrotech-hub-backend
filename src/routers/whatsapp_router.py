@@ -18,6 +18,10 @@ class WhatsAppOauthRequest(BaseModel):
     waba_id: Optional[str] = None
     phone_number_id: Optional[str] = None
 
+class WhatsAppRegisterRequest(BaseModel):
+    phone_number_id: str
+    pin: str
+
 router = APIRouter(
     prefix="/api/whatsapp",
     tags=["whatsapp"]
@@ -153,7 +157,7 @@ async def embedded_oauth_callback(
     logger.info(f"Embedded callback: code={'present' if code else 'missing'}, waba_id={request_data.waba_id}, phone_number_id={request_data.phone_number_id}")
     
     try:
-        access_token, waba_id, phone_number_id, display_phone_number, business_id = await _exchange_code_and_discover(
+        access_token, waba_id, phone_number_id, display_phone_number, business_id, phone_status = await _exchange_code_and_discover(
             code=code,
             redirect_uri="",  # Empty string — will be omitted from the token exchange request
             hint_waba_id=request_data.waba_id,
@@ -203,7 +207,7 @@ async def _exchange_code_and_discover(
     If hint_waba_id and hint_phone_number_id are provided (from Embedded Signup
     with config_id), they are used directly instead of blindly taking [0].
     
-    Returns: (access_token, waba_id, phone_number_id, display_phone_number, business_id)
+    Returns: (access_token, waba_id, phone_number_id, display_phone_number, business_id, phone_status)
     """
     async with httpx.AsyncClient(timeout=30.0) as client:
         # 1. Exchange code for short-lived access token
@@ -261,6 +265,7 @@ async def _exchange_code_and_discover(
             )
             phone_data = phone_resp.json()
             display_phone_number = phone_data.get("display_phone_number", "Unknown")
+            phone_status = phone_data.get("status", "PENDING")
             
         else:
             # Fallback 1: Use debug_token to discover WABA ID from granular scopes
@@ -374,10 +379,11 @@ async def _exchange_code_and_discover(
                 phone = phones[0]
                 phone_number_id = phone.get("id")
                 display_phone_number = phone.get("display_phone_number")
+                phone_status = phone.get("status", "PENDING")
         
-        logger.info(f"WhatsApp OAuth complete: waba={waba_id}, phone={phone_number_id}, display={display_phone_number}")
+        logger.info(f"WhatsApp OAuth complete: waba={waba_id}, phone={phone_number_id}, display={display_phone_number}, status={phone_status}")
         
-        return access_token, waba_id, phone_number_id, display_phone_number, business_id
+        return access_token, waba_id, phone_number_id, display_phone_number, business_id, phone_status
 
 
 async def _upsert_whatsapp_connection(
@@ -388,6 +394,7 @@ async def _upsert_whatsapp_connection(
     waba_id: str,
     phone_number_id: str,
     display_phone_number: str,
+    phone_status: str = "PENDING",
     auth_type: str = "embedded_signup"
 ):
     """Create or update the WhatsApp connection for a user."""
@@ -408,6 +415,7 @@ async def _upsert_whatsapp_connection(
         "waba_id": waba_id,
         "phone_number_id": phone_number_id,
         "display_phone_number": display_phone_number,
+        "phone_status": phone_status,
         "base_url": FACEBOOK_GRAPH_URL,
         "token_refreshed_at": datetime.utcnow().isoformat(),
         "token_expires_at": (datetime.utcnow() + timedelta(days=60)).isoformat(),
@@ -539,3 +547,52 @@ async def manual_connect(
     except Exception as e:
         logger.error(f"Manual connect error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+@router.post("/register-phone")
+async def register_whatsapp_phone(
+    request: WhatsAppRegisterRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Register the phone number with Meta Cloud API using the provided PIN."""
+    result = await db.execute(
+        select(Connection).filter(
+            Connection.user_id == user.id,
+            Connection.platform == "whatsapp"
+        )
+    )
+    connection = result.scalar_one_or_none()
+    
+    if not connection or not connection.config.get("access_token"):
+        raise HTTPException(status_code=400, detail="WhatsApp connection not found or incomplete.")
+        
+    access_token = connection.config.get("access_token")
+    
+    # Send registration request to Meta
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        register_url = f"{FACEBOOK_GRAPH_URL}/{request.phone_number_id}/register"
+        response = await client.post(
+            register_url,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "messaging_product": "whatsapp",
+                "pin": request.pin
+            }
+        )
+        
+        data = response.json()
+        
+        if response.status_code != 200:
+            logger.error(f"Failed to register WhatsApp phone: {data}")
+            error_msg = data.get('error', {}).get('message', '') if isinstance(data.get('error'), dict) else str(data)
+            raise HTTPException(status_code=400, detail=f"Failed to register phone number: {error_msg}")
+            
+        # Update connection config to mark phone as connected
+        config_data = connection.config.copy()
+        config_data["phone_status"] = "CONNECTED"
+        connection.config = config_data
+        await db.commit()
+        
+        return {"success": True, "message": "Phone number successfully registered"}
