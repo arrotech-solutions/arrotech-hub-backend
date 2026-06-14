@@ -41,7 +41,7 @@ WHATSAPP_SCOPES = "whatsapp_business_management,whatsapp_business_messaging,busi
 from ..routers.auth_router import get_current_user
 
 @router.get("/auth-url")
-async def get_auth_url(user: User = Depends(get_current_user)):
+async def get_auth_url(config_id: Optional[str] = None, user: User = Depends(get_current_user)):
     """Generate WhatsApp (Meta) OAuth URL."""
     # Check tier-based access BEFORE allowing OAuth flow
     from ..services.tier_gate import check_connection_access
@@ -66,6 +66,9 @@ async def get_auth_url(user: User = Depends(get_current_user)):
         "state": state,
         "display": "page"
     }
+    
+    if config_id:
+        params["config_id"] = config_id
     
     auth_url = f"https://www.facebook.com/v22.0/dialog/oauth?{urllib.parse.urlencode(params)}"
     return {"url": auth_url}
