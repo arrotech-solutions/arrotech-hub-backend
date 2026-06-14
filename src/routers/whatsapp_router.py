@@ -108,7 +108,7 @@ async def oauth_callback(
     try:
         redirect_uri = f"{settings.API_BASE_URL.rstrip('/')}/api/whatsapp/callback"
         
-        access_token, waba_id, phone_number_id, display_phone_number, business_id, phone_status = await _exchange_code_and_discover(
+        access_token, waba_id, phone_number_id, display_phone_number, business_id = await _exchange_code_and_discover(
             code=code,
             redirect_uri=redirect_uri
         )
