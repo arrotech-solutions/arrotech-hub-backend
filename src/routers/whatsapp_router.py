@@ -22,6 +22,9 @@ class WhatsAppRegisterRequest(BaseModel):
     phone_number_id: str
     pin: str
 
+class WhatsAppDeregisterRequest(BaseModel):
+    phone_number_id: str
+
 router = APIRouter(
     prefix="/api/whatsapp",
     tags=["whatsapp"]
@@ -599,3 +602,49 @@ async def register_whatsapp_phone(
         await db.commit()
         
         return {"success": True, "message": "Phone number successfully registered"}
+
+@router.post("/deregister-phone")
+async def deregister_whatsapp_phone(
+    request: WhatsAppDeregisterRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Deregister the phone number with Meta Cloud API."""
+    result = await db.execute(
+        select(Connection).filter(
+            Connection.user_id == user.id,
+            Connection.platform == "whatsapp"
+        )
+    )
+    connection = result.scalar_one_or_none()
+    
+    if not connection or not connection.config.get("access_token"):
+        raise HTTPException(status_code=400, detail="WhatsApp connection not found or incomplete.")
+        
+    access_token = connection.config.get("access_token")
+    
+    # Send deregistration request to Meta
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        deregister_url = f"{FACEBOOK_GRAPH_URL}/{request.phone_number_id}/deregister"
+        response = await client.post(
+            deregister_url,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
+        )
+        
+        data = response.json() if response.content else {}
+        
+        if response.status_code != 200:
+            logger.error(f"Failed to deregister WhatsApp phone: {data}")
+            error_msg = data.get('error', {}).get('message', '') if isinstance(data.get('error'), dict) else str(data)
+            raise HTTPException(status_code=400, detail=f"Failed to deregister phone number: {error_msg}")
+            
+        # Update connection config to mark phone as PENDING
+        config_data = connection.config.copy()
+        config_data["phone_status"] = "PENDING"
+        connection.config = config_data
+        await db.commit()
+        
+        return {"success": True, "message": "Phone number successfully deregistered"}
