@@ -25,12 +25,12 @@ WORKFLOW_TEMPLATES = [
     {
         "id": "whatsapp_real_estate_agent",
         "name": "WhatsApp Real Estate Agent",
-        "description": "AI-powered WhatsApp real estate agent that answers property inquiries and captures leads.",
+        "description": "AI-powered WhatsApp real estate agent that answers property inquiries, captures leads, sends brochures, and schedules viewings.",
         "icon": "🏠",
         "category": "Customer Support",
-        "difficulty": "beginner",
-        "estimated_time": "5 mins",
-        "tags": ["whatsapp", "real estate", "ai", "leads"],
+        "difficulty": "intermediate",
+        "estimated_time": "15 mins",
+        "tags": ["whatsapp", "real estate", "ai", "leads", "scheduling"],
         "required_connections": ["whatsapp", "rag_pipeline"],
         "steps": [
             {
@@ -45,11 +45,11 @@ WORKFLOW_TEMPLATES = [
                         "business_phone": "{{variables.business_phone}}",
                         "order_type": "real_estate",
                         "currency": "{{variables.currency}}",
-                        "storage_provider": "{{variables.storage_provider}}",
-                        "storage_spreadsheet_id": "{{variables.storage_spreadsheet_id}}"
+                        "scheduling_provider": "{{variables.scheduling_provider}}",
+                        "calendar_link": "{{variables.calendar_link}}"
                     }
                 },
-                "description": "AI handles conversation and answers property queries"
+                "description": "AI handles conversation, qualifies leads, and sends brochures"
             },
             {
                 "step_number": 2,
@@ -72,8 +72,59 @@ WORKFLOW_TEMPLATES = [
                     "to_number": "{{variables.business_phone}}",
                     "message": "{{step_1.order_notification}}"
                 },
-                "description": "Notify agency of new inquiry",
-                "condition": {"if": "step_1.order_created == True"}
+                "description": "Notify agency of hot lead or booked viewing",
+                "condition": {"if": "step_1.order_created == True or step_1.lead_urgency == 'high'"}
+            },
+            {
+                "step_number": 4,
+                "tool_name": "hubspot_create_contact",
+                "tool_parameters": {
+                    "email": "{{step_1.lead_email}}",
+                    "phone": "{{whatsapp_contact_phone}}",
+                    "firstname": "{{step_1.lead_name}}",
+                    "properties": {
+                        "budget": "{{step_1.lead_budget}}",
+                        "preferred_location": "{{step_1.lead_location}}",
+                        "bedrooms": "{{step_1.lead_bedrooms}}"
+                    }
+                },
+                "description": "Sync lead to HubSpot",
+                "condition": {"if": "variables.crm_provider == 'hubspot' and step_1.lead_captured == True"}
+            },
+            {
+                "step_number": 5,
+                "tool_name": "google_sheets_append_row",
+                "tool_parameters": {
+                    "spreadsheet_id": "{{variables.crm_spreadsheet_id}}",
+                    "sheet_name": "Leads",
+                    "values": ["{{whatsapp_contact_phone}}", "{{step_1.lead_name}}", "{{step_1.lead_budget}}", "{{step_1.lead_location}}"]
+                },
+                "description": "Sync lead to Google Sheets",
+                "condition": {"if": "variables.crm_provider == 'google_sheets' and step_1.lead_captured == True"}
+            },
+            {
+                "step_number": 6,
+                "tool_name": "salesforce_create_lead",
+                "tool_parameters": {
+                    "phone": "{{whatsapp_contact_phone}}",
+                    "lastname": "{{step_1.lead_name}}",
+                    "company": "WhatsApp Inquiry",
+                    "description": "Budget: {{step_1.lead_budget}}, Location: {{step_1.lead_location}}"
+                },
+                "description": "Sync lead to Salesforce",
+                "condition": {"if": "variables.crm_provider == 'salesforce' and step_1.lead_captured == True"}
+            },
+            {
+                "step_number": 7,
+                "tool_name": "schedule_followup",
+                "tool_parameters": {
+                    "type": "whatsapp",
+                    "delay": "{{variables.followup_days}} days",
+                    "phone": "{{whatsapp_contact_phone}}",
+                    "message": "Hi! Just checking in to see if you have any questions about the properties we discussed. Let me know if you need to schedule a site visit! 🏠"
+                },
+                "description": "Schedule automated WhatsApp follow-up",
+                "condition": {"if": "variables.followup_days != '0' and step_1.lead_captured == True"}
             }
         ],
         "variables": {
@@ -89,17 +140,32 @@ WORKFLOW_TEMPLATES = [
             "currency": {
                 "type": "string", "default": "KES"
             },
-            "storage_provider": {
+            "crm_provider": {
                 "type": "string",
-                "description": "Where to save inquiries",
-                "enum": ["none", "google_sheets", "airtable"],
+                "description": "Select CRM to sync leads to",
+                "enum": ["none", "hubspot", "google_sheets", "salesforce"],
                 "default": "none"
             },
-            "storage_spreadsheet_id": {
+            "crm_spreadsheet_id": {
                 "type": "string",
-                "description": "Google Sheets Spreadsheet ID",
+                "description": "If using Sheets: Google Sheets Spreadsheet ID",
                 "x-dynamic-ui": "google_workspace_drive.list_spreadsheets",
                 "ui_hint": "folder_picker"
+            },
+            "scheduling_provider": {
+                "type": "string",
+                "description": "How should site visits be scheduled?",
+                "enum": ["native", "calendly", "google_calendar"],
+                "default": "native"
+            },
+            "calendar_link": {
+                "type": "string",
+                "description": "Your Calendly or booking link (if using external calendar)"
+            },
+            "followup_days": {
+                "type": "string",
+                "description": "Days to wait before auto-follow-up (0 to disable)",
+                "default": "2"
             }
         }
     },

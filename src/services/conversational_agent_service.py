@@ -1555,6 +1555,7 @@ class ConversationalAgentService:
                 customer_name=customer_name,
                 preferred_language=preferred_language,
                 auto_escalation_enabled=auto_escalation_enabled,
+                business_config=business_config,
             )
 
             cart_context = await self._build_cart_context_block(session_key, currency)
@@ -2353,6 +2354,7 @@ class ConversationalAgentService:
         customer_name: str = "",
         preferred_language: str = DEFAULT_LANGUAGE,
         auto_escalation_enabled: bool = True,
+        business_config: Dict[str, Any] = None,
     ) -> str:
         """Build the business-specific system prompt for the AI agent."""
 
@@ -2374,6 +2376,16 @@ class ConversationalAgentService:
                 "If the customer provides a different name or phone, use the new one instead.\n"
             )
 
+        # Extract extra real estate configs
+        scheduling_provider = (business_config or {}).get("scheduling_provider", "native")
+        calendar_link = (business_config or {}).get("calendar_link", "")
+
+        scheduling_instructions = ""
+        if scheduling_provider in ["calendly", "google_calendar"] and calendar_link:
+            scheduling_instructions = f"To schedule a viewing, provide this exact calendar link to the customer: {calendar_link}"
+        else:
+            scheduling_instructions = "To schedule a viewing, propose 3 available time slots in the next few days and ask them to choose one. Once they choose, confirm the slot."
+
         # Industry-specific context
         industry_context = {
             "food": (
@@ -2394,8 +2406,13 @@ class ConversationalAgentService:
             ),
             "real_estate": (
                 f"You are the real estate assistant for {business_name}, a property management or real estate company. "
-                "Help clients find properties for rent or sale, schedule viewings, report maintenance issues, and manage rent payments. "
-                "Always ask for their preferences such as location, budget, and number of bedrooms when they inquire about properties."
+                "Help clients find properties for rent or sale, schedule viewings, report maintenance issues, and manage rent payments.\n\n"
+                "**REAL ESTATE STRICT RULES:**\n"
+                "1. **Lead Qualification:** Always ask for their specific preferences BEFORE showing random properties. Ask for: Budget, Preferred Location, and Number of Bedrooms.\n"
+                "2. **Brochures:** If a customer asks for more details or a brochure for a specific property, check if a PDF or link is available in the knowledge base and share it. Alternatively, explicitly offer to send a 'property brochure PDF' via WhatsApp.\n"
+                f"3. **Scheduling:** {scheduling_instructions}\n"
+                "4. **Escalation:** If a customer expresses high urgency, says they want to buy immediately, or books a viewing, label them internally as a HOT LEAD so the human team gets notified.\n"
+                "5. **Locations:** Always provide the property location. When a viewing is booked, ensure you provide the exact map location if available."
             ),
             "general": (
                 f"You are the customer service assistant for {business_name}. "
