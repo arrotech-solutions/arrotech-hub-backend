@@ -156,10 +156,9 @@ class EmailService:
             return True # Return True to simulate success for the caller
         
         try:
-            # Resend HTTP API — commented out, using Zoho SMTP instead.
-            # Uncomment the block below (and set RESEND_API_KEY in .env) to revert.
-            # if self.use_resend:
-            #     return await self._send_resend(to_email, subject, html_content, text_content)
+            # Resend HTTP API
+            if self.use_resend:
+                return await self._send_resend(to_email, subject, html_content, text_content)
             
             msg = MIMEMultipart('alternative')
             msg['From'] = f"{self.from_name} <{self.from_email}>"
