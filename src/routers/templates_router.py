@@ -53,6 +53,11 @@ WORKFLOW_TEMPLATES = [
                         "currency": "{{variables.currency}}",
                         "service_areas": "{{variables.service_areas}}",
                         "default_listing_type": "{{variables.default_listing_type}}",
+                        "crm_provider": "{{variables.crm_provider}}",
+                        "crm_spreadsheet_id": "{{variables.crm_spreadsheet_id}}",
+                        "scheduling_provider": "{{variables.scheduling_provider}}",
+                        "calendar_link": "{{variables.calendar_link}}",
+                        "followup_days": "{{variables.followup_days}}",
                         "qualification_fields": "{{variables.qualification_fields}}",
                         "response_style": "{{variables.response_style}}",
                         "enabled_mcp_tools": "{{variables.enabled_mcp_tools}}",
@@ -120,6 +125,32 @@ WORKFLOW_TEMPLATES = [
                 "enum": ["rent", "sale", "both"],
                 "default": "both",
                 "description": "Primary property mode for this assistant"
+            },
+            "crm_provider": {
+                "type": "string",
+                "description": "CRM target for lead sync",
+                "enum": ["none", "hubspot", "google_sheets", "salesforce"],
+                "default": "none"
+            },
+            "crm_spreadsheet_id": {
+                "type": "string",
+                "description": "If using Google Sheets CRM, select spreadsheet ID",
+                "x-dynamic-ui": "google_workspace_drive.list_spreadsheets"
+            },
+            "scheduling_provider": {
+                "type": "string",
+                "description": "Viewing scheduling mode",
+                "enum": ["native", "calendly", "google_calendar"],
+                "default": "native"
+            },
+            "calendar_link": {
+                "type": "string",
+                "description": "Calendly or booking link (if external scheduling is used)"
+            },
+            "followup_days": {
+                "type": "string",
+                "description": "Days before automated follow-up (0 disables)",
+                "default": "2"
             },
             "qualification_fields": {
                 "type": "array",

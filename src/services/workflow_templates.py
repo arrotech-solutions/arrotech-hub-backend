@@ -383,6 +383,51 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 ],
                 "default": "both"
             },
+            "crm_provider": {
+                "label": "CRM Provider",
+                "type": "select",
+                "description": "Where qualified leads should be synced",
+                "required": False,
+                "options": [
+                    {"value": "none", "label": "None"},
+                    {"value": "hubspot", "label": "HubSpot"},
+                    {"value": "google_sheets", "label": "Google Sheets"},
+                    {"value": "salesforce", "label": "Salesforce"}
+                ],
+                "default": "none"
+            },
+            "crm_spreadsheet_id": {
+                "label": "Google Sheets CRM Spreadsheet",
+                "type": "text",
+                "description": "Spreadsheet ID when CRM provider is Google Sheets",
+                "required": False,
+                "show_if": {"field": "crm_provider", "value": "google_sheets"}
+            },
+            "scheduling_provider": {
+                "label": "Viewing Scheduling Provider",
+                "type": "select",
+                "description": "How viewing bookings are handled",
+                "required": False,
+                "options": [
+                    {"value": "native", "label": "Native chat scheduling"},
+                    {"value": "calendly", "label": "Calendly"},
+                    {"value": "google_calendar", "label": "Google Calendar"}
+                ],
+                "default": "native"
+            },
+            "calendar_link": {
+                "label": "Calendar/Booking Link",
+                "type": "text",
+                "description": "External booking link for viewings (Calendly, etc.)",
+                "required": False
+            },
+            "followup_days": {
+                "label": "Follow-up Delay (days)",
+                "type": "number",
+                "description": "How many days before automated re-engagement (0 disables)",
+                "required": False,
+                "default": 2
+            },
             "qualification_fields": {
                 "label": "Qualification Fields",
                 "type": "multi_select",
@@ -463,6 +508,11 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                         "currency": "{{config.currency}}",
                         "service_areas": "{{config.service_areas}}",
                         "default_listing_type": "{{config.default_listing_type}}",
+                        "crm_provider": "{{config.crm_provider}}",
+                        "crm_spreadsheet_id": "{{config.crm_spreadsheet_id}}",
+                        "scheduling_provider": "{{config.scheduling_provider}}",
+                        "calendar_link": "{{config.calendar_link}}",
+                        "followup_days": "{{config.followup_days}}",
                         "qualification_fields": "{{config.qualification_fields}}",
                         "response_style": "{{config.response_style}}",
                         "system_prompt": (
