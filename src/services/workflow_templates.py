@@ -313,6 +313,204 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
         ]
     },
 
+    # ── WhatsApp Real Estate Agent ──────────────────────────────
+    "whatsapp_real_estate_agent": {
+        "name": "WhatsApp Real Estate Agent",
+        "description": (
+            "AI-powered WhatsApp real estate agent for instant lead qualification, "
+            "property matching, and viewing booking handoff. Built for agencies, "
+            "developers, and property managers."
+        ),
+        "icon": "🏠",
+        "industry_tags": ["real_estate", "property", "rentals", "sales", "brokerage"],
+        "platform": "whatsapp",
+        "estimated_setup": "6 minutes",
+        "trigger": {
+            "type": "event",
+            "platform": "whatsapp",
+            "event_type": "whatsapp_message_received"
+        },
+        "required_config": {
+            "kb_id": {
+                "label": "Knowledge Base",
+                "type": "kb_select",
+                "description": "Select your property inventory and FAQ knowledge base",
+                "required": True
+            },
+            "business_name": {
+                "label": "Agency Name",
+                "type": "text",
+                "description": "Your agency/brand name shown to prospects",
+                "required": True
+            },
+            "business_phone": {
+                "label": "Agent Notification Phone",
+                "type": "phone",
+                "description": "Team phone for hot lead alerts and handoff notifications",
+                "required": True,
+                "placeholder": "+254..."
+            },
+            "business_email": {
+                "label": "Agent Notification Email",
+                "type": "email",
+                "description": "Optional inbox for lead and viewing alerts",
+                "required": False,
+                "placeholder": "leads@youragency.com"
+            },
+            "currency": {
+                "label": "Currency",
+                "type": "text",
+                "description": "Currency code used for pricing (e.g. KES, USD)",
+                "required": True,
+                "default": "KES"
+            },
+            "service_areas": {
+                "label": "Service Areas",
+                "type": "text",
+                "description": "Comma-separated areas/estates the agency serves",
+                "required": False,
+                "default": "Nairobi, Kiambu, Thika"
+            },
+            "default_listing_type": {
+                "label": "Primary Offering",
+                "type": "select",
+                "description": "Default mode for prospect conversations",
+                "required": True,
+                "options": [
+                    {"value": "rent", "label": "🏢 Rentals"},
+                    {"value": "sale", "label": "🏡 Sales"},
+                    {"value": "both", "label": "🔁 Both"}
+                ],
+                "default": "both"
+            },
+            "qualification_fields": {
+                "label": "Qualification Fields",
+                "type": "multi_select",
+                "description": "Lead qualification profile captured in chat",
+                "required": False,
+                "options": [
+                    {"value": "budget", "label": "Budget range"},
+                    {"value": "location", "label": "Preferred location"},
+                    {"value": "property_type", "label": "Property type"},
+                    {"value": "bedrooms", "label": "Bedrooms / size"},
+                    {"value": "timeline", "label": "Purchase/Rent timeline"},
+                    {"value": "financing", "label": "Financing status"}
+                ],
+                "default": ["budget", "location", "property_type", "timeline"]
+            },
+            "response_style": {
+                "label": "Agent Tone",
+                "type": "select",
+                "description": "Tone for customer-facing replies",
+                "required": False,
+                "options": [
+                    {"value": "professional", "label": "Professional"},
+                    {"value": "warm", "label": "Warm + Consultative"},
+                    {"value": "concise", "label": "Concise"}
+                ],
+                "default": "warm"
+            },
+            "system_prompt": {
+                "label": "Custom Instructions (Optional)",
+                "type": "textarea",
+                "description": "Any agency-specific policy, financing, or compliance rules",
+                "required": False,
+                "placeholder": "e.g. Always ask budget and preferred location before suggesting listings."
+            },
+            "enabled_mcp_tools": {
+                "label": "Enabled MCP Tools",
+                "type": "multi_select",
+                "description": "Optional MCP tools for calendar/CRM/listings enrichment",
+                "required": False,
+                "options": [],
+                "default": []
+            },
+            "auto_escalation_enabled": {
+                "label": "Smart Escalation",
+                "type": "boolean",
+                "description": "Escalate hot leads or sensitive requests to a human agent",
+                "required": False,
+                "default": True
+            },
+            "supported_languages": {
+                "label": "Supported Languages",
+                "type": "text",
+                "description": "Comma-separated language codes (e.g. en,sw)",
+                "required": False,
+                "default": "en,sw"
+            },
+            "human_handoff_ttl_hours": {
+                "label": "Handoff Auto-Resume (hours)",
+                "type": "number",
+                "description": "AI resumes after this duration (0 = manual only)",
+                "required": False,
+                "default": 24
+            }
+        },
+        "steps": [
+            {
+                "tool_name": "conversational_agent",
+                "description": "Qualify lead, match property options, and prepare viewing handoff",
+                "parameters": {
+                    "session_key": "{{session_key}}",
+                    "user_message": "{{whatsapp_message_content}}",
+                    "business_config": {
+                        "kb_id": "{{config.kb_id}}",
+                        "business_name": "{{config.business_name}}",
+                        "business_phone": "{{config.business_phone}}",
+                        "business_email": "{{config.business_email}}",
+                        "order_type": "real_estate",
+                        "currency": "{{config.currency}}",
+                        "service_areas": "{{config.service_areas}}",
+                        "default_listing_type": "{{config.default_listing_type}}",
+                        "qualification_fields": "{{config.qualification_fields}}",
+                        "response_style": "{{config.response_style}}",
+                        "system_prompt": (
+                            "You are a top-performing WhatsApp real estate sales assistant for {{config.business_name}}. "
+                            "Goals: respond fast, qualify leads naturally, suggest matching listings from KB, and move hot leads to viewing booking. "
+                            "Always capture these fields progressively: budget, preferred location, property type, and timeline. "
+                            "When missing fields exist, ask one short question at a time. "
+                            "Keep responses concise (2-5 lines), friendly, and actionable. "
+                            "For hot leads (clear budget + timeline within 3 months), propose a viewing and summarize lead context for agent handoff. "
+                            "Never hallucinate listing details; use KB facts only. "
+                            "{{config.system_prompt}}"
+                        ),
+                        "enabled_mcp_tools": "{{config.enabled_mcp_tools}}",
+                        "auto_escalation_enabled": "{{config.auto_escalation_enabled}}",
+                        "supported_languages": "{{config.supported_languages}}",
+                        "human_handoff_ttl_hours": "{{config.human_handoff_ttl_hours}}"
+                    }
+                }
+            },
+            {
+                "tool_name": "whatsapp_send_message",
+                "description": "Send AI response back to prospect",
+                "parameters": {
+                    "operation": "send_message",
+                    "to_number": "{{whatsapp_contact_phone}}",
+                    "message": "{{step_1.response_text}}",
+                    "image_urls": "{{step_1.image_urls}}",
+                    "session_key": "{{session_key}}"
+                }
+            },
+            {
+                "tool_name": "whatsapp_send_message",
+                "description": "Notify assigned agent when escalation/handoff is triggered",
+                "condition": {
+                    "type": "if",
+                    "field": "step_1.escalation_triggered",
+                    "operator": "equals",
+                    "value": True
+                },
+                "parameters": {
+                    "operation": "send_message",
+                    "to_number": "{{config.business_phone}}",
+                    "message": "{{step_1.escalation_notification}}"
+                }
+            }
+        ]
+    },
+
     # ── Telegram Ordering Agent ──────────────────────────────
     "telegram_ordering_agent": {
         "name": "Telegram Ordering Agent",

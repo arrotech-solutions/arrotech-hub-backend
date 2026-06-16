@@ -25,13 +25,18 @@ WORKFLOW_TEMPLATES = [
     {
         "id": "whatsapp_real_estate_agent",
         "name": "WhatsApp Real Estate Agent",
-        "description": "AI-powered WhatsApp real estate agent that answers property inquiries, captures leads, sends brochures, and schedules viewings.",
+        "description": "AI-powered WhatsApp real estate agent for lead qualification, listing assistance, and viewing handoff.",
         "icon": "🏠",
         "category": "Customer Support",
         "difficulty": "intermediate",
-        "estimated_time": "15 mins",
-        "tags": ["whatsapp", "real estate", "ai", "leads", "scheduling"],
+        "estimated_time": "6 mins",
+        "tags": ["whatsapp", "real estate", "ai", "leads", "viewings"],
         "required_connections": ["whatsapp", "rag_pipeline"],
+        "trigger_type": WorkflowTriggerType.EVENT,
+        "trigger_config": {
+            "platform": "whatsapp",
+            "event_type": "whatsapp_message_received"
+        },
         "steps": [
             {
                 "step_number": 1,
@@ -43,13 +48,21 @@ WORKFLOW_TEMPLATES = [
                         "kb_id": "{{variables.kb_id}}",
                         "business_name": "{{variables.business_name}}",
                         "business_phone": "{{variables.business_phone}}",
+                        "business_email": "{{variables.business_email}}",
                         "order_type": "real_estate",
                         "currency": "{{variables.currency}}",
-                        "scheduling_provider": "{{variables.scheduling_provider}}",
-                        "calendar_link": "{{variables.calendar_link}}"
+                        "service_areas": "{{variables.service_areas}}",
+                        "default_listing_type": "{{variables.default_listing_type}}",
+                        "qualification_fields": "{{variables.qualification_fields}}",
+                        "response_style": "{{variables.response_style}}",
+                        "enabled_mcp_tools": "{{variables.enabled_mcp_tools}}",
+                        "auto_escalation_enabled": "{{variables.auto_escalation_enabled}}",
+                        "supported_languages": "{{variables.supported_languages}}",
+                        "human_handoff_ttl_hours": "{{variables.human_handoff_ttl_hours}}",
+                        "system_prompt": "{{variables.system_prompt}}"
                     }
                 },
-                "description": "AI handles conversation, qualifies leads, and sends brochures"
+                "description": "AI handles lead qualification, listing guidance, and viewing flow"
             },
             {
                 "step_number": 2,
@@ -70,61 +83,15 @@ WORKFLOW_TEMPLATES = [
                 "tool_parameters": {
                     "operation": "send_message",
                     "to_number": "{{variables.business_phone}}",
-                    "message": "{{step_1.order_notification}}"
+                    "message": "{{step_1.escalation_notification}}"
                 },
-                "description": "Notify agency of hot lead or booked viewing",
-                "condition": {"if": "step_1.order_created == True or step_1.lead_urgency == 'high'"}
-            },
-            {
-                "step_number": 4,
-                "tool_name": "hubspot_create_contact",
-                "tool_parameters": {
-                    "email": "{{step_1.lead_email}}",
-                    "phone": "{{whatsapp_contact_phone}}",
-                    "firstname": "{{step_1.lead_name}}",
-                    "properties": {
-                        "budget": "{{step_1.lead_budget}}",
-                        "preferred_location": "{{step_1.lead_location}}",
-                        "bedrooms": "{{step_1.lead_bedrooms}}"
-                    }
+                "description": "Notify agency when AI escalates to a human",
+                "condition": {
+                    "type": "if",
+                    "field": "step_1.escalation_triggered",
+                    "operator": "equals",
+                    "value": True
                 },
-                "description": "Sync lead to HubSpot",
-                "condition": {"if": "variables.crm_provider == 'hubspot' and step_1.lead_captured == True"}
-            },
-            {
-                "step_number": 5,
-                "tool_name": "google_sheets_append_row",
-                "tool_parameters": {
-                    "spreadsheet_id": "{{variables.crm_spreadsheet_id}}",
-                    "sheet_name": "Leads",
-                    "values": ["{{whatsapp_contact_phone}}", "{{step_1.lead_name}}", "{{step_1.lead_budget}}", "{{step_1.lead_location}}"]
-                },
-                "description": "Sync lead to Google Sheets",
-                "condition": {"if": "variables.crm_provider == 'google_sheets' and step_1.lead_captured == True"}
-            },
-            {
-                "step_number": 6,
-                "tool_name": "salesforce_create_lead",
-                "tool_parameters": {
-                    "phone": "{{whatsapp_contact_phone}}",
-                    "lastname": "{{step_1.lead_name}}",
-                    "company": "WhatsApp Inquiry",
-                    "description": "Budget: {{step_1.lead_budget}}, Location: {{step_1.lead_location}}"
-                },
-                "description": "Sync lead to Salesforce",
-                "condition": {"if": "variables.crm_provider == 'salesforce' and step_1.lead_captured == True"}
-            },
-            {
-                "step_number": 7,
-                "tool_name": "schedule_followup",
-                "tool_parameters": {
-                    "type": "whatsapp",
-                    "delay": "{{variables.followup_days}} days",
-                    "phone": "{{whatsapp_contact_phone}}",
-                    "message": "Hi! Just checking in to see if you have any questions about the properties we discussed. Let me know if you need to schedule a site visit! 🏠"
-                },
-                "description": "Schedule automated WhatsApp follow-up",
-                "condition": {"if": "variables.followup_days != '0' and step_1.lead_captured == True"}
             }
         ],
         "variables": {
@@ -137,35 +104,56 @@ WORKFLOW_TEMPLATES = [
             "business_phone": {
                 "type": "string", "required": True, "description": "Phone number to receive lead notifications", "connection_for": "whatsapp"
             },
+            "business_email": {
+                "type": "string", "required": False, "description": "Optional email for lead notifications"
+            },
             "currency": {
                 "type": "string", "default": "KES"
             },
-            "crm_provider": {
+            "service_areas": {
                 "type": "string",
-                "description": "Select CRM to sync leads to",
-                "enum": ["none", "hubspot", "google_sheets", "salesforce"],
-                "default": "none"
+                "description": "Comma-separated areas served by agency",
+                "default": "Nairobi, Kiambu, Thika"
             },
-            "crm_spreadsheet_id": {
+            "default_listing_type": {
                 "type": "string",
-                "description": "If using Sheets: Google Sheets Spreadsheet ID",
-                "x-dynamic-ui": "google_workspace_drive.list_spreadsheets",
-                "ui_hint": "folder_picker"
+                "enum": ["rent", "sale", "both"],
+                "default": "both",
+                "description": "Primary property mode for this assistant"
             },
-            "scheduling_provider": {
-                "type": "string",
-                "description": "How should site visits be scheduled?",
-                "enum": ["native", "calendly", "google_calendar"],
-                "default": "native"
+            "qualification_fields": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": ["budget", "location", "property_type", "timeline"],
+                "description": "Lead fields to collect progressively in chat"
             },
-            "calendar_link": {
+            "response_style": {
                 "type": "string",
-                "description": "Your Calendly or booking link (if using external calendar)"
+                "enum": ["professional", "warm", "concise"],
+                "default": "warm"
             },
-            "followup_days": {
+            "enabled_mcp_tools": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+                "description": "Optional MCP tools available to this agent"
+            },
+            "auto_escalation_enabled": {
+                "type": "boolean",
+                "default": True
+            },
+            "supported_languages": {
                 "type": "string",
-                "description": "Days to wait before auto-follow-up (0 to disable)",
-                "default": "2"
+                "default": "en,sw"
+            },
+            "human_handoff_ttl_hours": {
+                "type": "number",
+                "default": 24
+            },
+            "system_prompt": {
+                "type": "string",
+                "required": False,
+                "description": "Custom operating instructions for this agency"
             }
         }
     },

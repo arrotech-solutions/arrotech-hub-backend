@@ -76,7 +76,8 @@ class WhatsAppWorkflowTrigger:
         workflows = result.scalars().all()
         for workflow in workflows:
             trigger_config = workflow.trigger_config or {}
-            if trigger_config.get("event_type") != "whatsapp_message_received":
+            event_type = trigger_config.get("event_type") or trigger_config.get("trigger")
+            if event_type != "whatsapp_message_received":
                 continue
             step_result = await db.execute(
                 select(WorkflowStep).where(
@@ -214,7 +215,7 @@ class WhatsAppWorkflowTrigger:
                 matched: List[tuple] = []
                 for workflow in workflows:
                     trigger_config = workflow.trigger_config or {}
-                    event_type = trigger_config.get("event_type", "")
+                    event_type = trigger_config.get("event_type") or trigger_config.get("trigger") or ""
                     should_trigger = False
 
                     if event_type == "whatsapp_message_received":

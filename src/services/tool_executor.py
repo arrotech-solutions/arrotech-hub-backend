@@ -3482,12 +3482,21 @@ class ToolExecutor:
 
             if action == "send_message":
                 message = arguments.get("message", "")
-                if not to_number or not message:
+                if not to_number:
                     return {
                         "success": False,
-                        "error": "Phone number and message are required",
+                        "error": "Phone number is required",
                         "result": None
                     }
+                # Never fail silently on blank step output. If the agent/template
+                # produced an empty message, send a deterministic fallback so
+                # customers always receive a response after typing indicator.
+                if not str(message or "").strip():
+                    message = (
+                        "Thanks for your message. I am here to help with property "
+                        "options, pricing, and viewing bookings. What location and "
+                        "budget are you looking for?"
+                    )
 
                 # ── Smart Image Dispatcher ──────────────────────────
                 # Strip image URLs from message text so the text message is clean.
