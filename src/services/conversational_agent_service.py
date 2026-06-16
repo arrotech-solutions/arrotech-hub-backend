@@ -2408,7 +2408,7 @@ class ConversationalAgentService:
                 f"You are the real estate assistant for {business_name}, a property management or real estate company. "
                 "Help clients find properties for rent or sale, schedule viewings, report maintenance issues, and manage rent payments.\n\n"
                 "**REAL ESTATE STRICT RULES:**\n"
-                "1. **Property Search:** When a user asks for properties, ALWAYS use the `search_products` tool to search the database for properties matching their criteria. Properties are stored as products. NEVER hallucinate that you are searching. Do NOT tell the user to 'hold on while I search' without actually calling the tool.\n"
+                "1. **Property Search:** When a user asks for properties, ALWAYS use the `search_products` tool. Properties are stored as products. **CRITICAL:** When constructing the `query` argument, keep it EXTREMELY SIMPLE and keyword-based (e.g., '3 bedroom Mombasa' or 'apartment'). NEVER include conversational phrases or strict numeric filters like 'under 66190 KES' in the query string, because extra words confuse the semantic search engine and return 0 results. Instead, use a broad keyword query and let the user see the options. NEVER hallucinate that you are searching.\n"
                 "2. **Lead Qualification:** If the user's request is too broad, gently ask for preferences (Budget, Location, Bedrooms). However, if they have provided these or just want to see what you have, DO NOT block them. Immediately call `search_products` to show them the properties. ALWAYS remember preferences from previous messages.\n"
                 "3. **Brochures:** If a customer asks for more details or a brochure for a specific property, check if a PDF or link is available in the knowledge base and share it. Alternatively, explicitly offer to send a 'property brochure PDF' via WhatsApp.\n"
                 f"4. **Scheduling:** {scheduling_instructions}\n"
@@ -2423,7 +2423,25 @@ class ConversationalAgentService:
 
         base_context = industry_context.get(order_type, industry_context["general"])
 
-        prompt = f"""{base_context}
+        if order_type == "real_estate":
+            prompt = f"""{base_context}
+
+## Your Capabilities
+- Search the property database to answer client questions using `search_products`.
+- Display properties as interactive cards with images using `display_product_cards`.
+- Escalate to a live human agent using `escalate_to_human` when needed.
+
+## Conversation Flow
+1. Greet the client warmly and ask how you can help (e.g., renting, buying, viewings).
+2. When they ask for properties: ALWAYS use `search_products` to search the database.
+3. NEVER list properties as plain text. ALWAYS use `display_product_cards` to show results.
+4. Keep responses brief and friendly (WhatsApp chat style, under 150 words).
+5. Always use {currency} for prices.
+6. Use emojis naturally but sparingly (1-3 per message).
+7. Do NOT mention "carts", "checkout", "orders", or "delivery" as this is a real estate service.
+"""
+        else:
+            prompt = f"""{base_context}
 
 ## Your Capabilities
 - Search the product catalog/menu to answer customer questions
@@ -3454,6 +3472,7 @@ class ConversationalAgentService:
                     currency=currency,
                     user=user,
                     db=db,
+                    order_type=business_config.get("order_type", "general"),
                 )
 
             elif tool_name == "cancel_order":
@@ -4592,6 +4611,7 @@ class ConversationalAgentService:
         currency: str,
         user: User,
         db: AsyncSession,
+        order_type: str = "general",
     ) -> Dict[str, Any]:
         """
         Send product cards as native interactive messages on WhatsApp/Telegram.
@@ -4664,6 +4684,7 @@ class ConversationalAgentService:
                 currency=currency,
                 user=user,
                 db=db,
+                order_type=order_type,
             )
 
         # Telegram: send photo + caption cards
@@ -4690,6 +4711,7 @@ class ConversationalAgentService:
         currency: str,
         user: User,
         db: AsyncSession,
+        order_type: str = "general",
     ) -> Dict[str, Any]:
         """Send each product as a native WhatsApp interactive button message."""
         try:
@@ -4761,6 +4783,13 @@ class ConversationalAgentService:
                 except Exception as cache_err:
                     logger.warning(f"[CONV_AGENT] Failed to cache product card: {cache_err}")
 
+            # Configure button actions based on order_type
+            primary_title = "Add to Cart"
+            primary_prefix = "cart"
+            if order_type == "real_estate":
+                primary_title = "Inquire"
+                primary_prefix = "inquire"
+
             # Send all cards concurrently for speed
             async def _send_one_card(product, idx):
                 name = product.get("name", "Product")
@@ -4779,6 +4808,8 @@ class ConversationalAgentService:
                             image_url=image_url,
                             product_id=product_id,
                             config=wa_config,
+                            primary_action_title=primary_title,
+                            primary_action_id_prefix=primary_prefix,
                         )
                         if card_result.get("success"):
                             logger.info(f"[CONV_AGENT] ✅ Sent product card: {name} → {recipient}")

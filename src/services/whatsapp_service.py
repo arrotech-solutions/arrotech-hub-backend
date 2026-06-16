@@ -272,7 +272,9 @@ class WhatsAppService:
         description: str,
         image_url: str,
         product_id: str,
-        config: Optional[Dict[str, Any]] = None
+        config: Optional[Dict[str, Any]] = None,
+        primary_action_title: str = "Add to Cart",
+        primary_action_id_prefix: str = "cart"
     ) -> Dict[str, Any]:
         """Send a product card with interactive buttons."""
         try:
@@ -305,6 +307,9 @@ class WhatsAppService:
             safe_name = str(name).replace(":", "-")[:100]
             stateless_id = f"{safe_name}:{price}"
             
+            # Ensure button title does not exceed WhatsApp's 20-character limit
+            safe_title = primary_action_title[:20]
+
             payload = {
                 "messaging_product": "whatsapp",
                 "recipient_type": "individual",
@@ -326,8 +331,8 @@ class WhatsAppService:
                             {
                                 "type": "reply",
                                 "reply": {
-                                    "id": f"cart:{stateless_id}",
-                                    "title": "Add to Cart"
+                                    "id": f"{primary_action_id_prefix}:{stateless_id}",
+                                    "title": safe_title
                                 }
                             },
                             {
