@@ -120,35 +120,27 @@ async def receive_webhook(
 
 
 def _dispatch_whatsapp_incoming(value: dict, background_tasks: Optional[BackgroundTasks]) -> None:
-    """Queue to Celery, and/or process inline when broker/worker unavailable."""
+    """Queue to Celery, or process inline when broker/worker unavailable."""
     use_celery = getattr(settings, "WHATSAPP_USE_CELERY_WEBHOOK", True)
     inline_fallback = getattr(settings, "WHATSAPP_WEBHOOK_INLINE_FALLBACK", True)
-    always_inline_backup = getattr(settings, "WHATSAPP_WEBHOOK_ALWAYS_INLINE_BACKUP", True)
-    celery_queued = False
+    queued = False
 
     if use_celery:
         try:
             from ..tasks.webhook_tasks import process_whatsapp_message_task
-            process_whatsapp_message_task.apply_async(
-                args=[value],
-                queue="default",
-            )
-            celery_queued = True
-            logger.info("[WHATSAPP WEBHOOK] Message queued to Celery (queue=default)")
+            process_whatsapp_message_task.delay(value)
+            queued = True
+            logger.info("[WHATSAPP WEBHOOK] Message queued to Celery")
         except Exception as e:
             logger.warning(
                 f"[WHATSAPP WEBHOOK] Celery dispatch failed, will use inline fallback: {e}"
             )
 
-    should_inline = (
-        (not celery_queued and inline_fallback)
-        or (celery_queued and always_inline_backup)
-    )
-    if should_inline:
+    if not queued and inline_fallback:
         if background_tasks is not None:
             background_tasks.add_task(_process_whatsapp_payload_inline, value)
-            logger.info("[WHATSAPP WEBHOOK] Inline background processing scheduled")
-        elif not celery_queued:
+            logger.info("[WHATSAPP WEBHOOK] Message scheduled for inline background processing")
+        else:
             logger.warning(
                 "[WHATSAPP WEBHOOK] No Celery and no BackgroundTasks — message may not be processed"
             )
@@ -182,23 +174,6 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
         try:
             # Extract message details
             msg_id = msg.get("id")
-
-            # Deduplicate when Celery + inline backup both run for the same webhook payload
-            processing_lock_key = f"wa_webhook_processing:{msg_id}" if msg_id else None
-            if processing_lock_key:
-                try:
-                    from ..services.cache_service import cache_service
-                    if not cache_service.set_if_not_exists(
-                        processing_lock_key, "1", expire_seconds=600
-                    ):
-                        logger.info(
-                            f"[WHATSAPP WEBHOOK] Message {msg_id} already processing — skipping duplicate"
-                        )
-                        continue
-                except Exception as lock_err:
-                    logger.warning(
-                        f"[WHATSAPP WEBHOOK] Processing lock check failed (continuing): {lock_err}"
-                    )
             
             # Duplicate Meta retries: re-run pipeline if DB row exists (prior run may have failed)
             existing_msg = await db.execute(
@@ -614,11 +589,6 @@ async def background_process_message(user_id: uuid.UUID, contact_id: uuid.UUID, 
             if not contact or not message:
                 logger.error(f"[WHATSAPP WEBHOOK BG] Contact or message not found")
                 return
-
-            logger.info(
-                f"[WHATSAPP WEBHOOK BG] Processing message {message_id} "
-                f"from {contact.phone_number} for user {user_id}"
-            )
 
             wa_config = None
 

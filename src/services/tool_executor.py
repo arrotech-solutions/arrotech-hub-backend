@@ -3482,21 +3482,12 @@ class ToolExecutor:
 
             if action == "send_message":
                 message = arguments.get("message", "")
-                if not to_number:
+                if not to_number or not message:
                     return {
                         "success": False,
-                        "error": "Phone number is required",
+                        "error": "Phone number and message are required",
                         "result": None
                     }
-                # Never fail silently on blank step output. If the agent/template
-                # produced an empty message, send a deterministic fallback so
-                # customers always receive a response after typing indicator.
-                if not str(message or "").strip():
-                    message = (
-                        "Thanks for your message. I am here to help with property "
-                        "options, pricing, and viewing bookings. What location and "
-                        "budget are you looking for?"
-                    )
 
                 # ── Smart Image Dispatcher ──────────────────────────
                 # Strip image URLs from message text so the text message is clean.
@@ -7482,27 +7473,10 @@ Description: {payment.description or 'N/A'}"""
 
         except Exception as e:
             logger.error(f"Conversational agent error: {e}", exc_info=True)
-            fallback = (
-                "Thanks for your message. I am here to help with property options, "
-                "pricing, and viewing bookings. What location and budget are you looking for?"
-            )
             return {
-                "success": True,
+                "success": False,
                 "error": f"Agent error: {str(e)}",
-                "result": fallback,
-                "response_text": fallback,
-                "image_urls": [],
-                "cards": [],
-                "order_created": False,
-                "order_cancelled": False,
-                "order_data": None,
-                "order_notification": "",
-                "escalation_triggered": False,
-                "escalation_notification": "",
-                "human_handoff": False,
-                "skip_customer_reply": False,
-                "actions_taken": [],
-                "send_cart_buttons": False,
+                "result": None
             }
 
 
