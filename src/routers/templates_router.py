@@ -20,6 +20,20 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _flatten_template_variables(variables: Dict[str, Any]) -> Dict[str, Any]:
+    """Store template variable defaults as flat runtime values, not schema objects."""
+    flat: Dict[str, Any] = {}
+    for key, val in (variables or {}).items():
+        if isinstance(val, dict) and (
+            "type" in val or "description" in val or "required" in val
+        ):
+            if val.get("default") not in (None, ""):
+                flat[key] = val["default"]
+        else:
+            flat[key] = val
+    return flat
+
+
 # Pre-built workflow templates
 WORKFLOW_TEMPLATES = [
     {
@@ -2596,8 +2610,12 @@ async def use_template(
         description=template["description"],
         user_id=current_user.id,
         steps=[WorkflowStep(**step) for step in template["steps"]],
-        variables=template.get("variables"),
-        trigger_type=template.get("trigger_type", WorkflowTriggerType.MANUAL),
+        variables=_flatten_template_variables(template.get("variables", {})),
+        trigger_type=(
+            template.get("trigger_type", WorkflowTriggerType.MANUAL).value
+            if hasattr(template.get("trigger_type"), "value")
+            else str(template.get("trigger_type", WorkflowTriggerType.MANUAL.value))
+        ),
         trigger_config=template.get("trigger_config", {}),
         status=WorkflowStatus.ACTIVE,
         category=template["category"],

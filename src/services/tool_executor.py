@@ -7482,10 +7482,27 @@ Description: {payment.description or 'N/A'}"""
 
         except Exception as e:
             logger.error(f"Conversational agent error: {e}", exc_info=True)
+            fallback = (
+                "Thanks for your message. I am here to help with property options, "
+                "pricing, and viewing bookings. What location and budget are you looking for?"
+            )
             return {
-                "success": False,
+                "success": True,
                 "error": f"Agent error: {str(e)}",
-                "result": None
+                "result": fallback,
+                "response_text": fallback,
+                "image_urls": [],
+                "cards": [],
+                "order_created": False,
+                "order_cancelled": False,
+                "order_data": None,
+                "order_notification": "",
+                "escalation_triggered": False,
+                "escalation_notification": "",
+                "human_handoff": False,
+                "skip_customer_reply": False,
+                "actions_taken": [],
+                "send_cart_buttons": False,
             }
 
 

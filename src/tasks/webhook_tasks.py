@@ -33,7 +33,10 @@ def process_whatsapp_message_task(self, payload: Dict[str, Any], user_id: str = 
     This handles the heavy lifting: contact resolution, message persistence,
     auto-reply engine, and AI agent invocation.
     """
-    logger.info(f"[CeleryWebhook] Processing WhatsApp message payload")
+    logger.info(
+        f"[CeleryWebhook] Processing WhatsApp message payload "
+        f"({len(payload.get('messages', []) or [])} message(s))"
+    )
 
     async def _process():
         from src.database import get_session_maker

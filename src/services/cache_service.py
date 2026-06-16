@@ -48,6 +48,26 @@ class CacheService:
             logger.error(f"Redis set error: {e}")
             return False
 
+    def set_if_not_exists(self, key: str, value: Any, expire_seconds: int = 3600) -> bool:
+        """
+        Set a key only when absent (SET NX). Returns True when the key was set
+        (caller acquired the lock), False when another worker already holds it.
+        """
+        if not self.redis_client:
+            return True
+        try:
+            return bool(
+                self.redis_client.set(
+                    key,
+                    json.dumps(value),
+                    nx=True,
+                    ex=expire_seconds,
+                )
+            )
+        except Exception as e:
+            logger.error(f"Redis set_if_not_exists error: {e}")
+            return True
+
     def delete(self, key: str) -> bool:
         """Delete a key from cache."""
         if not self.redis_client:

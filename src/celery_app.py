@@ -64,8 +64,8 @@ app.config_from_object({
     # ── Queue Routing ──
     "task_default_queue": "default",
     "task_routes": {
-        # High priority — real-time webhook processing
-        "src.tasks.webhook_tasks.*": {"queue": "high"},
+        # Webhook processing — default queue so standard workers pick these up
+        "src.tasks.webhook_tasks.*": {"queue": "default"},
 
         # Default — email, workflow execution
         "src.tasks.email_tasks.*": {"queue": "default"},

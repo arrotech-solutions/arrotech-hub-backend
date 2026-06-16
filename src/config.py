@@ -74,6 +74,8 @@ class BaseConfig(BaseSettings):
     WHATSAPP_USE_CELERY_WEBHOOK: bool = True
     # If Celery queue fails, fall back to FastAPI BackgroundTasks
     WHATSAPP_WEBHOOK_INLINE_FALLBACK: bool = True
+    # Also schedule inline processing when Celery dispatch succeeds (deduped per message id).
+    WHATSAPP_WEBHOOK_ALWAYS_INLINE_BACKUP: bool = True
     
     # Facebook (Pages) Configuration
     FACEBOOK_APP_ID: Optional[str] = None

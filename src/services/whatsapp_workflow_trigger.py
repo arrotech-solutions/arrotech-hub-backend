@@ -56,6 +56,36 @@ class WhatsAppWorkflowTrigger:
     """Service to trigger workflows based on WhatsApp events."""
 
     @classmethod
+    def _normalize_trigger_type(cls, trigger_type: Any) -> str:
+        if trigger_type is None:
+            return ""
+        if hasattr(trigger_type, "value"):
+            return str(trigger_type.value).lower()
+        return str(trigger_type).lower()
+
+    @classmethod
+    def _workflow_runtime_config(cls, workflow: Workflow) -> Dict[str, Any]:
+        """Resolve flat or nested workflow.variables into runtime business config."""
+        vars_data = workflow.variables or {}
+        nested = vars_data.get("config")
+        if isinstance(nested, dict) and nested:
+            return dict(nested)
+
+        runtime: Dict[str, Any] = {}
+        for key, val in vars_data.items():
+            if key == "config":
+                continue
+            if isinstance(val, dict) and (
+                "type" in val or "description" in val or "required" in val
+            ):
+                default = val.get("default")
+                if default not in (None, ""):
+                    runtime[key] = default
+                continue
+            runtime[key] = val
+        return runtime
+
+    @classmethod
     async def has_active_conversational_agent(
         cls,
         user_id: uuid.UUID,
@@ -69,12 +99,13 @@ class WhatsAppWorkflowTrigger:
                 and_(
                     Workflow.user_id == user_id,
                     Workflow.status == WorkflowStatus.ACTIVE,
-                    Workflow.trigger_type == WorkflowTriggerType.EVENT.value,
                 )
             )
         )
         workflows = result.scalars().all()
         for workflow in workflows:
+            if cls._normalize_trigger_type(workflow.trigger_type) != WorkflowTriggerType.EVENT.value:
+                continue
             trigger_config = workflow.trigger_config or {}
             event_type = trigger_config.get("event_type") or trigger_config.get("trigger")
             if event_type != "whatsapp_message_received":
@@ -168,11 +199,21 @@ class WhatsAppWorkflowTrigger:
                         and_(
                             Workflow.user_id == user_id,
                             Workflow.status == WorkflowStatus.ACTIVE,
-                            Workflow.trigger_type == WorkflowTriggerType.EVENT.value,
                         )
                     )
                 )
-                workflows = result.scalars().all()
+                workflows = [
+                    wf
+                    for wf in result.scalars().all()
+                    if cls._normalize_trigger_type(wf.trigger_type)
+                    == WorkflowTriggerType.EVENT.value
+                ]
+
+                if not workflows:
+                    logger.warning(
+                        "[WA_TRIGGER] No active EVENT workflows for user %s — message not handled",
+                        user_id,
+                    )
 
                 # Handoff TTL from first active ordering workflow config (matches agent)
                 if session_key:
@@ -258,8 +299,19 @@ class WhatsAppWorkflowTrigger:
                             preferred.name,
                         )
 
+                if not to_execute:
+                    logger.warning(
+                        "[WA_TRIGGER] No workflows matched for %s (checked %s EVENT workflows, "
+                        "re_intent=%s, message=%r)",
+                        contact.phone_number,
+                        len(workflows),
+                        re_intent,
+                        (message.content or "")[:80],
+                    )
+                    return
+
                 for workflow, event_type in to_execute:
-                    wf_config = dict((workflow.variables or {}).get("config", {}) or {})
+                    wf_config = cls._workflow_runtime_config(workflow)
                     wf_config.setdefault("customer_phone", contact.phone_number)
                     wf_config.setdefault(
                         "customer_name",
