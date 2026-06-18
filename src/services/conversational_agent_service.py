@@ -2339,6 +2339,136 @@ class ConversationalAgentService:
 
         return corrected
 
+    # ── Product parser: RAG chunks → structured product dicts ──────────
+
+    _PRICE_LINE_RE = re.compile(
+        r'(?:price|cost|bei|amount)\s*[:=]\s*(?:KES|Ksh|KSH|\$|USD|EUR)?\s*([\d,]+\.?\d*)',
+        re.IGNORECASE,
+    )
+    _PRICE_DASH_RE = re.compile(
+        r'[-–—]\s*(?:KES|Ksh|KSH|\$|USD|EUR)?\s*([\d,]+\.?\d*)',
+    )
+    _MARKDOWN_IMG_RE = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
+
+    @classmethod
+    def _parse_products_from_search_results(
+        cls, search_data: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """
+        Parse RAG search result chunks into structured product dicts
+        ready for ``display_product_cards``.
+
+        This replaces the previous approach of asking the LLM to extract
+        id / name / price / description / image_url from free text, which
+        was fragile and frequently dropped images or hallucinated prices.
+        """
+        results = search_data.get("results", []) if isinstance(search_data, dict) else []
+        if not results:
+            return []
+
+        products: List[Dict[str, Any]] = []
+        seen_names: set = set()
+
+        for idx, item in enumerate(results):
+            if not isinstance(item, dict):
+                continue
+            chunk_text = (item.get("text") or "").strip()
+            if not chunk_text:
+                continue
+
+            name = ""
+            price = 0.0
+            desc_parts: List[str] = []
+            image_url = ""
+
+            # ── Image: prefer metadata, fallback to markdown in text ──
+            meta_images = item.get("image_urls", [])
+            if isinstance(meta_images, list) and meta_images:
+                image_url = meta_images[0]
+
+            lines = chunk_text.split("\n")
+            for i, raw_line in enumerate(lines):
+                line = raw_line.strip()
+                if not line:
+                    continue
+
+                # Markdown image
+                md_img = cls._MARKDOWN_IMG_RE.match(line)
+                if md_img:
+                    if not image_url:
+                        image_url = md_img.group(2).strip()
+                    continue
+
+                # Label: Value
+                label_m = re.match(r'^([A-Za-z][A-Za-z\s]{0,25}?)\s*:\s*(.+)$', line)
+                if label_m:
+                    label = label_m.group(1).strip().lower()
+                    value = label_m.group(2).strip()
+
+                    if label in ("price", "cost", "bei", "amount"):
+                        num_m = re.search(r'[\d,]+\.?\d*', value.replace(",", ""))
+                        if num_m:
+                            try:
+                                price = float(num_m.group())
+                            except ValueError:
+                                pass
+                    elif label in ("description", "details", "maelezo", "info"):
+                        desc_parts.append(value)
+                    elif label in ("image url", "image", "photo", "photo url",
+                                   "thumbnail", "picture", "media url"):
+                        if not image_url and value.startswith("http"):
+                            image_url = value.rstrip('.,;:!?)\'">')
+                    elif label in ("name", "product", "item", "title"):
+                        if not name:
+                            name = value
+                    elif label not in ("id", "sku"):
+                        desc_parts.append(f"{label.title()}: {value}")
+                elif i == 0 and not name:
+                    # First non-label line → product name.
+                    # Also try to extract a trailing price  "Masala Tea - KES 100"
+                    pm = cls._PRICE_DASH_RE.search(line)
+                    if pm:
+                        name = line[:pm.start()].strip().rstrip("-–— ")
+                        if not price:
+                            try:
+                                price = float(pm.group(1).replace(",", ""))
+                            except ValueError:
+                                pass
+                    else:
+                        name = line
+                elif not name:
+                    name = line
+                else:
+                    desc_parts.append(line)
+
+            # Fallback: try extracting price from full text if still 0
+            if not price:
+                pm = cls._PRICE_LINE_RE.search(chunk_text)
+                if pm:
+                    try:
+                        price = float(pm.group(1).replace(",", ""))
+                    except ValueError:
+                        pass
+
+            if not name:
+                continue
+
+            # Deduplicate
+            name_norm = cls._normalize_product_name(name)
+            if name_norm in seen_names:
+                continue
+            seen_names.add(name_norm)
+
+            products.append({
+                "id": f"prod_{idx}",
+                "name": name,
+                "price": price,
+                "description": " | ".join(desc_parts[:3]) if desc_parts else "",
+                "image_url": image_url or "",
+            })
+
+        return products[:10]
+
     # ═══════════════════════════════════════════════════════════
     # SYSTEM PROMPT BUILDER
     # ═══════════════════════════════════════════════════════════
@@ -2516,6 +2646,19 @@ class ConversationalAgentService:
                 "- For bulk/corporate orders, serious complaints, or unusual requests — escalate.\n"
                 "- After escalating, send a short reassuring message in their language; do not keep troubleshooting.\n"
             )
+
+        # ── Anti-hallucination & anti-false-escalation guardrails ──
+        prompt += (
+            "\n## ANTI-HALLUCINATION RULES (CRITICAL)\n"
+            "- Messages that look like product/food names (e.g. 'masala tea', 'pilau', 'red bull', "
+            "'chicken', 'burger', 'latte') are ALWAYS product search queries. "
+            "You MUST call `search_products` for them. NEVER escalate for these.\n"
+            "- NEVER say a product is unavailable unless `search_products` returned 0 results.\n"
+            "- NEVER make up prices, product names, or descriptions. Always search the catalog first.\n"
+            "- If the previous turn had a display issue (e.g. cards failed to send), "
+            "try again by calling `search_products` and `display_product_cards`. Do NOT escalate.\n"
+            "- NEVER list products as numbered plain text. ALWAYS use `display_product_cards`.\n"
+        )
 
         if customer_context:
             prompt += customer_context
@@ -3617,38 +3760,67 @@ class ConversationalAgentService:
                 # strictly bound to its own RAG chunk.  This prevents the LLM
                 # from accidentally swapping images between products.
                 structured_chunks = self._extract_structured_products_from_chunks(result)
-                structured_block = ""
-                if structured_chunks:
-                    # Only include chunks that actually have images — the LLM
-                    # already has the full text from the synthesis above.
-                    chunks_with_images = [
-                        c for c in structured_chunks if c.get("image_urls")
-                    ]
-                    if chunks_with_images:
-                        try:
-                            structured_block = (
-                                "\n\nSTRUCTURED_PRODUCT_IMAGE_MAP (use this to match images to products):\n"
-                                + json.dumps(chunks_with_images, ensure_ascii=False)
-                            )
-                        except (TypeError, ValueError):
-                            structured_block = ""
 
-                return {
-                    "success": True,
-                    "result": (
-                        f"{search_text}"
-                        f"{structured_block}\n\n"
-                        "INSTRUCTION: You MUST now call `display_product_cards` with the products found above. "
-                        "Extract each product's id, name, price, description, and image_url from the search results "
-                        "and pass them to `display_product_cards`. Do NOT list products in plain text. "
-                        "CRITICAL IMAGE RULE: When setting each product's image_url, you MUST use ONLY the image URL "
-                        "that appears in the SAME chunk/entry as that product in the STRUCTURED_PRODUCT_IMAGE_MAP above. "
-                        "NEVER assign an image from one product's chunk to a different product. "
-                        "If a product has no image in its chunk, pass an empty string for image_url. "
+                # ── Pre-parse products so the LLM doesn't have to ──
+                # This guarantees correct image_url bindings and prevents
+                # the LLM from constructing a huge JSON that gets truncated.
+                pre_parsed = self._parse_products_from_search_results(
+                    result.get("data", {})
+                )
+                # Apply programmatic image correction from chunk map
+                if pre_parsed and structured_chunks:
+                    pre_parsed = self._correct_product_image_urls(
+                        pre_parsed, structured_chunks
+                    )
+
+                products_json_block = ""
+                if pre_parsed:
+                    try:
+                        products_json_block = (
+                            "\n\nREADY_TO_DISPLAY_PRODUCTS (pass this array directly as the `products` argument to display_product_cards):\n"
+                            + json.dumps(pre_parsed, ensure_ascii=False)
+                        )
+                    except (TypeError, ValueError):
+                        products_json_block = ""
+
+                # Build concise instruction
+                if products_json_block:
+                    instruction = (
+                        "\n\nINSTRUCTION: Call `display_product_cards` NOW with the READY_TO_DISPLAY_PRODUCTS "
+                        "JSON array above as the `products` argument. Do NOT modify the products — pass them as-is. "
+                        "Do NOT list products as plain text. "
                         "If the customer explicitly asked to ADD items to their cart, also call "
                         "`manage_cart(action='add', product_name=..., unit_price=..., quantity=...)` "
                         "for each item they requested."
-                    ),
+                    )
+                else:
+                    # Fallback: include chunk map so LLM can extract manually
+                    structured_block = ""
+                    if structured_chunks:
+                        chunks_with_images = [
+                            c for c in structured_chunks if c.get("image_urls")
+                        ]
+                        if chunks_with_images:
+                            try:
+                                structured_block = (
+                                    "\n\nSTRUCTURED_PRODUCT_IMAGE_MAP:\n"
+                                    + json.dumps(chunks_with_images, ensure_ascii=False)
+                                )
+                            except (TypeError, ValueError):
+                                structured_block = ""
+                    products_json_block = structured_block
+                    instruction = (
+                        "\n\nINSTRUCTION: Call `display_product_cards` with the products found above. "
+                        "Extract each product's id, name, price, description, and image_url. "
+                        "Do NOT list products as plain text. "
+                        "If the customer explicitly asked to ADD items, also call "
+                        "`manage_cart(action='add', product_name=..., unit_price=..., quantity=...)` "
+                        "for each item they requested."
+                    )
+
+                return {
+                    "success": True,
+                    "result": f"{search_text}{products_json_block}{instruction}",
                     "data": result.get("data", {})
                 }
             else:
