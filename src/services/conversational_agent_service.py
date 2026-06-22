@@ -3807,8 +3807,10 @@ class ConversationalAgentService:
                                 structured_block = ""
                     products_json_block = structured_block
                     instruction = (
-                        "\n\nINSTRUCTION: Call `display_product_cards` with the products found above. "
+                        "\n\nINSTRUCTION: If products were found, call `display_product_cards` to show them. "
                         "Extract each product's id, name, price, description, and image_url. "
+                        "CRITICAL: If the search results indicate the product is not found or not in context, "
+                        "DO NOT call `display_product_cards` and do NOT invent products. Just apologize to the customer. "
                         "Do NOT list products as plain text. "
                         "If the customer explicitly asked to ADD items, also call "
                         "`manage_cart(action='add', product_name=..., unit_price=..., quantity=...)` "
