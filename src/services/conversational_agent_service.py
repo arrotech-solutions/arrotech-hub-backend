@@ -3615,7 +3615,7 @@ class ConversationalAgentService:
                     currency=currency,
                     user=user,
                     db=db,
-                    order_type=business_config.get("order_type", "general"),
+                    order_type=order_type,
                 )
 
             elif tool_name == "cancel_order":
