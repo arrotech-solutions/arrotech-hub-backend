@@ -2331,6 +2331,10 @@ class ConversationalAgentService:
     _PRICE_DASH_RE = re.compile(
         r'[-–—]\s*(?:KES|Ksh|KSH|\$|USD|EUR)?\s*([\d,]+\.?\d*)',
     )
+    _PRICE_ANYWHERE_RE = re.compile(
+        r'(?:KES|Ksh|KSH|\$|USD|EUR)\s*([\d,]+\.?\d*)|([\d,]+\.?\d*)\s*(?:KES|Ksh|KSH|\$|USD|EUR)',
+        re.IGNORECASE,
+    )
     _MARKDOWN_IMG_RE = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
 
     @classmethod
@@ -2432,6 +2436,16 @@ class ConversationalAgentService:
                         price = float(pm.group(1).replace(",", ""))
                     except ValueError:
                         pass
+            
+            if not price:
+                pm = cls._PRICE_ANYWHERE_RE.search(chunk_text)
+                if pm:
+                    val = pm.group(1) or pm.group(2)
+                    if val:
+                        try:
+                            price = float(val.replace(",", ""))
+                        except ValueError:
+                            pass
 
             if not name:
                 continue
