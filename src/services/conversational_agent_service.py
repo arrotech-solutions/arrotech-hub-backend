@@ -2232,17 +2232,17 @@ class ConversationalAgentService:
                 continue
             name_positions.sort(key=lambda t: t[0])
 
-            # Rule 2: assign each image to the closest product name preceding it.
+            # Rule 2: assign each image to the closest product name (minimum absolute distance).
             for img_pos, url in cls._image_positions(text):
-                owner = None
+                best_owner = None
+                min_dist = float("inf")
                 for pos, n in name_positions:
-                    if pos <= img_pos:
-                        owner = n
-                    else:
-                        break
-                if owner is None:
-                    owner = name_positions[0][1]  # image before any name → first product
-                result.setdefault(owner, url)  # first image per product wins
+                    dist = abs(pos - img_pos)
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_owner = n
+                if best_owner:
+                    result.setdefault(best_owner, url)  # first image per product wins
 
             # Rule 3 (legacy fallback): labeled URL lines like
             # "Image URL: https://...", "Photo: https://...", etc.
@@ -2252,15 +2252,15 @@ class ConversationalAgentService:
                 if not url:
                     continue
                 label_pos = m.start()
-                owner = None
+                best_owner = None
+                min_dist = float("inf")
                 for pos, n in name_positions:
-                    if pos <= label_pos:
-                        owner = n
-                    else:
-                        break
-                if owner is None:
-                    owner = name_positions[0][1]
-                result.setdefault(owner, url)
+                    dist = abs(pos - label_pos)
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_owner = n
+                if best_owner:
+                    result.setdefault(best_owner, url)
 
             # Rule 3b: single-product chunk with a single metadata image_url.
             # Per-row ingestion creates one chunk per product. If the chunk
@@ -2311,29 +2311,12 @@ class ConversationalAgentService:
                     )
                 product["image_url"] = chosen_url
             else:
-                # Last resort: if the LLM assigned an image URL that DOES appear
-                # in the chunk map (just not matched by name), allow it through.
-                # This prevents dropping valid images that the LLM correctly
-                # extracted but our name-matching couldn't verify.
-                all_chunk_urls: set = set()
-                for c in chunk_map:
-                    for u in (c.get("image_urls") or []):
-                        if isinstance(u, str) and u:
-                            all_chunk_urls.add(u)
-                if current_url and current_url in all_chunk_urls:
+                if current_url:
                     logger.info(
-                        "[CONV_AGENT] 🔧 Keeping LLM image for '%s' (found in chunk data): '%s'",
+                        "[CONV_AGENT] 🔧 Dropping unverified image for '%s' (no confident match)",
                         product.get("name", "?"),
-                        current_url[:60],
                     )
-                    # Keep current_url — it came from the knowledge base
-                else:
-                    if current_url:
-                        logger.info(
-                            "[CONV_AGENT] 🔧 Dropping unverified image for '%s' (no confident match)",
-                            product.get("name", "?"),
-                        )
-                    product["image_url"] = ""
+                product["image_url"] = ""
 
             corrected.append(product)
 
