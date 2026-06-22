@@ -2470,7 +2470,7 @@ class ConversationalAgentService:
         return products[:10]
 
     # ═══════════════════════════════════════════════════════════
-    # SYSTEM PROMPT BUILDER
+    # SYSTEM PROMPT BUILDER.
     # ═══════════════════════════════════════════════════════════
 
     def _build_system_prompt(
