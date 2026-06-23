@@ -2938,6 +2938,8 @@ class ConversationalAgentService:
                     {"id": "agent:human", "title": "Talk to us"},
                     {"id": "menu:cart", "title": "View cart"},
                     {"id": "menu:orders", "title": "My orders"},
+                    {"id": "menu:new_arrivals", "title": "New Arrivals"},
+                    {"id": "menu:offers", "title": "Special Offers"},
                 ],
                 config={
                     "access_token": config.get("access_token"),

@@ -341,6 +341,8 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                             "clear_cart": "clear cart",
                             "checkout": "checkout",
                             "orders": "I'd like to see my order history and status.",
+                            "new_arrivals": "I'd like to see your new arrivals.",
+                            "offers": "I'd like to see your special offers and discounts.",
                             "human": "I'd like to speak with a person, please.",
                             "reset": "reset",
                         }
