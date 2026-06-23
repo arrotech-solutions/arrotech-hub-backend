@@ -612,8 +612,9 @@ def agent_mode_buttons(handoff_active: bool, catalog_word: str = "menu") -> List
         return [{"id": AGENT_BUTTON_ORDER_WITH_AI, "title": "Order with AI"}]
     return [
         {"id": "menu:browse", "title": f"Browse {catalog_word}"},
-        {"id": AGENT_BUTTON_TALK_TO_STAFF, "title": "Talk to staff"},
-        {"id": "menu:cart", "title": "My cart"},
+        {"id": AGENT_BUTTON_TALK_TO_STAFF, "title": "Talk to us"},
+        {"id": "menu:cart", "title": "View cart"},
+        {"id": "menu:orders", "title": "My orders"},
     ]
 
 
@@ -636,8 +637,9 @@ def cart_action_buttons(cart_has_items: bool = True, catalog_word: str = "menu")
         ]
     return [
         {"id": "menu:browse", "title": f"Browse {catalog_word}"},
+        {"id": "agent:human", "title": "Talk to us"},
         {"id": "menu:cart", "title": "View cart"},
-        {"id": "agent:human", "title": "Talk to staff"},
+        {"id": "menu:orders", "title": "My orders"},
     ]
 
 

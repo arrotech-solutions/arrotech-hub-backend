@@ -1091,9 +1091,27 @@ class WhatsAppService:
         config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Send WhatsApp interactive reply buttons (max 3).
-        buttons: [{"id": "menu:browse", "title": "Browse menu"}, ...]
+        Send WhatsApp interactive reply buttons.
+        Automatically falls back to a list message if there are >3 buttons.
         """
+        if len(buttons) > 3:
+            return await self.send_list_message(
+                to_number=to_number,
+                body_text=body_text,
+                button_label="Options",
+                sections=[{
+                    "title": "Options",
+                    "rows": [
+                        {
+                            "id": (btn.get("id") or f"btn_{i}")[:200],
+                            "title": (btn.get("title") or "Option")[:24],
+                            "description": btn.get("description", "")[:72]
+                        } for i, btn in enumerate(buttons)
+                    ]
+                }],
+                config=config
+            )
+
         try:
             credentials = self._get_credentials()
             if config:

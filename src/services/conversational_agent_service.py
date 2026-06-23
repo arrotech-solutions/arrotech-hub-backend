@@ -2935,8 +2935,9 @@ class ConversationalAgentService:
                 body_text=body,
                 buttons=[
                     {"id": "menu:browse", "title": f"Browse {catalog_word}"},
+                    {"id": "agent:human", "title": "Talk to us"},
                     {"id": "menu:cart", "title": "View cart"},
-                    {"id": "agent:human", "title": "Talk to staff"},
+                    {"id": "menu:orders", "title": "My orders"},
                 ],
                 config={
                     "access_token": config.get("access_token"),
@@ -3378,7 +3379,7 @@ class ConversationalAgentService:
         handoff_active: bool,
         to_number: str = "",
     ) -> None:
-        """Send Talk to staff / Order with AI reply buttons after handoff or release."""
+        """Send Talk to us / Order with AI reply buttons after handoff or release."""
         if not session_key or not session_key.startswith("ccm:whatsapp:"):
             return
         try:
