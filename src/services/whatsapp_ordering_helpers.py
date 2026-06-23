@@ -402,7 +402,7 @@ def parse_product_button_id(btn_id: str) -> Tuple[Optional[str], Optional[str]]:
     return action, rest
 
 
-def format_cart_summary(cart: List[Dict[str, Any]], currency: str = "KES", catalog_word: str = "menu") -> str:
+def format_cart_summary(cart: List[Dict[str, Any]], currency: str = "KES", catalog_word: str = "catalog") -> str:
     if not cart:
         return f"Your cart is empty. 🛒\nTap *Browse {catalog_word}* to add items, or tell me what you'd like."
     lines = [f"🛒 *Your cart* ({len(cart)} item(s)):"]
@@ -569,7 +569,7 @@ def parse_set_quantity_message(message: str) -> Tuple[Optional[str], Optional[fl
     return None, None
 
 
-def cart_cleared_message(catalog_word: str = "menu") -> str:
+def cart_cleared_message(catalog_word: str = "catalog") -> str:
     return (
         "✅ Your cart is now empty.\n\n"
         f"Tap *Browse {catalog_word}* to add items, or tell me what you'd like. 🛒"
@@ -601,7 +601,7 @@ AGENT_BUTTON_TALK_TO_STAFF = "agent:human"
 AGENT_BUTTON_ORDER_WITH_AI = "agent:ai"
 
 
-def agent_mode_buttons(handoff_active: bool, catalog_word: str = "menu") -> List[Dict[str, str]]:
+def agent_mode_buttons(handoff_active: bool, catalog_word: str = "catalog") -> List[Dict[str, str]]:
     """
     Reply buttons to switch between live staff and AI ordering assistant.
 
@@ -626,7 +626,7 @@ def agent_mode_button_body(handoff_active: bool) -> str:
     return "Quick options — tap below or just type your request."
 
 
-def cart_action_buttons(cart_has_items: bool = True, catalog_word: str = "menu") -> List[Dict[str, str]]:
+def cart_action_buttons(cart_has_items: bool = True, catalog_word: str = "catalog") -> List[Dict[str, str]]:
     """
     Cart screen actions (WhatsApp max 3 reply buttons).
     Mirrors a typical cart: checkout, keep shopping, or empty cart.

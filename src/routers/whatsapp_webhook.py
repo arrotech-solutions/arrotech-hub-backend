@@ -335,8 +335,8 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                     elif btn_id.startswith("menu:"):
                         menu_action = btn_id.split(":", 1)[1] if ":" in btn_id else ""
                         menu_messages = {
-                            "browse": "I'd like to browse the menu. Please show me what you have.",
-                            "add_more": "I'd like to browse the menu and add more items to my cart.",
+                            "browse": "I'd like to browse your catalog/products. Please show me what you have.",
+                            "add_more": "I'd like to browse your catalog/products and add more items to my cart.",
                             "cart": "view my cart",
                             "clear_cart": "clear cart",
                             "checkout": "checkout",

@@ -649,7 +649,16 @@ class ConversationalAgentService:
             delivery_methods = business_config.get("delivery_methods", ["delivery", "pickup"])
             custom_system_prompt = business_config.get("system_prompt", "")
 
-            catalog_word = "menu" if order_type == "food" else "catalog"
+            if order_type == "food":
+                catalog_word = "menu"
+            elif order_type in ("clothing", "apparel"):
+                catalog_word = "collection"
+            elif order_type == "real_estate":
+                catalog_word = "properties"
+            elif order_type == "services":
+                catalog_word = "services"
+            else:
+                catalog_word = "catalog"
             reset_intro = "what would you like today?"
             if order_type in ("retail", "clothing"):
                 reset_intro = "what are you looking for today?"
@@ -2571,7 +2580,7 @@ class ConversationalAgentService:
             prompt = f"""{base_context}
 
 ## Your Capabilities
-- Search the product catalog/menu to answer customer questions
+- Search the product {catalog_word} to answer customer questions
 - Display products as interactive cards with images and "Add to Cart" buttons
 - Collect customer details (name, phone, delivery address)
 - Create orders when the customer is ready
@@ -2586,7 +2595,7 @@ class ConversationalAgentService:
 4. Ask about delivery method ({delivery_str}) — if only one method is available, use it automatically without asking
 5. If delivery, collect the delivery address — customers can *share their location pin* on WhatsApp (📍) instead of typing
 6. If a delivery location is already saved in context below, use it — do not ask them to type the address again
-7. IMPORTANT ON CHECKOUT: If the customer provides their name, phone, or delivery details (like answering a checkout prompt), YOU MUST IMMEDIATELY proceed with checkout. DO NOT start a new conversation or ask them to browse the menu. If you need their delivery address, ask for it now.
+7. IMPORTANT ON CHECKOUT: If the customer provides their name, phone, or delivery details (like answering a checkout prompt), YOU MUST IMMEDIATELY proceed with checkout. DO NOT start a new conversation or ask them to browse the {catalog_word}. If you need their delivery address, ask for it now.
 8. Call `calculate_total` with the cart items to get the order total — this step is REQUIRED before creating the order
 9. Call `validate_order`, then show a clear summary and ask the customer to reply *YES* to confirm
 10. Only after they confirm, create the order using `create_order`
