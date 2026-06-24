@@ -317,12 +317,6 @@ class WhatsAppService:
                 "type": "interactive",
                 "interactive": {
                     "type": "button",
-                    "header": {
-                        "type": "image",
-                        "image": {
-                            "link": image_url
-                        }
-                    },
                     "body": {
                         "text": body_text
                     },
@@ -346,6 +340,14 @@ class WhatsAppService:
                     }
                 }
             }
+
+            if image_url:
+                payload["interactive"]["header"] = {
+                    "type": "image",
+                    "image": {
+                        "link": image_url
+                    }
+                }
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, headers=headers) as response:

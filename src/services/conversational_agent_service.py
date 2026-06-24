@@ -4993,23 +4993,23 @@ class ConversationalAgentService:
                 image_url = product.get("image_url", "")
                 product_id = product.get("id", str(idx + 1))
 
-                if image_url:
-                    try:
-                        card_result = await whatsapp.send_product_card(
-                            to_number=recipient,
-                            name=name,
-                            price=price,
-                            description=description,
-                            image_url=image_url,
-                            product_id=product_id,
-                            config=wa_config,
-                            primary_action_title=primary_title,
-                            primary_action_id_prefix=primary_prefix,
-                        )
-                        if card_result.get("success"):
-                            logger.info(f"[CONV_AGENT] ✅ Sent product card: {name} → {recipient}")
-                            return {"sent": True, "image_url": image_url}
-                        else:
+                try:
+                    card_result = await whatsapp.send_product_card(
+                        to_number=recipient,
+                        name=name,
+                        price=price,
+                        description=description,
+                        image_url=image_url,
+                        product_id=product_id,
+                        config=wa_config,
+                        primary_action_title=primary_title,
+                        primary_action_id_prefix=primary_prefix,
+                    )
+                    if card_result.get("success"):
+                        logger.info(f"[CONV_AGENT] ✅ Sent product card: {name} → {recipient}")
+                        return {"sent": True, "image_url": image_url}
+                    else:
+                        if image_url:
                             # Fallback to image + caption
                             caption = f"*{name}*\n💰 {currency} {price:,.0f}\n\n{description}"
                             if len(caption) > 1024:
@@ -5023,23 +5023,19 @@ class ConversationalAgentService:
                             )
                             logger.info(f"[CONV_AGENT] ✅ Sent product as image+caption: {name} → {recipient}")
                             return {"sent": True, "image_url": image_url}
-                    except Exception as card_err:
-                        logger.warning(f"[CONV_AGENT] ❌ Failed to send card for {name}: {card_err}")
-                        return {"sent": False}
-                else:
-                    # No image — send as text
-                    text = f"*{name}*\n💰 {currency} {price:,.0f}\n\n{description}"
-                    try:
-                        await whatsapp.send_message(
-                            to_number=recipient,
-                            message=text,
-                            config=wa_config,
-                        )
-                        logger.info(f"[CONV_AGENT] ✅ Sent product as text: {name} → {recipient}")
-                        return {"sent": True}
-                    except Exception as text_err:
-                        logger.warning(f"[CONV_AGENT] ❌ Failed to send text for {name}: {text_err}")
-                        return {"sent": False}
+                        else:
+                            # No image — fallback to text
+                            text = f"*{name}*\n💰 {currency} {price:,.0f}\n\n{description}"
+                            await whatsapp.send_message(
+                                to_number=recipient,
+                                message=text,
+                                config=wa_config,
+                            )
+                            logger.info(f"[CONV_AGENT] ✅ Sent product as text: {name} → {recipient}")
+                            return {"sent": True}
+                except Exception as card_err:
+                    logger.warning(f"[CONV_AGENT] ❌ Failed to send card for {name}: {card_err}")
+                    return {"sent": False}
 
             # Fire all card sends in parallel
             results = await asyncio.gather(
