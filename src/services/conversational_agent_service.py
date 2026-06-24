@@ -552,6 +552,25 @@ AGENT_SUB_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "show_options_menu",
+            "description": (
+                "Show the main options menu (Browse, Talk to Us, View Cart, Orders, Offers) to the customer. "
+                "Call this ONLY when: "
+                "1. The customer explicitly asks for 'menu', 'help', 'options', or 'home'. "
+                "2. You have reached a dead end (e.g. cart cleared, order completed, nothing left to do). "
+                "3. You are confused or cannot understand the customer's request. "
+                "DO NOT call this automatically after every message."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -1860,6 +1879,9 @@ class ConversationalAgentService:
                         send_agent_mode_buttons = "staff"
                         escalation_notification = tool_result.get("escalation_notification", "")
 
+                    if tool_name == "show_options_menu" and tool_result.get("success"):
+                        send_agent_mode_buttons = "assistant"
+
                     # Harness: track tool call for quality evaluation
                     if self._harness_enabled:
                         self._harness_track_tool_call(tool_name, tool_args, tool_result)
@@ -2640,6 +2662,10 @@ class ConversationalAgentService:
 - Do NOT repeat order IDs, statuses, or totals in text after cards are sent
 - NEVER ask customers to type an Order ID — they should tap the Cancel button on the order card instead
 
+## Navigation & Menus
+- If the customer explicitly asks for the "menu", "help", "options", or "home", you MUST call `show_options_menu`.
+- If you reach a dead end (e.g. cart cleared, order completed, nothing left to do) or don't understand the request, you MUST call `show_options_menu` to help them navigate.
+- NEVER list the main menu options in plain text. Always use the `show_options_menu` tool.
 
 ## Response Style Rules
 - Keep responses brief and friendly (WhatsApp chat style, under 150 words)
@@ -3667,6 +3693,12 @@ class ConversationalAgentService:
                     user=user,
                     db=db,
                 )
+
+            elif tool_name == "show_options_menu":
+                return {
+                    "success": True,
+                    "result_summary": "options_menu_requested"
+                }
 
             else:
                 # Dynamic MCP Tool execution (Harness delegation)
