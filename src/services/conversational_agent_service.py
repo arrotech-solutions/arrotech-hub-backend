@@ -3172,6 +3172,32 @@ class ConversationalAgentService:
             except Exception:
                 delivery_address = ""
 
+        # Require delivery address if still missing
+        if delivery_method == "delivery" and not delivery_address:
+            await context_manager.update_session_metadata(
+                session_key,
+                {
+                    "awaiting_checkout_details": True,
+                    "checkout_draft": {
+                        "name": customer_name or "",
+                        "phone": customer_phone or "",
+                        "delivery_method": "delivery",
+                        "delivery_address": "",
+                        "stage": "need_delivery_address",
+                    },
+                },
+            )
+            return await self._cart_fast_path_result(
+                session_key,
+                self._t(
+                    preferred_language,
+                    "Almost done! Please provide your *delivery address* or drop a WhatsApp location pin 📍.",
+                    "Tumekaribia! Tafadhali nipe *mahali pa kuleta mzigo* au tuma location pin ya WhatsApp 📍.",
+                ),
+                actions_taken=[{"tool": "checkout", "result_summary": "need_delivery_address"}],
+                send_cart_buttons=False,
+            )
+
         # Compute total and persist the pending order
         total_result = await self.order_service.handle_operation(
             operation="calculate_order_total",
