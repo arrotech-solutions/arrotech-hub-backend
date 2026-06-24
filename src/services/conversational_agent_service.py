@@ -3380,10 +3380,13 @@ class ConversationalAgentService:
                     else f"Your cart is empty — browse the {catalog_word} to add items."
                 )
             )
-            btn_result = await wa.send_quick_reply_buttons(
+            actions = cart_action_buttons(cart_has_items=has_items, catalog_word=catalog_word)
+            rows = [{"id": btn["id"][:200], "title": btn["title"][:24]} for btn in actions]
+            btn_result = await wa.send_list_message(
                 to_number=recipient,
                 body_text=button_body,
-                buttons=cart_action_buttons(cart_has_items=has_items, catalog_word=catalog_word),
+                button_label="Options",
+                sections=[{"title": "Actions", "rows": rows}],
                 config=wa_config,
             )
             if not btn_result.get("success"):
