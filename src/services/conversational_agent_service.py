@@ -2557,6 +2557,17 @@ class ConversationalAgentService:
             )
         }
 
+        if order_type == "food":
+            catalog_word = "menu"
+        elif order_type in ("clothing", "apparel"):
+            catalog_word = "collection"
+        elif order_type == "real_estate":
+            catalog_word = "properties"
+        elif order_type == "services":
+            catalog_word = "services"
+        else:
+            catalog_word = "catalog"
+
         base_context = industry_context.get(order_type, industry_context["general"])
 
         if order_type == "real_estate":
