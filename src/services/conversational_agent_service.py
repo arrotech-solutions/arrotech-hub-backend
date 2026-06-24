@@ -3355,21 +3355,11 @@ class ConversationalAgentService:
             if session and session.metadata:
                 catalog_word = session.metadata.get("catalog_word", "menu")
 
+            sections = []
             if has_items:
                 remove_rows = build_cart_remove_list_rows(cart, currency)
                 if remove_rows:
-                    list_result = await wa.send_list_message(
-                        to_number=recipient,
-                        body_text="Tap an item below to remove it from your cart 🗑️",
-                        button_label="Remove item",
-                        sections=[{"title": "Your items", "rows": remove_rows}],
-                        config=wa_config,
-                        footer_text="Up to 10 items shown",
-                    )
-                    if not list_result.get("success"):
-                        logger.warning(
-                            f"[CONV_AGENT] cart remove list failed: {list_result.get('error')}"
-                        )
+                    sections.append({"title": "Remove an item", "rows": remove_rows})
 
             button_body = (
                 body_text[:1024]
@@ -3380,13 +3370,17 @@ class ConversationalAgentService:
                     else f"Your cart is empty — browse the {catalog_word} to add items."
                 )
             )
+
             actions = cart_action_buttons(cart_has_items=has_items, catalog_word=catalog_word)
-            rows = [{"id": btn["id"][:200], "title": btn["title"][:24]} for btn in actions]
+            action_rows = [{"id": btn["id"][:200], "title": btn["title"][:24]} for btn in actions]
+            # Put main actions first
+            sections.insert(0, {"title": "Actions", "rows": action_rows})
+
             btn_result = await wa.send_list_message(
                 to_number=recipient,
                 body_text=button_body,
                 button_label="Options",
-                sections=[{"title": "Actions", "rows": rows}],
+                sections=sections,
                 config=wa_config,
             )
             if not btn_result.get("success"):
