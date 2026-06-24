@@ -1049,17 +1049,22 @@ class ConversationalAgentService:
                     customer_sent_details = bool(
                         parsed.get("phone") or parsed.get("name") or parsed.get("delivery_method")
                     )
+                    
+                    user_text = user_message.strip()
+                    is_providing_address = draft.get("stage") == "need_delivery_address" and bool(user_text)
 
                     should_capture = customer_sent_details and (
                         has_name_and_phone
                         or (bot_expecting_reply and parsed.get("phone"))
                         or (bot_expecting_reply and parsed.get("name") and eff_phone)
-                    )
+                    ) or is_providing_address
 
                     if should_capture:
                         eff_delivery, saved_addr = await self._resolve_checkout_delivery(
                             session_key, eff_delivery, delivery_methods
                         )
+                        if is_providing_address and not saved_addr:
+                            saved_addr = user_text
 
                         if not eff_phone:
                             await context_manager.update_session_metadata(
