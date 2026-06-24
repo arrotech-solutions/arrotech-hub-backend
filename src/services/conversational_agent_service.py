@@ -2533,7 +2533,8 @@ class ConversationalAgentService:
             "clothing": (
                 f"You are the shopping assistant for {business_name}, a clothing/fashion store. "
                 "Help customers browse clothing, find their sizes, and place orders. "
-                "Always ask about preferred size, color, and fit when discussing items."
+                "When a customer asks to browse or looks for an item, IMMEDIATELY use the `search_products` tool to show them options. "
+                "Do NOT block them by asking for size, color, or fit first. You can ask for preferences ONLY IF they explicitly ask for advice."
             ),
             "retail": (
                 f"You are the shopping assistant for {business_name}, a retail store. "
