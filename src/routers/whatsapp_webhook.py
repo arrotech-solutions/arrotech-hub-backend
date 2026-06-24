@@ -261,9 +261,18 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                 content = msg.get("button", {}).get("text", "")
             elif msg_type == "interactive":
                 interactive = msg.get("interactive", {})
+                
+                title = ""
+                btn_id = ""
+                
                 if interactive.get("type") == "button_reply":
                     title = interactive.get("button_reply", {}).get("title", "")
                     btn_id = interactive.get("button_reply", {}).get("id", "")
+                elif interactive.get("type") == "list_reply":
+                    title = interactive.get("list_reply", {}).get("title", "")
+                    btn_id = interactive.get("list_reply", {}).get("id", "")
+
+                if title or btn_id:
                     # ── Parse order card action button clicks ──
                     # Format: "cancel_order:{order_id}", "order_details:{order_id}",
                     #          "confirm_cancel:{order_id}", "keep_order:{order_id}"
@@ -350,6 +359,13 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                             menu_action,
                             title or "Hello, I need help with my order.",
                         )
+                        msg_type = "text"
+
+                    # ── Cart remove list logic ──
+                    elif btn_id.startswith("cart_rm:"):
+                        product_ref = btn_id.split(":", 1)[1]
+                        remove_label = title or product_ref
+                        content = f"remove {remove_label}"
                         msg_type = "text"
 
                     # ── Parse product card button clicks ──
@@ -454,19 +470,7 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
 
                     else:
                         # Generic interactive button
-                        content = f"{title}" if title else f"Button clicked: {btn_id}"
-                        msg_type = "text"
-
-                elif interactive.get("type") == "list_reply":
-                    title = interactive.get("list_reply", {}).get("title", "")
-                    list_id = interactive.get("list_reply", {}).get("id", "")
-                    if list_id.startswith("cart_rm:"):
-                        product_ref = list_id.split(":", 1)[1]
-                        remove_label = title or product_ref
-                        content = f"remove {remove_label}"
-                        msg_type = "text"
-                    else:
-                        content = f"{title}" if title else f"Selected: {list_id}"
+                        content = f"{title}" if title else f"Interaction: {btn_id}"
                         msg_type = "text"
             
             logger.info(f"[WHATSAPP WEBHOOK] Message from {from_number}: {content[:50]}...")
