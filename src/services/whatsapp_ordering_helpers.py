@@ -378,6 +378,37 @@ def sanitize_product_button_id(product_id: str) -> str:
     return pid or "item"
 
 
+def sanitize_image_url_for_whatsapp(url: str) -> str:
+    """
+    Sanitize image URLs for WhatsApp Cloud API.
+    WhatsApp interactive headers require direct links to images (JPEG/PNG).
+    """
+    if not url:
+        return ""
+    
+    url = url.strip()
+    
+    # 1. Unsplash: Force JPEG format instead of WebP (which auto=format often returns)
+    if "unsplash.com" in url:
+        if "fm=jpg" not in url:
+            if "?" in url:
+                # Replace auto=format with fm=jpg
+                if "auto=format" in url:
+                    url = url.replace("auto=format", "fm=jpg")
+                else:
+                    url += "&fm=jpg"
+            else:
+                url += "?fm=jpg"
+                
+    # 2. Google Drive: Convert view/open links to direct download links
+    elif "drive.google.com" in url:
+        m = re.search(r'id=([a-zA-Z0-9_-]+)', url) or re.search(r'file/d/([a-zA-Z0-9_-]+)', url)
+        if m:
+            url = f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+            
+    return url
+
+
 def parse_product_button_id(btn_id: str) -> Tuple[Optional[str], Optional[str]]:
     """
     Parse cart/details button ids.

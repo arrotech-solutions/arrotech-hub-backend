@@ -2347,12 +2347,13 @@ class ConversationalAgentService:
                     )
                 product["image_url"] = chosen_url
             else:
+                # Keep the LLM-provided image if available, as chunk mapping might have missed it
                 if current_url:
                     logger.info(
-                        "[CONV_AGENT] 🔧 Dropping unverified image for '%s' (no confident match)",
+                        "[CONV_AGENT] ⚠️ Keeping unverified image for '%s' (no confident match in chunks)",
                         product.get("name", "?"),
                     )
-                product["image_url"] = ""
+                product["image_url"] = current_url
 
             corrected.append(product)
 
@@ -5050,7 +5051,10 @@ class ConversationalAgentService:
                 name = product.get("name", "Product")
                 price = product.get("price", 0)
                 description = product.get("description", "")
-                image_url = product.get("image_url", "")
+                
+                from .whatsapp_ordering_helpers import sanitize_image_url_for_whatsapp
+                image_url = sanitize_image_url_for_whatsapp(product.get("image_url", ""))
+                
                 product_id = product.get("id", str(idx + 1))
 
                 try:
@@ -5178,6 +5182,9 @@ class ConversationalAgentService:
                 price = product.get("price", 0)
                 description = product.get("description", "")
                 image_url = product.get("image_url", "")
+                
+                from .whatsapp_ordering_helpers import sanitize_image_url_for_whatsapp
+                image_url = sanitize_image_url_for_whatsapp(image_url)
 
                 caption = f"*{name}*\n💰 {currency} {price:,.0f}\n\n{description}"
                 if len(caption) > 1024:
