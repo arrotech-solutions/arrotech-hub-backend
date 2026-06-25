@@ -465,7 +465,8 @@ class RAGPipelineService:
         vector_db: str = None,
         metadata: Dict[str, Any] = None,
         user: Any = None,
-        db: Any = None
+        db: Any = None,
+        skip_chunking: bool = False,
     ) -> Dict[str, Any]:
         """
         Universal Knowledge Sink: Handles single items or lists from any source.
@@ -513,10 +514,16 @@ class RAGPipelineService:
             
             if not item_text.strip():
                 continue
-                
-            item_chunks = self.native_recursive_token_splitter(
-                item_text, chunk_size=effective_chunk_size, overlap=effective_chunk_overlap
-            )
+
+            if skip_chunking:
+                # Each item is already a self-contained record (e.g. one product
+                # per spreadsheet row).  Do NOT split it — that would separate
+                # the product name from its image URL and cause image mix-ups.
+                item_chunks = [item_text]
+            else:
+                item_chunks = self.native_recursive_token_splitter(
+                    item_text, chunk_size=effective_chunk_size, overlap=effective_chunk_overlap
+                )
             
             for idx, chunk in enumerate(item_chunks):
                 all_chunks.append({
@@ -551,15 +558,32 @@ class RAGPipelineService:
         for i, (chunk_data, embedding) in enumerate(zip(all_chunks, embeddings_list)):
             vector_id = f"chunk_{uuid.uuid4().hex[:12]}_{i}"
 
+            chunk_text = chunk_data["text"]
+
             # Bind product images to the exact chunk they appear in, so retrieval
             # can pair the right image with the right product instead of guessing.
             try:
-                chunk_image_urls = extract_image_urls(chunk_data["text"]) or []
+                chunk_image_urls = extract_image_urls(chunk_text) or []
             except Exception:
                 chunk_image_urls = []
 
+            # Extract the primary image URL — the single "correct" image for
+            # this chunk's product.  Stored as a dedicated metadata field so
+            # retrieval can use it directly without text parsing.
+            primary_image_url = chunk_image_urls[0] if chunk_image_urls else ""
+
+            # Extract the product name (first non-empty, non-image line).
+            # For per-product chunks from spreadsheet ingestion, the first
+            # line is always the product name.
+            product_name = ""
+            for _line in chunk_text.split("\n"):
+                _line = _line.strip()
+                if _line and not _line.startswith("!["):
+                    product_name = _line
+                    break
+
             meta = {
-                "text": chunk_data["text"][:8192],  # Protect against metadata size limits
+                "text": chunk_text[:8192],  # Protect against metadata size limits
                 "source_url": chunk_data["url"],
                 "source_tool": source_tool,
                 "source_file_name": chunk_data["file_name"],
@@ -569,6 +593,11 @@ class RAGPipelineService:
                 "last_modified": now,
                 # Images bound to this specific chunk (empty for non-catalog content)
                 "image_urls": chunk_image_urls[:10],
+                # Dedicated product↔image binding fields for deterministic matching.
+                # These are the ground truth — retrieval should prefer these over
+                # text-parsing heuristics.
+                "image_url": primary_image_url,
+                "product_name": product_name[:200],
             }
             if metadata:
                 meta.update(metadata)
@@ -867,6 +896,7 @@ class RAGPipelineService:
                                 source_tool="google_workspace_sheets",
                                 user=user,
                                 db=db,
+                                skip_chunking=True,  # Each record = 1 product — do NOT split
                             )
 
                 # If not a folder, download as file
@@ -970,6 +1000,7 @@ class RAGPipelineService:
                         source_tool=source_type,
                         user=user,
                         db=db,
+                        skip_chunking=True,  # Each record = 1 product — do NOT split
                     )
 
                 # Fallback: flatten rows to text (e.g. header-less or single row)
@@ -1156,7 +1187,11 @@ class RAGPipelineService:
                 "tool": match.get("metadata", {}).get("source_tool", ""),
                 "modified": match.get("metadata", {}).get("last_modified", ""),
                 # Images bound to this chunk at ingestion (reliable product↔image link)
-                "image_urls": match.get("metadata", {}).get("image_urls", []) or []
+                "image_urls": match.get("metadata", {}).get("image_urls", []) or [],
+                # Dedicated ground-truth fields from ingestion (Phase 1 fix).
+                # These give deterministic product↔image binding without text parsing.
+                "image_url": match.get("metadata", {}).get("image_url", ""),
+                "product_name": match.get("metadata", {}).get("product_name", ""),
             }
             for match in matches
         ]
