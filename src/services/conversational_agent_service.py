@@ -2417,7 +2417,7 @@ class ConversationalAgentService:
                     continue
 
                 # Markdown image
-                md_img = cls._MARKDOWN_IMG_RE.match(line)
+                md_img = cls._MARKDOWN_IMG_RE.search(line)
                 if md_img:
                     if not image_url:
                         image_url = md_img.group(2).strip()
@@ -2438,8 +2438,7 @@ class ConversationalAgentService:
                                 pass
                     elif label in ("description", "details", "maelezo", "info"):
                         desc_parts.append(value)
-                    elif label in ("image url", "image", "photo", "photo url",
-                                   "thumbnail", "picture", "media url"):
+                    elif "image" in label or "photo" in label or "pic" in label or "thumb" in label:
                         if not image_url and value.startswith("http"):
                             image_url = value.rstrip('.,;:!?)\'">')
                     elif label in ("name", "product", "item", "title"):
