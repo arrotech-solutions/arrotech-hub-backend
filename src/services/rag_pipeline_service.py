@@ -662,7 +662,6 @@ class RAGPipelineService:
         "imageurl", "image", "photo", "photourl", "picture", "pictureurl",
         "thumbnail", "thumbnailurl", "img", "imgurl", "productimage",
         "productphoto", "mediaurl", "media", "itemimage", "menuimage",
-        "imagelink", "photolink", "link",
     }
 
     @classmethod

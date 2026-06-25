@@ -17,6 +17,7 @@ Design decisions:
 - Notifications: Both WhatsApp message + email to business owner
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -3812,9 +3813,9 @@ class ConversationalAgentService:
                 {
                     "query": normalized_query,
                     "kb_id": kb_id,
-                    "top_k": 5,
+                    "top_k": 10,
                     "rerank": True,
-                    "rerank_top_n": 3
+                    "rerank_top_n": 8
                 },
                 user, db
             )
@@ -3824,9 +3825,9 @@ class ConversationalAgentService:
                     {
                         "query": query,
                         "kb_id": kb_id,
-                        "top_k": 5,
+                        "top_k": 10,
                         "rerank": True,
-                        "rerank_top_n": 3,
+                        "rerank_top_n": 8,
                     },
                     user,
                     db,
@@ -3853,6 +3854,62 @@ class ConversationalAgentService:
                     pre_parsed = self._correct_product_image_urls(
                         pre_parsed, structured_chunks
                     )
+
+                # ── Follow-up: fetch images for products that are still missing them ──
+                # Broad queries like "products" or "browse catalog" return
+                # summary/category chunks that list product names & prices
+                # but lack image markdown.  For each imageless product, do a
+                # quick targeted search by product name to grab its image
+                # from the per-product chunk in the knowledge base.
+                if pre_parsed:
+                    imageless = [p for p in pre_parsed if not p.get("image_url")]
+                    if imageless:
+                        logger.info(
+                            "[CONV_AGENT] %d/%d products missing images — running targeted lookups",
+                            len(imageless), len(pre_parsed),
+                        )
+                        # Use RAGPipelineService directly to skip LLM synthesis overhead
+                        from .rag_pipeline_service import RAGPipelineService
+                        rag_svc = RAGPipelineService()
+                        # Run all image lookups concurrently for speed
+                        async def _fetch_image_for_product(product):
+                            pname = product.get("name", "")
+                            if not pname:
+                                return
+                            try:
+                                img_result = await rag_svc.rag_search_query(
+                                    query=pname,
+                                    kb_id=kb_id,
+                                    user_id=str(user.id),
+                                    top_k=2,
+                                    rerank=False,
+                                    user=user,
+                                    db=db,
+                                )
+                                if img_result.get("success"):
+                                    # Wrap in the format _extract_structured_products_from_chunks expects
+                                    wrapped = {"data": img_result}
+                                    img_chunks = self._extract_structured_products_from_chunks(wrapped)
+                                    if img_chunks:
+                                        name_to_url = self._bind_images_to_products(
+                                            [product], img_chunks
+                                        )
+                                        norm = self._normalize_product_name(pname)
+                                        if name_to_url.get(norm):
+                                            product["image_url"] = name_to_url[norm]
+                                            logger.info(
+                                                "[CONV_AGENT] ✅ Image found for '%s': %s",
+                                                pname, product["image_url"][:80],
+                                            )
+                            except Exception as img_err:
+                                logger.warning(
+                                    "[CONV_AGENT] Image lookup failed for '%s': %s",
+                                    pname, img_err,
+                                )
+                        await asyncio.gather(
+                            *[_fetch_image_for_product(p) for p in imageless],
+                            return_exceptions=True,
+                        )
 
                 products_json_block = ""
                 if pre_parsed:
