@@ -479,7 +479,7 @@ AGENT_SUB_TOOLS = [
                                 "name": {"type": "string", "description": "Product name exactly as shown in catalog"},
                                 "price": {"type": "number", "description": "Product price as a number (no currency symbol)"},
                                 "description": {"type": "string", "description": "Short product description (1-2 sentences)"},
-                                "image_url": {"type": "string", "description": "Full image URL from the catalog. Pass empty string if no image."}
+                                "image_url": {"type": "string", "description": "Full image URL from the catalog. CRITICAL: Use the EXACT value from READY_TO_DISPLAY_PRODUCTS — do NOT swap, modify, or guess image URLs. Pass empty string if no image."}
                             },
                             "required": ["id", "name", "price", "description", "image_url"]
                         }
@@ -2701,6 +2701,7 @@ class ConversationalAgentService:
 - ALWAYS use `display_product_cards` when showing products with images/prices
 - NEVER list products as plain text with numbered lists — customers can't interact with text
 - NEVER include raw image URLs (https://...) in your text responses
+- NEVER modify, swap, or guess image_url values — use exactly what is provided in READY_TO_DISPLAY_PRODUCTS
 - After `display_product_cards` succeeds, just say something brief like "Here's what we have! 🛒 Tap a product to add it to your cart."
 - Do NOT repeat product names, prices, or descriptions in text after cards are sent
 - If `display_product_cards` fails, describe products briefly in text WITHOUT image URLs
@@ -3995,6 +3996,7 @@ class ConversationalAgentService:
                     instruction = (
                         "\n\nINSTRUCTION: If products were found, call `display_product_cards` to show them. "
                         "Extract each product's id, name, price, description, and image_url. "
+                        "CRITICAL: Do NOT modify, swap, or guess image_url values — use exactly what appears in the search results. "
                         "CRITICAL: If the search results indicate the product is not found or not in context, "
                         "DO NOT call `display_product_cards` and do NOT invent products. Just apologize to the customer. "
                         "Do NOT list products as plain text. "
