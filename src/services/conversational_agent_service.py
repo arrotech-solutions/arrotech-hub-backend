@@ -1054,96 +1054,6 @@ class ConversationalAgentService:
                     user_text = user_message.strip()
                     is_providing_address = draft.get("stage") == "need_delivery_address" and bool(user_text)
 
-                    if is_providing_address:
-                        user_text_lower = user_text.lower()
-                        # If user clicked "Add New Address"
-                        if user_text_lower == "add new address" or user_text_lower == "checkout_new_addr":
-                            return await self._cart_fast_path_result(
-                                session_key,
-                                self._t(
-                                    preferred_language,
-                                    "Please type your new delivery address or share a WhatsApp location pin 📍.",
-                                    "Tafadhali andika anwani yako mpya au tuma location pin ya WhatsApp 📍.",
-                                ),
-                                actions_taken=[{"tool": "checkout", "result_summary": "need_delivery_address"}],
-                                send_cart_buttons=False,
-                            )
-                        # If user clicked "Use Existing Address"
-                        if user_text_lower == "use existing address" or user_text_lower == "checkout_use_saved":
-                            saved_addresses = await self._get_saved_addresses_for_contact(db, user, eff_phone)
-                            if len(saved_addresses) == 1:
-                                user_text = saved_addresses[0]  # Just apply it
-                            elif len(saved_addresses) >= 2:
-                                # Prompt with list/buttons
-                                try:
-                                    from .whatsapp_service import WhatsAppService
-                                    from sqlalchemy import select
-                                    from ..models import Connection, ConnectionStatus
-                                    
-                                    wa = WhatsAppService()
-                                    parts = session_key.split(":")
-                                    recipient = parts[3] if len(parts) >= 4 else ""
-                                    
-                                    result = await db.execute(
-                                        select(Connection).filter(
-                                            Connection.user_id == user.id,
-                                            Connection.platform == "whatsapp",
-                                            Connection.status == ConnectionStatus.ACTIVE,
-                                        )
-                                    )
-                                    connection = result.scalar_one_or_none()
-                                    config = connection.config if connection else {}
-                                    
-                                    if len(saved_addresses) <= 3:
-                                        buttons = [{"id": f"checkout_addr_{i}", "title": addr[:20]} for i, addr in enumerate(saved_addresses)]
-                                        await wa.send_quick_reply_buttons(
-                                            to_number=recipient,
-                                            body_text="Which saved address would you like to use?",
-                                            buttons=buttons,
-                                            config={
-                                                "access_token": config.get("access_token"),
-                                                "phone_number_id": config.get("phone_number_id"),
-                                            }
-                                        )
-                                    else:
-                                        options = [{"id": f"checkout_addr_{i}", "title": addr[:24], "description": addr[:70]} for i, addr in enumerate(saved_addresses[:10])]
-                                        await wa.send_list_message(
-                                            to_number=recipient,
-                                            body_text="Which saved address would you like to use?",
-                                            button_text="Select Address",
-                                            options=options,
-                                            config={
-                                                "access_token": config.get("access_token"),
-                                                "phone_number_id": config.get("phone_number_id"),
-                                            }
-                                        )
-                                except Exception as e:
-                                    logger.warning(f"[CONV_AGENT] Error sending existing addresses: {e}")
-
-                                return await self._cart_fast_path_result(
-                                    session_key,
-                                    reply="",
-                                    actions_taken=[{"tool": "checkout", "result_summary": "need_delivery_address"}],
-                                    send_cart_buttons=False,
-                                )
-                        
-                        # Handle the selection of a specific address button "checkout_addr_0"
-                        if user_text_lower.startswith("checkout_addr_"):
-                            try:
-                                idx = int(user_text_lower.replace("checkout_addr_", ""))
-                                saved_addresses = await self._get_saved_addresses_for_contact(db, user, eff_phone)
-                                if 0 <= idx < len(saved_addresses):
-                                    user_text = saved_addresses[idx]
-                            except ValueError:
-                                pass
-                        else:
-                            # Match title if webhook passed title instead of ID
-                            saved_addresses = await self._get_saved_addresses_for_contact(db, user, eff_phone)
-                            for addr in saved_addresses:
-                                if addr[:20] == user_text or addr[:24] == user_text:
-                                    user_text = addr
-                                    break
-
                     should_capture = customer_sent_details and (
                         has_name_and_phone
                         or (bot_expecting_reply and parsed.get("phone"))
@@ -1156,7 +1066,6 @@ class ConversationalAgentService:
                         )
                         if is_providing_address and not saved_addr:
                             saved_addr = user_text
-                            await self._add_saved_address_for_contact(db, user, eff_phone, saved_addr)
 
                         if not eff_phone:
                             await context_manager.update_session_metadata(
@@ -3145,67 +3054,6 @@ class ConversationalAgentService:
         """Tiny localization helper: Swahili when lang=='sw', else English."""
         return sw if (lang or "en").lower().startswith("sw") else en
 
-    async def _get_saved_addresses_for_contact(
-        self,
-        db: Optional[AsyncSession],
-        user: Optional[User],
-        customer_phone: str,
-    ) -> list:
-        """Fetch saved addresses from WhatsAppContact metadata."""
-        if not db or not user or not customer_phone:
-            return []
-        try:
-            from sqlalchemy import select
-            from ..models import WhatsAppContact
-            stmt = select(WhatsAppContact).where(
-                WhatsAppContact.owner_user_id == user.id,
-                WhatsAppContact.phone_number == customer_phone
-            )
-            result = await db.execute(stmt)
-            contact = result.scalar_one_or_none()
-            if contact and contact.metadata_:
-                saved = contact.metadata_.get("saved_addresses", [])
-                if isinstance(saved, list):
-                    return saved
-        except Exception as e:
-            logger.warning(f"[CONV_AGENT] Error getting saved addresses: {e}")
-        return []
-
-    async def _add_saved_address_for_contact(
-        self,
-        db: Optional[AsyncSession],
-        user: Optional[User],
-        customer_phone: str,
-        address: str,
-    ) -> None:
-        """Add a new saved address to WhatsAppContact metadata."""
-        if not db or not user or not customer_phone or not address:
-            return
-        address = str(address).strip()
-        if not address:
-            return
-        try:
-            from sqlalchemy import select
-            from ..models import WhatsAppContact
-            stmt = select(WhatsAppContact).where(
-                WhatsAppContact.owner_user_id == user.id,
-                WhatsAppContact.phone_number == customer_phone
-            )
-            result = await db.execute(stmt)
-            contact = result.scalar_one_or_none()
-            if contact:
-                meta = dict(contact.metadata_) if contact.metadata_ else {}
-                saved = meta.get("saved_addresses", [])
-                if not isinstance(saved, list):
-                    saved = []
-                if address not in saved:
-                    saved.append(address)
-                    meta["saved_addresses"] = saved
-                    contact.metadata_ = meta
-                    await db.commit()
-        except Exception as e:
-            logger.warning(f"[CONV_AGENT] Error saving address: {e}")
-
     async def _resolve_checkout_delivery(
         self,
         session_key: str,
@@ -3297,7 +3145,7 @@ class ConversationalAgentService:
         if len(delivery_methods) > 1 and not resolved_delivery:
             missing.append(
                 f"{'3' if len(missing) == 2 else '2' if len(missing) == 1 else '1'}️⃣ "
-                f"Delivery (you can share a location pin 📍) or pickup?"
+                f"Delivery or pickup?"
             )
         missing_str = "\n".join(missing)
         reply = (
@@ -3366,18 +3214,14 @@ class ConversationalAgentService:
                 send_cart_buttons=False,
             )
 
-        # Fetch saved addresses
-        saved_addresses = await self._get_saved_addresses_for_contact(db, user, customer_phone)
-        
-        # Check if session has a delivery_address (e.g., from a recent location pin)
-        try:
-            session = await context_manager.get_session_by_key(session_key)
-            if session:
-                sess_addr = context_manager.get_delivery_address(session)
-                if sess_addr and sess_addr not in saved_addresses:
-                    saved_addresses.insert(0, sess_addr)
-        except Exception:
-            pass
+        # Fill delivery address from a saved WhatsApp location pin when delivering
+        if delivery_method == "delivery" and not delivery_address:
+            try:
+                session = await context_manager.get_session_by_key(session_key)
+                if session:
+                    delivery_address = context_manager.get_delivery_address(session)
+            except Exception:
+                delivery_address = ""
 
         # Require delivery address if still missing
         if delivery_method == "delivery" and not delivery_address:
@@ -3394,59 +3238,16 @@ class ConversationalAgentService:
                     },
                 },
             )
-
-            if saved_addresses:
-                try:
-                    from .whatsapp_service import WhatsAppService
-                    from sqlalchemy import select
-                    from ..models import Connection, ConnectionStatus
-                    
-                    wa = WhatsAppService()
-                    parts = session_key.split(":")
-                    recipient = parts[3] if len(parts) >= 4 else ""
-                    
-                    result = await db.execute(
-                        select(Connection).filter(
-                            Connection.user_id == user.id,
-                            Connection.platform == "whatsapp",
-                            Connection.status == ConnectionStatus.ACTIVE,
-                        )
-                    )
-                    connection = result.scalar_one_or_none()
-                    config = connection.config if connection else {}
-                    
-                    await wa.send_quick_reply_buttons(
-                        to_number=recipient,
-                        body_text="Almost done! Where should we deliver this?",
-                        buttons=[
-                            {"id": "checkout_new_addr", "title": "Add New Address"},
-                            {"id": "checkout_use_saved", "title": "Use Existing Address"}
-                        ],
-                        config={
-                            "access_token": config.get("access_token"),
-                            "phone_number_id": config.get("phone_number_id"),
-                        }
-                    )
-                except Exception as e:
-                    logger.warning(f"[CONV_AGENT] Error sending address buttons: {e}")
-
-                return await self._cart_fast_path_result(
-                    session_key,
-                    reply="",  # Buttons already sent
-                    actions_taken=[{"tool": "checkout", "result_summary": "need_delivery_address"}],
-                    send_cart_buttons=False,
-                )
-            else:
-                return await self._cart_fast_path_result(
-                    session_key,
-                    self._t(
-                        preferred_language,
-                        "Almost done! Please provide your *delivery address* or drop a WhatsApp location pin 📍.",
-                        "Tumekaribia! Tafadhali nipe *mahali pa kuleta mzigo* au tuma location pin ya WhatsApp 📍.",
-                    ),
-                    actions_taken=[{"tool": "checkout", "result_summary": "need_delivery_address"}],
-                    send_cart_buttons=False,
-                )
+            return await self._cart_fast_path_result(
+                session_key,
+                self._t(
+                    preferred_language,
+                    "Almost done! Please provide your *delivery address* or drop a WhatsApp location pin 📍.",
+                    "Tumekaribia! Tafadhali nipe *mahali pa kuleta mzigo* au tuma location pin ya WhatsApp 📍.",
+                ),
+                actions_taken=[{"tool": "checkout", "result_summary": "need_delivery_address"}],
+                send_cart_buttons=False,
+            )
 
         # Compute total and persist the pending order
         total_result = await self.order_service.handle_operation(
