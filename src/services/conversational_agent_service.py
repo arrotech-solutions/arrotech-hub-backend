@@ -2179,6 +2179,11 @@ class ConversationalAgentService:
                 "image_urls": chunk_urls,
                 # Highest-confidence binding: alt-text → URL from markdown images.
                 "image_alt_map": extract_markdown_image_map(chunk_text),
+                # Ground-truth fields from Phase 1 ingestion fix.
+                # These are the most reliable product↔image binding — prefer
+                # over any text-parsing heuristic.
+                "image_url": item.get("image_url", ""),
+                "product_name": item.get("product_name", ""),
             })
 
         return structured
@@ -2194,8 +2199,32 @@ class ConversationalAgentService:
 
     @staticmethod
     def _normalize_product_name(value: str) -> str:
-        """Lowercase, trim, and collapse whitespace for reliable name matching."""
-        return re.sub(r"\s+", " ", (value or "").strip().lower())
+        """Lowercase, trim, strip emojis, and collapse whitespace.
+
+        Stripping emojis is critical because the LLM frequently decorates
+        product names with emojis (e.g. '🎮 PS5 Console') while the ingested
+        alt-text is plain 'PS5 Console'.  Without stripping, the exact
+        alt-text match (Rule 1) fails silently and falls through to
+        unreliable heuristics.
+        """
+        text = (value or "").strip().lower()
+        # Remove emoji and other non-text Unicode symbols
+        text = re.sub(
+            r'[\U0001F600-\U0001F64F'   # Emoticons
+            r'\U0001F300-\U0001F5FF'     # Misc Symbols & Pictographs
+            r'\U0001F680-\U0001F6FF'     # Transport & Map
+            r'\U0001F1E0-\U0001F1FF'     # Flags
+            r'\U00002702-\U000027B0'     # Dingbats
+            r'\U000024C2-\U0001F251'     # Enclosed chars
+            r'\U0001f900-\U0001f9FF'     # Supplemental Symbols
+            r'\U0001fa00-\U0001fa6F'     # Chess Symbols
+            r'\U0001fa70-\U0001faFF'     # Symbols Extended-A
+            r'\U00002600-\U000026FF'     # Misc Symbols
+            r'\U0000FE00-\U0000FE0F'     # Variation Selectors
+            r'\U0000200D'                # Zero Width Joiner
+            r']+', '', text
+        )
+        return re.sub(r"\s+", " ", text).strip()
 
     @staticmethod
     def _image_positions(text: str) -> List[Tuple[int, str]]:
@@ -2225,18 +2254,25 @@ class ConversationalAgentService:
         chunk_map: List[Dict[str, Any]],
     ) -> Dict[str, str]:
         """
-        Build {normalized_product_name: image_url} using three deterministic rules:
+        Build {normalized_product_name: image_url} using deterministic rules
+        ordered by confidence.  Only high-confidence rules are used — no
+        positional guessing that can cross-contaminate images.
 
-        1. **Exact alt-text** (highest confidence): an image written as
-           ``![Product Name](url)`` whose alt-text equals a product name.
-        2. **Positional**: every image belongs to the product whose name most
-           recently precedes it in the chunk text.
-        3. **Labeled URL** (legacy fallback): lines like
-           ``Image URL: https://...`` are matched to the product whose name
-           most recently precedes the line.  This handles chunks ingested
-           before the markdown-image format was introduced.
+        Priority cascade:
 
-        Works whether the catalog is one big blob chunk or one chunk per product.
+        0. **Metadata ground truth** (highest): ``image_url`` and
+           ``product_name`` stored in Pinecone metadata at ingestion.
+           This is an exact 1:1 binding and can never be wrong.
+        1. **Exact alt-text**: ``![Product Name](url)`` whose alt-text
+           (after normalization) equals a target product name.
+        2. **Single-product chunk**: a chunk that mentions exactly one
+           target product and has exactly one image.
+        3. **Labeled URL** (legacy): ``Image URL: https://...`` in a
+           single-product chunk.
+
+        Positional proximity matching (the old Rule 2) has been removed
+        because it was the primary source of image mix-ups in multi-product
+        chunks.
         """
         target_names: List[str] = []
         for p in products:
@@ -2252,61 +2288,61 @@ class ConversationalAgentService:
             text = chunk.get("chunk_text") or ""
             if not text:
                 continue
-            text_lower = text.lower()
 
-            # Rule 1: alt-text exactly equals a product name.
+            # ── Rule 0: Metadata ground truth (Phase 1 ingestion fix) ──
+            # If the chunk carries a dedicated product_name + image_url from
+            # ingestion, use it directly — this is the most reliable binding.
+            meta_product_name = cls._normalize_product_name(
+                chunk.get("product_name", "")
+            )
+            meta_image_url = (chunk.get("image_url") or "").strip()
+            if meta_product_name and meta_image_url:
+                if meta_product_name in target_names:
+                    result.setdefault(meta_product_name, meta_image_url)
+                else:
+                    # Fuzzy: the ingested name might be a substring of the
+                    # LLM-decorated name or vice versa.
+                    for tn in target_names:
+                        if meta_product_name in tn or tn in meta_product_name:
+                            result.setdefault(tn, meta_image_url)
+                            break
+
+            # ── Rule 1: Exact alt-text match from markdown images ──
             for alt_norm, url in (chunk.get("image_alt_map") or {}).items():
-                if alt_norm in target_names and url:
-                    result.setdefault(alt_norm, url)
+                alt_clean = cls._normalize_product_name(alt_norm)
+                if alt_clean in target_names and url:
+                    result.setdefault(alt_clean, url)
+                else:
+                    # Fuzzy substring fallback for alt-text
+                    for tn in target_names:
+                        if alt_clean and (alt_clean in tn or tn in alt_clean) and url:
+                            result.setdefault(tn, url)
+                            break
 
-            # Locate each product name's position within this chunk.
+            # Locate which target products appear in this chunk.
+            text_lower = text.lower()
             name_positions: List[Tuple[int, str]] = []
             for n in target_names:
                 pos = text_lower.find(n)
                 if pos >= 0:
                     name_positions.append((pos, n))
-            if not name_positions:
-                continue
-            name_positions.sort(key=lambda t: t[0])
 
-            # Rule 2: assign each image to the closest product name (minimum absolute distance).
-            for img_pos, url in cls._image_positions(text):
-                best_owner = None
-                min_dist = float("inf")
-                for pos, n in name_positions:
-                    dist = abs(pos - img_pos)
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_owner = n
-                if best_owner:
-                    result.setdefault(best_owner, url)  # first image per product wins
-
-            # Rule 3 (legacy fallback): labeled URL lines like
-            # "Image URL: https://...", "Photo: https://...", etc.
-            # These exist in chunks ingested before the markdown format fix.
-            for m in cls._LABELED_IMAGE_LINE_PATTERN.finditer(text):
-                url = (m.group(1) or "").strip().rstrip('.,;:!?)"\'>[\]')
-                if not url:
-                    continue
-                label_pos = m.start()
-                best_owner = None
-                min_dist = float("inf")
-                for pos, n in name_positions:
-                    dist = abs(pos - label_pos)
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_owner = n
-                if best_owner:
-                    result.setdefault(best_owner, url)
-
-            # Rule 3b: single-product chunk with a single metadata image_url.
-            # Per-row ingestion creates one chunk per product. If the chunk
-            # mentions exactly one of our target products and carries exactly
-            # one image in its metadata, we can safely bind them.
+            # ── Rule 2: Single-product chunk with metadata images ──
+            # Per-row ingestion creates one chunk per product.  If the chunk
+            # mentions exactly one target product, any image in it belongs
+            # to that product.
             chunk_image_urls = chunk.get("image_urls") or []
-            if len(name_positions) == 1 and len(chunk_image_urls) == 1:
+            if len(name_positions) == 1 and chunk_image_urls:
                 sole_name = name_positions[0][1]
                 result.setdefault(sole_name, chunk_image_urls[0])
+
+            # ── Rule 3: Labeled URL in single-product chunk (legacy) ──
+            if len(name_positions) == 1:
+                for m in cls._LABELED_IMAGE_LINE_PATTERN.finditer(text):
+                    url = (m.group(1) or "").strip().rstrip('.,;:!?)"\'>[\]')
+                    if url:
+                        result.setdefault(name_positions[0][1], url)
+                        break  # one image per product is enough
 
         return result
 
@@ -2318,13 +2354,12 @@ class ConversationalAgentService:
     ) -> List[Dict[str, Any]]:
         """
         Programmatic safety net that binds each product card to the CORRECT
-        image, or no image at all.
+        image, or **no image at all**.
 
-        Runs *after* the LLM builds display_product_cards but *before* the cards
-        are sent, so it catches image mix-ups (e.g. a soda showing a water photo)
-        regardless of what the LLM did. Binding is deterministic and positional
-        (see _bind_images_to_products): the image that follows a product in the
-        catalog text is that product's image.
+        Runs *after* the LLM builds display_product_cards but *before* the
+        cards are sent.  If the deterministic binding can't find a confident
+        match, the image is cleared rather than keeping an unverified LLM
+        image — a wrong image is worse than no image for customer trust.
         """
         if not products or not chunk_map:
             return products
@@ -2348,13 +2383,17 @@ class ConversationalAgentService:
                     )
                 product["image_url"] = chosen_url
             else:
-                # Keep the LLM-provided image if available, as chunk mapping might have missed it
+                # No confident match — clear the image rather than risking
+                # a wrong one.  A card without an image is far better than
+                # a card showing another product's photo.
                 if current_url:
-                    logger.info(
-                        "[CONV_AGENT] ⚠️ Keeping unverified image for '%s' (no confident match in chunks)",
+                    logger.warning(
+                        "[CONV_AGENT] ❌ Clearing unverified image for '%s' "
+                        "(no confident match in chunks — was '%s')",
                         product.get("name", "?"),
+                        current_url[:60],
                     )
-                product["image_url"] = current_url
+                product["image_url"] = ""
 
             corrected.append(product)
 
@@ -2406,10 +2445,15 @@ class ConversationalAgentService:
             desc_parts: List[str] = []
             image_url = ""
 
-            # ── Image: prefer metadata, fallback to markdown in text ──
-            meta_images = item.get("image_urls", [])
-            if isinstance(meta_images, list) and meta_images:
-                image_url = meta_images[0]
+            # ── Image: prefer dedicated metadata field (Phase 1 ground truth),
+            # then image_urls list, then markdown in text ──
+            meta_single_image = item.get("image_url", "")
+            if meta_single_image:
+                image_url = meta_single_image
+            else:
+                meta_images = item.get("image_urls", [])
+                if isinstance(meta_images, list) and meta_images:
+                    image_url = meta_images[0]
 
             lines = chunk_text.split("\n")
             for i, raw_line in enumerate(lines):
@@ -3926,6 +3970,7 @@ class ConversationalAgentService:
                     instruction = (
                         "\n\nINSTRUCTION: Call `display_product_cards` NOW with the READY_TO_DISPLAY_PRODUCTS "
                         "JSON array above as the `products` argument. Do NOT modify the products — pass them as-is. "
+                        "CRITICAL: Do NOT modify the image_url values. "
                         "Do NOT list products as plain text. "
                         "If the customer explicitly asked to ADD items to their cart, also call "
                         "`manage_cart(action='add', product_name=..., unit_price=..., quantity=...)` "
