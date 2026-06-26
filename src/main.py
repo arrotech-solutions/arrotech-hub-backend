@@ -347,6 +347,10 @@ main_router.include_router(public_forms_router.router)
 from .routers.coding_agent_router import router as coding_agent_router
 main_router.include_router(coding_agent_router)
 
+# Product Catalog Builder (photo -> Google Sheet)
+from .routers.catalog_builder_router import router as catalog_builder_router
+main_router.include_router(catalog_builder_router)
+
 # Harness Engineering
 try:
     from .routers.harness_router import router as harness_router

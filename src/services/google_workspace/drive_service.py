@@ -331,7 +331,48 @@ class DriveService:
                 'success': False,
                 'error': str(e)
             }
-    
+
+    async def make_public(
+        self,
+        file_id: str,
+        role: str = 'reader'
+    ) -> Dict[str, Any]:
+        """
+        Make a file readable by anyone with the link and return a direct,
+        embeddable image URL (uc?export=view). Used by the Catalog Builder so
+        the WhatsApp ordering agent can fetch product photos.
+
+        Some Workspace orgs disable "anyone with link" sharing; in that case the
+        Drive API returns a permissions error which we surface to the caller.
+        """
+        try:
+            service = self.base_client.get_service(self.service_name, self.version)
+
+            permission = {
+                'type': 'anyone',
+                'role': role,
+            }
+
+            service.permissions().create(
+                fileId=file_id,
+                body=permission,
+                fields='id'
+            ).execute()
+
+            return {
+                'success': True,
+                'file_id': file_id,
+                'direct_url': f"https://drive.google.com/uc?export=view&id={file_id}",
+                'view_url': f"https://drive.google.com/file/d/{file_id}/view",
+            }
+
+        except Exception as e:
+            logger.error(f"[DRIVE] make_public failed for {file_id}: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
     async def search_files(
         self,
         query: str,
