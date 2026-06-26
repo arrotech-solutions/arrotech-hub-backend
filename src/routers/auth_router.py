@@ -284,6 +284,9 @@ async def register(
     await db.commit()
     await db.refresh(user)
 
+    from ..services.subscription_service import subscription_service
+    await subscription_service.start_trial(user, db)
+
     # Send verification email in background (truly fire-and-forget)
     async def _send_verification():
         try:
@@ -861,6 +864,12 @@ async def get_current_user_info(
     current_user: User = Depends(get_current_user)
 ):
     """Get current user information."""
+    from ..services.feature_flags import FeatureGate
+    from ..services.subscription_service import subscription_service
+
+    effective_tier = FeatureGate.get_effective_tier(current_user)
+    sub_snapshot = subscription_service.build_status_snapshot(current_user)
+
     return {
         "success": True,
         "data": {
@@ -868,8 +877,14 @@ async def get_current_user_info(
             "email": current_user.email,
             "name": current_user.name,
             "subscription_tier": current_user.subscription_tier,
+            "effective_tier": effective_tier,
             "subscription_status": current_user.subscription_status,
             "subscription_end_date": current_user.subscription_end_date.isoformat() if current_user.subscription_end_date else None,
+            "billing_cycle": getattr(current_user, "billing_cycle", None) or "monthly",
+            "cancel_at_period_end": bool(getattr(current_user, "cancel_at_period_end", False)),
+            "auto_renew_enabled": bool(getattr(current_user, "auto_renew_enabled", True)),
+            "days_remaining": sub_snapshot.get("days_remaining"),
+            "is_trial": sub_snapshot.get("is_trial", False),
             "role": getattr(current_user, 'role', 'user') or 'user',
             "permissions": getattr(current_user, 'permissions', {}) or {},
             "email_verified": current_user.email_verified,

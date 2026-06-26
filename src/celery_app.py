@@ -76,6 +76,7 @@ app.config_from_object({
         "src.tasks.maintenance_tasks.*": {"queue": "low"},
         "src.tasks.rag_tasks.*": {"queue": "low"},
         "src.tasks.drive_sync_tasks.*": {"queue": "low"},
+        "src.tasks.subscription_tasks.*": {"queue": "low"},
     },
 
     # ── Retry Defaults ──
@@ -93,6 +94,7 @@ app.autodiscover_tasks([
     "src.tasks.rag_tasks",
     "src.tasks.broadcast_tasks",
     "src.tasks.drive_sync_tasks",
+    "src.tasks.subscription_tasks",
 ])
 
 
@@ -135,6 +137,27 @@ app.conf.beat_schedule = {
     "log-cleanup-daily": {
         "task": "src.tasks.maintenance_tasks.log_cleanup_task",
         "schedule": crontab(hour=4, minute=0),
+        "options": {"queue": "low"},
+    },
+
+    # ── Subscription expiry (daily at 02:00 UTC) ──
+    "process-subscription-expiry-daily": {
+        "task": "src.tasks.subscription_tasks.process_subscription_expiry_task",
+        "schedule": crontab(hour=2, minute=0),
+        "options": {"queue": "low"},
+    },
+
+    # ── Subscription renewal reminders (daily at 08:00 UTC) ──
+    "subscription-reminders-daily": {
+        "task": "src.tasks.subscription_tasks.send_subscription_reminders_task",
+        "schedule": crontab(hour=8, minute=0),
+        "options": {"queue": "low"},
+    },
+
+    # ── Paystack auto-renewal (daily at 06:00 UTC) ──
+    "subscription-auto-renew-daily": {
+        "task": "src.tasks.subscription_tasks.attempt_subscription_renewal_task",
+        "schedule": crontab(hour=6, minute=0),
         "options": {"queue": "low"},
     },
 

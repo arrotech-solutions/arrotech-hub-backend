@@ -51,7 +51,7 @@ class WorkflowBuilderService:
         if not FeatureGate.can_activate_workflow(user, active_workflows):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Plan limit reached: {user.subscription_tier} plan allows only {FeatureGate.get_limits(user.subscription_tier)['max_active_workflows']} active workflows. Please upgrade."
+                detail=f"Plan limit reached: {user.subscription_tier} plan allows only {FeatureGate.get_limits_for_user(user)['max_active_workflows']} active workflows. Please upgrade."
             )
 
         # Analyze the description to identify required tools and steps

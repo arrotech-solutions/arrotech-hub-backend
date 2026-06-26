@@ -215,6 +215,10 @@ class BaseConfig(BaseSettings):
     PAYSTACK_SECRET_KEY: Optional[str] = None
     PAYSTACK_PUBLIC_KEY: Optional[str] = None
 
+    # Subscription lifecycle
+    SUBSCRIPTION_GRACE_DAYS: int = 3
+    SUBSCRIPTION_TRIAL_DAYS: int = 7
+
     # Stripe
     STRIPE_SECRET_KEY: Optional[str] = None
     STRIPE_WEBHOOK_SECRET: Optional[str] = None

@@ -472,6 +472,51 @@ class PaymentService:
                 "error": f"Payment verification error: {str(e)}"
             }
 
+    async def _activate_paystack_charge(
+        self,
+        user,
+        data: Dict[str, Any],
+        reference: str,
+        amount_kes: float,
+        metadata: Dict[str, Any],
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Shared activation path for verify API and charge.success webhook."""
+        from .subscription_service import PaymentActivationData, subscription_service
+
+        plan_id, billing_cycle = subscription_service.resolve_plan_from_paystack_metadata(
+            metadata, amount_kes
+        )
+        if not plan_id:
+            logger.warning(
+                "[PAYSTACK] Could not resolve plan for user %s amount=%s metadata=%s",
+                user.id,
+                amount_kes,
+                metadata,
+            )
+            return {"success": False, "error": "Could not determine subscription plan"}
+
+        customer = data.get("customer", {}) or {}
+        authorization = data.get("authorization", {}) or {}
+        auth_code = None
+        if authorization.get("reusable") and authorization.get("authorization_code"):
+            auth_code = authorization["authorization_code"]
+
+        payment_data = PaymentActivationData(
+            transaction_id=str(data.get("id")),
+            reference=reference,
+            amount_kes=amount_kes,
+            currency=data.get("currency", "KES"),
+            plan_id=plan_id,
+            billing_cycle=billing_cycle,
+            metadata=metadata,
+            paystack_customer_code=customer.get("customer_code"),
+            paystack_authorization_code=auth_code,
+        )
+        return await subscription_service.activate_from_payment(
+            user, plan_id, billing_cycle, payment_data, db
+        )
+
     async def verify_paystack_payment(
         self,
         reference: str,
@@ -528,91 +573,41 @@ class PaymentService:
             # Persist to database if session provided
             if db and user_id:
                 from sqlalchemy import select
-                from ..models import Payment, User, SubscriptionStatus
-                
-                # Check for duplicate transaction
-                existing = await db.execute(
-                    select(Payment).where(Payment.transaction_id == str(data.get("id")))
+                from ..models import User
+                from .subscription_service import (
+                    PaymentActivationData,
+                    subscription_service,
                 )
-                if existing.scalar_one_or_none():
-                    logger.warning(f"[PAYSTACK] Payment {reference} already processed")
-                    return {"success": True, "status": "completed", "message": "Payment already processed"}
 
-                # Create payment record
-                payment = Payment(
-                    user_id=user_id,
-                    payment_method="paystack",
-                    amount=amount_kes,
-                    currency=data.get("currency", "KES"),
-                    status="completed",
-                    transaction_id=str(data.get("id")),
-                    reference=reference,
-                    payment_metadata={
-                        "reference": reference,
-                        "customer_email": data.get("customer", {}).get("email"),
-                        "plan": metadata.get("plan"),
-                        "raw_metadata": metadata
-                    }
-                )
-                db.add(payment)
-                logger.info(f"[PAYSTACK] Created payment record for user {user_id}")
-
-                # Update user subscription
                 user_result = await db.execute(select(User).where(User.id == user_id))
                 user = user_result.scalar_one_or_none()
-                
-                if user:
-                    # Determine plan tier from metadata or amount
-                    plan_id = None
-                    
-                    # Check custom_fields format (Paystack standard)
-                    if "custom_fields" in metadata:
-                        for field in metadata["custom_fields"]:
-                            if field.get("variable_name") == "plan":
-                                plan_id = field.get("value")
-                                break
-                    
-                    # Check direct plan in metadata
-                    if not plan_id and "plan" in metadata:
-                        plan_id = metadata["plan"]
-                    
-                    # Fallback: determine tier from amount
-                    if not plan_id:
-                        if amount_kes >= 10000:
-                            plan_id = "enterprise"
-                        elif amount_kes >= 2500:
-                            plan_id = "pro"
-                        elif amount_kes >= 200:
-                            plan_id = "lite"
-                    
-                    logger.info(f"[PAYSTACK] Determined plan_id: {plan_id} for amount: {amount_kes}")
-                    
-                    if plan_id and plan_id != "free":
-                        user.subscription_tier = plan_id
-                        user.subscription_status = SubscriptionStatus.ACTIVE
-                        
-                        # Extend subscription by 30 days
-                        now = datetime.now()
-                        if user.subscription_end_date and user.subscription_end_date > now:
-                            user.subscription_end_date += timedelta(days=30)
-                        else:
-                            user.subscription_end_date = now + timedelta(days=30)
-                        
-                        # Store Paystack customer data for future use
-                        customer = data.get("customer", {})
-                        if customer.get("customer_code"):
-                            user.paystack_customer_code = customer["customer_code"]
-                        
-                        authorization = data.get("authorization", {})
-                        if authorization.get("reusable") and authorization.get("authorization_code"):
-                            user.paystack_authorization_code = authorization["authorization_code"]
-                        
-                        logger.info(f"[PAYSTACK] Updated user {user_id}: tier={plan_id}, end_date={user.subscription_end_date}")
-                    else:
-                        logger.warning(f"[PAYSTACK] No valid plan_id determined, user tier not updated")
+                if not user:
+                    return {"success": False, "error": "User not found"}
 
-                await db.commit()
-                logger.info(f"[PAYSTACK] Database commit successful for user {user_id}")
+                activation_result = await self._activate_paystack_charge(
+                    user=user,
+                    data=data,
+                    reference=reference,
+                    amount_kes=amount_kes,
+                    metadata=metadata,
+                    db=db,
+                )
+                if not activation_result.get("success"):
+                    return activation_result
+
+                sub = activation_result.get("subscription", {})
+                return {
+                    "success": True,
+                    "status": "completed",
+                    "transaction_id": str(data.get("id")),
+                    "reference": reference,
+                    "amount": amount_kobo,
+                    "amount_kes": amount_kes,
+                    "currency": data.get("currency"),
+                    "customer_email": data.get("customer", {}).get("email"),
+                    "plan": sub.get("tier") or metadata.get("plan_id"),
+                    "subscription": sub,
+                }
 
             return {
                 "success": True,
@@ -623,7 +618,7 @@ class PaymentService:
                 "amount_kes": amount_kes,
                 "currency": data.get("currency"),
                 "customer_email": data.get("customer", {}).get("email"),
-                "plan": metadata.get("plan")
+                "plan": metadata.get("plan_id"),
             }
 
         except requests.exceptions.Timeout:
@@ -1101,13 +1096,15 @@ class PaymentService:
     async def process_paystack_webhook(self, event: Dict[str, Any], db: AsyncSession) -> Dict[str, Any]:
         """
         Process Paystack webhook events.
-        Handles: transfer.success, transfer.failed, transfer.reversed
+        Handles: charge.success, transfer.success, transfer.failed, transfer.reversed
         """
         event_type = event.get("event")
         data = event.get("data", {})
         
         logger.info(f"[PAYSTACK WEBHOOK] Processing event: {event_type}")
         
+        if event_type == "charge.success":
+            return await self.handle_charge_success(data, db)
         if event_type == "transfer.success":
             return await self.handle_transfer_success(data, db)
         elif event_type == "transfer.failed":
@@ -1116,6 +1113,49 @@ class PaymentService:
             return await self.handle_transfer_reversed(data, db)
         
         return {"processed": False, "reason": "Event ignored"}
+
+    async def handle_charge_success(self, data: Dict[str, Any], db: AsyncSession) -> Dict[str, Any]:
+        """Activate subscription from Paystack charge.success webhook (idempotent)."""
+        from sqlalchemy import select
+        from ..models import User
+        import uuid as _uuid
+
+        if data.get("status") != "success":
+            return {"processed": False, "reason": "Non-success charge"}
+
+        metadata = data.get("metadata") or {}
+        amount_kes = (data.get("amount") or 0) / 100
+        reference = data.get("reference", "")
+
+        user = None
+        user_id_raw = metadata.get("user_id")
+        if user_id_raw:
+            try:
+                uid = _uuid.UUID(str(user_id_raw))
+                result = await db.execute(select(User).where(User.id == uid))
+                user = result.scalar_one_or_none()
+            except (ValueError, TypeError):
+                pass
+
+        if not user:
+            email = (data.get("customer") or {}).get("email")
+            if email:
+                result = await db.execute(select(User).where(User.email == email))
+                user = result.scalar_one_or_none()
+
+        if not user:
+            logger.warning("[PAYSTACK WEBHOOK] charge.success: user not found ref=%s", reference)
+            return {"processed": False, "error": "User not found"}
+
+        result = await self._activate_paystack_charge(
+            user=user,
+            data=data,
+            reference=reference,
+            amount_kes=amount_kes,
+            metadata=metadata,
+            db=db,
+        )
+        return {"processed": True, **result}
 
     async def handle_transfer_success(self, data: Dict[str, Any], db: AsyncSession) -> Dict[str, Any]:
         """Handle successful transfer event."""

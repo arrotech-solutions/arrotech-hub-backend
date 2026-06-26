@@ -18,6 +18,8 @@ from .auth_router import get_current_user
 from ..services.execution_orchestrator import ExecutionOrchestrator
 from ..services.workflow_builder_service import WorkflowBuilderService
 from ..services.feature_flags import FeatureGate, PLAN_LIMITS
+from ..services.subscription_plans import list_plans_for_api
+from ..services.subscription_service import subscription_service
 
 router = APIRouter(prefix="/subscription", tags=["subscription"])
 
@@ -59,7 +61,7 @@ async def get_or_create_usage_record(
     
     if record:
         # Check if limits need to be updated (e.g. user upgraded)
-        limits = FeatureGate.get_limits(user.subscription_tier)
+        limits = FeatureGate.get_limits_for_user(user)
         current_ai_limit = limits.get("ai_actions_monthly", 100)
         current_auto_limit = limits.get("automation_runs_monthly", 500)
         
@@ -73,7 +75,7 @@ async def get_or_create_usage_record(
         return record
     
     # Create new record with plan limits
-    limits = FeatureGate.get_limits(user.subscription_tier)
+    limits = FeatureGate.get_limits_for_user(user)
     record = UsageRecord(
         user_id=user.id,
         period_start=period_start,
@@ -115,8 +117,9 @@ async def get_usage_stats(
         usage_record = await get_or_create_usage_record(db, user)
         
         # Get plan limits
-        limits = FeatureGate.get_limits(user.subscription_tier)
-        pricing = FeatureGate.get_pricing(user.subscription_tier)
+        effective_tier = FeatureGate.get_effective_tier(user)
+        limits = FeatureGate.get_limits_for_user(user)
+        pricing = FeatureGate.get_pricing(effective_tier)
         
         # Calculate percentages
         ai_percentage = FeatureGate.get_usage_percentage(
@@ -132,6 +135,13 @@ async def get_usage_stats(
             "success": True,
             "data": {
                 "tier": user.subscription_tier,
+                "effective_tier": effective_tier,
+                "subscription_status": user.subscription_status,
+                "subscription_end_date": (
+                    user.subscription_end_date.isoformat()
+                    if user.subscription_end_date
+                    else None
+                ),
                 "tier_name": pricing.get("name"),
                 "tier_tagline": pricing.get("tagline"),
                 "usage": {
@@ -342,8 +352,32 @@ async def check_feature_access(
             "feature": feature_name,
             "has_access": has_access,
             "tier": user.subscription_tier,
-            "upgrade_message": FeatureGate.get_upgrade_message(user.subscription_tier, feature_name) if not has_access else None
+            "effective_tier": FeatureGate.get_effective_tier(user),
+            "upgrade_message": FeatureGate.get_upgrade_message(
+                FeatureGate.get_effective_tier(user), feature_name
+            ) if not has_access else None
         }
+    }
+
+
+# ============================================================================
+# PLAN CATALOG & STATUS
+# ============================================================================
+
+@router.get("/plans")
+async def get_subscription_plans():
+    """Public plan catalog with monthly and yearly KES prices."""
+    return {"success": True, "data": list_plans_for_api()}
+
+
+@router.get("/status")
+async def get_subscription_status(
+    user: User = Depends(get_current_user),
+):
+    """Full subscription snapshot for the current user."""
+    return {
+        "success": True,
+        "data": subscription_service.build_status_snapshot(user),
     }
 
 

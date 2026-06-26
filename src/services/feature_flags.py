@@ -384,12 +384,20 @@ PLAN_PRICING: Dict[str, Dict[str, Any]] = {
     },
     SubscriptionTier.ENTERPRISE: {
         "price_monthly": None,  # Custom
+        "price_yearly": None,
         "currency": "KES",
         "name": "Enterprise",
         "tagline": "Custom Solution",
         "description": "Everything unlocked plus dedicated support."
     },
 }
+
+# Enrich paid tiers with yearly prices from authoritative catalog
+from .subscription_plans import PLANS as _SUB_PLANS  # noqa: E402
+
+for _tier_key in (SubscriptionTier.STARTER, SubscriptionTier.BUSINESS, SubscriptionTier.PRO):
+    if _tier_key in _SUB_PLANS and _tier_key in PLAN_PRICING:
+        PLAN_PRICING[_tier_key]["price_yearly"] = _SUB_PLANS[_tier_key]["yearly_kes"]
 
 
 # ============================================================================
@@ -420,6 +428,17 @@ class FeatureGate:
     """Service to check user permissions based on their subscription tier."""
     
     @staticmethod
+    def get_effective_tier(user: User) -> str:
+        """Resolve tier accounting for trial, expiry, and cancellation."""
+        from .subscription_service import subscription_service
+        return subscription_service.get_effective_tier(user)
+
+    @staticmethod
+    def get_limits_for_user(user: User) -> Dict[str, Any]:
+        """Get plan limits using effective (enforced) tier."""
+        return FeatureGate.get_limits(FeatureGate.get_effective_tier(user))
+    
+    @staticmethod
     def get_limits(tier: str) -> Dict[str, Any]:
         """Get the limits for a specific tier."""
         # Convert string tier to enum if needed
@@ -448,19 +467,19 @@ class FeatureGate:
     @staticmethod
     def can_activate_workflow(user: User, active_workflow_count: int) -> bool:
         """Check if user can activate another workflow."""
-        limits = FeatureGate.get_limits(user.subscription_tier)
+        limits = FeatureGate.get_limits_for_user(user)
         return active_workflow_count < limits["max_active_workflows"]
 
     @staticmethod
     def can_use_ai_action(user: User, monthly_action_count: int) -> bool:
         """Check if user is within their monthly AI action limit."""
-        limits = FeatureGate.get_limits(user.subscription_tier)
+        limits = FeatureGate.get_limits_for_user(user)
         return monthly_action_count < limits["ai_actions_monthly"]
     
     @staticmethod
     def can_use_automation_run(user: User, monthly_run_count: int) -> bool:
         """Check if user is within their monthly automation run limit."""
-        limits = FeatureGate.get_limits(user.subscription_tier)
+        limits = FeatureGate.get_limits_for_user(user)
         return monthly_run_count < limits["automation_runs_monthly"]
     
     @staticmethod
@@ -470,27 +489,27 @@ class FeatureGate:
         Kept for backward compatibility with existing code.
         """
         # check against monthly limit directly to avoid artificial daily caps
-        limits = FeatureGate.get_limits(user.subscription_tier)
+        limits = FeatureGate.get_limits_for_user(user)
         monthly_limit = limits["ai_actions_monthly"]
         return daily_message_count < monthly_limit
 
     @staticmethod
     def has_connection_access(user: User, platform: str) -> bool:
         """Check if user has access to a specific integration platform."""
-        limits = FeatureGate.get_limits(user.subscription_tier)
+        limits = FeatureGate.get_limits_for_user(user)
         allowed = limits["allowed_connections"]
         return "*" in allowed or platform.lower() in [p.lower() for p in allowed]
     
     @staticmethod
     def has_feature(user: User, feature_name: str) -> bool:
         """Check if user has access to a specific feature."""
-        limits = FeatureGate.get_limits(user.subscription_tier)
+        limits = FeatureGate.get_limits_for_user(user)
         return limits.get(feature_name, False)
     
     @staticmethod
     def get_provider_limit(user: User, provider_type: str) -> int:
         """Get the limit for a specific provider type (email, messaging, calendar, task)."""
-        limits = FeatureGate.get_limits(user.subscription_tier)
+        limits = FeatureGate.get_limits_for_user(user)
         key = f"{provider_type}_providers"
         return limits.get(key, 1)
     

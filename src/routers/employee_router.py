@@ -3,6 +3,7 @@ Employee & Admin management router for Arrotech Hub.
 Handles employee promotion, permission management, and subscriber listing.
 """
 
+import logging
 from typing import Optional, List
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status, Query
@@ -14,6 +15,8 @@ from ..database import get_db
 from ..models import User, UserRole
 from ..routers.auth_router import get_current_user
 from ..config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -360,3 +363,56 @@ async def list_my_posts(
             for p in posts
         ]
     }
+
+
+# ── Admin: manual subscription override ──────────────────
+
+class AdminSetSubscriptionRequest(BaseModel):
+    tier: str
+    status: str = "active"
+    end_date: str  # ISO datetime
+    billing_cycle: str = "monthly"
+
+
+@router.post("/users/{user_id}/subscription")
+async def admin_set_user_subscription(
+    user_id: uuid.UUID,
+    body: AdminSetSubscriptionRequest,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Manually set a user's subscription (support / onboarding).
+    Ops: verify Paystack payment → set tier/status/end_date → confirm GET /subscription/status.
+    """
+    from datetime import datetime, timezone
+    from ..services.subscription_service import subscription_service
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    target = result.scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    try:
+        end_dt = datetime.fromisoformat(body.end_date.replace("Z", "+00:00"))
+        if end_dt.tzinfo is None:
+            end_dt = end_dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid end_date format (use ISO 8601)")
+
+    sub_result = await subscription_service.admin_set_subscription(
+        user=target,
+        tier=body.tier.lower(),
+        status=body.status,
+        end_date=end_dt,
+        billing_cycle=body.billing_cycle,
+        db=db,
+    )
+    logger.info(
+        "Admin %s set subscription for user %s: tier=%s end=%s",
+        admin.id,
+        user_id,
+        body.tier,
+        body.end_date,
+    )
+    return sub_result

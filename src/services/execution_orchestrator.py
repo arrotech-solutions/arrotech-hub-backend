@@ -147,7 +147,7 @@ class ExecutionOrchestrator:
             if not is_byok:
                 daily_count = await self.get_daily_message_count(self.db, self.user.id)
                 if not FeatureGate.can_use_ai_message(self.user, daily_count):
-                    return f"Plan limit reached: Your {self.user.subscription_tier} plan allows {FeatureGate.get_limits(self.user.subscription_tier)['max_ai_messages_daily']} AI messages per day. Please upgrade to continue.", [], 0
+                    return f"Plan limit reached: Your {FeatureGate.get_effective_tier(self.user)} plan allows {FeatureGate.get_limits_for_user(self.user).get('max_ai_messages_daily', FeatureGate.get_limits_for_user(self.user)['ai_actions_monthly'])} AI messages per day. Please upgrade to continue.", [], 0
 
             # Step 1: Classify intent
             intent_classifier = await self.intent_processor.classify_intent(content)
@@ -1446,7 +1446,8 @@ When the user asks you to perform actions, write Python code using the available
             if not is_byok:
                 daily_count = await self.get_daily_message_count(self.db, self.user.id)
                 if not FeatureGate.can_use_ai_message(self.user, daily_count):
-                    limit = FeatureGate.get_limits(self.user.subscription_tier)['max_ai_messages_daily']
+                    limits = FeatureGate.get_limits_for_user(self.user)
+                    limit = limits.get("max_ai_messages_daily", limits["ai_actions_monthly"])
                     yield {"type": "error", "error": f"Plan limit reached: Your {self.user.subscription_tier} plan allows {limit} AI messages per day. Please upgrade to continue."}
                     return
 

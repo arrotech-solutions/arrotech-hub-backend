@@ -131,6 +131,7 @@ class InvoiceStatus(str, Enum):
 class SubscriptionStatus(str, Enum):
     """Subscription status."""
     ACTIVE = "active"
+    TRIAL = "trial"
     PAST_DUE = "past_due"
     CANCELED = "canceled"
     EXPIRED = "expired"
@@ -188,6 +189,11 @@ class User(Base):
     subscription_tier = Column(String, default=SubscriptionTier.FREE)
     subscription_status = Column(String, default=SubscriptionStatus.ACTIVE)
     subscription_end_date = Column(DateTime(timezone=True), nullable=True)
+    billing_cycle = Column(String, default="monthly")
+    trial_started_at = Column(DateTime(timezone=True), nullable=True)
+    cancel_at_period_end = Column(Boolean, default=False)
+    last_payment_at = Column(DateTime(timezone=True), nullable=True)
+    auto_renew_enabled = Column(Boolean, default=True)
     stripe_customer_id = Column(String, nullable=True)
     paystack_customer_code = Column(String, nullable=True)  # NEW: For Paystack
     paystack_authorization_code = Column(String, nullable=True)  # NEW: For recurring charges
@@ -504,12 +510,16 @@ class Subscription(Base):
     stripe_subscription_id = Column(String, nullable=True)
     tier = Column(String, nullable=False)
     status = Column(String, default="active")
+    billing_cycle = Column(String, default="monthly")
+    payment_id = Column(PG_UUID(as_uuid=True), ForeignKey("payments.id"), nullable=True)
+    paystack_reference = Column(String, nullable=True)
     current_period_start = Column(DateTime(timezone=True))
     current_period_end = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
     user = relationship("User")
+    payment = relationship("Payment")
 
 
 class UsageLog(Base):

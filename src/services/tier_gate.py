@@ -76,7 +76,7 @@ def check_workflow_limit(user: User, active_workflow_count: int) -> None:
     Raises:
         TierGateError: If user has reached their workflow limit
     """
-    limits = FeatureGate.get_limits(user.subscription_tier)
+    limits = FeatureGate.get_limits_for_user(user)
     max_workflows = limits["max_active_workflows"]
     
     if active_workflow_count >= max_workflows:
@@ -101,8 +101,8 @@ def check_ai_message_limit(user: User, daily_message_count: int) -> None:
     Raises:
         TierGateError: If user has exceeded their daily AI message limit
     """
-    limits = FeatureGate.get_limits(user.subscription_tier)
-    max_messages = limits["max_ai_messages_daily"]
+    limits = FeatureGate.get_limits_for_user(user)
+    max_messages = limits.get("max_ai_messages_daily", limits["ai_actions_monthly"])
     
     if daily_message_count >= max_messages:
         next_tier = get_next_tier(user.subscription_tier)
