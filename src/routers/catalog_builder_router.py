@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/catalog-builder", tags=["catalog-builder"])
 
 # Guardrails to keep vision cost predictable.
-MAX_IMAGES_PER_EXTRACT = 4
+MAX_IMAGES_PER_EXTRACT = 6
 MAX_PRODUCTS_PER_EXPORT = 200
 MAX_IMAGE_BYTES = 8 * 1024 * 1024  # 8 MB per image
 

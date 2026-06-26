@@ -23,7 +23,7 @@ from ..config import settings
 logger = logging.getLogger(__name__)
 
 # Cap images per product to keep token cost predictable.
-MAX_IMAGES_PER_PRODUCT = 4
+MAX_IMAGES_PER_PRODUCT = 6
 
 _SUPPORTED_IMAGE_MIME = {
     "image/jpeg",
@@ -46,6 +46,9 @@ _EXTRACTION_SYSTEM_PROMPT = (
 
 def _build_extraction_instruction(currency: str, hint: Optional[str]) -> str:
     instruction = (
+        "You may receive several photos of the SAME product from different angles. "
+        "Combine visible details from ALL angles — labels, ports, specs, colour, model "
+        "numbers, packaging text, etc. — into one coherent listing.\n\n"
         "Analyse the product photo(s) and return a JSON object with EXACTLY these keys:\n"
         '  "name": short retail product name (string),\n'
         '  "category": product category, e.g. Electronics, Gaming, Audio (string),\n'
