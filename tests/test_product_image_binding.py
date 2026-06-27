@@ -174,3 +174,50 @@ class TestConversationalAgentBinding:
     def test_is_browse_query(self):
         assert ProductCatalogService.is_browse_query("show me your catalog") is True
         assert ProductCatalogService.is_browse_query("luxury sofa") is False
+
+
+class TestCatalogProductOverride:
+    SHEET_IMAGE = "https://images.pexels.com/photos/1866149/pexels-photo-1866149.jpeg"
+    LLM_IMAGE = "https://images.pexels.com/photos/6996085/pexels-photo-6996085.jpeg"
+
+    def test_override_blocks_llm_image_swap(self):
+        cached = [{
+            "id": "FURN-001",
+            "name": "3-seater fabric sofa",
+            "price": 499.99,
+            "description": "From sheet",
+            "image_url": self.SHEET_IMAGE,
+            "sku": "FURN-001",
+            "product_id": "FURN-001",
+        }]
+        incoming = [{
+            "id": "prod_0_0",
+            "name": "3-seater fabric sofa",
+            "price": 499.99,
+            "description": "LLM description",
+            "image_url": self.LLM_IMAGE,
+        }]
+        result = ConversationalAgentService._apply_catalog_product_override(
+            incoming, cached
+        )
+        assert len(result) == 1
+        assert result[0]["image_url"] == self.SHEET_IMAGE
+        assert result[0]["id"] == "FURN-001"
+
+    def test_override_uses_full_cache_when_llm_fabricates(self):
+        cached = [{
+            "id": "FURN-001",
+            "name": "3-seater fabric sofa",
+            "price": 499.99,
+            "image_url": self.SHEET_IMAGE,
+        }]
+        incoming = [{
+            "id": "prod_0_0",
+            "name": "sofa",
+            "price": 499.99,
+            "image_url": self.LLM_IMAGE,
+        }]
+        result = ConversationalAgentService._apply_catalog_product_override(
+            incoming, cached
+        )
+        assert result[0]["image_url"] == self.SHEET_IMAGE
