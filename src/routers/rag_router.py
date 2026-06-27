@@ -457,6 +457,39 @@ async def delete_data_source(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/knowledge-bases/{kb_id}/validate-products")
+async def validate_kb_products(
+    kb_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Audit catalog sheet rows for missing images, duplicates, and alt-text mismatches."""
+    try:
+        kb_uuid = uuid.UUID(kb_id)
+        result = await db.execute(
+            select(KnowledgeBase).filter(
+                KnowledgeBase.id == kb_uuid,
+                KnowledgeBase.user_id == user.id,
+            )
+        )
+        if not result.scalars().first():
+            raise HTTPException(status_code=404, detail="Knowledge base not found")
+
+        from ..services.product_catalog_service import ProductCatalogService
+
+        report = await ProductCatalogService.validate_kb_catalog(
+            kb_id=kb_id, user=user, db=db
+        )
+        return report
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid KB ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error validating KB products: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ================================================================
 # Sync Trigger
 # ================================================================

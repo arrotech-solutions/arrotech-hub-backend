@@ -227,6 +227,29 @@ AGENT_SUB_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "list_catalog_products",
+            "description": (
+                "List products directly from the business catalog spreadsheet. "
+                "Use this when the customer wants to browse the full catalog, "
+                "see all products, or asks 'what do you have' / 'show me everything'. "
+                "Returns products with correct images from the source sheet — "
+                "more reliable than semantic search for broad browse requests."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "number",
+                        "description": "Max products to return (default 20, max 50)",
+                    }
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_products",
             "description": (
                 "Search the business knowledge base for products, menu items, "
@@ -2299,25 +2322,12 @@ class ConversationalAgentService:
             if meta_product_name and meta_image_url:
                 if meta_product_name in target_names:
                     result.setdefault(meta_product_name, meta_image_url)
-                else:
-                    # Fuzzy: the ingested name might be a substring of the
-                    # LLM-decorated name or vice versa.
-                    for tn in target_names:
-                        if meta_product_name in tn or tn in meta_product_name:
-                            result.setdefault(tn, meta_image_url)
-                            break
 
             # ── Rule 1: Exact alt-text match from markdown images ──
             for alt_norm, url in (chunk.get("image_alt_map") or {}).items():
                 alt_clean = cls._normalize_product_name(alt_norm)
                 if alt_clean in target_names and url:
                     result.setdefault(alt_clean, url)
-                else:
-                    # Fuzzy substring fallback for alt-text
-                    for tn in target_names:
-                        if alt_clean and (alt_clean in tn or tn in alt_clean) and url:
-                            result.setdefault(tn, url)
-                            break
 
             # Locate which target products appear in this chunk.
             text_lower = text.lower()
@@ -2440,13 +2450,18 @@ class ConversationalAgentService:
             if not chunk_text:
                 continue
 
+            from .product_catalog_service import ProductCatalogService
+            if ProductCatalogService._is_multi_product_chunk(chunk_text):
+                continue
+
             name = ""
             price = 0.0
             desc_parts: List[str] = []
             image_url = ""
+            sku = (item.get("sku") or "").strip()
+            product_id = (item.get("product_id") or "").strip()
 
-            # ── Image: prefer dedicated metadata field (Phase 1 ground truth),
-            # then image_urls list, then markdown in text ──
+            # Prefer dedicated metadata fields from ingestion
             meta_single_image = item.get("image_url", "")
             if meta_single_image:
                 image_url = meta_single_image
@@ -2454,6 +2469,17 @@ class ConversationalAgentService:
                 meta_images = item.get("image_urls", [])
                 if isinstance(meta_images, list) and meta_images:
                     image_url = meta_images[0]
+
+            meta_name = (item.get("product_name") or "").strip()
+            if meta_name:
+                name = meta_name
+
+            meta_price = item.get("price")
+            if meta_price:
+                try:
+                    price = float(meta_price)
+                except (TypeError, ValueError):
+                    pass
 
             lines = chunk_text.split("\n")
             for i, raw_line in enumerate(lines):
@@ -2538,11 +2564,13 @@ class ConversationalAgentService:
             seen_names.add(name_norm)
 
             products.append({
-                "id": f"prod_{idx}",
+                "id": product_id or sku or f"prod_{idx}",
                 "name": name,
                 "price": price,
                 "description": " | ".join(desc_parts[:3]) if desc_parts else "",
                 "image_url": image_url or "",
+                "sku": sku,
+                "product_id": product_id or sku,
             })
 
         return products[:10]
@@ -3671,6 +3699,14 @@ class ConversationalAgentService:
                     db=db
                 )
 
+            if tool_name == "list_catalog_products":
+                return await self._sub_list_catalog_products(
+                    kb_id=kb_id,
+                    limit=int(arguments.get("limit") or 20),
+                    user=user,
+                    db=db,
+                )
+
             elif tool_name == "create_order":
                 if not arguments.get("customer_phone") and default_customer_phone:
                     arguments["customer_phone"] = default_customer_phone
@@ -3840,6 +3876,47 @@ class ConversationalAgentService:
             "human_handoff": True,
         }
 
+    async def _sub_list_catalog_products(
+        self,
+        kb_id: str,
+        limit: int,
+        user: User,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Read catalog directly from Google Sheet — bypasses vector search."""
+        if not kb_id:
+            return {"success": False, "result": "No knowledge base configured for this business."}
+
+        from .product_catalog_service import ProductCatalogService
+
+        limit = max(1, min(limit or 20, 50))
+        try:
+            records = await ProductCatalogService.list_from_kb(
+                kb_id=kb_id, user=user, db=db, limit=limit
+            )
+            if not records:
+                return {
+                    "success": True,
+                    "result": "No catalog sheet found or sheet has no valid product rows.",
+                    "data": {"results": [], "products": []},
+                }
+
+            products = ProductCatalogService.records_to_display_products(records)
+            products_json = json.dumps(products, ensure_ascii=False)
+            return {
+                "success": True,
+                "result": (
+                    f"Found {len(products)} products in catalog.\n\n"
+                    f"READY_TO_DISPLAY_PRODUCTS:\n{products_json}\n\n"
+                    "INSTRUCTION: Call display_product_cards NOW with the READY_TO_DISPLAY_PRODUCTS "
+                    "array above. Do NOT modify image_url values."
+                ),
+                "data": {"results": records, "products": products},
+            }
+        except Exception as e:
+            logger.error("[CONV_AGENT] list_catalog_products failed: %s", e, exc_info=True)
+            return {"success": False, "result": f"Catalog listing failed: {e}"}
+
     async def _sub_search_products(
         self, query: str, kb_id: str, user: User, db: AsyncSession
     ) -> Dict[str, Any]:
@@ -3849,8 +3926,15 @@ class ConversationalAgentService:
 
         try:
             from .whatsapp_ordering_helpers import normalize_search_query
+            from .product_catalog_service import ProductCatalogService
             from .tool_executor import ToolExecutor
             executor = ToolExecutor()
+
+            if ProductCatalogService.is_browse_query(query):
+                logger.info("[CONV_AGENT] Browse query detected — using list_catalog_products path")
+                return await self._sub_list_catalog_products(
+                    kb_id=kb_id, limit=20, user=user, db=db
+                )
 
             normalized_query = normalize_search_query(query)
             result = await executor.execute_tool(
@@ -3859,8 +3943,7 @@ class ConversationalAgentService:
                     "query": normalized_query,
                     "kb_id": kb_id,
                     "top_k": 10,
-                    "rerank": True,
-                    "rerank_top_n": 8
+                    "rerank": False,
                 },
                 user, db
             )
@@ -3871,8 +3954,7 @@ class ConversationalAgentService:
                         "query": query,
                         "kb_id": kb_id,
                         "top_k": 10,
-                        "rerank": True,
-                        "rerank_top_n": 8,
+                        "rerank": False,
                     },
                     user,
                     db,
@@ -3881,76 +3963,58 @@ class ConversationalAgentService:
 
             if result.get("success"):
                 search_text = result.get("result", "No results found")
+                search_data = result.get("data", {})
+                search_results = search_data.get("results", []) if isinstance(search_data, dict) else []
 
-                # ── Build structured product-image mapping ──
-                # Extract per-chunk image URLs so each product's image stays
-                # strictly bound to its own RAG chunk.  This prevents the LLM
-                # from accidentally swapping images between products.
-                structured_chunks = self._extract_structured_products_from_chunks(result)
-
-                # ── Pre-parse products so the LLM doesn't have to ──
-                # This guarantees correct image_url bindings and prevents
-                # the LLM from constructing a huge JSON that gets truncated.
-                pre_parsed = self._parse_products_from_search_results(
-                    result.get("data", {})
-                )
-                # Apply programmatic image correction from chunk map
-                if pre_parsed and structured_chunks:
-                    pre_parsed = self._correct_product_image_urls(
-                        pre_parsed, structured_chunks
+                pre_parsed = self._parse_products_from_search_results(search_data)
+                if pre_parsed and search_results:
+                    pre_parsed = ProductCatalogService.enrich_products(
+                        pre_parsed, search_results
                     )
 
-                # ── Follow-up: fetch images for products that are still missing them ──
-                # Broad queries like "products" or "browse catalog" return
-                # summary/category chunks that list product names & prices
-                # but lack image markdown.  For each imageless product, do a
-                # quick targeted search by product name to grab its image
-                # from the per-product chunk in the knowledge base.
+                # Targeted exact lookups for products still missing images
                 if pre_parsed:
                     imageless = [p for p in pre_parsed if not p.get("image_url")]
                     if imageless:
                         logger.info(
-                            "[CONV_AGENT] %d/%d products missing images — running targeted lookups",
+                            "[CONV_AGENT] %d/%d products missing images — running exact lookups",
                             len(imageless), len(pre_parsed),
                         )
-                        # Use RAGPipelineService directly to skip LLM synthesis overhead
                         from .rag_pipeline_service import RAGPipelineService
                         rag_svc = RAGPipelineService()
-                        # Run all image lookups concurrently for speed
+
                         async def _fetch_image_for_product(product):
                             pname = product.get("name", "")
+                            sku = product.get("sku", "")
                             if not pname:
                                 return
                             try:
+                                lookup_query = sku or pname
                                 img_result = await rag_svc.rag_search_query(
-                                    query=pname,
+                                    query=lookup_query,
                                     kb_id=kb_id,
                                     user_id=str(user.id),
-                                    top_k=2,
+                                    top_k=3,
                                     rerank=False,
                                     user=user,
                                     db=db,
                                 )
                                 if img_result.get("success"):
-                                    # Wrap in the format _extract_structured_products_from_chunks expects
-                                    wrapped = {"data": img_result}
-                                    img_chunks = self._extract_structured_products_from_chunks(wrapped)
-                                    if img_chunks:
-                                        name_to_url = self._bind_images_to_products(
-                                            [product], img_chunks
+                                    enriched = ProductCatalogService.enrich_products(
+                                        [product], img_result.get("results", [])
+                                    )
+                                    if enriched and enriched[0].get("image_url"):
+                                        product.update(enriched[0])
+                                        logger.info(
+                                            "[CONV_AGENT] Image bound for '%s' via exact lookup",
+                                            pname,
                                         )
-                                        norm = self._normalize_product_name(pname)
-                                        if name_to_url.get(norm):
-                                            product["image_url"] = name_to_url[norm]
-                                            logger.info(
-                                                "[CONV_AGENT] ✅ Image found for '%s': %s",
-                                                pname, product["image_url"][:80],
-                                            )
                             except Exception as img_err:
                                 logger.warning(
                                     "[CONV_AGENT] Image lookup failed for '%s': %s",
                                     pname, img_err,
                                 )
+
                         await asyncio.gather(
                             *[_fetch_image_for_product(p) for p in imageless],
                             return_exceptions=True,
@@ -3978,7 +4042,7 @@ class ConversationalAgentService:
                         "for each item they requested."
                     )
                 else:
-                    # Fallback: include chunk map so LLM can extract manually
+                    structured_chunks = self._extract_structured_products_from_chunks(result)
                     structured_block = ""
                     if structured_chunks:
                         chunks_with_images = [

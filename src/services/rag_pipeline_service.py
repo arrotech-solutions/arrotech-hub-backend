@@ -508,17 +508,25 @@ class RAGPipelineService:
         
         # 1. Batch Extraction & Chunking
         for item in items_to_process:
-            extracted = self._smart_extract_text(item)
-            item_text = extracted["text"]
-            item_url = source_url or extracted["url"]
+            extra_meta: Dict[str, Any] = {}
+            if isinstance(item, dict):
+                item_text = (item.get("text") or item.get("content") or "").strip()
+                item_url = source_url or item.get("url") or ""
+                for key in (
+                    "product_name", "sku", "product_id", "row_index",
+                    "image_url", "price", "description",
+                ):
+                    if item.get(key) is not None and item.get(key) != "":
+                        extra_meta[key] = item[key]
+            else:
+                extracted = self._smart_extract_text(item)
+                item_text = extracted["text"]
+                item_url = source_url or extracted["url"]
             
             if not item_text.strip():
                 continue
 
             if skip_chunking:
-                # Each item is already a self-contained record (e.g. one product
-                # per spreadsheet row).  Do NOT split it — that would separate
-                # the product name from its image URL and cause image mix-ups.
                 item_chunks = [item_text]
             else:
                 item_chunks = self.native_recursive_token_splitter(
@@ -530,7 +538,8 @@ class RAGPipelineService:
                     "text": chunk,
                     "url": item_url,
                     "index": idx,
-                    "file_name": source_name or "document"
+                    "file_name": source_name or "document",
+                    "extra_meta": extra_meta,
                 })
 
         if not all_chunks:
@@ -559,6 +568,7 @@ class RAGPipelineService:
             vector_id = f"chunk_{uuid.uuid4().hex[:12]}_{i}"
 
             chunk_text = chunk_data["text"]
+            extra_meta = chunk_data.get("extra_meta") or {}
 
             # Bind product images to the exact chunk they appear in, so retrieval
             # can pair the right image with the right product instead of guessing.
@@ -567,23 +577,20 @@ class RAGPipelineService:
             except Exception:
                 chunk_image_urls = []
 
-            # Extract the primary image URL — the single "correct" image for
-            # this chunk's product.  Stored as a dedicated metadata field so
-            # retrieval can use it directly without text parsing.
-            primary_image_url = chunk_image_urls[0] if chunk_image_urls else ""
+            primary_image_url = extra_meta.get("image_url") or (
+                chunk_image_urls[0] if chunk_image_urls else ""
+            )
 
-            # Extract the product name (first non-empty, non-image line).
-            # For per-product chunks from spreadsheet ingestion, the first
-            # line is always the product name.
-            product_name = ""
-            for _line in chunk_text.split("\n"):
-                _line = _line.strip()
-                if _line and not _line.startswith("!["):
-                    product_name = _line
-                    break
+            product_name = extra_meta.get("product_name") or ""
+            if not product_name:
+                for _line in chunk_text.split("\n"):
+                    _line = _line.strip()
+                    if _line and not _line.startswith("!["):
+                        product_name = _line
+                        break
 
             meta = {
-                "text": chunk_text[:8192],  # Protect against metadata size limits
+                "text": chunk_text[:8192],
                 "source_url": chunk_data["url"],
                 "source_tool": source_tool,
                 "source_file_name": chunk_data["file_name"],
@@ -591,13 +598,12 @@ class RAGPipelineService:
                 "customer_id": user_id,
                 "chunk_index": chunk_data["index"],
                 "last_modified": now,
-                # Images bound to this specific chunk (empty for non-catalog content)
                 "image_urls": chunk_image_urls[:10],
-                # Dedicated product↔image binding fields for deterministic matching.
-                # These are the ground truth — retrieval should prefer these over
-                # text-parsing heuristics.
                 "image_url": primary_image_url,
-                "product_name": product_name[:200],
+                "product_name": (product_name or "")[:200],
+                "sku": str(extra_meta.get("sku") or "")[:100],
+                "product_id": str(extra_meta.get("product_id") or "")[:100],
+                "row_index": extra_meta.get("row_index", -1),
             }
             if metadata:
                 meta.update(metadata)
@@ -694,81 +700,15 @@ class RAGPipelineService:
     }
 
     @classmethod
-    def _rows_to_product_records(cls, rows: List[List[Any]]) -> List[str]:
+    def _rows_to_product_records(cls, rows: List[List[Any]], source_id: str = "") -> List[Dict[str, Any]]:
         """
-        Convert a catalog spreadsheet's rows (first row = headers) into one
-        self-contained text record per product row.
+        Convert a catalog spreadsheet's rows into structured product records.
 
-        Ingesting one product per chunk is the key to reliable image binding:
-        each product's name, price, description and image URL stay together in
-        the same chunk, so retrieval can never pair a product with another
-        product's image.
-
-        Image URL columns are emitted as ``![Product Name](url)`` markdown
-        syntax so that downstream ``extract_markdown_image_map()`` can build
-        an exact product↔image binding.  This prevents the LLM from swapping
-        images between products and ensures 100 % accuracy.
+        Each record is one self-contained product with stable product_id, sku,
+        and image_url — ingested as one chunk (skip_chunking=True).
         """
-        records: List[str] = []
-        if not rows or len(rows) < 2:
-            return records
-
-        header = [str(h).strip() for h in rows[0]]
-
-        def _norm(h: str) -> str:
-            return re.sub(r"[^a-z0-9]", "", (h or "").lower())
-
-        norm_header = [_norm(h) for h in header]
-        name_aliases = {
-            "name", "productname", "product", "item", "itemname",
-            "title", "menuitem", "dish", "service",
-        }
-        name_idx = next((i for i, h in enumerate(norm_header) if h in name_aliases), None)
-
-        # Detect image URL column(s)
-        image_col_indices: set = set()
-        for i, nh in enumerate(norm_header):
-            if nh in cls._IMAGE_COL_ALIASES:
-                image_col_indices.add(i)
-
-        for row in rows[1:]:
-            if not any(str(c).strip() for c in row):
-                continue  # skip blank rows
-
-            lines: List[str] = []
-            image_url: str = ""
-
-            # Lead with the product name so name-in-chunk matching is reliable
-            product_name = ""
-            if name_idx is not None and name_idx < len(row) and str(row[name_idx]).strip():
-                product_name = str(row[name_idx]).strip()
-                lines.append(product_name)
-
-            for i, cell in enumerate(row):
-                val = str(cell).strip()
-                if not val or i == name_idx:
-                    continue
-
-                # If this column is an image URL column, capture it separately
-                if i in image_col_indices:
-                    # Validate it looks like a URL before treating it as an image
-                    if val.startswith("http://") or val.startswith("https://"):
-                        image_url = val
-                    continue  # Don't emit it as a plain label line
-
-                label = header[i] if i < len(header) and header[i] else f"Column {i + 1}"
-                lines.append(f"{label}: {val}")
-
-            # Emit image as markdown syntax at the end of the record.
-            # Using ![Product Name](url) binds the image to this product by
-            # alt-text — the highest-confidence signal for image correction.
-            if image_url:
-                alt_text = product_name or "Product Image"
-                lines.append(f"![{alt_text}]({image_url})")
-
-            if lines:
-                records.append("\n".join(lines))
-        return records
+        from .product_catalog_service import ProductCatalogService
+        return ProductCatalogService.parse_sheet_rows(rows, source_id=source_id)
 
     async def rag_ingest_source(
         self, 
@@ -882,7 +822,7 @@ class RAGPipelineService:
                         rows = sheet_res.get("values")
                         if rows is None and isinstance(sheet_res.get("data"), dict):
                             rows = sheet_res["data"].get("values")
-                        product_records = self._rows_to_product_records(rows or [])
+                        product_records = self._rows_to_product_records(rows or [], source_id=url_or_id)
                         if product_records:
                             logger.info(
                                 f"RAG Ingestion: Drive sheet {url_or_id} → {len(product_records)} per-product chunks"
@@ -898,6 +838,14 @@ class RAGPipelineService:
                                 db=db,
                                 skip_chunking=True,  # Each record = 1 product — do NOT split
                             )
+                        return {
+                            "status": "error",
+                            "message": (
+                                f"Drive sheet {url_or_id} produced 0 valid product rows. "
+                                "Each row needs a product name and HTTP image URL. "
+                                "Fix the sheet and re-sync — token chunking is disabled for catalogs."
+                            ),
+                        }
 
                 # If not a folder, download as file
                 res = await executor.execute_tool(
@@ -986,7 +934,7 @@ class RAGPipelineService:
 
                 # Ingest ONE product per row → one chunk per product. This keeps
                 # each product's image URL bound to that product (no mismatches).
-                product_records = self._rows_to_product_records(rows)
+                product_records = self._rows_to_product_records(rows, source_id=url_or_id)
                 if product_records:
                     logger.info(
                         f"RAG Ingestion: catalog sheet {url_or_id} → {len(product_records)} per-product chunks"
@@ -1003,8 +951,15 @@ class RAGPipelineService:
                         skip_chunking=True,  # Each record = 1 product — do NOT split
                     )
 
-                # Fallback: flatten rows to text (e.g. header-less or single row)
-                raw_text = "\n".join(" | ".join(str(c) for c in r) for r in rows) if rows else ""
+                return {
+                    "status": "error",
+                    "message": (
+                        f"Google Sheet {url_or_id} produced 0 valid product rows. "
+                        "Each row needs a product name and HTTP image URL column. "
+                        "Fix the sheet and re-sync — token chunking is disabled for catalogs "
+                        "to prevent product/image mismatches."
+                    ),
+                }
                 
             # ---- Slack ----
             elif source_type == "slack":
@@ -1181,17 +1136,19 @@ class RAGPipelineService:
         results = [
             {
                 "score": match.get("score"),
+                "vector_id": match.get("id", ""),
                 "text": match.get("metadata", {}).get("text", ""),
                 "source": match.get("metadata", {}).get("source_url", ""),
                 "file": match.get("metadata", {}).get("source_file_name", ""),
                 "tool": match.get("metadata", {}).get("source_tool", ""),
                 "modified": match.get("metadata", {}).get("last_modified", ""),
-                # Images bound to this chunk at ingestion (reliable product↔image link)
                 "image_urls": match.get("metadata", {}).get("image_urls", []) or [],
-                # Dedicated ground-truth fields from ingestion (Phase 1 fix).
-                # These give deterministic product↔image binding without text parsing.
                 "image_url": match.get("metadata", {}).get("image_url", ""),
                 "product_name": match.get("metadata", {}).get("product_name", ""),
+                "sku": match.get("metadata", {}).get("sku", ""),
+                "product_id": match.get("metadata", {}).get("product_id", ""),
+                "row_index": match.get("metadata", {}).get("row_index", -1),
+                "price": match.get("metadata", {}).get("price", 0),
             }
             for match in matches
         ]
