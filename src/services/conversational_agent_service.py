@@ -227,29 +227,6 @@ AGENT_SUB_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "list_catalog_products",
-            "description": (
-                "List products directly from the business catalog spreadsheet. "
-                "Use this when the customer wants to browse the full catalog, "
-                "see all products, or asks 'what do you have' / 'show me everything'. "
-                "Returns products with correct images from the source sheet — "
-                "more reliable than semantic search for broad browse requests."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "number",
-                        "description": "Max products to return (default 20, max 50)",
-                    }
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "search_products",
             "description": (
                 "Search the business knowledge base for products, menu items, "
@@ -1663,8 +1640,6 @@ class ConversationalAgentService:
             collected_product_cards: List[Dict[str, Any]] = []
             sent_product_ids: set = set()  # Track product IDs already sent as cards this turn
             last_search_product_image_map: List[Dict[str, Any]] = []  # Per-chunk product→image data from latest search
-            last_search_parsed_products: List[Dict[str, Any]] = []  # Catalog-bound products from latest search
-            search_cards_already_sent = False
             send_cart_buttons_after_turn = False
             checkout_keywords = ("order", "cart", "checkout", "pay", "total", "confirm", "delivery")
             msg_lower = (user_message or "").lower()
@@ -1831,25 +1806,6 @@ class ConversationalAgentService:
                         except Exception as e:
                             logger.warning(f"[CONV_AGENT] Guardrail check failed: {e}")
 
-                    if tool_name == "display_product_cards" and search_cards_already_sent:
-                        logger.info(
-                            "[CONV_AGENT] Skipping display_product_cards — cards already sent by search_products"
-                        )
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": call_id,
-                            "content": (
-                                "SKIPPED: Product cards were already sent automatically with "
-                                "catalog-bound images. Do NOT call display_product_cards again."
-                            ),
-                        })
-                        actions_taken.append({
-                            "tool": tool_name,
-                            "args": tool_args,
-                            "result_summary": "SKIPPED: cards already auto-sent",
-                        })
-                        continue
-
                     # ── Dedup guard: filter out already-sent products ──
                     # The LLM sometimes calls display_product_cards again in
                     # a later iteration with the same products.  Each call
@@ -1891,21 +1847,6 @@ class ConversationalAgentService:
                                 f"(removed {len(incoming_products) - len(new_products)} duplicates)"
                             )
                             tool_args = {**tool_args, "products": new_products}
-
-                    # ── Catalog override: LLM must not replace sheet-bound images ──
-                    if tool_name == "display_product_cards" and last_search_parsed_products:
-                        incoming_products = tool_args.get("products", [])
-                        overridden = self._apply_catalog_product_override(
-                            incoming_products, last_search_parsed_products
-                        )
-                        if overridden:
-                            logger.info(
-                                "[CONV_AGENT] Applied catalog override to display_product_cards "
-                                "(%d → %d products)",
-                                len(incoming_products or []),
-                                len(overridden),
-                            )
-                            tool_args = {**tool_args, "products": overridden}
 
                     # ── Programmatic image correction for display_product_cards ──
                     # Even if the LLM assigned wrong images, fix them before
@@ -1974,36 +1915,12 @@ class ConversationalAgentService:
                         tool_images = self._extract_image_urls_from_search_result(tool_result)
                         if tool_images:
                             collected_image_urls = _dedupe_keep_order(collected_image_urls + tool_images)
+                        # Capture structured per-chunk product→image map for
+                        # programmatic correction of display_product_cards.
                         chunks = self._extract_structured_products_from_chunks(tool_result)
                         if chunks:
                             last_search_product_image_map = chunks
-                        parsed = tool_result.get("parsed_products")
-                        if isinstance(parsed, list) and parsed:
-                            last_search_parsed_products = parsed
-                        if tool_result.get("cards_already_sent"):
-                            search_cards_already_sent = True
-                            for card in tool_result.get("cards", []):
-                                card_id = card.get("id", "")
-                                if card_id:
-                                    sent_product_ids.add(card_id)
-                                    collected_product_cards.append(card)
-                                elif card:
-                                    collected_product_cards.append(card)
                             
-                    if tool_name == "list_catalog_products":
-                        parsed = tool_result.get("parsed_products")
-                        if isinstance(parsed, list) and parsed:
-                            last_search_parsed_products = parsed
-                        if tool_result.get("cards_already_sent"):
-                            search_cards_already_sent = True
-                            for card in tool_result.get("cards", []):
-                                card_id = card.get("id", "")
-                                if card_id:
-                                    sent_product_ids.add(card_id)
-                                    collected_product_cards.append(card)
-                                elif card:
-                                    collected_product_cards.append(card)
-
                     if tool_name == "display_product_cards":
                         tool_cards = tool_result.get("cards", [])
                         if tool_cards:
@@ -2382,12 +2299,25 @@ class ConversationalAgentService:
             if meta_product_name and meta_image_url:
                 if meta_product_name in target_names:
                     result.setdefault(meta_product_name, meta_image_url)
+                else:
+                    # Fuzzy: the ingested name might be a substring of the
+                    # LLM-decorated name or vice versa.
+                    for tn in target_names:
+                        if meta_product_name in tn or tn in meta_product_name:
+                            result.setdefault(tn, meta_image_url)
+                            break
 
             # ── Rule 1: Exact alt-text match from markdown images ──
             for alt_norm, url in (chunk.get("image_alt_map") or {}).items():
                 alt_clean = cls._normalize_product_name(alt_norm)
                 if alt_clean in target_names and url:
                     result.setdefault(alt_clean, url)
+                else:
+                    # Fuzzy substring fallback for alt-text
+                    for tn in target_names:
+                        if alt_clean and (alt_clean in tn or tn in alt_clean) and url:
+                            result.setdefault(tn, url)
+                            break
 
             # Locate which target products appear in this chunk.
             text_lower = text.lower()
@@ -2469,142 +2399,6 @@ class ConversationalAgentService:
 
         return corrected
 
-    @classmethod
-    def _apply_catalog_product_override(
-        cls,
-        incoming: List[Dict[str, Any]],
-        cached: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """
-        Replace LLM-constructed product cards with catalog-bound records.
-        The sheet/RAG pipeline is authoritative for id, price, and image_url.
-        """
-        if not cached:
-            return incoming or []
-
-        from .product_catalog_service import ProductCatalogService
-
-        cache_by_name: Dict[str, Dict[str, Any]] = {}
-        for product in cached:
-            norm = cls._normalize_product_name(product.get("name", ""))
-            if norm:
-                cache_by_name[norm] = product
-
-        if not incoming:
-            return [dict(p) for p in cached]
-
-        overridden: List[Dict[str, Any]] = []
-        used_cache_keys: set = set()
-
-        for product in incoming:
-            norm = cls._normalize_product_name(product.get("name", ""))
-            cached_hit = cache_by_name.get(norm) if norm else None
-            if cached_hit:
-                merged = dict(cached_hit)
-                used_cache_keys.add(norm)
-                llm_image = (product.get("image_url") or "").strip()
-                catalog_image = (cached_hit.get("image_url") or "").strip()
-                if llm_image and catalog_image and llm_image != catalog_image:
-                    logger.warning(
-                        "[CONV_AGENT] Blocked LLM image override for '%s': %s → %s",
-                        product.get("name", "?"),
-                        llm_image[:60],
-                        catalog_image[:60],
-                    )
-                overridden.append(merged)
-            else:
-                p = dict(product)
-                if not ProductCatalogService.resolve_from_index(
-                    p.get("name", ""),
-                    p.get("sku", ""),
-                    ProductCatalogService.build_index_from_search_results(
-                        [{"product_name": c.get("name"), "image_url": c.get("image_url"),
-                          "sku": c.get("sku"), "product_id": c.get("product_id"),
-                          "text": c.get("description", "")} for c in cached]
-                    ),
-                ):
-                    p["image_url"] = ""
-                overridden.append(p)
-
-        if not overridden:
-            return [dict(p) for p in cached]
-
-        for product in cached:
-            norm = cls._normalize_product_name(product.get("name", ""))
-            if norm and norm not in used_cache_keys and len(incoming) == 1 and len(cached) == 1:
-                return [dict(product)]
-
-        return overridden
-
-    async def _enrich_products_from_sheet(
-        self,
-        products: List[Dict[str, Any]],
-        kb_id: str,
-        user: User,
-        db: AsyncSession,
-    ) -> List[Dict[str, Any]]:
-        """Fallback: bind images directly from the Google Sheet when vectors are stale."""
-        if not products or not kb_id:
-            return products
-
-        from .product_catalog_service import ProductCatalogService
-
-        try:
-            records = await ProductCatalogService.list_from_kb(
-                kb_id=kb_id, user=user, db=db, limit=200
-            )
-            if not records:
-                return products
-            sheet_results = [
-                {
-                    "product_name": r.get("product_name"),
-                    "image_url": r.get("image_url"),
-                    "product_id": r.get("product_id"),
-                    "sku": r.get("sku"),
-                    "price": r.get("price"),
-                    "text": r.get("text", ""),
-                }
-                for r in records
-            ]
-            return ProductCatalogService.enrich_products(products, sheet_results)
-        except Exception as e:
-            logger.warning("[CONV_AGENT] Sheet enrichment fallback failed: %s", e)
-            return products
-
-    async def _auto_send_product_cards_if_ready(
-        self,
-        products: List[Dict[str, Any]],
-        session_key: str,
-        currency: str,
-        order_type: str,
-        user: User,
-        db: AsyncSession,
-    ) -> Dict[str, Any]:
-        """Send product cards immediately so the LLM cannot swap images."""
-        if not products or not session_key:
-            return {"cards_already_sent": False, "cards": []}
-
-        sendable = [p for p in products if p.get("name")]
-        if not sendable:
-            return {"cards_already_sent": False, "cards": []}
-
-        result = await self._sub_display_product_cards(
-            products=sendable,
-            session_key=session_key,
-            currency=currency,
-            user=user,
-            db=db,
-            order_type=order_type,
-        )
-        cards = result.get("cards", [])
-        cards_sent = result.get("cards_sent", 0) or len(cards)
-        return {
-            "cards_already_sent": cards_sent > 0,
-            "cards": cards,
-            "cards_sent": cards_sent,
-            "display_result": result,
-        }
-
     # ── Product parser: RAG chunks → structured product dicts ──────────
 
     _PRICE_LINE_RE = re.compile(
@@ -2646,18 +2440,13 @@ class ConversationalAgentService:
             if not chunk_text:
                 continue
 
-            from .product_catalog_service import ProductCatalogService
-            if ProductCatalogService._is_multi_product_chunk(chunk_text):
-                continue
-
             name = ""
             price = 0.0
             desc_parts: List[str] = []
             image_url = ""
-            sku = (item.get("sku") or "").strip()
-            product_id = (item.get("product_id") or "").strip()
 
-            # Prefer dedicated metadata fields from ingestion
+            # ── Image: prefer dedicated metadata field (Phase 1 ground truth),
+            # then image_urls list, then markdown in text ──
             meta_single_image = item.get("image_url", "")
             if meta_single_image:
                 image_url = meta_single_image
@@ -2665,17 +2454,6 @@ class ConversationalAgentService:
                 meta_images = item.get("image_urls", [])
                 if isinstance(meta_images, list) and meta_images:
                     image_url = meta_images[0]
-
-            meta_name = (item.get("product_name") or "").strip()
-            if meta_name:
-                name = meta_name
-
-            meta_price = item.get("price")
-            if meta_price:
-                try:
-                    price = float(meta_price)
-                except (TypeError, ValueError):
-                    pass
 
             lines = chunk_text.split("\n")
             for i, raw_line in enumerate(lines):
@@ -2760,13 +2538,11 @@ class ConversationalAgentService:
             seen_names.add(name_norm)
 
             products.append({
-                "id": product_id or sku or f"prod_{idx}",
+                "id": f"prod_{idx}",
                 "name": name,
                 "price": price,
                 "description": " | ".join(desc_parts[:3]) if desc_parts else "",
                 "image_url": image_url or "",
-                "sku": sku,
-                "product_id": product_id or sku,
             })
 
         return products[:10]
@@ -3892,21 +3668,7 @@ class ConversationalAgentService:
                     query=arguments.get("query", ""),
                     kb_id=kb_id,
                     user=user,
-                    db=db,
-                    session_key=session_key,
-                    currency=currency,
-                    order_type=order_type,
-                )
-
-            if tool_name == "list_catalog_products":
-                return await self._sub_list_catalog_products(
-                    kb_id=kb_id,
-                    limit=int(arguments.get("limit") or 20),
-                    user=user,
-                    db=db,
-                    session_key=session_key,
-                    currency=currency,
-                    order_type=order_type,
+                    db=db
                 )
 
             elif tool_name == "create_order":
@@ -4078,80 +3840,8 @@ class ConversationalAgentService:
             "human_handoff": True,
         }
 
-    async def _sub_list_catalog_products(
-        self,
-        kb_id: str,
-        limit: int,
-        user: User,
-        db: AsyncSession,
-        session_key: str = "",
-        currency: str = "KES",
-        order_type: str = "general",
-    ) -> Dict[str, Any]:
-        """Read catalog directly from Google Sheet — bypasses vector search."""
-        if not kb_id:
-            return {"success": False, "result": "No knowledge base configured for this business."}
-
-        from .product_catalog_service import ProductCatalogService
-
-        limit = max(1, min(limit or 20, 50))
-        try:
-            records = await ProductCatalogService.list_from_kb(
-                kb_id=kb_id, user=user, db=db, limit=limit
-            )
-            if not records:
-                return {
-                    "success": True,
-                    "result": "No catalog sheet found or sheet has no valid product rows.",
-                    "data": {"results": [], "products": []},
-                }
-
-            products = ProductCatalogService.records_to_display_products(records)
-            auto_send = await self._auto_send_product_cards_if_ready(
-                products=products,
-                session_key=session_key,
-                currency=currency,
-                order_type=order_type,
-                user=user,
-                db=db,
-            )
-            if auto_send.get("cards_already_sent"):
-                return {
-                    "success": True,
-                    "parsed_products": products,
-                    "cards": auto_send.get("cards", []),
-                    "cards_already_sent": True,
-                    "cards_sent": auto_send.get("cards_sent", 0),
-                    "result": (
-                        f"SUCCESS: {auto_send.get('cards_sent', 0)} product card(s) already sent "
-                        f"to the customer from the catalog sheet. "
-                        "DO NOT call display_product_cards again. "
-                        "Briefly acknowledge what you shared and ask if they want to order."
-                    ),
-                    "data": {"results": records, "products": products},
-                }
-
-            products_json = json.dumps(products, ensure_ascii=False)
-            return {
-                "success": True,
-                "parsed_products": products,
-                "result": (
-                    f"Found {len(products)} products in catalog.\n\n"
-                    f"READY_TO_DISPLAY_PRODUCTS:\n{products_json}\n\n"
-                    "INSTRUCTION: Call display_product_cards NOW with the READY_TO_DISPLAY_PRODUCTS "
-                    "array above. Do NOT modify image_url values."
-                ),
-                "data": {"results": records, "products": products},
-            }
-        except Exception as e:
-            logger.error("[CONV_AGENT] list_catalog_products failed: %s", e, exc_info=True)
-            return {"success": False, "result": f"Catalog listing failed: {e}"}
-
     async def _sub_search_products(
-        self, query: str, kb_id: str, user: User, db: AsyncSession,
-        session_key: str = "",
-        currency: str = "KES",
-        order_type: str = "general",
+        self, query: str, kb_id: str, user: User, db: AsyncSession
     ) -> Dict[str, Any]:
         """Search the business knowledge base via RAG."""
         if not kb_id:
@@ -4159,16 +3849,8 @@ class ConversationalAgentService:
 
         try:
             from .whatsapp_ordering_helpers import normalize_search_query
-            from .product_catalog_service import ProductCatalogService
             from .tool_executor import ToolExecutor
             executor = ToolExecutor()
-
-            if ProductCatalogService.is_browse_query(query):
-                logger.info("[CONV_AGENT] Browse query detected — using list_catalog_products path")
-                return await self._sub_list_catalog_products(
-                    kb_id=kb_id, limit=20, user=user, db=db,
-                    session_key=session_key, currency=currency, order_type=order_type,
-                )
 
             normalized_query = normalize_search_query(query)
             result = await executor.execute_tool(
@@ -4177,7 +3859,8 @@ class ConversationalAgentService:
                     "query": normalized_query,
                     "kb_id": kb_id,
                     "top_k": 10,
-                    "rerank": False,
+                    "rerank": True,
+                    "rerank_top_n": 8
                 },
                 user, db
             )
@@ -4188,7 +3871,8 @@ class ConversationalAgentService:
                         "query": query,
                         "kb_id": kb_id,
                         "top_k": 10,
-                        "rerank": False,
+                        "rerank": True,
+                        "rerank_top_n": 8,
                     },
                     user,
                     db,
@@ -4197,93 +3881,80 @@ class ConversationalAgentService:
 
             if result.get("success"):
                 search_text = result.get("result", "No results found")
-                search_data = result.get("data", {})
-                search_results = search_data.get("results", []) if isinstance(search_data, dict) else []
 
-                pre_parsed = self._parse_products_from_search_results(search_data)
-                if pre_parsed and search_results:
-                    pre_parsed = ProductCatalogService.enrich_products(
-                        pre_parsed, search_results
-                    )
-                if pre_parsed:
-                    pre_parsed = await self._enrich_products_from_sheet(
-                        pre_parsed, kb_id, user, db
+                # ── Build structured product-image mapping ──
+                # Extract per-chunk image URLs so each product's image stays
+                # strictly bound to its own RAG chunk.  This prevents the LLM
+                # from accidentally swapping images between products.
+                structured_chunks = self._extract_structured_products_from_chunks(result)
+
+                # ── Pre-parse products so the LLM doesn't have to ──
+                # This guarantees correct image_url bindings and prevents
+                # the LLM from constructing a huge JSON that gets truncated.
+                pre_parsed = self._parse_products_from_search_results(
+                    result.get("data", {})
+                )
+                # Apply programmatic image correction from chunk map
+                if pre_parsed and structured_chunks:
+                    pre_parsed = self._correct_product_image_urls(
+                        pre_parsed, structured_chunks
                     )
 
-                # Targeted exact lookups for products still missing images
+                # ── Follow-up: fetch images for products that are still missing them ──
+                # Broad queries like "products" or "browse catalog" return
+                # summary/category chunks that list product names & prices
+                # but lack image markdown.  For each imageless product, do a
+                # quick targeted search by product name to grab its image
+                # from the per-product chunk in the knowledge base.
                 if pre_parsed:
                     imageless = [p for p in pre_parsed if not p.get("image_url")]
                     if imageless:
                         logger.info(
-                            "[CONV_AGENT] %d/%d products missing images — running exact lookups",
+                            "[CONV_AGENT] %d/%d products missing images — running targeted lookups",
                             len(imageless), len(pre_parsed),
                         )
+                        # Use RAGPipelineService directly to skip LLM synthesis overhead
                         from .rag_pipeline_service import RAGPipelineService
                         rag_svc = RAGPipelineService()
-
+                        # Run all image lookups concurrently for speed
                         async def _fetch_image_for_product(product):
                             pname = product.get("name", "")
-                            sku = product.get("sku", "")
                             if not pname:
                                 return
                             try:
-                                lookup_query = sku or pname
                                 img_result = await rag_svc.rag_search_query(
-                                    query=lookup_query,
+                                    query=pname,
                                     kb_id=kb_id,
                                     user_id=str(user.id),
-                                    top_k=3,
+                                    top_k=2,
                                     rerank=False,
                                     user=user,
                                     db=db,
                                 )
                                 if img_result.get("success"):
-                                    enriched = ProductCatalogService.enrich_products(
-                                        [product], img_result.get("results", [])
-                                    )
-                                    if enriched and enriched[0].get("image_url"):
-                                        product.update(enriched[0])
-                                        logger.info(
-                                            "[CONV_AGENT] Image bound for '%s' via exact lookup",
-                                            pname,
+                                    # Wrap in the format _extract_structured_products_from_chunks expects
+                                    wrapped = {"data": img_result}
+                                    img_chunks = self._extract_structured_products_from_chunks(wrapped)
+                                    if img_chunks:
+                                        name_to_url = self._bind_images_to_products(
+                                            [product], img_chunks
                                         )
+                                        norm = self._normalize_product_name(pname)
+                                        if name_to_url.get(norm):
+                                            product["image_url"] = name_to_url[norm]
+                                            logger.info(
+                                                "[CONV_AGENT] ✅ Image found for '%s': %s",
+                                                pname, product["image_url"][:80],
+                                            )
                             except Exception as img_err:
                                 logger.warning(
                                     "[CONV_AGENT] Image lookup failed for '%s': %s",
                                     pname, img_err,
                                 )
-
                         await asyncio.gather(
                             *[_fetch_image_for_product(p) for p in imageless],
                             return_exceptions=True,
                         )
-                    pre_parsed = await self._enrich_products_from_sheet(
-                        pre_parsed, kb_id, user, db
-                    )
-
-                auto_send = await self._auto_send_product_cards_if_ready(
-                    products=pre_parsed or [],
-                    session_key=session_key,
-                    currency=currency,
-                    order_type=order_type,
-                    user=user,
-                    db=db,
-                )
-                if auto_send.get("cards_already_sent"):
-                    return {
-                        "success": True,
-                        "parsed_products": pre_parsed,
-                        "cards": auto_send.get("cards", []),
-                        "cards_already_sent": True,
-                        "cards_sent": auto_send.get("cards_sent", 0),
-                        "result": (
-                            f"SUCCESS: {auto_send.get('cards_sent', 0)} product card(s) already sent "
-                            f"to the customer with catalog-bound images. "
-                            "DO NOT call display_product_cards again. "
-                            "Briefly acknowledge what you shared and ask if they want to order."
-                        ),
-                        "data": result.get("data", {}),
-                    }
 
                 products_json_block = ""
                 if pre_parsed:
@@ -4307,7 +3978,7 @@ class ConversationalAgentService:
                         "for each item they requested."
                     )
                 else:
-                    structured_chunks = self._extract_structured_products_from_chunks(result)
+                    # Fallback: include chunk map so LLM can extract manually
                     structured_block = ""
                     if structured_chunks:
                         chunks_with_images = [
@@ -4336,9 +4007,8 @@ class ConversationalAgentService:
 
                 return {
                     "success": True,
-                    "parsed_products": pre_parsed or [],
                     "result": f"{search_text}{products_json_block}{instruction}",
-                    "data": result.get("data", {}),
+                    "data": result.get("data", {})
                 }
             else:
                 return {"success": False, "result": result.get("error", "Search failed")}
