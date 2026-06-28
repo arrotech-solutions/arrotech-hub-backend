@@ -177,9 +177,13 @@ class CatalogBuilderService:
         )
         if read.get("success"):
             values = read.get("values") or []
-            existing = [h for h in (values[0] if values else []) if str(h).strip()]
-            if existing:
-                return sheet_name, existing
+            if values and values[0]:
+                header_row = [str(h) for h in values[0]]
+                # Remove trailing empty columns only
+                while header_row and not header_row[-1].strip():
+                    header_row.pop()
+                if header_row:
+                    return sheet_name, header_row
 
         # No headers yet — write canonical headers.
         write = await sheets_service.write_range(
@@ -203,7 +207,11 @@ class CatalogBuilderService:
 
         row: List[str] = []
         for h in headers:
-            row.append(header_value.get(_normalize_header(h), ""))
+            h_str = h.strip()
+            if not h_str:
+                row.append("")
+            else:
+                row.append(header_value.get(_normalize_header(h_str), ""))
         return row
 
     async def write_products(
@@ -220,8 +228,13 @@ class CatalogBuilderService:
         rows = [self._record_to_row(p, headers) for p in products]
         if not rows:
             return 0
+        # Bound the table range strictly to the header columns to prevent the Google Sheets
+        # API from starting the append at a later column (e.g. Column J) if there are trailing formulas.
+        end_col_idx = min(max(len(headers) - 1, 0), 25)
+        end_col = chr(ord('A') + end_col_idx)
+        
         append = await sheets_service.append_rows(
-            spreadsheet_id, f"{target_sheet}!A:ZZ", rows
+            spreadsheet_id, f"{target_sheet}!A:{end_col}", rows
         )
         if not append.get("success"):
             raise CatalogBuilderError(append.get("error", "Failed to append product rows"))
