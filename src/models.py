@@ -1017,6 +1017,8 @@ class WhatsAppContact(Base):
     message_count = Column(Integer, default=0)
     unread_count = Column(Integer, default=0)  # Unread incoming messages
     is_blocked = Column(Boolean, default=False)
+    opted_out = Column(Boolean, default=False)
+    opted_out_at = Column(DateTime(timezone=True), nullable=True)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -1216,6 +1218,14 @@ class WhatsAppBroadcast(Base):
     template_id = Column(PG_UUID(as_uuid=True), ForeignKey("whatsapp_templates.id"), nullable=True)
     template_variables = Column(JSON, nullable=True)  # Variables to replace in template
     text_content = Column(Text, nullable=True)  # For plain text broadcasts
+    
+    # Media broadcast fields
+    media_url = Column(String, nullable=True)
+    media_type = Column(String, nullable=True)  # image, video, document
+    
+    # Execution config
+    send_rate = Column(Integer, default=10)  # messages per second
+    error_summary = Column(JSON, nullable=True)  # summary of errors
     
     # Targeting
     target_type = Column(String, default="all")  # all, tag, selected

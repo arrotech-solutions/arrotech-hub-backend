@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import List, Optional
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +21,8 @@ from ..models import (
 )
 from ..routers.auth_router import get_current_user
 from ..services.whatsapp_service import WhatsAppService
+from ..services.llm_service import llm_service
+from ..tasks.broadcast_tasks import execute_broadcast_campaign_task
 from ..config import settings
 
 logger = logging.getLogger(__name__)
@@ -56,6 +58,12 @@ class BroadcastCreate(BaseModel):
     target_tag: Optional[str] = None
     target_contact_ids: Optional[List[int]] = None
     scheduled_at: Optional[datetime] = None
+
+
+class GenerateCopyRequest(BaseModel):
+    campaign_goal: str
+    audience_description: Optional[str] = None
+    tone: Optional[str] = "professional"
 
 
 class BroadcastResponse(BaseModel):
@@ -279,7 +287,6 @@ async def get_broadcast(
 @router.post("/broadcasts/{broadcast_id}/send", response_model=dict)
 async def send_broadcast(
     broadcast_id: uuid.UUID,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -300,11 +307,10 @@ async def send_broadcast(
     broadcast.started_at = datetime.utcnow()
     await db.commit()
     
-    # Add recipients and start sending in background
-    background_tasks.add_task(
-        _execute_broadcast,
-        broadcast_id,
-        current_user.id
+    # Delegate to Celery task
+    execute_broadcast_campaign_task.delay(
+        str(broadcast_id),
+        str(current_user.id)
     )
     
     return {
@@ -423,7 +429,8 @@ async def _count_broadcast_recipients(
     query = select(func.count(WhatsAppContact.id)).where(
         and_(
             WhatsAppContact.user_id == user_id,
-            WhatsAppContact.is_blocked == False
+            WhatsAppContact.is_blocked == False,
+            WhatsAppContact.opted_out == False
         )
     )
     
@@ -436,119 +443,127 @@ async def _count_broadcast_recipients(
     return result.scalar() or 0
 
 
-async def _execute_broadcast(broadcast_id: uuid.UUID, user_id: uuid.UUID):
-    """Background task to execute broadcast sending."""
-    from ..database import get_session_maker
+@router.post("/broadcasts/{broadcast_id}/duplicate", response_model=dict)
+async def duplicate_broadcast(
+    broadcast_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Duplicate an existing broadcast campaign."""
+    broadcast = await db.get(WhatsAppBroadcast, broadcast_id)
     
-    session_maker = get_session_maker()
-    async with session_maker() as db:
-        try:
-            broadcast = await db.get(WhatsAppBroadcast, broadcast_id)
-            if not broadcast:
-                return
-            
-            # Get recipients based on targeting
-            query = select(WhatsAppContact).where(
-                and_(
-                    WhatsAppContact.user_id == user_id,
-                    WhatsAppContact.is_blocked == False
-                )
-            )
-            
-            if broadcast.target_type == "tag" and broadcast.target_tag:
-                query = query.where(WhatsAppContact.tags.contains([broadcast.target_tag]))
-            elif broadcast.target_type == "selected" and broadcast.target_contact_ids:
-                query = query.where(WhatsAppContact.id.in_(broadcast.target_contact_ids))
-            
-            result = await db.execute(query)
-            contacts = result.scalars().all()
-            
-            # Create recipient records
-            for contact in contacts:
-                recipient = WhatsAppBroadcastRecipient(
-                    broadcast_id=broadcast_id,
-                    contact_id=contact.id,
-                    status="pending"
-                )
-                db.add(recipient)
-            
-            await db.commit()
-            
-            # Initialize WhatsApp service
-            wa_service = WhatsAppService(
-                access_token=settings.WHATSAPP_TOKEN,
-                phone_number_id=settings.WHATSAPP_PHONE_NUMBER_ID
-            )
-            
-            # Send to each recipient
-            sent = 0
-            failed = 0
-            
-            for contact in contacts:
-                try:
-                    if broadcast.message_type == "template" and broadcast.template_id:
-                        # Get template
-                        template = await db.get(WhatsAppTemplate, broadcast.template_id)
-                        if template:
-                            response = await wa_service.send_template_message(
-                                to=contact.phone_number,
-                                template_name=template.name,
-                                language_code=template.language,
-                                components=broadcast.template_variables
-                            )
-                    else:
-                        response = await wa_service.send_text_message(
-                            to=contact.phone_number,
-                            text=broadcast.text_content or ""
-                        )
-                    
-                    # Update recipient status
-                    recipient_result = await db.execute(
-                        select(WhatsAppBroadcastRecipient).where(
-                            and_(
-                                WhatsAppBroadcastRecipient.broadcast_id == broadcast_id,
-                                WhatsAppBroadcastRecipient.contact_id == contact.id
-                            )
-                        )
-                    )
-                    recipient = recipient_result.scalar_one_or_none()
-                    if recipient:
-                        recipient.status = "sent"
-                        recipient.sent_at = datetime.utcnow()
-                        recipient.whatsapp_message_id = response.get("messages", [{}])[0].get("id")
-                    
-                    sent += 1
-                    
-                except Exception as e:
-                    logger.error(f"Failed to send to {contact.phone_number}: {e}")
-                    recipient_result = await db.execute(
-                        select(WhatsAppBroadcastRecipient).where(
-                            and_(
-                                WhatsAppBroadcastRecipient.broadcast_id == broadcast_id,
-                                WhatsAppBroadcastRecipient.contact_id == contact.id
-                            )
-                        )
-                    )
-                    recipient = recipient_result.scalar_one_or_none()
-                    if recipient:
-                        recipient.status = "failed"
-                        recipient.error_message = str(e)
-                    
-                    failed += 1
-                
-                await db.commit()
-            
-            # Update broadcast status
-            broadcast.sent_count = sent
-            broadcast.failed_count = failed
-            broadcast.status = WhatsAppBroadcastStatus.COMPLETED
-            broadcast.completed_at = datetime.utcnow()
-            await db.commit()
-            
-            logger.info(f"[BROADCAST] Completed '{broadcast.name}': {sent} sent, {failed} failed")
-            
-        except Exception as e:
-            logger.error(f"Error executing broadcast {broadcast_id}: {e}")
-            if broadcast:
-                broadcast.status = WhatsAppBroadcastStatus.FAILED
-                await db.commit()
+    if not broadcast or broadcast.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Broadcast not found")
+        
+    new_broadcast = WhatsAppBroadcast(
+        user_id=current_user.id,
+        name=f"{broadcast.name} (Copy)",
+        description=broadcast.description,
+        message_type=broadcast.message_type,
+        template_id=broadcast.template_id,
+        template_variables=broadcast.template_variables,
+        text_content=broadcast.text_content,
+        media_url=broadcast.media_url,
+        media_type=broadcast.media_type,
+        send_rate=broadcast.send_rate,
+        target_type=broadcast.target_type,
+        target_tag=broadcast.target_tag,
+        target_contact_ids=broadcast.target_contact_ids,
+        status=WhatsAppBroadcastStatus.DRAFT
+    )
+    
+    db.add(new_broadcast)
+    await db.commit()
+    await db.refresh(new_broadcast)
+    
+    # Recalculate recipient count
+    create_data = BroadcastCreate(
+        name=new_broadcast.name,
+        target_type=new_broadcast.target_type,
+        target_tag=new_broadcast.target_tag,
+        target_contact_ids=new_broadcast.target_contact_ids,
+        message_type=new_broadcast.message_type
+    )
+    recipient_count = await _count_broadcast_recipients(db, current_user.id, create_data)
+    new_broadcast.total_recipients = recipient_count
+    await db.commit()
+    
+    return {
+        "success": True,
+        "message": "Broadcast duplicated",
+        "data": BroadcastResponse.model_validate(new_broadcast).model_dump()
+    }
+
+
+@router.get("/broadcasts/dashboard/stats", response_model=dict)
+async def get_broadcast_stats(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get aggregate stats across all broadcast campaigns."""
+    result = await db.execute(
+        select(
+            func.count(WhatsAppBroadcast.id).label('total_campaigns'),
+            func.sum(WhatsAppBroadcast.sent_count).label('total_sent'),
+            func.sum(WhatsAppBroadcast.delivered_count).label('total_delivered'),
+            func.sum(WhatsAppBroadcast.read_count).label('total_read'),
+            func.sum(WhatsAppBroadcast.failed_count).label('total_failed')
+        ).where(WhatsAppBroadcast.user_id == current_user.id)
+    )
+    stats = result.first()
+    
+    total_campaigns = stats.total_campaigns or 0
+    total_sent = stats.total_sent or 0
+    total_delivered = stats.total_delivered or 0
+    total_read = stats.total_read or 0
+    total_failed = stats.total_failed or 0
+    
+    delivery_rate = round((total_delivered / total_sent * 100), 2) if total_sent > 0 else 0
+    read_rate = round((total_read / total_sent * 100), 2) if total_sent > 0 else 0
+    
+    return {
+        "success": True,
+        "data": {
+            "total_campaigns": total_campaigns,
+            "total_sent": total_sent,
+            "total_delivered": total_delivered,
+            "total_read": total_read,
+            "total_failed": total_failed,
+            "delivery_rate": delivery_rate,
+            "read_rate": read_rate
+        }
+    }
+
+
+@router.post("/broadcasts/generate-copy", response_model=dict)
+async def generate_broadcast_copy(
+    data: GenerateCopyRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """Generate campaign copy variations using AI."""
+    prompt = (
+        f"You are an expert copywriter for WhatsApp marketing campaigns.\n"
+        f"Goal: {data.campaign_goal}\n"
+        f"Audience: {data.audience_description or 'General audience'}\n"
+        f"Tone: {data.tone}\n\n"
+        "Generate 3 short, engaging variations of WhatsApp message copy. "
+        "Each variation should be less than 400 characters, include emojis, "
+        "and have a clear call to action. Use variables like {{name}} if appropriate."
+    )
+    
+    try:
+        response = await llm_service.generate_text(prompt, model="gpt-4o")
+        
+        # Parse the variations out of the response
+        # Assuming the LLM will just give a list or paragraphs
+        variations = [v.strip() for v in response.split('\n\n') if len(v.strip()) > 10]
+        # Keep just top 3 if it generated more
+        variations = variations[:3]
+        
+        return {
+            "success": True,
+            "variations": variations
+        }
+    except Exception as e:
+        logger.error(f"Error generating broadcast copy: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate AI copy")

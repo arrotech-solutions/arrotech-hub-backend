@@ -93,6 +93,7 @@ app.autodiscover_tasks([
     "src.tasks.maintenance_tasks",
     "src.tasks.rag_tasks",
     "src.tasks.broadcast_tasks",
+    "src.tasks.scheduled_broadcast_beat",
     "src.tasks.drive_sync_tasks",
     "src.tasks.subscription_tasks",
 ])
@@ -107,6 +108,13 @@ app.conf.beat_schedule = {
     # Syncs active scheduled workflows from DB → Beat dynamic schedule
     "sync-workflows-every-60s": {
         "task": "src.tasks.workflow_tasks.sync_workflows_task",
+        "schedule": 60.0,
+        "options": {"queue": "default"},
+    },
+
+    # ── Scheduled Broadcasts (every 60s) ──
+    "check-scheduled-broadcasts-every-60s": {
+        "task": "src.tasks.scheduled_broadcast_beat.check_scheduled_broadcasts_task",
         "schedule": 60.0,
         "options": {"queue": "default"},
     },
