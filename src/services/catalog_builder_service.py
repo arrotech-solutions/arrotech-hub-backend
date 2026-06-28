@@ -228,16 +228,34 @@ class CatalogBuilderService:
         rows = [self._record_to_row(p, headers) for p in products]
         if not rows:
             return 0
-        # Bound the table range strictly to the header columns to prevent the Google Sheets
-        # API from starting the append at a later column (e.g. Column J) if there are trailing formulas.
-        end_col_idx = min(max(len(headers) - 1, 0), 25)
-        end_col = chr(ord('A') + end_col_idx)
+        # Instead of using append_rows (which is notoriously buggy if there are formulas/formatting
+        # anywhere in the sheet), we manually find the last row by reading the Name column.
+        name_idx = 0
+        for i, h in enumerate(headers):
+            if _normalize_header(h) == "name":
+                name_idx = i
+                break
         
-        append = await sheets_service.append_rows(
-            spreadsheet_id, f"{target_sheet}!A:{end_col}", rows
+        name_col = chr(ord('A') + min(name_idx, 25))
+        
+        col_read = await sheets_service.read_range(
+            spreadsheet_id, f"{target_sheet}!{name_col}:{name_col}"
         )
-        if not append.get("success"):
-            raise CatalogBuilderError(append.get("error", "Failed to append product rows"))
+        
+        last_row = 0
+        if col_read.get("success"):
+            col_values = col_read.get("values") or []
+            for i, row_val in enumerate(col_values):
+                if row_val and len(row_val) > 0 and str(row_val[0]).strip():
+                    last_row = i + 1
+        
+        next_row = max(last_row + 1, 2)
+        
+        write = await sheets_service.write_range(
+            spreadsheet_id, f"{target_sheet}!A{next_row}", rows
+        )
+        if not write.get("success"):
+            raise CatalogBuilderError(write.get("error", "Failed to write product rows"))
         return len(rows)
 
     async def export_catalog(
