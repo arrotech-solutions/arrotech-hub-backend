@@ -492,15 +492,22 @@ class DriveService:
                 'error': str(e)
             }
 
-    async def list_spreadsheets(self) -> Dict[str, Any]:
+    async def list_spreadsheets(self, folder_id: Optional[str] = None) -> Dict[str, Any]:
         """
         List all available spreadsheets in Google Drive for selection
+        
+        Args:
+            folder_id: Optional parent folder ID to filter spreadsheets
         """
         try:
             service = self.base_client.get_service(self.service_name, self.version)
             
+            query = "mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false"
+            if folder_id:
+                query += f" and '{folder_id}' in parents"
+                
             result = service.files().list(
-                q="mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false",
+                q=query,
                 pageSize=100,
                 fields="files(id, name)"
             ).execute()

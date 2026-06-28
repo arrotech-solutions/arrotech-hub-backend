@@ -80,6 +80,7 @@ async def get_status(
 
 @router.get("/sheets")
 async def list_sheets(
+    folder_id: Optional[str] = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -90,7 +91,7 @@ async def list_sheets(
     )
 
     try:
-        sheets = await catalog_builder_service.list_spreadsheets(user.id, db)
+        sheets = await catalog_builder_service.list_spreadsheets(user.id, db, folder_id=folder_id)
         return {"success": True, "data": sheets}
     except CatalogBuilderError as e:
         return {"success": False, "message": str(e), "data": []}
@@ -160,6 +161,7 @@ async def export_catalog(
     mode: str = Form("new"),
     title: Optional[str] = Form(None),
     spreadsheet_id: Optional[str] = Form(None),
+    folder_id: Optional[str] = Form(None),
     want_csv: bool = Form(False),
     files: List[UploadFile] = File(default=[]),
     user: User = Depends(get_current_user),
@@ -248,6 +250,7 @@ async def export_catalog(
                 "mode": mode,
                 "title": title,
                 "spreadsheet_id": spreadsheet_id,
+                "folder_id": folder_id,
             },
             want_csv=bool(want_csv),
         )

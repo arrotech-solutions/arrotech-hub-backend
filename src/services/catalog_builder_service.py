@@ -97,10 +97,10 @@ class CatalogBuilderService:
         base_client = GoogleWorkspaceBaseClient(credentials_data)
         return DriveService(base_client), SheetsService(base_client)
 
-    async def list_spreadsheets(self, user_id: Any, db: AsyncSession) -> List[Dict[str, str]]:
+    async def list_spreadsheets(self, user_id: Any, db: AsyncSession, folder_id: Optional[str] = None) -> List[Dict[str, str]]:
         config = await self._get_connection_config(user_id, db)
         drive_service, _ = self._build_services(config)
-        result = await drive_service.list_spreadsheets()
+        result = await drive_service.list_spreadsheets(folder_id=folder_id)
         if not result.get("success"):
             raise CatalogBuilderError(result.get("error", "Failed to list spreadsheets"))
         return [
@@ -307,6 +307,7 @@ class CatalogBuilderService:
                 )
             else:
                 title = (target or {}).get("title") or "Product Catalog"
+                target_folder_id = (target or {}).get("folder_id")
                 created = await sheets_service.create_spreadsheet(
                     title=title, sheets=[PRODUCTS_SHEET_NAME]
                 )
@@ -317,6 +318,13 @@ class CatalogBuilderService:
                 spreadsheet_id = created.get("spreadsheet_id")
                 spreadsheet_url = created.get("spreadsheet_url", "")
                 sheet_name = PRODUCTS_SHEET_NAME
+                
+                # Move to the selected folder if specified
+                if target_folder_id:
+                    try:
+                        await drive_service.move_file(spreadsheet_id, target_folder_id)
+                    except Exception as e:
+                        logger.warning(f"[CATALOG] Failed to move spreadsheet to folder {target_folder_id}: {e}")
 
             # 3. Write rows.
             rows_written = await self.write_products(
