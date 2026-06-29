@@ -603,10 +603,6 @@ class ContentCreationService:
                 return {
                     "success": False,
                     "error": f"LLM generation failed: {response.error}",
-                    "result": (
-                        "Thanks for reaching out! We're having a brief technical issue "
-                        "and will get back to you shortly."
-                    ),
                 }
 
             # ── CCM: Persist AI response to session ──

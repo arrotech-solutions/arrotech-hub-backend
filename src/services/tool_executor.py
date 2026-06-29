@@ -3482,13 +3482,7 @@ class ToolExecutor:
 
             if action == "send_message":
                 message = arguments.get("message", "")
-                if not message or not str(message).strip():
-                    message = (
-                        arguments.get("content")
-                        or arguments.get("fallback_message")
-                        or ""
-                    )
-                if not to_number or not str(message).strip():
+                if not to_number or not message:
                     return {
                         "success": False,
                         "error": "Phone number and message are required",
@@ -3512,20 +3506,6 @@ class ToolExecutor:
                         to_number, clean_message,
                         config={"access_token": access_token, "phone_number_id": phone_number_id}
                     )
-                else:
-                    return {
-                        "success": False,
-                        "error": "Message content is empty after processing",
-                        "result": None,
-                    }
-
-                if not text_result or not text_result.get("success"):
-                    return {
-                        "success": False,
-                        "error": (text_result or {}).get("error", "Failed to send WhatsApp message"),
-                        "result": None,
-                        "data": text_result,
-                    }
 
                 # Cart UX: list + reply buttons after the cart summary text
                 from .whatsapp_ordering_helpers import message_requests_cart_buttons
@@ -7233,13 +7213,6 @@ Description: {payment.description or 'N/A'}"""
                     logger.error(f"Failed to synthesize RAG answer via LLM: {llm_err}")
                     # Fall back to the match count string — don't break the workflow
             
-            if not res.get("success"):
-                answer = (
-                    res.get("result")
-                    or res.get("error")
-                    or "I couldn't search our knowledge base right now. Please try again shortly."
-                )
-
             return {"success": res.get("success"), "result": answer, "data": res}
 
         elif tool_name == "rag_delete_kb":

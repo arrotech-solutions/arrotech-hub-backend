@@ -631,24 +631,6 @@ class WorkflowBuilderService:
                 if sk and "{{" not in str(sk):
                     substituted_params["session_key"] = sk
 
-                # Support agent step 3 uses {{step_2.result}} — fall back if empty/unset
-                outbound = substituted_params.get("message", "")
-                if not str(outbound or "").strip():
-                    prev_text = ""
-                    if isinstance(prev_result, dict):
-                        prev_text = (
-                            prev_result.get("result")
-                            or prev_result.get("content")
-                            or prev_result.get("response_text")
-                            or ""
-                        )
-                    if isinstance(prev_text, str) and prev_text.strip():
-                        substituted_params["message"] = prev_text.strip()
-                    else:
-                        substituted_params["message"] = (
-                            "Thanks for your message! Our team will get back to you shortly."
-                        )
-
             # Update step execution with substituted parameters
             step_execution.input_data = substituted_params
             step_execution.status = WorkflowExecutionStatus.RUNNING.value if hasattr(WorkflowExecutionStatus.RUNNING, 'value') else "running"

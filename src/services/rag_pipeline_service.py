@@ -1141,12 +1141,7 @@ class RAGPipelineService:
         embed_res = await executor.execute_tool("ai_embeddings", embed_params, user, db)
         
         if not embed_res.get("success"):
-            err = embed_res.get("error", "Query embedding failed")
-            return {
-                "success": False,
-                "error": err,
-                "result": "I couldn't search our knowledge base right now. Please try again shortly.",
-            }
+            return {"success": False, "error": f"Query embedding failed: {embed_res.get('error')}"}
             
         query_vector = embed_res.get("embeddings", [])[0]
         
