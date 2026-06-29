@@ -8,14 +8,15 @@ from fastapi.responses import PlainTextResponse
 import logging
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy.orm import selectinload
 from typing import Optional
 import uuid
 
 from ..database import get_db, get_session_maker
 from ..models import (
     User, Connection, WhatsAppContact, WhatsAppMessage,
-    WhatsAppMessageDirection, WhatsAppMessageStatus
+    WhatsAppMessageDirection, WhatsAppMessageStatus,
+    WhatsAppBroadcast, WhatsAppBroadcastRecipient,
 )
 from ..config import settings
 from ..services import WhatsAppService
@@ -755,6 +756,44 @@ async def background_process_message(user_id: uuid.UUID, contact_id: uuid.UUID, 
             logger.error(f"[WHATSAPP WEBHOOK BG] Error in background processing: {e}")
 
 
+async def _update_broadcast_recipient_status(
+    db: AsyncSession,
+    whatsapp_message_id: str,
+    status_value: str,
+) -> None:
+    """Update broadcast recipient and campaign counters from webhook status."""
+    if not whatsapp_message_id:
+        return
+
+    result = await db.execute(
+        select(WhatsAppBroadcastRecipient)
+        .where(WhatsAppBroadcastRecipient.whatsapp_message_id == whatsapp_message_id)
+        .options(selectinload(WhatsAppBroadcastRecipient.broadcast))
+    )
+    recipient = result.scalar_one_or_none()
+    if not recipient or not recipient.broadcast:
+        return
+
+    broadcast = recipient.broadcast
+    now = datetime.utcnow()
+
+    if status_value == "delivered" and recipient.status == "sent":
+        recipient.status = "delivered"
+        recipient.delivered_at = now
+        broadcast.delivered_count = (broadcast.delivered_count or 0) + 1
+    elif status_value == "read":
+        if recipient.status == "sent":
+            broadcast.delivered_count = (broadcast.delivered_count or 0) + 1
+            recipient.delivered_at = now
+        if recipient.status != "read":
+            recipient.status = "read"
+            recipient.read_at = now
+            broadcast.read_count = (broadcast.read_count or 0) + 1
+    elif status_value == "failed" and recipient.status not in ("failed",):
+        recipient.status = "failed"
+        broadcast.failed_count = (broadcast.failed_count or 0) + 1
+
+
 async def process_status_updates(value: dict, db: AsyncSession):
     """Process message status updates (sent, delivered, read)."""
     
@@ -798,7 +837,8 @@ async def process_status_updates(value: dict, db: AsyncSession):
                     errors = status.get("errors", [])
                     if errors:
                         message.error_message = errors[0].get("message", "Unknown error")
-                
+
+                await _update_broadcast_recipient_status(db, msg_id, status_value)
                 await db.commit()
                 logger.info(f"[WHATSAPP WEBHOOK] Updated message {msg_id} status to {status_value}")
             

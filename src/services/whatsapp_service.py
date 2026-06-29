@@ -898,7 +898,8 @@ class WhatsAppService:
                     "error": "WhatsApp credentials not configured"
                 }
 
-            url = f"{base_url}/{phone_number_id}/message_templates"
+            waba_id = business_account_id or phone_number_id
+            url = f"{base_url}/{waba_id}/message_templates"
             headers = {
                 "Authorization": f"Bearer {access_token}"
             }

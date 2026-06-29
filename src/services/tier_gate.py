@@ -113,6 +113,19 @@ def check_ai_message_limit(user: User, daily_message_count: int) -> None:
         )
 
 
+def check_broadcast_access(user: User) -> None:
+    """WhatsApp broadcasts require active subscription + WhatsApp access."""
+    from .subscription_service import SubscriptionService
+
+    if not SubscriptionService.is_subscription_active(user):
+        raise TierGateError(
+            feature="WhatsApp Broadcasts",
+            required_tier="Starter",
+            current_tier=format_tier_name(user.subscription_tier or SubscriptionTier.FREE),
+        )
+    check_connection_access(user, "whatsapp")
+
+
 def get_tier_for_platform(platform: str) -> str:
     """
     Determine the minimum tier required for a platform.

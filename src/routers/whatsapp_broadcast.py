@@ -21,9 +21,10 @@ from ..models import (
 )
 from ..routers.auth_router import get_current_user
 from ..services.whatsapp_service import WhatsAppService
+from ..services.whatsapp_config_helper import get_whatsapp_config_for_user
 from ..services.llm_service import llm_service
+from ..services.tier_gate import check_broadcast_access
 from ..tasks.broadcast_tasks import execute_broadcast_campaign_task
-from ..config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +57,9 @@ class BroadcastCreate(BaseModel):
     text_content: Optional[str] = None
     target_type: str = "all"  # all, tag, selected
     target_tag: Optional[str] = None
-    target_contact_ids: Optional[List[int]] = None
+    target_contact_ids: Optional[List[uuid.UUID]] = None
     scheduled_at: Optional[datetime] = None
+    send_rate: Optional[int] = 10
 
 
 class GenerateCopyRequest(BaseModel):
@@ -92,7 +94,26 @@ class BroadcastResponse(BaseModel):
 class BroadcastDetailResponse(BroadcastResponse):
     text_content: Optional[str]
     template_variables: Optional[dict]
-    target_contact_ids: Optional[List[int]]
+    target_contact_ids: Optional[List[uuid.UUID]]
+
+
+def _parse_meta_templates(templates_data: dict) -> List[dict]:
+    """Extract template list from WhatsAppService.list_templates response."""
+    if not templates_data.get("success"):
+        return []
+    payload = templates_data.get("data") or {}
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        return payload.get("data") or []
+    return []
+
+
+def _template_language_code(tmpl: dict) -> str:
+    lang = tmpl.get("language")
+    if isinstance(lang, dict):
+        return lang.get("code") or "en_US"
+    return lang or "en_US"
 
 
 # ============== Template Endpoints ==============
@@ -122,61 +143,65 @@ async def sync_templates(
     current_user: User = Depends(get_current_user)
 ):
     """Sync templates from Meta WhatsApp API."""
+    check_broadcast_access(current_user)
     try:
-        # Get WhatsApp service
-        wa_service = WhatsAppService(
-            access_token=settings.WHATSAPP_TOKEN,
-            phone_number_id=settings.WHATSAPP_PHONE_NUMBER_ID
-        )
-        
-        # Fetch templates from Meta
-        templates_data = await wa_service.list_templates()
-        
+        wa_config = await get_whatsapp_config_for_user(db, current_user)
+        wa_service = WhatsAppService()
+        templates_data = await wa_service.list_templates(config=wa_config)
+        if not templates_data.get("success"):
+            raise HTTPException(
+                status_code=400,
+                detail=templates_data.get("error", "Failed to fetch templates from Meta"),
+            )
+
         synced_count = 0
-        for tmpl in templates_data.get("data", []):
-            # Check if template exists
+        for tmpl in _parse_meta_templates(templates_data):
+            template_id = str(tmpl.get("id") or tmpl.get("name", ""))
+            if not template_id:
+                continue
             existing = await db.execute(
                 select(WhatsAppTemplate).where(
                     and_(
                         WhatsAppTemplate.user_id == current_user.id,
-                        WhatsAppTemplate.template_id == tmpl["id"]
+                        WhatsAppTemplate.template_id == template_id,
                     )
                 )
             )
             template = existing.scalar_one_or_none()
-            
+            lang = _template_language_code(tmpl)
+
             if template:
-                # Update existing
-                template.name = tmpl["name"]
-                template.language = tmpl.get("language", "en")
+                template.name = tmpl.get("name", template.name)
+                template.language = lang
                 template.category = tmpl.get("category")
                 template.status = tmpl.get("status")
                 template.components = tmpl.get("components")
                 template.synced_at = datetime.utcnow()
             else:
-                # Create new
                 template = WhatsAppTemplate(
                     user_id=current_user.id,
-                    template_id=tmpl["id"],
-                    name=tmpl["name"],
-                    language=tmpl.get("language", "en"),
+                    template_id=template_id,
+                    name=tmpl.get("name", template_id),
+                    language=lang,
                     category=tmpl.get("category"),
                     status=tmpl.get("status"),
                     components=tmpl.get("components"),
-                    synced_at=datetime.utcnow()
+                    synced_at=datetime.utcnow(),
                 )
                 db.add(template)
-            
+
             synced_count += 1
-        
+
         await db.commit()
-        
+
         return {
             "success": True,
             "message": f"Synced {synced_count} templates from Meta",
-            "synced_count": synced_count
+            "synced_count": synced_count,
         }
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error syncing templates: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -227,13 +252,26 @@ async def create_broadcast(
     current_user: User = Depends(get_current_user)
 ):
     """Create a new broadcast campaign."""
-    # Validate template if using template message
-    if data.message_type == "template" and data.template_id:
+    check_broadcast_access(current_user)
+    await get_whatsapp_config_for_user(db, current_user)
+
+    if data.message_type == "template":
+        if not data.template_id:
+            raise HTTPException(status_code=400, detail="template_id is required for template broadcasts")
         template = await db.get(WhatsAppTemplate, data.template_id)
         if not template or template.user_id != current_user.id:
             raise HTTPException(status_code=404, detail="Template not found")
-    
-    # Create broadcast
+        if (template.status or "").upper() not in ("APPROVED", "ACTIVE"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Template '{template.name}' is not approved (status: {template.status})",
+            )
+    elif data.message_type == "text":
+        if not (data.text_content or "").strip():
+            raise HTTPException(status_code=400, detail="text_content is required for text broadcasts")
+    else:
+        raise HTTPException(status_code=400, detail="message_type must be 'template' or 'text'")
+
     broadcast = WhatsAppBroadcast(
         user_id=current_user.id,
         name=data.name,
@@ -244,9 +282,10 @@ async def create_broadcast(
         text_content=data.text_content,
         target_type=data.target_type,
         target_tag=data.target_tag,
-        target_contact_ids=data.target_contact_ids,
+        target_contact_ids=[str(cid) for cid in data.target_contact_ids] if data.target_contact_ids else None,
+        send_rate=data.send_rate or 10,
         status=WhatsAppBroadcastStatus.SCHEDULED if data.scheduled_at else WhatsAppBroadcastStatus.DRAFT,
-        scheduled_at=data.scheduled_at
+        scheduled_at=data.scheduled_at,
     )
     
     db.add(broadcast)
@@ -264,6 +303,77 @@ async def create_broadcast(
         "success": True,
         "data": BroadcastResponse.model_validate(broadcast).model_dump()
     }
+
+
+@router.get("/broadcasts/dashboard/stats", response_model=dict)
+async def get_broadcast_stats(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get aggregate stats across all broadcast campaigns."""
+    result = await db.execute(
+        select(
+            func.count(WhatsAppBroadcast.id).label('total_campaigns'),
+            func.sum(WhatsAppBroadcast.sent_count).label('total_sent'),
+            func.sum(WhatsAppBroadcast.delivered_count).label('total_delivered'),
+            func.sum(WhatsAppBroadcast.read_count).label('total_read'),
+            func.sum(WhatsAppBroadcast.failed_count).label('total_failed')
+        ).where(WhatsAppBroadcast.user_id == current_user.id)
+    )
+    stats = result.first()
+
+    total_campaigns = stats.total_campaigns or 0
+    total_sent = stats.total_sent or 0
+    total_delivered = stats.total_delivered or 0
+    total_read = stats.total_read or 0
+    total_failed = stats.total_failed or 0
+
+    delivery_rate = round((total_delivered / total_sent * 100), 2) if total_sent > 0 else 0
+    read_rate = round((total_read / total_sent * 100), 2) if total_sent > 0 else 0
+
+    return {
+        "success": True,
+        "data": {
+            "total_campaigns": total_campaigns,
+            "total_sent": total_sent,
+            "total_delivered": total_delivered,
+            "total_read": total_read,
+            "total_failed": total_failed,
+            "delivery_rate": delivery_rate,
+            "read_rate": read_rate,
+        },
+    }
+
+
+@router.post("/broadcasts/generate-copy", response_model=dict)
+async def generate_broadcast_copy(
+    data: GenerateCopyRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """Generate campaign copy variations using AI."""
+    check_broadcast_access(current_user)
+    prompt = (
+        f"You are an expert copywriter for WhatsApp marketing campaigns.\n"
+        f"Goal: {data.campaign_goal}\n"
+        f"Audience: {data.audience_description or 'General audience'}\n"
+        f"Tone: {data.tone}\n\n"
+        "Generate 3 short, engaging variations of WhatsApp message copy. "
+        "Each variation should be less than 400 characters, include emojis, "
+        "and have a clear call to action. Use variables like {{name}} if appropriate."
+    )
+
+    try:
+        response = await llm_service.generate_text(prompt, model="gpt-4o")
+        variations = [v.strip() for v in response.split('\n\n') if len(v.strip()) > 10]
+        variations = variations[:3]
+
+        return {
+            "success": True,
+            "variations": variations,
+        }
+    except Exception as e:
+        logger.error(f"Error generating broadcast copy: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate AI copy")
 
 
 @router.get("/broadcasts/{broadcast_id}", response_model=dict)
@@ -291,18 +401,28 @@ async def send_broadcast(
     current_user: User = Depends(get_current_user)
 ):
     """Start sending a broadcast campaign."""
+    check_broadcast_access(current_user)
+    await get_whatsapp_config_for_user(db, current_user)
+
     broadcast = await db.get(WhatsAppBroadcast, broadcast_id)
-    
+
     if not broadcast or broadcast.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Broadcast not found")
-    
+
+    if broadcast.status == WhatsAppBroadcastStatus.SENDING:
+        raise HTTPException(status_code=400, detail="Broadcast is already sending")
+
     if broadcast.status not in [WhatsAppBroadcastStatus.DRAFT, WhatsAppBroadcastStatus.SCHEDULED]:
         raise HTTPException(
             status_code=400,
             detail=f"Cannot send broadcast with status '{broadcast.status}'"
         )
-    
-    # Update status
+
+    if broadcast.message_type == "template" and broadcast.template_id:
+        template = await db.get(WhatsAppTemplate, broadcast.template_id)
+        if not template or (template.status or "").upper() not in ("APPROVED", "ACTIVE"):
+            raise HTTPException(status_code=400, detail="Broadcast template is not approved")
+
     broadcast.status = WhatsAppBroadcastStatus.SENDING
     broadcast.started_at = datetime.utcnow()
     await db.commit()
@@ -481,8 +601,10 @@ async def duplicate_broadcast(
         name=new_broadcast.name,
         target_type=new_broadcast.target_type,
         target_tag=new_broadcast.target_tag,
-        target_contact_ids=new_broadcast.target_contact_ids,
-        message_type=new_broadcast.message_type
+        target_contact_ids=[
+            uuid.UUID(str(cid)) for cid in (new_broadcast.target_contact_ids or [])
+        ] or None,
+        message_type=new_broadcast.message_type,
     )
     recipient_count = await _count_broadcast_recipients(db, current_user.id, create_data)
     new_broadcast.total_recipients = recipient_count
@@ -493,77 +615,3 @@ async def duplicate_broadcast(
         "message": "Broadcast duplicated",
         "data": BroadcastResponse.model_validate(new_broadcast).model_dump()
     }
-
-
-@router.get("/broadcasts/dashboard/stats", response_model=dict)
-async def get_broadcast_stats(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """Get aggregate stats across all broadcast campaigns."""
-    result = await db.execute(
-        select(
-            func.count(WhatsAppBroadcast.id).label('total_campaigns'),
-            func.sum(WhatsAppBroadcast.sent_count).label('total_sent'),
-            func.sum(WhatsAppBroadcast.delivered_count).label('total_delivered'),
-            func.sum(WhatsAppBroadcast.read_count).label('total_read'),
-            func.sum(WhatsAppBroadcast.failed_count).label('total_failed')
-        ).where(WhatsAppBroadcast.user_id == current_user.id)
-    )
-    stats = result.first()
-    
-    total_campaigns = stats.total_campaigns or 0
-    total_sent = stats.total_sent or 0
-    total_delivered = stats.total_delivered or 0
-    total_read = stats.total_read or 0
-    total_failed = stats.total_failed or 0
-    
-    delivery_rate = round((total_delivered / total_sent * 100), 2) if total_sent > 0 else 0
-    read_rate = round((total_read / total_sent * 100), 2) if total_sent > 0 else 0
-    
-    return {
-        "success": True,
-        "data": {
-            "total_campaigns": total_campaigns,
-            "total_sent": total_sent,
-            "total_delivered": total_delivered,
-            "total_read": total_read,
-            "total_failed": total_failed,
-            "delivery_rate": delivery_rate,
-            "read_rate": read_rate
-        }
-    }
-
-
-@router.post("/broadcasts/generate-copy", response_model=dict)
-async def generate_broadcast_copy(
-    data: GenerateCopyRequest,
-    current_user: User = Depends(get_current_user)
-):
-    """Generate campaign copy variations using AI."""
-    prompt = (
-        f"You are an expert copywriter for WhatsApp marketing campaigns.\n"
-        f"Goal: {data.campaign_goal}\n"
-        f"Audience: {data.audience_description or 'General audience'}\n"
-        f"Tone: {data.tone}\n\n"
-        "Generate 3 short, engaging variations of WhatsApp message copy. "
-        "Each variation should be less than 400 characters, include emojis, "
-        "and have a clear call to action. Use variables like {{name}} if appropriate."
-    )
-    
-    try:
-        response = await llm_service.generate_text(prompt, model="gpt-4o")
-        
-        # Parse the variations out of the response
-        # Assuming the LLM will just give a list or paragraphs
-        variations = [v.strip() for v in response.split('\n\n') if len(v.strip()) > 10]
-        # Keep just top 3 if it generated more
-        variations = variations[:3]
-        
-        return {
-            "success": True,
-            "variations": variations
-        }
-    except Exception as e:
-        logger.error(f"Error generating broadcast copy: {e}")
-        raise HTTPException(status_code=500, detail="Failed to generate AI copy")
