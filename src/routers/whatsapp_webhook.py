@@ -724,13 +724,17 @@ async def background_process_message(user_id: uuid.UUID, contact_id: uuid.UUID, 
             has_agent_workflow = False
             try:
                 from ..services.whatsapp_workflow_trigger import WhatsAppWorkflowTrigger
-                has_agent_workflow = await WhatsAppWorkflowTrigger.has_active_conversational_agent(
+                has_ordering_agent = await WhatsAppWorkflowTrigger.has_active_conversational_agent(
                     user_id, db
                 )
+                has_support_agent = await WhatsAppWorkflowTrigger.has_active_support_agent(
+                    user_id, db
+                )
+                has_agent_workflow = has_ordering_agent or has_support_agent
             except Exception as e:
                 logger.warning(f"[WHATSAPP WEBHOOK BG] Agent workflow check failed: {e}")
 
-            # Skip auto-reply when a conversational ordering workflow is active
+            # Skip dashboard auto-reply rules when an ordering or support agent workflow is active
             if not has_agent_workflow:
                 try:
                     from ..services.whatsapp_auto_reply import auto_reply_engine
@@ -741,7 +745,7 @@ async def background_process_message(user_id: uuid.UUID, contact_id: uuid.UUID, 
                     logger.error(f"[WHATSAPP WEBHOOK BG] Auto-reply error: {e}")
             else:
                 logger.info(
-                    "[WHATSAPP WEBHOOK BG] Skipping auto-reply — conversational agent workflow active"
+                    "[WHATSAPP WEBHOOK BG] Skipping auto-reply — ordering/support agent workflow active"
                 )
 
             # Trigger workflow automation (always — cart commands handled inside agent)

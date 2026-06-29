@@ -52,6 +52,65 @@ RE_KEYWORDS = {
 }
 
 
+def _workflow_has_conversational_agent_steps(workflow: Workflow) -> bool:
+    return any(
+        s.tool_name == "conversational_agent" for s in (workflow.steps or [])
+    )
+
+
+def _is_support_agent_workflow(workflow: Workflow) -> bool:
+    """KB + AI text support template (not the ordering conversational_agent)."""
+    variables = workflow.variables or {}
+    metadata = workflow.workflow_metadata or {}
+    if variables.get("template_id") == "whatsapp_support_agent":
+        return True
+    if metadata.get("template_id") == "whatsapp_support_agent":
+        return True
+    tool_names = {s.tool_name for s in (workflow.steps or [])}
+    return (
+        "rag_search" in tool_names
+        and "ai_text_generation" in tool_names
+        and "conversational_agent" not in tool_names
+    )
+
+
+def _prefer_ordering_workflow_for_message(message_content: str) -> bool:
+    """Route commerce/cart messages to the ordering agent when both agents are active."""
+    from .whatsapp_ordering_helpers import match_cart_command
+
+    if match_cart_command(message_content or ""):
+        return True
+    content = (message_content or "").lower()
+    order_signals = (
+        "order", "buy", "cart", "menu", "checkout", "deliver",
+        "pickup", "add to", "pay with", "mpesa", "catalog", "price list",
+    )
+    return any(signal in content for signal in order_signals)
+
+
+def _pick_whatsapp_inbound_workflow(
+    wa_general: List[tuple],
+    message_content: str,
+) -> Workflow:
+    """
+    Choose one whatsapp_message_received workflow when several are active.
+    Ordering and support agents share the same trigger — prefer by message intent.
+    """
+    workflows = [wf for wf, _ in wa_general]
+    ordering = [wf for wf in workflows if _workflow_has_conversational_agent_steps(wf)]
+    support = [wf for wf in workflows if _is_support_agent_workflow(wf)]
+
+    if ordering and support:
+        if _prefer_ordering_workflow_for_message(message_content):
+            return ordering[0]
+        return support[0]
+    if ordering:
+        return ordering[0]
+    if support:
+        return support[0]
+    return wa_general[0][0]
+
+
 class WhatsAppWorkflowTrigger:
     """Service to trigger workflows based on WhatsApp events."""
 
@@ -87,6 +146,30 @@ class WhatsAppWorkflowTrigger:
                 )
             )
             if step_result.scalar_one_or_none():
+                return True
+        return False
+
+    @classmethod
+    async def has_active_support_agent(
+        cls,
+        user_id: uuid.UUID,
+        db: AsyncSession,
+    ) -> bool:
+        """True if user has an active WhatsApp support (RAG + AI) workflow."""
+        result = await db.execute(
+            select(Workflow).options(selectinload(Workflow.steps)).where(
+                and_(
+                    Workflow.user_id == user_id,
+                    Workflow.status == WorkflowStatus.ACTIVE,
+                    Workflow.trigger_type == WorkflowTriggerType.EVENT.value,
+                )
+            )
+        )
+        for workflow in result.scalars().all():
+            trigger_config = workflow.trigger_config or {}
+            if trigger_config.get("event_type") != "whatsapp_message_received":
+                continue
+            if _is_support_agent_workflow(workflow):
                 return True
         return False
     
@@ -206,11 +289,6 @@ class WhatsAppWorkflowTrigger:
                             f"[WA_TRIGGER] Handoff TTL check failed (continuing): {handoff_err}"
                         )
 
-                def _workflow_has_conversational_agent(wf: Workflow) -> bool:
-                    return any(
-                        s.tool_name == "conversational_agent" for s in (wf.steps or [])
-                    )
-
                 matched: List[tuple] = []
                 for workflow in workflows:
                     trigger_config = workflow.trigger_config or {}
@@ -244,17 +322,17 @@ class WhatsAppWorkflowTrigger:
                 ]
                 to_execute: List[tuple] = list(others)
                 if wa_general:
-                    preferred = next(
-                        (w for w, _ in wa_general if _workflow_has_conversational_agent(w)),
-                        wa_general[0][0],
+                    preferred = _pick_whatsapp_inbound_workflow(
+                        wa_general, message.content or ""
                     )
                     to_execute.append((preferred, "whatsapp_message_received"))
                     if len(wa_general) > 1:
-                        logger.warning(
+                        logger.info(
                             "[WA_TRIGGER] %s whatsapp_message_received workflows matched; "
-                            "running only '%s'",
+                            "selected '%s' for message: %s",
                             len(wa_general),
                             preferred.name,
+                            (message.content or "")[:80],
                         )
 
                 for workflow, event_type in to_execute:

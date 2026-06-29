@@ -594,7 +594,7 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "parameters": {
                     "operation": "send_message",
                     "to_number": "{{whatsapp_contact_phone}}",
-                    "message": "{{step_2.result}}"
+                    "message": "{{ step_2.result or step_2.content }}",
                 }
             }
         ]
