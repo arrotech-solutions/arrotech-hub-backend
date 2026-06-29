@@ -99,29 +99,34 @@ async def seed_admin_user():
     session_maker = get_session_maker()
     async with session_maker() as session:
         from sqlalchemy import select
-        from .models import User
+        from .models import User, UserRole
         from passlib.context import CryptContext
         
-        # Check if admin user exists
         result = await session.execute(select(User).where(User.email == settings.ADMIN_EMAIL))
         user = result.scalar_one_or_none()
         
-        if not user:
-            print(f"[Admin] Seeding admin user: {settings.ADMIN_EMAIL}")
-            pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-            
-            # Create strict admin user
-            new_user = User(
-                email=settings.ADMIN_EMAIL,
-                name="System Admin",
-                password_hash=pwd_context.hash(settings.ADMIN_PASSWORD),
-                api_key="admin_" + os.urandom(12).hex(),
-                # Assuming enterprise tier for admin
-                subscription_tier="enterprise" 
-            )
-            session.add(new_user)
-            await session.commit()
-            print("[Admin] Admin user created.")
+        if user:
+            if (user.role or UserRole.USER) != UserRole.ADMIN:
+                user.role = UserRole.ADMIN
+                session.add(user)
+                await session.commit()
+                print(f"[Admin] Promoted existing user to admin: {settings.ADMIN_EMAIL}")
+            return
+
+        print(f"[Admin] Seeding admin user: {settings.ADMIN_EMAIL}")
+        pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+        
+        new_user = User(
+            email=settings.ADMIN_EMAIL,
+            name="System Admin",
+            password_hash=pwd_context.hash(settings.ADMIN_PASSWORD),
+            api_key="admin_" + os.urandom(12).hex(),
+            role=UserRole.ADMIN,
+            subscription_tier="enterprise",
+        )
+        session.add(new_user)
+        await session.commit()
+        print("[Admin] Admin user created.")
 
 
 async def init_db():

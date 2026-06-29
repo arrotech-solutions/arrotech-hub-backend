@@ -281,11 +281,15 @@ class BaseConfig(BaseSettings):
         "http://localhost:5174",
         "http://localhost:5175",
         "http://localhost:5176",
+        "http://localhost:5177",
         "https://hub.arrotechsolutions.com",
+        "https://admin.arrotechsolutions.com",
         "https://arrotechsolutions.com",
         "https://www.arrotechsolutions.com",
         "https://blog.arrotechsolutions.com"
     ]
+
+    ADMIN_FRONTEND_URL: str = "http://localhost:5177"
 
     # Conversation Context Manager (CCM) — WhatsApp/Telegram memory
     CCM_MAX_MESSAGES: int = 20             # Sliding window: max messages to keep
