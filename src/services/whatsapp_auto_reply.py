@@ -172,6 +172,9 @@ class AutoReplyEngine:
         if response_type == "text":
             # Simple text response with variable substitution
             text = rule.response_content or ""
+            if not text.strip() and rule.trigger_type == WhatsAppAutoReplyTrigger.BUSINESS_HOURS.value:
+                if profile and profile.away_message:
+                    text = profile.away_message
             text = self._substitute_variables(text, contact, message, profile)
             return text
             
