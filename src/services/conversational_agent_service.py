@@ -222,6 +222,60 @@ def _record_to_sheet_row(record: Dict[str, Any], headers: List[str]) -> List[str
             row.append(header_norm_to_value.get(_normalize_header(h_str), ""))
     return row
 
+_ORDERS_SHEET_HEADERS = [
+    "Order ID",
+    "Status",
+    "Customer Name",
+    "Customer Phone",
+    "M-Pesa Phone",
+    "Customer Email",
+    "Items",
+    "Item Count",
+    "Subtotal",
+    "Currency",
+    "Delivery Method",
+    "Delivery Address",
+    "Notes",
+    "Order Type",
+    "Created At",
+]
+
+def _sheet_record_get(record: Dict[str, Any], header: str) -> str:
+    target = _normalize_header(header)
+    for key, value in (record or {}).items():
+        if _normalize_header(key) == target:
+            return _safe_str(value)
+    return ""
+
+def _merge_sheet_records(
+    headers: List[str],
+    existing_row: List[Any],
+    new_record: Dict[str, Any],
+    *,
+    force_status: Optional[str] = None,
+) -> Dict[str, str]:
+    """Merge sheet row values; prefer new_record when existing cell is empty."""
+    merged: Dict[str, str] = {}
+    for idx, header in enumerate(headers):
+        old_val = ""
+        if idx < len(existing_row):
+            old_val = _safe_str(existing_row[idx]).strip()
+        new_val = _sheet_record_get(new_record, header).strip()
+        if (
+            force_status
+            and header == "Customer Phone"
+            and old_val
+            and new_val
+            and not _phones_match(old_val, new_val)
+        ):
+            # Keep WhatsApp chat number; do not replace with M-Pesa payer line on paid merge.
+            merged[header] = old_val
+        else:
+            merged[header] = new_val or old_val
+    if force_status:
+        merged["Status"] = force_status
+    return merged
+
 def _phones_match(p1: str, p2: str) -> bool:
     """Robustly compare phone numbers by checking the last 9 digits."""
     if not p1 or not p2:
@@ -4990,12 +5044,7 @@ class ConversationalAgentService:
 
         sheet_name = (storage_config.get("orders_sheet_name") or "Orders").strip() or "Orders"
         
-        orders_headers_required = [
-            "Order ID", "Status", "Customer Name", "Customer Phone", 
-            "Customer Email", "Items", "Item Count", "Subtotal", 
-            "Currency", "Delivery Method", "Delivery Address", 
-            "Notes", "Order Type", "Created At"
-        ]
+        orders_headers_required = list(_ORDERS_SHEET_HEADERS)
         
         orders_headers = await self._ensure_sheet_headers_with_fallback(
             executor=executor,
@@ -6363,12 +6412,7 @@ class ConversationalAgentService:
 
         sheet_name = (storage_config.get("orders_sheet_name") or "Orders").strip() or "Orders"
 
-        orders_headers_required = [
-            "Order ID", "Status", "Customer Name", "Customer Phone", 
-            "Customer Email", "Items", "Item Count", "Subtotal", 
-            "Currency", "Delivery Method", "Delivery Address", 
-            "Notes", "Order Type", "Created At"
-        ]
+        orders_headers_required = list(_ORDERS_SHEET_HEADERS)
         
         orders_headers = await self._ensure_sheet_headers_with_fallback(
             executor=executor,
@@ -6522,9 +6566,10 @@ class ConversationalAgentService:
         storage_config: Dict[str, Any],
         user: User,
         db: AsyncSession,
+        order_data: Optional[Dict[str, Any]] = None,
     ):
         """
-        Persist successful payment transaction data to connected storage.
+        Persist successful payment: update Orders row to paid (full fields) + append Transactions row.
         """
         provider = (storage_config or {}).get("provider", "none")
         if provider in (None, "", "none"):
@@ -6533,6 +6578,17 @@ class ConversationalAgentService:
             from .tool_executor import ToolExecutor
             executor = ToolExecutor()
             if provider == "google_sheets":
+                order_id = _safe_str((transaction_data or {}).get("order_id", "")).strip()
+                if order_id and order_data:
+                    await self._mark_order_paid_in_google_sheets(
+                        executor=executor,
+                        order_id=order_id,
+                        order_data=order_data,
+                        storage_config=storage_config,
+                        user=user,
+                        db=db,
+                        amount_paid=float((transaction_data or {}).get("amount") or 0),
+                    )
                 await self._persist_transaction_to_google_sheets(
                     executor=executor,
                     transaction_data=transaction_data,
@@ -6580,22 +6636,7 @@ class ConversationalAgentService:
         order_id = _safe_str(order_data.get("order_id", "")).strip()
         customer_phone = _safe_str(customer.get("phone", "")).strip()
 
-        orders_headers_required = [
-            "Order ID",
-            "Status",
-            "Customer Name",
-            "Customer Phone",
-            "Customer Email",
-            "Items",
-            "Item Count",
-            "Subtotal",
-            "Currency",
-            "Delivery Method",
-            "Delivery Address",
-            "Notes",
-            "Order Type",
-            "Created At",
-        ]
+        orders_headers_required = list(_ORDERS_SHEET_HEADERS)
 
         customers_headers_required = [
             "Customer Phone",
@@ -6626,52 +6667,253 @@ class ConversationalAgentService:
             db=db,
         )
 
-        # If we couldn't validate headers, don't write blindly.
-        if not orders_headers or not customers_headers:
-            logger.warning("[CONV_AGENT] Sheets schema validation failed; skipping append to avoid misplaced rows.")
+        if not orders_headers:
+            logger.warning("[CONV_AGENT] Orders sheet schema validation failed; skipping append.")
             return
+        if not customers_headers:
+            logger.warning(
+                "[CONV_AGENT] Customers sheet tab missing; continuing with Orders write only."
+            )
 
         # Dedup: don't append same Order ID more than once.
+        order_record = self._build_order_sheet_record(
+            order_data=order_data,
+            customer=customer,
+            items_summary=items_summary,
+            created_at=created_at,
+            status=_safe_str(order_data.get("status", "pending")),
+        )
         if order_id:
-            exists = await self._sheet_value_exists(
+            await self._upsert_order_row_in_google_sheets(
                 executor=executor,
                 spreadsheet_id=spreadsheet_id,
-                sheet_name=orders_headers["sheet_name"],
-                headers=orders_headers["headers"],
-                header_name="Order ID",
-                value=order_id,
+                orders_headers=orders_headers,
+                order_id=order_id,
+                order_record=order_record,
                 user=user,
                 db=db,
             )
-            if exists:
-                logger.info(f"[CONV_AGENT] Order {order_id} already exists in Sheets; skipping duplicate append.")
+
+    def _build_order_sheet_record(
+        self,
+        *,
+        order_data: Dict[str, Any],
+        customer: Dict[str, Any],
+        items_summary: str,
+        created_at: str,
+        status: str = "pending",
+        mpesa_phone: str = "",
+    ) -> Dict[str, str]:
+        customer = customer or order_data.get("customer") or {}
+        whatsapp_phone = _safe_str(
+            order_data.get("whatsapp_sender") or customer.get("phone", "")
+        ).strip()
+        payer_phone = _safe_str(mpesa_phone or order_data.get("mpesa_phone", "")).strip()
+        return {
+            "Order ID": _safe_str(order_data.get("order_id", "")),
+            "Status": status,
+            "Customer Name": _safe_str(customer.get("name", "")),
+            "Customer Phone": whatsapp_phone,
+            "M-Pesa Phone": payer_phone,
+            "Customer Email": _safe_str(customer.get("email", "")),
+            "Items": _safe_str(items_summary),
+            "Item Count": _safe_str(order_data.get("item_count", 0)),
+            "Subtotal": _safe_str(order_data.get("subtotal", 0)),
+            "Currency": _safe_str(order_data.get("currency", "KES")),
+            "Delivery Method": _safe_str(order_data.get("delivery_method", "")),
+            "Delivery Address": _safe_str(order_data.get("delivery_address", "")),
+            "Notes": _safe_str(order_data.get("notes", "")),
+            "Order Type": _safe_str(order_data.get("order_type", "")),
+            "Created At": _safe_str(created_at or order_data.get("created_at", "")),
+        }
+
+    async def _mark_order_paid_in_google_sheets(
+        self,
+        executor,
+        order_id: str,
+        order_data: Dict[str, Any],
+        storage_config: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+        amount_paid: float = 0,
+    ) -> None:
+        """Update existing Orders row to paid, filling any empty order columns from registry."""
+        spreadsheet_id = storage_config.get("spreadsheet_id", "")
+        if not spreadsheet_id or not order_id:
+            return
+
+        orders_sheet = (storage_config.get("orders_sheet_name") or "Orders").strip() or "Orders"
+        orders_headers = await self._ensure_sheet_headers_with_fallback(
+            executor=executor,
+            spreadsheet_id=spreadsheet_id,
+            preferred_sheet=orders_sheet,
+            fallback_sheets=["Orders", "Sheet1"],
+            required_headers=list(_ORDERS_SHEET_HEADERS),
+            user=user,
+            db=db,
+        )
+        if not orders_headers:
+            return
+
+        customer = dict(order_data.get("customer") or {})
+        whatsapp_sender = _safe_str(
+            order_data.get("whatsapp_sender") or customer.get("phone", "")
+        ).strip()
+        if whatsapp_sender:
+            customer["phone"] = whatsapp_sender
+        mpesa_phone = _safe_str(order_data.get("mpesa_phone", "")).strip()
+        items = order_data.get("items") or []
+        items_summary = "; ".join(
+            f"{it.get('name', '?')} x{it.get('quantity', 1)}" for it in items
+        )
+        if amount_paid and not order_data.get("subtotal"):
+            order_data = dict(order_data)
+            order_data["subtotal"] = amount_paid
+
+        order_record = self._build_order_sheet_record(
+            order_data=order_data,
+            customer=customer,
+            items_summary=items_summary,
+            created_at=_safe_str(order_data.get("created_at", datetime.utcnow().isoformat())),
+            status="paid",
+            mpesa_phone=mpesa_phone,
+        )
+        await self._upsert_order_row_in_google_sheets(
+            executor=executor,
+            spreadsheet_id=spreadsheet_id,
+            orders_headers=orders_headers,
+            order_id=order_id,
+            order_record=order_record,
+            user=user,
+            db=db,
+            force_status="paid",
+        )
+
+    async def _upsert_order_row_in_google_sheets(
+        self,
+        executor,
+        spreadsheet_id: str,
+        orders_headers: Dict[str, Any],
+        order_id: str,
+        order_record: Dict[str, str],
+        user: User,
+        db: AsyncSession,
+        force_status: Optional[str] = None,
+    ) -> None:
+        sheet_name = orders_headers["sheet_name"]
+        headers: List[str] = orders_headers["headers"]
+
+        read_res = await executor.execute_tool(
+            "google_workspace_sheets",
+            {
+                "operation": "read_range",
+                "spreadsheet_id": spreadsheet_id,
+                "range_name": f"{sheet_name}!A:ZZ",
+            },
+            user,
+            db,
+        )
+        if not read_res.get("success"):
+            await self._append_record_by_headers(
+                executor=executor,
+                spreadsheet_id=spreadsheet_id,
+                sheet_name=sheet_name,
+                headers=headers,
+                record=order_record,
+                user=user,
+                db=db,
+                probe_header="Order ID",
+            )
+            return
+
+        values = read_res.get("values") or []
+        if not values:
+            await self._append_record_by_headers(
+                executor=executor,
+                spreadsheet_id=spreadsheet_id,
+                sheet_name=sheet_name,
+                headers=headers,
+                record=order_record,
+                user=user,
+                db=db,
+                probe_header="Order ID",
+            )
+            return
+
+        header_norms = [_normalize_header(h) for h in headers]
+        order_idx_norm = _normalize_header("Order ID")
+        if order_idx_norm not in header_norms:
+            return
+        order_idx = header_norms.index(order_idx_norm)
+
+        matches: List[tuple] = []
+        for r_idx, row in enumerate(values):
+            if r_idx == 0:
+                continue
+            if len(row) > order_idx and _safe_str(row[order_idx]).strip() == order_id:
+                matches.append((r_idx + 1, row))
+
+        if len(matches) > 1:
+            logger.warning(
+                "[CONV_AGENT] Duplicate Order ID %s in Sheets rows %s",
+                order_id,
+                [row_num for row_num, _ in matches],
+            )
+
+        target_row_num = None
+        existing_row: List[Any] = []
+        if matches:
+            if force_status == "paid":
+                status_idx = None
+                status_norm = _normalize_header("Status")
+                if status_norm in header_norms:
+                    status_idx = header_norms.index(status_norm)
+                pending_match = None
+                for row_num, row in matches:
+                    if status_idx is not None and len(row) > status_idx:
+                        st = _safe_str(row[status_idx]).strip().lower()
+                        if st in ("pending", ""):
+                            pending_match = (row_num, row)
+                            break
+                if pending_match:
+                    target_row_num, existing_row = pending_match
+                else:
+                    target_row_num, existing_row = matches[0]
             else:
-                order_record = {
-                    "Order ID": order_id,
-                    "Status": _safe_str(order_data.get("status", "pending")),
-                    "Customer Name": _safe_str(customer.get("name", "")),
-                    "Customer Phone": customer_phone,
-                    "Customer Email": _safe_str(customer.get("email", "")),
-                    "Items": _safe_str(items_summary),
-                    "Item Count": _safe_str(order_data.get("item_count", 0)),
-                    "Subtotal": _safe_str(order_data.get("subtotal", 0)),
-                    "Currency": _safe_str(order_data.get("currency", "KES")),
-                    "Delivery Method": _safe_str(order_data.get("delivery_method", "")),
-                    "Delivery Address": _safe_str(order_data.get("delivery_address", "")),
-                    "Notes": _safe_str(order_data.get("notes", "")),
-                    "Order Type": _safe_str(order_data.get("order_type", "")),
-                    "Created At": _safe_str(created_at),
-                }
-                await self._append_record_by_headers(
-                    executor=executor,
-                    spreadsheet_id=spreadsheet_id,
-                    sheet_name=orders_headers["sheet_name"],
-                    headers=orders_headers["headers"],
-                    record=order_record,
-                    user=user,
-                    db=db,
-                    probe_header="Order ID",
-                )
+                target_row_num, existing_row = matches[0]
+
+        if not target_row_num:
+            await self._append_record_by_headers(
+                executor=executor,
+                spreadsheet_id=spreadsheet_id,
+                sheet_name=sheet_name,
+                headers=headers,
+                record=order_record,
+                user=user,
+                db=db,
+                probe_header="Order ID",
+            )
+            return
+
+        merged = _merge_sheet_records(
+            headers,
+            existing_row,
+            order_record,
+            force_status=force_status or order_record.get("Status"),
+        )
+        row = _record_to_sheet_row(merged, headers)
+        await executor.execute_tool(
+            "google_workspace_sheets",
+            {
+                "operation": "write_range",
+                "spreadsheet_id": spreadsheet_id,
+                "range_name": f"{sheet_name}!A{target_row_num}",
+                "values": [row],
+            },
+            user,
+            db,
+        )
+        logger.info("[CONV_AGENT] Upserted order %s in Sheets (row %s)", order_id, target_row_num)
 
     async def _persist_transaction_to_google_sheets(
         self,
@@ -6687,6 +6929,13 @@ class ConversationalAgentService:
             return
 
         tx_sheet = (storage_config.get("transactions_sheet_name") or "Transactions").strip() or "Transactions"
+        orders_sheet = (storage_config.get("orders_sheet_name") or "Orders").strip() or "Orders"
+        if tx_sheet.lower() == orders_sheet.lower():
+            logger.warning(
+                "[CONV_AGENT] transactions_sheet_name matches orders_sheet_name — "
+                "using dedicated 'Transactions' tab for payment rows"
+            )
+            tx_sheet = "Transactions"
         tx_headers_required = [
             "Order ID",
             "Transaction ID",
@@ -6695,6 +6944,8 @@ class ConversationalAgentService:
             "Amount",
             "Currency",
             "Customer Phone",
+            "M-Pesa Phone",
+            "WhatsApp Phone",
             "Status",
             "Result Code",
             "Result Desc",
@@ -6705,7 +6956,7 @@ class ConversationalAgentService:
             executor=executor,
             spreadsheet_id=spreadsheet_id,
             preferred_sheet=tx_sheet,
-            fallback_sheets=["Transactions", "Sheet1"],
+            fallback_sheets=["Transactions"],
             required_headers=tx_headers_required,
             user=user,
             db=db,
@@ -6729,6 +6980,11 @@ class ConversationalAgentService:
                 logger.info(f"[CONV_AGENT] Transaction {transaction_id} already exists in Sheets; skipping")
                 return
 
+        payer_phone = _safe_str(
+            transaction_data.get("mpesa_phone")
+            or transaction_data.get("customer_phone", "")
+        ).strip()
+        whatsapp_phone = _safe_str(transaction_data.get("whatsapp_phone", "")).strip()
         record = {
             "Order ID": _safe_str(transaction_data.get("order_id", "")),
             "Transaction ID": transaction_id,
@@ -6736,7 +6992,9 @@ class ConversationalAgentService:
             "Merchant Request ID": _safe_str(transaction_data.get("merchant_request_id", "")),
             "Amount": _safe_str(transaction_data.get("amount", 0)),
             "Currency": _safe_str(transaction_data.get("currency", "KES")),
-            "Customer Phone": _safe_str(transaction_data.get("customer_phone", "")),
+            "Customer Phone": payer_phone,
+            "M-Pesa Phone": payer_phone,
+            "WhatsApp Phone": whatsapp_phone,
             "Status": _safe_str(transaction_data.get("status", "paid")),
             "Result Code": _safe_str(transaction_data.get("result_code", "")),
             "Result Desc": _safe_str(transaction_data.get("result_desc", "")),

@@ -2073,9 +2073,13 @@ WORKFLOW_TEMPLATES = [
                         "delivery_methods": "{{variables.delivery_methods}}",
                         "storage_provider": "{{variables.storage_provider}}",
                         "storage_spreadsheet_id": "{{variables.storage_spreadsheet_id}}",
+                        "storage_orders_sheet_name": "{{variables.storage_orders_sheet_name}}",
+                        "storage_customers_sheet_name": "{{variables.storage_customers_sheet_name}}",
+                        "storage_transactions_sheet_name": "{{variables.storage_transactions_sheet_name}}",
                         "storage_airtable_base_id": "{{variables.storage_airtable_base_id}}",
                         "storage_airtable_orders_table": "{{variables.storage_airtable_orders_table}}",
                         "storage_airtable_customers_table": "{{variables.storage_airtable_customers_table}}",
+                        "storage_airtable_transactions_table": "{{variables.storage_airtable_transactions_table}}",
                         "auto_escalation_enabled": "{{variables.auto_escalation_enabled}}",
                         "supported_languages": "{{variables.supported_languages}}",
                         "human_handoff_ttl_hours": "{{variables.human_handoff_ttl_hours}}"
@@ -2173,6 +2177,12 @@ WORKFLOW_TEMPLATES = [
                 "default": "Customers",
                 "show_if": {"field": "storage_provider", "value": "google_sheets"}
             },
+            "storage_transactions_sheet_name": {
+                "type": "string",
+                "description": "Transactions sheet/tab name for payment records",
+                "default": "Transactions",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
             "storage_airtable_base_id": {
                 "type": "string",
                 "description": "Airtable Base ID",
@@ -2187,6 +2197,11 @@ WORKFLOW_TEMPLATES = [
             "storage_airtable_customers_table": {
                 "type": "string",
                 "default": "Customers",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
+            },
+            "storage_airtable_transactions_table": {
+                "type": "string",
+                "default": "Transactions",
                 "show_if": {"field": "storage_provider", "value": "airtable"}
             },
             "auto_escalation_enabled": {
@@ -2239,9 +2254,11 @@ WORKFLOW_TEMPLATES = [
                         "storage_spreadsheet_id": "{{variables.storage_spreadsheet_id}}",
                         "storage_orders_sheet_name": "{{variables.storage_orders_sheet_name}}",
                         "storage_customers_sheet_name": "{{variables.storage_customers_sheet_name}}",
+                        "storage_transactions_sheet_name": "{{variables.storage_transactions_sheet_name}}",
                         "storage_airtable_base_id": "{{variables.storage_airtable_base_id}}",
                         "storage_airtable_orders_table": "{{variables.storage_airtable_orders_table}}",
-                        "storage_airtable_customers_table": "{{variables.storage_airtable_customers_table}}"
+                        "storage_airtable_customers_table": "{{variables.storage_airtable_customers_table}}",
+                        "storage_airtable_transactions_table": "{{variables.storage_airtable_transactions_table}}"
                     }
                 },
                 "description": "AI agent handles conversation and order creation"
@@ -2300,6 +2317,12 @@ WORKFLOW_TEMPLATES = [
                 "default": "Customers",
                 "show_if": {"field": "storage_provider", "value": "google_sheets"}
             },
+            "storage_transactions_sheet_name": {
+                "type": "string",
+                "description": "Transactions sheet/tab name for payment records",
+                "default": "Transactions",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
             "storage_airtable_base_id": {
                 "type": "string",
                 "description": "Airtable Base ID",
@@ -2314,6 +2337,11 @@ WORKFLOW_TEMPLATES = [
             "storage_airtable_customers_table": {
                 "type": "string",
                 "default": "Customers",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
+            },
+            "storage_airtable_transactions_table": {
+                "type": "string",
+                "default": "Transactions",
                 "show_if": {"field": "storage_provider", "value": "airtable"}
             }
         }

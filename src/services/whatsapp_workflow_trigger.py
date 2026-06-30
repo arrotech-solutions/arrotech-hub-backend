@@ -23,6 +23,36 @@ from ..services.workflow_builder_service import WorkflowBuilderService
 
 logger = logging.getLogger(__name__)
 
+_STORAGE_CONFIG_KEYS = (
+    "storage_provider",
+    "storage_spreadsheet_id",
+    "storage_orders_sheet_name",
+    "storage_customers_sheet_name",
+    "storage_transactions_sheet_name",
+    "storage_airtable_base_id",
+    "storage_airtable_orders_table",
+    "storage_airtable_customers_table",
+    "storage_airtable_transactions_table",
+)
+
+
+def _merge_workflow_storage_into_config(
+    wf_config: Dict[str, Any],
+    workflow_variables: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Backfill storage tab names from top-level workflow variables for older workflows."""
+    merged = dict(wf_config or {})
+    variables = workflow_variables or {}
+    nested_config = variables.get("config") if isinstance(variables.get("config"), dict) else {}
+    for key in _STORAGE_CONFIG_KEYS:
+        if merged.get(key):
+            continue
+        if key in variables and variables.get(key):
+            merged[key] = variables[key]
+        elif nested_config.get(key):
+            merged[key] = nested_config[key]
+    return merged
+
 
 # Real estate keyword groups for trigger matching
 RE_KEYWORDS = {
@@ -259,6 +289,9 @@ class WhatsAppWorkflowTrigger:
 
                 for workflow, event_type in to_execute:
                     wf_config = dict((workflow.variables or {}).get("config", {}) or {})
+                    wf_config = _merge_workflow_storage_into_config(
+                        wf_config, workflow.variables
+                    )
                     wf_config.setdefault("customer_phone", contact.phone_number)
                     wf_config.setdefault(
                         "customer_name",

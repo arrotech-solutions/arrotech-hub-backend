@@ -105,6 +105,14 @@ async def finalize_order_stk_payment(
             try:
                 from .conversational_agent_service import ConversationalAgentService
 
+                registry = order_tracking_service.get_registered_order(owner_user_id, order_id) or {}
+                order_snapshot = dict(registry.get("order") or {})
+                order_snapshot["order_id"] = order_id
+                order_snapshot["whatsapp_sender"] = registry.get("whatsapp_sender", "")
+                order_snapshot["mpesa_phone"] = registry.get("mpesa_phone", "")
+                if amount_paid:
+                    order_snapshot.setdefault("subtotal", amount_paid)
+
                 tx_data = {
                     "order_id": order_id,
                     "transaction_id": mpesa_receipt or checkout_request_id,
@@ -113,6 +121,8 @@ async def finalize_order_stk_payment(
                     "amount": float(amount_paid or 0),
                     "currency": currency,
                     "customer_phone": mpesa_phone or whatsapp_sender,
+                    "mpesa_phone": mpesa_phone or whatsapp_sender,
+                    "whatsapp_phone": whatsapp_sender or "",
                     "status": "paid",
                     "result_code": result_code,
                     "result_desc": result_desc,
@@ -124,6 +134,7 @@ async def finalize_order_stk_payment(
                     storage_config=storage_config,
                     user=owner_user,
                     db=db,
+                    order_data=order_snapshot,
                 )
             except Exception as tx_err:
                 logger.warning("[STK_PAY] Transaction storage failed for %s: %s", order_id, tx_err)

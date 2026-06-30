@@ -90,6 +90,39 @@ def test_parse_checkout_details_splits_name_and_delivery(message, expected_name,
     assert parsed["delivery_method"] == expected_delivery
 
 
+def test_merge_sheet_records_fills_empty_cells():
+    from src.services.conversational_agent_service import (
+        _ORDERS_SHEET_HEADERS,
+        _merge_sheet_records,
+    )
+
+    headers = list(_ORDERS_SHEET_HEADERS)
+    sparse_row = [
+        "ORD-1", "paid", "", "", "", "", "", "", "", "KES", "", "", "", "", "",
+    ]
+    full_record = {
+        "Order ID": "ORD-1",
+        "Status": "paid",
+        "Customer Name": "Harun Gitundu",
+        "Customer Phone": "254711371265",
+        "Items": "Tea x1",
+        "Item Count": "1",
+        "Subtotal": "2",
+        "Delivery Method": "pickup",
+        "Order Type": "food",
+        "Created At": "2026-06-30T12:00:00",
+    }
+    merged = _merge_sheet_records(headers, sparse_row, full_record, force_status="paid")
+    assert merged["Customer Name"] == "Harun Gitundu"
+    assert merged["Items"] == "Tea x1"
+    assert merged["Item Count"] == "1"
+    assert merged["Subtotal"] == "2"
+    assert merged["Delivery Method"] == "pickup"
+    assert merged["Order Type"] == "food"
+    assert merged["Created At"] == "2026-06-30T12:00:00"
+    assert merged["Status"] == "paid"
+
+
 def test_clean_checkout_customer_name_strips_multiline_delivery():
     assert clean_checkout_customer_name("Harun Gitundu\nPickup") == "Harun Gitundu"
     assert clean_checkout_customer_name("Name: Harun Gitundu\nPickup") == "Harun Gitundu"
