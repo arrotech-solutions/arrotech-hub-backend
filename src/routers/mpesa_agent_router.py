@@ -513,85 +513,31 @@ async def _handle_mpesa_callback_background(webhook_secret: str, body: bytes):
                         or (registry_fallback or {}).get("mpesa_phone")
                         or ""
                     )
-                    platform = (notify_ctx or {}).get("platform")
+                    platform = (notify_ctx or {}).get("platform") or "whatsapp"
                     storage_config = (notify_ctx or {}).get("storage_config") or {}
 
                     try:
-                        from ..services.whatsapp_service import WhatsAppService
-                        from ..services.telegram_service import TelegramService
-                        from ..services.conversational_agent_service import ConversationalAgentService
+                        from ..services.order_stk_payment_service import finalize_order_stk_payment
 
-                        # Resolve the business owner so customer notifications use the
-                        # tenant's own WhatsApp credentials (not global settings).
-                        owner_stmt = select(User).where(User.id == config.user_id)
-                        owner_res = await db.execute(owner_stmt)
-                        owner_user = owner_res.scalar_one_or_none()
-                        wa_config = None
-                        if owner_user and platform == "whatsapp":
-                            try:
-                                wa_config = await order_tracking_service._get_whatsapp_config(
-                                    owner_user, db
-                                )
-                            except Exception as cfg_err:
-                                logger.warning(f"Failed to resolve tenant WhatsApp config: {cfg_err}")
-
-                        msg_ok = (
-                            f"✅ Payment received for order {order_id}. "
-                            f"Receipt: {(parsed or {}).get('transaction_id') or 'pending'}"
-                            if is_paid
-                            else f"⚠️ Payment failed for order {order_id}. {(parsed or {}).get('result_desc') or ''}".strip()
+                        await finalize_order_stk_payment(
+                            db=db,
+                            owner_user_id=str(config.user_id),
+                            order_id=order_id,
+                            whatsapp_sender=whatsapp_sender or "",
+                            mpesa_phone=mpesa_phone,
+                            platform=platform,
+                            storage_config=storage_config,
+                            is_paid=is_paid,
+                            mpesa_receipt=(parsed or {}).get("transaction_id") or "",
+                            amount_paid=float((parsed or {}).get("amount") or 0),
+                            currency="KES",
+                            result_code=str((parsed or {}).get("result_code") or ""),
+                            result_desc=str((parsed or {}).get("result_desc") or ""),
+                            checkout_request_id=checkout_request_id or "",
+                            merchant_request_id=merchant_request_id or "",
+                            payment_record=payment if is_paid else None,
                         )
 
-                        if platform == "whatsapp" and whatsapp_sender:
-                            wa = WhatsAppService()
-                            await wa.send_message(
-                                to_number=whatsapp_sender, message=msg_ok, config=wa_config
-                            )
-                        elif platform == "telegram" and whatsapp_sender:
-                            tg = TelegramService()
-                            await tg.send_message(chat_id=whatsapp_sender, message=msg_ok)
-
-                        # On confirmed payment, generate a PDF receipt and send it
-                        # to both the customer and the business.
-                        if is_paid and owner_user and order_id:
-                            try:
-                                await order_tracking_service.notify_payment_received(
-                                    user=owner_user,
-                                    db=db,
-                                    order_id=order_id,
-                                    mpesa_receipt=(parsed or {}).get("transaction_id") or "",
-                                    amount_paid=float((parsed or {}).get("amount") or 0),
-                                    currency="KES",
-                                    customer_phone=whatsapp_sender or "",
-                                )
-                            except Exception as receipt_err:
-                                logger.warning(f"Failed to send payment receipt: {receipt_err}")
-
-                        # Only record successful transaction rows
-                        if is_paid and payment:
-                            if owner_user and storage_config and storage_config.get("provider") not in (None, "", "none"):
-                                tx_data = {
-                                    "order_id": order_id,
-                                    "transaction_id": (parsed or {}).get("transaction_id"),
-                                    "checkout_request_id": (parsed or {}).get("checkout_request_id"),
-                                    "merchant_request_id": (parsed or {}).get("merchant_request_id"),
-                                    "amount": float((parsed or {}).get("amount") or 0),
-                                    "currency": "KES",
-                                    "customer_phone": mpesa_phone or whatsapp_sender,
-                                    "status": "paid",
-                                    "result_code": (parsed or {}).get("result_code"),
-                                    "result_desc": (parsed or {}).get("result_desc"),
-                                    "paid_at": ((parsed or {}).get("transaction_time") or datetime.utcnow()).isoformat(),
-                                }
-                                conv_service = ConversationalAgentService()
-                                await conv_service.persist_payment_transaction_to_storage(
-                                    transaction_data=tx_data,
-                                    storage_config=storage_config,
-                                    user=owner_user,
-                                    db=db,
-                                )
-
-                        # cleanup ephemeral mapping key after callback processing
                         if map_key_checkout:
                             cache_service.delete(map_key_checkout)
                         if map_key_merchant:

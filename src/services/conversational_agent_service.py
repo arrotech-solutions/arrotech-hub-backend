@@ -3460,15 +3460,12 @@ class ConversationalAgentService:
             lang=preferred_language,
         )
 
-        # Show a tappable "Pay with M-Pesa" button (after the summary text) so the
-        # customer can confirm + pay in one tap — no need to type "YES". The button
-        # is dispatched by the whatsapp_send_message step, after this reply.
         return await self._cart_fast_path_result(
             session_key,
             reply,
             actions_taken=[{"tool": "checkout", "result_summary": "awaiting_confirmation"}],
             send_cart_buttons=False,
-            send_checkout_pay_button=True,
+            send_checkout_pay_button=False,
         )
 
     async def _send_checkout_pay_button(
@@ -5459,6 +5456,33 @@ class ConversationalAgentService:
                 storage_config=storage_config or {},
                 platform=platform,
                 session_key=session_key or "",
+                amount=float(amount_int),
+                currency="KES",
+            )
+
+            logger.info(
+                "[CONV_AGENT] STK initiated order=%s checkout=%s callback_url=%s whatsapp=%s mpesa=%s",
+                order_id,
+                checkout_request_id,
+                callback_url,
+                whatsapp_sender,
+                phone_number,
+            )
+
+            from .order_stk_payment_service import schedule_stk_payment_poll
+
+            schedule_stk_payment_poll(
+                owner_user_id=owner_id,
+                order_id=order_id,
+                checkout_request_id=checkout_request_id or "",
+                merchant_request_id=merchant_request_id or "",
+                amount=float(amount_int),
+                currency="KES",
+                daraja_environment=tenant_env,
+                consumer_key=decrypted["daraja_consumer_key"],
+                consumer_secret=decrypted["daraja_consumer_secret"],
+                short_code=cfg.daraja_shortcode,
+                passkey=decrypted.get("daraja_passkey") or "",
             )
 
             return {

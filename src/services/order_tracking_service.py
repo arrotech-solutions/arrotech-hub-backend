@@ -129,6 +129,8 @@ class OrderTrackingService:
         storage_config: Optional[Dict[str, Any]] = None,
         platform: str = "whatsapp",
         session_key: str = "",
+        amount: float = 0,
+        currency: str = "KES",
     ) -> None:
         """Persist STK IDs on the order registry so callbacks survive Redis ctx loss."""
         if not order_id:
@@ -149,6 +151,10 @@ class OrderTrackingService:
             registry["platform"] = platform
         if session_key:
             registry["session_key"] = session_key
+        if amount:
+            registry["amount"] = amount
+        if currency:
+            registry["currency"] = currency
         registry["stk_initiated"] = True
         if not cache_service.set(
             self._tracking_key(owner_user_id, order_id),

@@ -131,6 +131,59 @@ class DarajaService:
 
         return {"success": False, "error": data.get("ResponseDescription") or "STK push failed", "raw": data}
 
+    async def stk_push_query(
+        self,
+        *,
+        checkout_request_id: str,
+        consumer_key: Optional[str] = None,
+        consumer_secret: Optional[str] = None,
+        short_code: Optional[str] = None,
+        passkey: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Query STK push status (fallback when Daraja callback does not arrive)."""
+        if not checkout_request_id:
+            return {"success": False, "error": "checkout_request_id is required"}
+        bsc = short_code or self.business_short_code
+        pk = passkey or self.passkey
+        if not bsc or not pk:
+            return {"success": False, "error": "Shortcode or passkey not configured"}
+
+        token = await self._get_access_token(consumer_key, consumer_secret)
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        password_str = f"{bsc}{pk}{timestamp}"
+        password = base64.b64encode(password_str.encode()).decode()
+
+        url = f"{self.base_url}/mpesa/stkpushquery/v1/query"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        payload = {
+            "BusinessShortCode": bsc,
+            "Password": password,
+            "Timestamp": timestamp,
+            "CheckoutRequestID": checkout_request_id,
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=payload) as resp:
+                data = await resp.json(content_type=None)
+                if resp.status != 200:
+                    return {
+                        "success": False,
+                        "error": f"Daraja STK query error {resp.status}: {data}",
+                        "raw": data,
+                    }
+
+        response_code = str(data.get("ResponseCode", ""))
+        result_code = str(data.get("ResultCode", "")) if data.get("ResultCode") is not None else ""
+        return {
+            "success": response_code == "0",
+            "response_code": response_code,
+            "result_code": result_code,
+            "result_desc": data.get("ResultDesc") or data.get("ResponseDescription") or "",
+            "checkout_request_id": data.get("CheckoutRequestID") or checkout_request_id,
+            "merchant_request_id": data.get("MerchantRequestID"),
+            "raw": data,
+        }
+
     async def _get_access_token(self, consumer_key: Optional[str] = None, consumer_secret: Optional[str] = None) -> str:
         """Get or refresh OAuth access token."""
         # Use provided credentials or default to settings
