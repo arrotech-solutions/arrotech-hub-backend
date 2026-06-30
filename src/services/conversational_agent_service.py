@@ -4358,6 +4358,20 @@ class ConversationalAgentService:
                         currency=currency,
                     )
 
+                if session_key and order_obj.get("order_id"):
+                    try:
+                        session = await context_manager.get_session_by_key(session_key)
+                        if session:
+                            by_id = dict(session.metadata.get("orders_by_id") or {})
+                            by_id[order_obj["order_id"]] = order_obj
+                            await context_manager.update_session_metadata(
+                                session_key, {"orders_by_id": by_id}
+                            )
+                    except Exception as sess_err:
+                        logger.warning(
+                            "[CONV_AGENT] Failed to cache order in session: %s", sess_err
+                        )
+
                 if getattr(settings, "ORDER_TRACKING_ENABLED", True):
                     if notify_phone and user:
                         if background_tasks:
@@ -4824,6 +4838,198 @@ class ConversationalAgentService:
             
         return found_orders
 
+    async def _resolve_order_for_payment(
+        self,
+        *,
+        order_id: str,
+        user: User,
+        db: AsyncSession,
+        session_key: str = "",
+        storage_config: Optional[Dict[str, Any]] = None,
+        amount_hint: Any = 0,
+    ) -> tuple[Optional[Dict[str, Any]], float]:
+        """
+        Resolve order snapshot + payable amount for STK push.
+        Tries tracking cache, session metadata, then connected storage.
+        """
+        from .order_tracking_service import order_tracking_service
+
+        owner_ids = []
+        session_owner = order_tracking_service.owner_id_from_session_key(
+            session_key, str(user.id)
+        )
+        for candidate in (session_owner, str(user.id)):
+            if candidate and candidate not in owner_ids:
+                owner_ids.append(candidate)
+
+        order_snapshot: Optional[Dict[str, Any]] = None
+        for owner_id in owner_ids:
+            order_snapshot = order_tracking_service.get_order_snapshot(owner_id, order_id)
+            if order_snapshot:
+                break
+
+        if not order_snapshot and session_key:
+            try:
+                session = await context_manager.get_session_by_key(session_key)
+                if session:
+                    by_id = session.metadata.get("orders_by_id") or {}
+                    if isinstance(by_id, dict):
+                        candidate = by_id.get(order_id)
+                        if isinstance(candidate, dict):
+                            order_snapshot = dict(candidate)
+            except Exception as sess_err:
+                logger.warning(
+                    "[CONV_AGENT] Session order lookup failed for %s: %s",
+                    order_id,
+                    sess_err,
+                )
+
+        if not order_snapshot and storage_config:
+            try:
+                order_snapshot = await self._fetch_order_from_storage_by_id(
+                    order_id=order_id,
+                    storage_config=storage_config,
+                    user=user,
+                    db=db,
+                )
+            except Exception as storage_err:
+                logger.warning(
+                    "[CONV_AGENT] Storage order lookup failed for %s: %s",
+                    order_id,
+                    storage_err,
+                )
+
+        amount = order_tracking_service._order_amount(order_snapshot or {})
+        if amount < 1:
+            try:
+                amount = float(amount_hint or 0)
+            except (TypeError, ValueError):
+                amount = 0.0
+
+        return order_snapshot, amount
+
+    async def _fetch_order_from_storage_by_id(
+        self,
+        *,
+        order_id: str,
+        storage_config: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+    ) -> Optional[Dict[str, Any]]:
+        """Load a minimal order snapshot from Sheets/Airtable by order ID."""
+        provider = (storage_config.get("provider") or "").lower()
+        if provider in ("", "none"):
+            return None
+
+        from .tool_executor import ToolExecutor
+
+        executor = ToolExecutor()
+
+        if provider == "google_sheets":
+            spreadsheet_id = storage_config.get("spreadsheet_id", "")
+            if not spreadsheet_id:
+                return None
+            sheet_name = (storage_config.get("orders_sheet_name") or "Orders").strip() or "Orders"
+            read_res = await executor.execute_tool(
+                "google_workspace_sheets",
+                {
+                    "operation": "read_range",
+                    "spreadsheet_id": spreadsheet_id,
+                    "range_name": f"{sheet_name}!A:ZZ",
+                },
+                user,
+                db,
+            )
+            if not read_res.get("success"):
+                return None
+            values = read_res.get("values") or []
+            if len(values) < 2:
+                return None
+            headers = values[0]
+            header_norms = [_normalize_header(h) for h in headers]
+            order_idx_norm = _normalize_header("Order ID")
+            if order_idx_norm not in header_norms:
+                return None
+            order_idx = header_norms.index(order_idx_norm)
+            field_map = {
+                "subtotal": _normalize_header("Subtotal"),
+                "customer_name": _normalize_header("Customer Name"),
+                "customer_phone": _normalize_header("Customer Phone"),
+                "delivery_method": _normalize_header("Delivery Method"),
+                "currency": _normalize_header("Currency"),
+            }
+            col_indices = {
+                key: header_norms.index(norm)
+                for key, norm in field_map.items()
+                if norm in header_norms
+            }
+            for row in values[1:]:
+                if len(row) <= order_idx:
+                    continue
+                if _safe_str(row[order_idx]).strip() != order_id:
+                    continue
+                snapshot: Dict[str, Any] = {"order_id": order_id, "items": []}
+                if "subtotal" in col_indices:
+                    try:
+                        snapshot["subtotal"] = float(
+                            str(row[col_indices["subtotal"]]).replace(",", "") or 0
+                        )
+                    except (TypeError, ValueError):
+                        snapshot["subtotal"] = 0
+                if "customer_name" in col_indices:
+                    snapshot["customer_name"] = _safe_str(
+                        row[col_indices["customer_name"]]
+                    )
+                if "customer_phone" in col_indices:
+                    snapshot["customer_phone"] = _safe_str(
+                        row[col_indices["customer_phone"]]
+                    )
+                if "delivery_method" in col_indices:
+                    snapshot["delivery_method"] = _safe_str(
+                        row[col_indices["delivery_method"]]
+                    )
+                if "currency" in col_indices:
+                    snapshot["currency"] = _safe_str(row[col_indices["currency"]]) or "KES"
+                return snapshot
+
+        if provider == "airtable":
+            base_id = storage_config.get("airtable_base_id", "")
+            table_name = storage_config.get("airtable_orders_table", "Orders")
+            if not base_id:
+                return None
+            read_res = await executor.execute_tool(
+                "airtable_record_management",
+                {
+                    "operation": "read_records",
+                    "base_id": base_id,
+                    "table_name": table_name,
+                    "max_records": 200,
+                },
+                user,
+                db,
+            )
+            if not read_res.get("success"):
+                return None
+            for record in read_res.get("records") or []:
+                fields = record.get("fields") or {}
+                if _safe_str(fields.get("Order ID", "")).strip() != order_id:
+                    continue
+                snapshot = {
+                    "order_id": order_id,
+                    "items": [],
+                    "customer_name": _safe_str(fields.get("Customer Name", "")),
+                    "customer_phone": _safe_str(fields.get("Customer Phone", "")),
+                    "delivery_method": _safe_str(fields.get("Delivery Method", "")),
+                    "currency": _safe_str(fields.get("Currency", "")) or "KES",
+                }
+                try:
+                    snapshot["subtotal"] = float(fields.get("Subtotal") or 0)
+                except (TypeError, ValueError):
+                    snapshot["subtotal"] = 0
+                return snapshot
+
+        return None
+
     async def _sub_initiate_mpesa_payment(
         self,
         *,
@@ -4847,25 +5053,20 @@ class ConversationalAgentService:
             if not phone_number:
                 return {"success": False, "error": "phone_number is required"}
 
-            # Try to fetch the actual amount from cached order to prevent LLM hallucinations
-            from ..services.order_tracking_service import OrderTrackingService
-            track_svc = OrderTrackingService()
-            cached_order = track_svc.get_registered_order(str(user.id), order_id)
-            if cached_order and cached_order.get("order"):
-                _order = cached_order["order"]
-                # OrderService.create_order persists `subtotal`; calculate_order_total
-                # adds `grand_total`. Check all known amount fields so we never charge 0.
-                actual_amount = (
-                    _order.get("total_amount")
-                    or _order.get("grand_total")
-                    or _order.get("total")
-                    or _order.get("subtotal")
-                )
-                if actual_amount:
-                    try:
-                        amount = float(actual_amount)
-                    except (ValueError, TypeError):
-                        pass
+            order_snapshot, resolved_amount = await self._resolve_order_for_payment(
+                order_id=order_id,
+                user=user,
+                db=db,
+                session_key=session_key or "",
+                storage_config=storage_config,
+                amount_hint=amount,
+            )
+            if resolved_amount >= 1:
+                amount = resolved_amount
+            elif order_snapshot:
+                from .order_tracking_service import order_tracking_service
+
+                amount = order_tracking_service._order_amount(order_snapshot)
 
             # Format phone number to 254XXXXXXXXX for M-Pesa
             import re
@@ -4882,7 +5083,27 @@ class ConversationalAgentService:
             except Exception:
                 amount_int = 0
             if amount_int < 1:
-                return {"success": False, "error": "amount must be at least 1 KES"}
+                return {
+                    "success": False,
+                    "error": (
+                        "amount must be at least 1 KES"
+                        + (f" (order {order_id} not found or has zero total)" if order_id else "")
+                    ),
+                }
+
+            from .order_tracking_service import order_tracking_service
+
+            owner_id = order_tracking_service.owner_id_from_session_key(
+                session_key or "", str(user.id)
+            )
+            if order_snapshot:
+                order_tracking_service.register_order(
+                    owner_id,
+                    order_id,
+                    phone_number,
+                    order_snapshot,
+                    business_name=business_name,
+                )
 
             from sqlalchemy import select
             from ..models import MpesaAgentConfig

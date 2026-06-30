@@ -158,7 +158,7 @@ class OrderService:
         for i, item in enumerate(items):
             item_name = item.get("name", f"Item {i + 1}")
             quantity = float(item.get("quantity", 1))
-            unit_price = float(item.get("unit_price", 0))
+            unit_price = float(item.get("unit_price", item.get("price", 0)) or 0)
             unit = item.get("unit", "pcs")
             item_total = quantity * unit_price
 

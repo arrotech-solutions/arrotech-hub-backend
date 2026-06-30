@@ -92,6 +92,17 @@ class OrderTrackingService:
             payload,
             expire_seconds=TRACKING_TTL_SECONDS,
         )
+        if not cache_service.redis_client:
+            logger.warning(
+                "[ORDER_TRACK] Redis unavailable — order %s not cached for payment lookup",
+                order_id,
+            )
+        elif not cache_service.get(self._tracking_key(owner_user_id, order_id)):
+            logger.warning(
+                "[ORDER_TRACK] Failed to cache order %s for owner %s",
+                order_id,
+                owner_user_id,
+            )
 
     def mark_stk_initiated(self, owner_user_id: str, order_id: str) -> None:
         """Flag that an M-Pesa STK push was already sent for this order."""
@@ -113,12 +124,49 @@ class OrderTrackingService:
     def _order_amount(self, order: Dict[str, Any]) -> float:
         for key in ("grand_total", "total_amount", "total", "subtotal"):
             val = order.get(key)
-            if val is not None:
+            if val is not None and val != "":
                 try:
-                    return float(val)
+                    amt = float(val)
+                    if amt > 0:
+                        return amt
                 except (TypeError, ValueError):
                     continue
-        return 0.0
+
+        line_total = 0.0
+        for item in order.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("total") is not None:
+                try:
+                    line_total += float(item.get("total") or 0)
+                    continue
+                except (TypeError, ValueError):
+                    pass
+            try:
+                qty = float(item.get("quantity", 1) or 1)
+                unit = float(
+                    item.get("unit_price", item.get("price", 0)) or 0
+                )
+                line_total += qty * unit
+            except (TypeError, ValueError):
+                continue
+        return round(line_total, 2)
+
+    @staticmethod
+    def owner_id_from_session_key(session_key: str, fallback_user_id: str) -> str:
+        if session_key and session_key.startswith("ccm:"):
+            parts = session_key.split(":")
+            if len(parts) >= 3 and parts[2]:
+                return parts[2]
+        return str(fallback_user_id)
+
+    def get_order_snapshot(
+        self, owner_user_id: str, order_id: str
+    ) -> Optional[Dict[str, Any]]:
+        registry = self.get_registered_order(owner_user_id, order_id)
+        if registry and isinstance(registry.get("order"), dict):
+            return dict(registry["order"])
+        return None
 
     async def _generate_receipt_pdf_bytes(
         self,

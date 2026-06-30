@@ -91,13 +91,83 @@ async def test_generate_order_receipt_pdf_produces_valid_pdf(sample_order):
     assert b"ORDER RECEIVED" not in raw  # text is compressed/encoded in PDF stream
 
 
+def test_order_amount_sums_line_items_when_subtotal_missing(tracking_service):
+    order = {
+        "items": [
+            {"name": "Coca-Cola", "quantity": 1, "price": 1, "total": 1},
+        ],
+    }
+    assert tracking_service._order_amount(order) == 1.0
+
+
+def test_order_amount_uses_price_when_unit_price_missing(tracking_service):
+    order = {
+        "subtotal": 0,
+        "items": [{"name": "Snack", "quantity": 2, "price": 50}],
+    }
+    assert tracking_service._order_amount(order) == 100.0
+
+
+@pytest.mark.asyncio
+async def test_resolve_order_for_payment_from_session_metadata(sample_order):
+    from src.services.conversational_agent_service import ConversationalAgentService
+    from src.services.conversation_context_manager import (
+        ConversationSession,
+        context_manager,
+    )
+
+    agent = ConversationalAgentService()
+    user = MagicMock()
+    user.id = "f90eb4b7-f155-49ce-b76f-518f8ca9b673"
+    session_key = f"ccm:whatsapp:{user.id}:254711371265"
+
+    async def fake_get_session_by_key(key):
+        return ConversationSession(
+            session_key=key,
+            platform="whatsapp",
+            owner_user_id=str(user.id),
+            sender_id="254711371265",
+            messages=[],
+            metadata={
+                "orders_by_id": {
+                    sample_order["order_id"]: sample_order,
+                }
+            },
+        )
+
+    with patch.object(
+        context_manager, "get_session_by_key", fake_get_session_by_key
+    ), patch(
+        "src.services.order_tracking_service.cache_service"
+    ) as cache:
+        cache.get.return_value = None
+        cache.redis_client = None
+
+        order, amount = await agent._resolve_order_for_payment(
+            order_id=sample_order["order_id"],
+            user=user,
+            db=AsyncMock(),
+            session_key=session_key,
+            storage_config={"provider": "none"},
+            amount_hint=0,
+        )
+
+    assert order is not None
+    assert amount == 1000.0
+
+
 def test_register_order_preserves_existing_flags(tracking_service, sample_order):
     with patch("src.services.order_tracking_service.cache_service") as cache:
-        cache.get.return_value = {
-            "placement_notified": True,
-            "stk_initiated": True,
-            "payment_notified": False,
-        }
+        cache.redis_client = MagicMock()
+        cache.get.side_effect = [
+            {
+                "placement_notified": True,
+                "stk_initiated": True,
+                "payment_notified": False,
+            },
+            {"order_id": sample_order["order_id"]},
+        ]
+        cache.set.return_value = True
         tracking_service.register_order(
             "user-1",
             sample_order["order_id"],
