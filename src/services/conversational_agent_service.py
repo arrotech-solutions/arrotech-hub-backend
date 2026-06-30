@@ -188,6 +188,19 @@ def _dedupe_keep_order(values: List[str]) -> List[str]:
             out.append(v)
     return out
 
+
+def _orders_sheet_tab_candidates(preferred_sheet: str) -> List[str]:
+    """Tab names to try when locating the Orders sheet.
+
+    Workflows often still reference ``Sheet1`` after that tab was renamed to
+    ``Orders``. Prefer ``Orders`` first in that case so rows are not written to
+    a new empty ``Sheet1`` tab while the user watches the renamed Orders tab.
+    """
+    preferred = (preferred_sheet or "Orders").strip() or "Orders"
+    if preferred.lower() == "sheet1":
+        return _dedupe_keep_order(["Orders", "Sheet1"])
+    return _dedupe_keep_order([preferred, "Orders", "Sheet1"])
+
 def _col_idx_to_a1(idx0: int) -> str:
     """0-based column index → A1 column letters."""
     if idx0 < 0:
@@ -5050,10 +5063,11 @@ class ConversationalAgentService:
             executor=executor,
             spreadsheet_id=spreadsheet_id,
             preferred_sheet=sheet_name,
-            fallback_sheets=["Orders", "Sheet1"],
+            fallback_sheets=[],
             required_headers=orders_headers_required,
             user=user,
             db=db,
+            candidate_sheets=_orders_sheet_tab_candidates(sheet_name),
         )
         if not orders_headers:
             return []
@@ -6418,10 +6432,11 @@ class ConversationalAgentService:
             executor=executor,
             spreadsheet_id=spreadsheet_id,
             preferred_sheet=sheet_name,
-            fallback_sheets=["Orders", "Sheet1"],
+            fallback_sheets=[],
             required_headers=orders_headers_required,
             user=user,
             db=db,
+            candidate_sheets=_orders_sheet_tab_candidates(sheet_name),
         )
         if not orders_headers:
             return
@@ -6631,49 +6646,31 @@ class ConversationalAgentService:
             return
 
         orders_sheet = (storage_config.get("orders_sheet_name") or "Orders").strip() or "Orders"
-        customers_sheet = (storage_config.get("customers_sheet_name") or "Customers").strip() or "Customers"
 
         order_id = _safe_str(order_data.get("order_id", "")).strip()
-        customer_phone = _safe_str(customer.get("phone", "")).strip()
 
         orders_headers_required = list(_ORDERS_SHEET_HEADERS)
 
-        customers_headers_required = [
-            "Customer Phone",
-            "Customer Name",
-            "Customer Email",
-            "Last Order ID",
-            "Last Order Date",
-            "Source",
-        ]
-
-        # Ensure tabs + headers exist (best-effort with fallbacks)
         orders_headers = await self._ensure_sheet_headers_with_fallback(
             executor=executor,
             spreadsheet_id=spreadsheet_id,
             preferred_sheet=orders_sheet,
-            fallback_sheets=["Orders", "Sheet1"],
+            fallback_sheets=[],
             required_headers=orders_headers_required,
             user=user,
             db=db,
-        )
-        customers_headers = await self._ensure_sheet_headers_with_fallback(
-            executor=executor,
-            spreadsheet_id=spreadsheet_id,
-            preferred_sheet=customers_sheet,
-            fallback_sheets=["Customers", "Sheet1"],
-            required_headers=customers_headers_required,
-            user=user,
-            db=db,
+            candidate_sheets=_orders_sheet_tab_candidates(orders_sheet),
         )
 
         if not orders_headers:
             logger.warning("[CONV_AGENT] Orders sheet schema validation failed; skipping append.")
             return
-        if not customers_headers:
-            logger.warning(
-                "[CONV_AGENT] Customers sheet tab missing; continuing with Orders write only."
-            )
+
+        logger.info(
+            "[CONV_AGENT] Persisting order %s to Sheets tab '%s'",
+            order_id,
+            orders_headers["sheet_name"],
+        )
 
         # Dedup: don't append same Order ID more than once.
         order_record = self._build_order_sheet_record(
@@ -6747,10 +6744,11 @@ class ConversationalAgentService:
             executor=executor,
             spreadsheet_id=spreadsheet_id,
             preferred_sheet=orders_sheet,
-            fallback_sheets=["Orders", "Sheet1"],
+            fallback_sheets=[],
             required_headers=list(_ORDERS_SHEET_HEADERS),
             user=user,
             db=db,
+            candidate_sheets=_orders_sheet_tab_candidates(orders_sheet),
         )
         if not orders_headers:
             return
@@ -7021,14 +7019,19 @@ class ConversationalAgentService:
         required_headers: List[str],
         user: User,
         db: AsyncSession,
+        *,
+        candidate_sheets: Optional[List[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Ensure the header row exists for a sheet tab. If the preferred tab doesn't exist,
         tries fallbacks. Returns {"sheet_name": str, "headers": List[str]} or None.
         """
-        candidate_sheets = _dedupe_keep_order([preferred_sheet] + (fallback_sheets or []))
+        if candidate_sheets:
+            sheets_to_try = _dedupe_keep_order(candidate_sheets)
+        else:
+            sheets_to_try = _dedupe_keep_order([preferred_sheet] + (fallback_sheets or []))
         last_error = ""
-        for sheet_name in candidate_sheets:
+        for sheet_name in sheets_to_try:
             try:
                 headers = await self._ensure_sheet_headers(
                     executor=executor,
@@ -7042,7 +7045,7 @@ class ConversationalAgentService:
                     return {"sheet_name": sheet_name, "headers": headers}
             except Exception as e:
                 last_error = str(e)
-        logger.warning(f"[CONV_AGENT] Failed to ensure sheet headers for any candidate tabs: {candidate_sheets}. Last error: {last_error}")
+        logger.warning(f"[CONV_AGENT] Failed to ensure sheet headers for any candidate tabs: {sheets_to_try}. Last error: {last_error}")
         return None
 
     async def _ensure_sheet_headers(

@@ -70,6 +70,14 @@ def test_build_order_sheet_record_separates_whatsapp_and_mpesa_phone():
     assert record["M-Pesa Phone"] == "254797568564"
 
 
+def test_orders_sheet_tab_candidates_prefers_orders_after_sheet1_rename():
+    from src.services.conversational_agent_service import _orders_sheet_tab_candidates
+
+    assert _orders_sheet_tab_candidates("Sheet1") == ["Orders", "Sheet1"]
+    assert _orders_sheet_tab_candidates("Orders") == ["Orders", "Sheet1"]
+    assert _orders_sheet_tab_candidates("") == ["Orders", "Sheet1"]
+
+
 def test_merge_preserves_whatsapp_customer_phone_on_paid_update():
     headers = list(_ORDERS_SHEET_HEADERS)
     existing = [
