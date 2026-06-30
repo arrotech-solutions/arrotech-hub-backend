@@ -174,3 +174,71 @@ class TestConversationalAgentService:
                 last_message = messages[-1]
                 assert last_message["role"] == "tool"
                 assert "API Key Invalid" in last_message["content"]
+
+
+class TestGoogleSheetsRowAlignment:
+    def test_record_to_sheet_row_respects_header_order(self):
+        from src.services.conversational_agent_service import _record_to_sheet_row
+
+        headers = ["Created At", "Order ID", "Amount", "Customer Phone"]
+        record = {
+            "Order ID": "ORD-99",
+            "Amount": "250",
+            "Customer Phone": "254711371265",
+            "Created At": "2026-06-30T12:00:00",
+        }
+        assert _record_to_sheet_row(record, headers) == [
+            "2026-06-30T12:00:00",
+            "ORD-99",
+            "250",
+            "254711371265",
+        ]
+
+    def test_record_to_sheet_row_matches_headers_with_different_spacing(self):
+        from src.services.conversational_agent_service import _record_to_sheet_row
+
+        headers = ["Transaction ID", "Order ID", "Paid At"]
+        record = {
+            "order id": "ORD-1",
+            "transaction_id": "ABC123",
+            "Paid At": "2026-06-30",
+        }
+        assert _record_to_sheet_row(record, headers) == [
+            "ABC123",
+            "ORD-1",
+            "2026-06-30",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_append_record_by_headers_uses_write_range(self, mock_user, mock_db):
+        from src.services.conversational_agent_service import ConversationalAgentService
+
+        svc = ConversationalAgentService()
+        executor = AsyncMock()
+        executor.execute_tool = AsyncMock(
+            side_effect=[
+                {
+                    "success": True,
+                    "values": [["Order ID", "Amount"], ["ORD-1", "10"], ["ORD-2", "20"]],
+                },
+                {"success": True},
+            ]
+        )
+
+        res = await svc._append_record_by_headers(
+            executor=executor,
+            spreadsheet_id="sheet123",
+            sheet_name="Orders",
+            headers=["Order ID", "Amount"],
+            record={"Order ID": "ORD-3", "Amount": "30"},
+            user=mock_user,
+            db=mock_db,
+            probe_header="Order ID",
+        )
+
+        assert res.get("success") is True
+        write_call = executor.execute_tool.call_args_list[-1]
+        assert write_call.args[0] == "google_workspace_sheets"
+        assert write_call.args[1]["operation"] == "write_range"
+        assert write_call.args[1]["range_name"] == "Orders!A4"
+        assert write_call.args[1]["values"] == [["ORD-3", "30"]]

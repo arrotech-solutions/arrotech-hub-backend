@@ -200,12 +200,27 @@ def _col_idx_to_a1(idx0: int) -> str:
     return letters
 
 def _normalize_header(s: str) -> str:
-    return re.sub(r"\s+", " ", (s or "").strip().lower())
+    """Lowercase + strip non-alphanumerics so 'Order ID' == 'order_id'."""
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 def _safe_str(v: Any) -> str:
     if v is None:
         return ""
     return str(v)
+
+def _record_to_sheet_row(record: Dict[str, Any], headers: List[str]) -> List[str]:
+    """Align a dict record to the sheet's header columns (catalog-builder style)."""
+    header_norm_to_value = {
+        _normalize_header(k): _safe_str(v) for k, v in (record or {}).items()
+    }
+    row: List[str] = []
+    for h in headers:
+        h_str = _safe_str(h).strip()
+        if not h_str:
+            row.append("")
+        else:
+            row.append(header_norm_to_value.get(_normalize_header(h_str), ""))
+    return row
 
 def _phones_match(p1: str, p2: str) -> bool:
     """Robustly compare phone numbers by checking the last 9 digits."""
@@ -1179,6 +1194,10 @@ class ConversationalAgentService:
 
                     eff_phone = parsed.get("phone") or draft.get("phone") or customer_phone
                     eff_name = parsed.get("name") or draft.get("name") or customer_name
+                    if eff_name:
+                        from .whatsapp_ordering_helpers import clean_checkout_customer_name
+
+                        eff_name = clean_checkout_customer_name(eff_name) or eff_name
                     eff_delivery = parsed.get("delivery_method") or draft.get("delivery_method")
 
                     has_name_and_phone = bool(eff_phone and eff_name)
@@ -3274,6 +3293,20 @@ class ConversationalAgentService:
 
         return None, delivery_address
 
+    def _sanitize_checkout_customer_args(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Strip delivery/pickup text accidentally embedded in customer_name (LLM or free-text replies)."""
+        from .whatsapp_ordering_helpers import clean_checkout_customer_name, parse_checkout_details
+
+        raw_name = (arguments.get("customer_name") or "").strip()
+        if raw_name:
+            parsed = parse_checkout_details(raw_name)
+            cleaned = clean_checkout_customer_name(parsed.get("name") or raw_name)
+            if cleaned:
+                arguments["customer_name"] = cleaned
+            if not arguments.get("delivery_method") and parsed.get("delivery_method"):
+                arguments["delivery_method"] = parsed["delivery_method"]
+        return arguments
+
     async def _start_checkout_flow(
         self,
         session_key: str,
@@ -3355,7 +3388,9 @@ class ConversationalAgentService:
         ask for it; otherwise compute the total, persist the pending order, and
         ask the customer to reply YES to confirm.
         """
-        from .whatsapp_ordering_helpers import format_checkout_confirmation
+        from .whatsapp_ordering_helpers import format_checkout_confirmation, clean_checkout_customer_name
+
+        customer_name = clean_checkout_customer_name(customer_name) or customer_name
 
         # Auto-pick delivery when a saved address exists or only one method is offered
         if not delivery_method:
@@ -3917,6 +3952,7 @@ class ConversationalAgentService:
                     arguments["customer_phone"] = default_customer_phone
                 if not arguments.get("customer_name") and default_customer_name:
                     arguments["customer_name"] = default_customer_name
+                arguments = self._sanitize_checkout_customer_args(arguments)
                 return await self._sub_create_order(
                     arguments=arguments,
                     order_type=order_type,
@@ -3936,6 +3972,7 @@ class ConversationalAgentService:
                     arguments["customer_phone"] = default_customer_phone
                 if not arguments.get("customer_name") and default_customer_name:
                     arguments["customer_name"] = default_customer_name
+                arguments = self._sanitize_checkout_customer_args(arguments)
                 return await self._sub_validate_order(
                     arguments=arguments,
                     order_type=order_type,
@@ -6633,6 +6670,7 @@ class ConversationalAgentService:
                     record=order_record,
                     user=user,
                     db=db,
+                    probe_header="Order ID",
                 )
 
     async def _persist_transaction_to_google_sheets(
@@ -6713,40 +6751,8 @@ class ConversationalAgentService:
             record=record,
             user=user,
             db=db,
+            probe_header="Transaction ID",
         )
-
-        # Dedup: don't append same customer phone more than once.
-        if customer_phone:
-            cust_exists = await self._sheet_value_exists(
-                executor=executor,
-                spreadsheet_id=spreadsheet_id,
-                sheet_name=customers_headers["sheet_name"],
-                headers=customers_headers["headers"],
-                header_name="Customer Phone",
-                value=customer_phone,
-                user=user,
-                db=db,
-            )
-            if cust_exists:
-                logger.info(f"[CONV_AGENT] Customer {customer_phone} already exists in Sheets; not duplicating row.")
-            else:
-                customer_record = {
-                    "Customer Phone": customer_phone,
-                    "Customer Name": _safe_str(customer.get("name", "")),
-                    "Customer Email": _safe_str(customer.get("email", "")),
-                    "Last Order ID": order_id,
-                    "Last Order Date": _safe_str(created_at),
-                    "Source": "whatsapp",
-                }
-                await self._append_record_by_headers(
-                    executor=executor,
-                    spreadsheet_id=spreadsheet_id,
-                    sheet_name=customers_headers["sheet_name"],
-                    headers=customers_headers["headers"],
-                    record=customer_record,
-                    user=user,
-                    db=db,
-                )
 
     async def _ensure_sheet_headers_with_fallback(
         self,
@@ -6811,6 +6817,9 @@ class ConversationalAgentService:
         values = (read_res.get("values") or [])
         existing_row = values[0] if values and isinstance(values[0], list) else []
         existing_headers = [h for h in (existing_row or []) if _safe_str(h).strip() != ""]
+        # Drop trailing empty header cells (common in manually edited sheets).
+        while existing_headers and not _safe_str(existing_headers[-1]).strip():
+            existing_headers.pop()
 
         if not existing_headers:
             # Sheet is empty — create header row.
@@ -6854,6 +6863,55 @@ class ConversationalAgentService:
             raise Exception(write_res.get("error", "Failed to update header row"))
         return merged
 
+    async def _find_next_sheet_row(
+        self,
+        executor,
+        spreadsheet_id: str,
+        sheet_name: str,
+        headers: List[str],
+        user: User,
+        db: AsyncSession,
+        probe_header: Optional[str] = None,
+    ) -> int:
+        """
+        Find the next 1-based row to write data (row 1 = headers).
+        Uses write_range instead of append_rows (append misaligns when the sheet
+        has formulas, filters, or sparse columns — same approach as catalog builder).
+        """
+        col_idx = 0
+        if probe_header:
+            target = _normalize_header(probe_header)
+            for i, h in enumerate(headers):
+                if _normalize_header(h) == target:
+                    col_idx = i
+                    break
+        else:
+            for i, h in enumerate(headers):
+                if _safe_str(h).strip():
+                    col_idx = i
+                    break
+
+        col = _col_idx_to_a1(col_idx)
+        read_res = await executor.execute_tool(
+            "google_workspace_sheets",
+            {
+                "operation": "read_range",
+                "spreadsheet_id": spreadsheet_id,
+                "range_name": f"{sheet_name}!{col}:{col}",
+            },
+            user,
+            db,
+        )
+
+        last_row = 0
+        if read_res.get("success"):
+            col_values = read_res.get("values") or []
+            for i, row_val in enumerate(col_values):
+                if row_val and len(row_val) > 0 and str(row_val[0]).strip():
+                    last_row = i + 1
+
+        return max(last_row + 1, 2)
+
     async def _append_record_by_headers(
         self,
         executor,
@@ -6863,30 +6921,38 @@ class ConversationalAgentService:
         record: Dict[str, Any],
         user: User,
         db: AsyncSession,
+        probe_header: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Append a record aligned to the given header columns."""
-        header_norm_to_idx = {_normalize_header(h): i for i, h in enumerate(headers)}
-        row = [""] * len(headers)
-        for k, v in (record or {}).items():
-            idx = header_norm_to_idx.get(_normalize_header(k))
-            if idx is None:
-                continue
-            row[idx] = _safe_str(v)
+        """Append a record aligned to the sheet header columns."""
+        row = _record_to_sheet_row(record, headers)
+        next_row = await self._find_next_sheet_row(
+            executor=executor,
+            spreadsheet_id=spreadsheet_id,
+            sheet_name=sheet_name,
+            headers=headers,
+            user=user,
+            db=db,
+            probe_header=probe_header,
+        )
 
-        # Append to full-width range; Google will place values starting at first column.
         res = await executor.execute_tool(
             "google_workspace_sheets",
             {
-                "operation": "append_rows",
+                "operation": "write_range",
                 "spreadsheet_id": spreadsheet_id,
-                "range_name": f"{sheet_name}!A:ZZ",
+                "range_name": f"{sheet_name}!A{next_row}",
                 "values": [row],
             },
             user,
             db,
         )
         if not res.get("success"):
-            logger.warning(f"[CONV_AGENT] Append row failed for {sheet_name}: {res.get('error')}")
+            logger.warning(
+                "[CONV_AGENT] Write row failed for %s row %s: %s",
+                sheet_name,
+                next_row,
+                res.get("error"),
+            )
         return res
 
     async def _sheet_value_exists(

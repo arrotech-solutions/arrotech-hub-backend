@@ -6,6 +6,8 @@ from src.services.whatsapp_ordering_helpers import (
     is_order_confirmation_message,
     match_cart_command,
     normalize_search_query,
+    parse_checkout_details,
+    clean_checkout_customer_name,
     parse_product_button_id,
     parse_remove_item_name,
     parse_set_quantity_message,
@@ -70,3 +72,24 @@ def test_webhook_signature():
     sig = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     assert verify_whatsapp_signature(body, sig, secret)
     assert not verify_whatsapp_signature(body, "sha256=bad", secret)
+
+
+@pytest.mark.parametrize(
+    "message,expected_name,expected_delivery",
+    [
+        ("Name: Harun Gitundu\nPickup", "Harun Gitundu", "pickup"),
+        ("Harun Gitundu\nPickup", "Harun Gitundu", "pickup"),
+        ("Name: Harun Gitundu Pickup", "Harun Gitundu", "pickup"),
+        ("Harun Gitundu Pickup", "Harun Gitundu", "pickup"),
+        ("Name: Harun Gitundu\nDelivery", "Harun Gitundu", "delivery"),
+    ],
+)
+def test_parse_checkout_details_splits_name_and_delivery(message, expected_name, expected_delivery):
+    parsed = parse_checkout_details(message)
+    assert parsed["name"] == expected_name
+    assert parsed["delivery_method"] == expected_delivery
+
+
+def test_clean_checkout_customer_name_strips_multiline_delivery():
+    assert clean_checkout_customer_name("Harun Gitundu\nPickup") == "Harun Gitundu"
+    assert clean_checkout_customer_name("Name: Harun Gitundu\nPickup") == "Harun Gitundu"

@@ -129,7 +129,7 @@ _LABELLED_PHONE_RE = re.compile(
     r"(?:phone|tel|telephone|mobile|cell|number|no|simu|nambari|namba)\s*[:\-]?\s*(\+?[\d\s\-]{7,})",
     re.IGNORECASE,
 )
-_LABELLED_NAME_RE = re.compile(r"name\s*[:\-]\s*(.+)", re.IGNORECASE)
+_LABELLED_NAME_RE = re.compile(r"name\s*[:\-]\s*([^\n\r]+)", re.IGNORECASE)
 _NAME_IS_RE = re.compile(
     r"(?:here\s+is\s+)?(?:my\s+)?name\s*(?:is|:|,)\s*"
     r"([A-Za-z][A-Za-z\s'\-]{1,60}?)"
@@ -167,6 +167,68 @@ def _looks_like_phrase_not_name(text: str) -> bool:
     if not lower:
         return True
     return any(p in lower for p in _NOT_A_NAME_PHRASES)
+
+
+def _is_delivery_method_only(text: str) -> bool:
+    """True when a line is only a delivery/pickup preference (not a person's name)."""
+    compact = re.sub(r"[^a-z\s]", "", (text or "").lower()).strip()
+    if not compact:
+        return True
+    if compact in (
+        "pickup", "pick up", "delivery", "deliver", "delivered",
+        "collect", "collection", "dine in", "dinein", "eat in",
+        "letewa", "uletewe", "nitachukua", "kuchukua", "kula hapa",
+    ):
+        return True
+    words = compact.split()
+    if words and len(words) <= 3 and all(
+        w in ("pick", "up", "pickup", "delivery", "deliver", "dine", "in", "collect", "collection")
+        for w in words
+    ):
+        return True
+    return False
+
+
+def clean_checkout_customer_name(name: str) -> str:
+    """
+    Remove delivery/pickup lines or suffixes accidentally captured as the customer name.
+
+    Examples:
+        "Harun Gitundu\\nPickup" -> "Harun Gitundu"
+        "Name: Harun Gitundu Pickup" -> "Harun Gitundu"
+    """
+    if not name:
+        return ""
+
+    text = (name or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    name_lines: List[str] = []
+    for ln in text.split("\n"):
+        s = ln.strip()
+        if not s or _is_delivery_method_only(s):
+            continue
+        s = re.sub(r"^name\s*[:\-]\s*", "", s, flags=re.IGNORECASE).strip()
+        if s and not _is_delivery_method_only(s):
+            name_lines.append(s)
+
+    if not name_lines:
+        return ""
+
+    cleaned = name_lines[0]
+    lower = cleaned.lower()
+    for phrases in (_PICKUP_WORDS, _DINE_WORDS, _DELIVERY_WORDS):
+        for phrase in sorted(phrases, key=len, reverse=True):
+            if lower.endswith(phrase):
+                cleaned = cleaned[: -len(phrase)].strip(" ,;-:")
+                lower = cleaned.lower()
+
+    parts = cleaned.split()
+    while parts and parts[-1].lower() in ("pickup", "delivery", "collect", "collection"):
+        parts.pop()
+    cleaned = " ".join(parts).strip()
+
+    if not cleaned or _looks_like_phrase_not_name(cleaned):
+        return ""
+    return cleaned[:80]
 
 
 def normalize_ke_mpesa_phone(raw: str) -> Optional[str]:
@@ -336,7 +398,7 @@ def parse_checkout_details(message: str) -> Dict[str, Optional[str]]:
     else:
         m_name = _LABELLED_NAME_RE.search(text)
         if m_name:
-            cand = m_name.group(1).splitlines()[0].strip()
+            cand = m_name.group(1).strip()
             cand = re.sub(r"\+?\d[\d\s\-]{6,}.*$", "", cand).strip(" ,;-")
             if cand and not _looks_like_phrase_not_name(cand):
                 result["name"] = cand[:80]
@@ -346,22 +408,31 @@ def parse_checkout_details(message: str) -> Dict[str, Optional[str]]:
                 if not s:
                     continue
                 sl = s.lower()
-                if any(w in sl for w in _DELIVERY_WORDS + _PICKUP_WORDS + _DINE_WORDS):
+                if _is_delivery_method_only(s):
                     continue
+                if re.match(r"^name\s*[:\-]", sl):
+                    s = re.sub(r"^name\s*[:\-]\s*", "", s, flags=re.IGNORECASE).strip()
+                    sl = s.lower()
+                    if not s or _is_delivery_method_only(s):
+                        continue
                 if re.search(r"\d", s):
                     continue
                 if sl in ("name", "phone", "tel", "mobile"):
                     continue
                 letters = re.sub(r"[^a-zA-Z\s']", "", s).strip()
-                parts = letters.split()
+                candidate = clean_checkout_customer_name(letters) or letters
+                parts = candidate.split()
                 if (
-                    letters
+                    candidate
                     and 1 <= len(parts) <= 6
-                    and len(letters) >= 2
-                    and not _looks_like_phrase_not_name(letters)
+                    and len(candidate) >= 2
+                    and not _looks_like_phrase_not_name(candidate)
                 ):
-                    result["name"] = letters[:80]
+                    result["name"] = candidate[:80]
                     break
+
+    if result["name"]:
+        result["name"] = clean_checkout_customer_name(result["name"])
 
     return result
 
