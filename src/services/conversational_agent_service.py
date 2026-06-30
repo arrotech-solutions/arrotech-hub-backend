@@ -32,6 +32,7 @@ from .order_service import OrderService
 from .conversation_context_manager import context_manager
 from .cache_service import cache_service
 from .agent_intelligence_service import agent_intelligence, LANGUAGE_PROFILES, DEFAULT_LANGUAGE
+from .whatsapp_ordering_helpers import normalize_ke_mpesa_phone
 from ..config import settings
 
 logger = logging.getLogger(__name__)
@@ -295,7 +296,9 @@ AGENT_SUB_TOOLS = [
             "description": (
                 "Initiate an M-Pesa STK push so the customer can pay for their order. "
                 "Only call this AFTER an order has been created (you must have an order_id and amount). "
-                "Use the customer's phone number for the STK prompt. "
+                "By default use the customer's WhatsApp number for the STK prompt. "
+                "If the customer chose 'Other number' or explicitly gave a different M-Pesa line "
+                "for payment, use that allowlisted number. "
                 "If the customer hasn't confirmed they want to pay now, ask first."
             ),
             "parameters": {
@@ -720,7 +723,11 @@ class ConversationalAgentService:
                 parse_remove_item_name,
                 parse_set_quantity_message,
                 PAY_MPESA_AGENT_PREFIX,
+                PAY_MPESA_OTHER_PREFIX,
                 CONFIRM_PAY_AGENT_MARKER,
+                extract_phone_from_text,
+                mask_mpesa_phone,
+                normalize_ke_mpesa_phone,
             )
 
             from .whatsapp_location_service import (
@@ -825,6 +832,7 @@ class ConversationalAgentService:
                     detected_confidence < 0.6
                     and len((user_message or "").split()) >= 2
                     and not user_message.startswith(PAY_MPESA_AGENT_PREFIX)
+                    and not user_message.startswith(PAY_MPESA_OTHER_PREFIX)
                 ):
                     llm_lang = await self._detect_language_llm(
                         user_message, supported_languages
@@ -1023,6 +1031,134 @@ class ConversationalAgentService:
                         "actions_taken": [{"tool": "handoff", "result_summary": "human_active"}],
                     }
 
+            # ── Awaiting alternate M-Pesa number (before checkout — phone reply is payment-only) ──
+            if session_key:
+                try:
+                    if not session:
+                        session = await context_manager.get_session_by_key(session_key)
+                except Exception:
+                    session = None
+            awaiting_mpesa = (
+                (session.metadata.get("awaiting_mpesa_payment") or {})
+                if session
+                else {}
+            )
+            if (
+                awaiting_mpesa.get("order_id")
+                and session_key
+                and not (user_message or "").startswith(PAY_MPESA_AGENT_PREFIX)
+                and not (user_message or "").startswith(PAY_MPESA_OTHER_PREFIX)
+            ):
+                early_storage_config = self._storage_config_from_business(business_config)
+                lang = (
+                    context_manager.get_preferred_language(session)
+                    if session
+                    else preferred_language
+                )
+                pay_order_id = str(awaiting_mpesa.get("order_id", "")).strip()
+                msg_lower = (user_message or "").strip().lower()
+
+                if msg_lower in ("cancel", "stop", "quit", "acha", "cancel payment"):
+                    await context_manager.update_session_metadata(
+                        session_key, {"awaiting_mpesa_payment": None}
+                    )
+                    reply = self._t(
+                        lang,
+                        "Okay, payment cancelled. Tap *Pay on this number* or *Other number* when you're ready.",
+                        "Sawa, malipo yameghairiwa. Bonyeza *Pay on this number* au *Other number* ukiwa tayari.",
+                    )
+                    return await self._cart_fast_path_result(
+                        session_key, reply,
+                        actions_taken=[{"tool": "initiate_mpesa_payment", "result_summary": "awaiting_cancelled"}],
+                        send_cart_buttons=False,
+                    )
+
+                parsed_phone = extract_phone_from_text(user_message or "")
+                if not parsed_phone:
+                    reply = self._t(
+                        lang,
+                        (
+                            "Please reply with a valid M-Pesa number (e.g. 0712 345 678), "
+                            "or type *cancel* to stop."
+                        ),
+                        (
+                            "Tafadhali jibu na nambari sahihi ya M-Pesa (mf. 0712 345 678), "
+                            "au andika *cancel* kuacha."
+                        ),
+                    )
+                    return await self._cart_fast_path_result(
+                        session_key, reply,
+                        actions_taken=[{"tool": "initiate_mpesa_payment", "result_summary": "awaiting_invalid_phone"}],
+                        send_cart_buttons=False,
+                    )
+
+                await context_manager.update_session_metadata(
+                    session_key,
+                    {
+                        "awaiting_mpesa_payment": {
+                            **awaiting_mpesa,
+                            "resolved_phone": parsed_phone,
+                        }
+                    },
+                )
+                try:
+                    pay_res = await self._sub_initiate_mpesa_payment(
+                        order_id=pay_order_id,
+                        phone_number=parsed_phone,
+                        amount=0,
+                        description=f"Order {pay_order_id}",
+                        session_key=session_key,
+                        storage_config=early_storage_config,
+                        business_name=business_name,
+                        user=user,
+                        db=db,
+                    )
+                except Exception as pay_err:
+                    logger.error(f"[CONV_AGENT] awaiting mpesa phone STK failed: {pay_err}", exc_info=True)
+                    pay_res = {"success": False, "error": str(pay_err)}
+
+                await context_manager.update_session_metadata(
+                    session_key, {"awaiting_mpesa_payment": None}
+                )
+
+                masked = mask_mpesa_phone(parsed_phone)
+                if pay_res.get("success"):
+                    reply = self._t(
+                        lang,
+                        (
+                            f"📲 I've sent an M-Pesa payment request to {masked}.\n"
+                            "Please check that phone and enter your M-Pesa PIN. "
+                            "You'll get a receipt here once payment is confirmed. 🙏"
+                        ),
+                        (
+                            f"📲 Nimetuma ombi la malipo ya M-Pesa kwa {masked}.\n"
+                            "Tafadhali angalia simu hiyo na uweke PIN yako ya M-Pesa. "
+                            "Utapokea risiti hapa mara malipo yatakapothibitishwa. 🙏"
+                        ),
+                    )
+                    summary = "stk_initiated_alt_phone"
+                else:
+                    err = pay_res.get("error", "")
+                    reply = self._t(
+                        lang,
+                        (
+                            "Sorry, I couldn't start the M-Pesa payment right now. "
+                            + (f"({err}) " if err else "")
+                            + "Please try again or tap *Pay on this number*."
+                        ),
+                        (
+                            "Samahani, sikuweza kuanzisha malipo ya M-Pesa kwa sasa. "
+                            + (f"({err}) " if err else "")
+                            + "Tafadhali jaribu tena au bonyeza *Pay on this number*."
+                        ),
+                    )
+                    summary = "stk_failed_alt_phone"
+                return await self._cart_fast_path_result(
+                    session_key, reply,
+                    actions_taken=[{"tool": "initiate_mpesa_payment", "result_summary": summary}],
+                    send_cart_buttons=False,
+                )
+
             # ── Deterministic checkout (Phase 1): capture name/phone/delivery ──
             if session_key:
                 try:
@@ -1177,17 +1313,54 @@ class ConversationalAgentService:
             )
 
             # Extract storage config
-            storage_config = {
-                "provider": business_config.get("storage_provider", "none"),
-                "spreadsheet_id": business_config.get("storage_spreadsheet_id", ""),
-                "orders_sheet_name": business_config.get("storage_orders_sheet_name", "Orders"),
-                "customers_sheet_name": business_config.get("storage_customers_sheet_name", "Customers"),
-                "transactions_sheet_name": business_config.get("storage_transactions_sheet_name", "Transactions"),
-                "airtable_base_id": business_config.get("storage_airtable_base_id", ""),
-                "airtable_orders_table": business_config.get("storage_airtable_orders_table", "Orders"),
-                "airtable_customers_table": business_config.get("storage_airtable_customers_table", "Customers"),
-                "airtable_transactions_table": business_config.get("storage_airtable_transactions_table", "Transactions"),
-            }
+            storage_config = self._storage_config_from_business(business_config)
+
+            # ── "Other number" M-Pesa button → ask for payment line ──
+            if (user_message or "").startswith(PAY_MPESA_OTHER_PREFIX):
+                pay_order_id = user_message[len(PAY_MPESA_OTHER_PREFIX):].strip()
+                lang = (
+                    context_manager.get_preferred_language(session)
+                    if session else preferred_language
+                )
+                if not pay_order_id:
+                    reply = self._t(
+                        lang,
+                        "I couldn't find which order to pay for. Please try again.",
+                        "Sikuweza kupata oda ya kulipia. Tafadhali jaribu tena.",
+                    )
+                    return await self._cart_fast_path_result(
+                        session_key, reply,
+                        actions_taken=[{"tool": "initiate_mpesa_payment", "result_summary": "missing_order_id"}],
+                        send_cart_buttons=False,
+                    )
+                if session_key:
+                    await context_manager.update_session_metadata(
+                        session_key,
+                        {
+                            "awaiting_mpesa_payment": {
+                                "order_id": pay_order_id,
+                                "default_phone": customer_phone,
+                            }
+                        },
+                    )
+                reply = self._t(
+                    lang,
+                    (
+                        f"Which M-Pesa number should we send the payment prompt to for order *{pay_order_id}*?\n\n"
+                        "Reply with the number (e.g. 0712 345 678).\n"
+                        "Type *cancel* to go back."
+                    ),
+                    (
+                        f"Tunatumie nambari gani ya M-Pesa kwa oda *{pay_order_id}*?\n\n"
+                        "Jibu na nambari (mf. 0712 345 678).\n"
+                        "Andika *cancel* kurudi nyuma."
+                    ),
+                )
+                return await self._cart_fast_path_result(
+                    session_key, reply,
+                    actions_taken=[{"tool": "initiate_mpesa_payment", "result_summary": "awaiting_alt_phone"}],
+                    send_cart_buttons=False,
+                )
 
             # ── Fast path: "Pay with Mpesa" button → deterministic STK push ──
             # The webhook converts a pay_mpesa:{order_id} button tap into a marker
@@ -2686,7 +2859,7 @@ class ConversationalAgentService:
 8. Call `calculate_total` with the cart items to get the order total — this step is REQUIRED before creating the order
 9. Call `validate_order`, then show a clear summary and ask the customer to reply *YES* to confirm
 10. Only after they confirm, create the order using `create_order`
-11. After order is created, offer M-Pesa payment using `initiate_mpesa_payment`
+11. After order is created, offer M-Pesa payment using `initiate_mpesa_payment` (STK defaults to the customer's WhatsApp number). After placement they also get payment buttons: *Pay on this number* or *Other number* — alternate M-Pesa lines are only accepted via the Other-number flow or when the customer explicitly provides a number for payment
 12. If a customer wants to cancel an order, FIRST call `get_user_orders` to show their orders with Cancel buttons — do NOT guess the Order ID and do NOT ask them to type it. NEVER ask the customer for their phone number — their orders are looked up automatically and securely from the WhatsApp number they are messaging from. If the order_id is already provided (e.g. from a button click), proceed directly with `cancel_order`
 13. If a customer wants to see their order history, check, or track an order status, call `get_user_orders` (with no arguments — NEVER ask for or accept a typed phone number) then ALWAYS call `display_order_cards` with the results
 14. If the customer has items in their cart (see Cart section below), reference the cart when summarizing their order
@@ -3610,6 +3783,58 @@ class ConversationalAgentService:
     # SUB-TOOL EXECUTOR
     # ═══════════════════════════════════════════════════════════
 
+    @staticmethod
+    def _storage_config_from_business(business_config: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "provider": business_config.get("storage_provider", "none"),
+            "spreadsheet_id": business_config.get("storage_spreadsheet_id", ""),
+            "orders_sheet_name": business_config.get("storage_orders_sheet_name", "Orders"),
+            "customers_sheet_name": business_config.get("storage_customers_sheet_name", "Customers"),
+            "transactions_sheet_name": business_config.get("storage_transactions_sheet_name", "Transactions"),
+            "airtable_base_id": business_config.get("storage_airtable_base_id", ""),
+            "airtable_orders_table": business_config.get("storage_airtable_orders_table", "Orders"),
+            "airtable_customers_table": business_config.get("storage_airtable_customers_table", "Customers"),
+            "airtable_transactions_table": business_config.get("storage_airtable_transactions_table", "Transactions"),
+        }
+
+    async def _get_allowed_mpesa_phones(
+        self,
+        session_key: str,
+        default_customer_phone: str,
+        order_id: Optional[str] = None,
+    ) -> set:
+        """Normalized Kenyan numbers permitted for M-Pesa STK (not order lookup)."""
+        allowed: set = set()
+
+        def _add(phone: Any) -> None:
+            if not phone:
+                return
+            normalized = normalize_ke_mpesa_phone(str(phone))
+            if normalized:
+                allowed.add(normalized)
+
+        _add(default_customer_phone)
+        if not session_key:
+            return allowed
+        try:
+            session = await context_manager.get_session_by_key(session_key)
+        except Exception:
+            session = None
+        if not session:
+            return allowed
+        checkout = session.metadata.get("checkout_customer") or {}
+        _add(checkout.get("phone"))
+        awaiting = session.metadata.get("awaiting_mpesa_payment") or {}
+        _add(awaiting.get("resolved_phone"))
+        if order_id:
+            by_id = session.metadata.get("orders_by_id") or {}
+            order_snap = by_id.get(order_id) or {}
+            _add(order_snap.get("customer_phone"))
+            customer = order_snap.get("customer") or {}
+            if isinstance(customer, dict):
+                _add(customer.get("phone"))
+        return allowed
+
     async def _execute_sub_tool(
         self,
         tool_name: str,
@@ -3646,12 +3871,28 @@ class ConversationalAgentService:
                         )
                     arguments["customer_phone"] = default_customer_phone
                 elif tool_name == "initiate_mpesa_payment":
-                    if arguments.get("phone_number") and arguments.get("phone_number") != default_customer_phone:
-                        logger.warning(
-                            "[CONV_AGENT] 🔒 Overriding STK phone_number %r → sender %r",
-                            arguments.get("phone_number"), default_customer_phone,
-                        )
-                    arguments["phone_number"] = default_customer_phone
+                    order_id = str(arguments.get("order_id") or "").strip()
+                    requested = arguments.get("phone_number") or ""
+                    normalized_requested = normalize_ke_mpesa_phone(str(requested))
+                    allowed = await self._get_allowed_mpesa_phones(
+                        session_key,
+                        default_customer_phone,
+                        order_id or None,
+                    )
+                    sender_normalized = (
+                        normalize_ke_mpesa_phone(default_customer_phone)
+                        or default_customer_phone
+                    )
+                    if normalized_requested and normalized_requested in allowed:
+                        arguments["phone_number"] = normalized_requested
+                    else:
+                        if requested and normalized_requested not in allowed:
+                            logger.warning(
+                                "[CONV_AGENT] 🔒 STK phone_number %r not allowlisted → sender %r",
+                                requested,
+                                default_customer_phone,
+                            )
+                        arguments["phone_number"] = sender_normalized
 
             if tool_name == "escalate_to_human":
                 return await self._sub_escalate_to_human(

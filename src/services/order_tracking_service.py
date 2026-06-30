@@ -406,11 +406,12 @@ class OrderTrackingService:
 
         if not skip_payment_prompt:
             payment_buttons = [
-                {"id": f"pay_mpesa:{order_id}", "title": "Pay with Mpesa"}
+                {"id": f"pay_mpesa:{order_id}", "title": "Pay on this number"},
+                {"id": f"pay_mpesa_other:{order_id}", "title": "Other number"},
             ]
             r4 = await wa.send_quick_reply_buttons(
                 to_number=customer_phone,
-                body_text="How would you like to pay for your order?",
+                body_text="How would you like to pay with M-Pesa?",
                 buttons=payment_buttons,
                 config=wa_config,
             )

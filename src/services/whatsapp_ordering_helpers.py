@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 # triggers an M-Pesa STK push (no reliance on the LLM choosing the tool).
 PAY_MPESA_AGENT_PREFIX = "__PAY_MPESA__:"
 
+# Customer tapped "Other number" — agent asks for M-Pesa line before STK push.
+PAY_MPESA_OTHER_PREFIX = "__PAY_MPESA_OTHER__:"
+
 # Internal marker for the "Pay with M-Pesa" button shown on the checkout
 # confirmation screen. One tap confirms the order (creating it) AND triggers
 # the STK push — so customers never have to type "YES" to proceed to payment.
@@ -164,6 +167,65 @@ def _looks_like_phrase_not_name(text: str) -> bool:
     if not lower:
         return True
     return any(p in lower for p in _NOT_A_NAME_PHRASES)
+
+
+def normalize_ke_mpesa_phone(raw: str) -> Optional[str]:
+    """Normalize Kenyan mobile to 254XXXXXXXXX for M-Pesa STK."""
+    if not raw:
+        return None
+    digits = re.sub(r"\D", "", str(raw).strip())
+    if not digits:
+        return None
+    if digits.startswith("0") and len(digits) == 10:
+        digits = "254" + digits[1:]
+    elif len(digits) == 9 and digits[0] in ("7", "1"):
+        digits = "254" + digits
+    elif digits.startswith("254") and len(digits) == 12:
+        pass
+    else:
+        return None
+    if len(digits) != 12 or not digits.startswith("254"):
+        return None
+    if digits[3] not in ("7", "1"):
+        return None
+    return digits
+
+
+def extract_phone_from_text(text: str) -> Optional[str]:
+    """Extract and normalize the first plausible KE mobile from free text."""
+    if not text:
+        return None
+    stripped = text.strip()
+    if stripped.lower() in ("cancel", "stop", "quit", "acha"):
+        return None
+
+    m_phone_is = _PHONE_IS_RE.search(stripped)
+    if m_phone_is:
+        normalized = normalize_ke_mpesa_phone(m_phone_is.group(1))
+        if normalized:
+            return normalized
+
+    m_label = _LABELLED_PHONE_RE.search(stripped)
+    if m_label:
+        normalized = normalize_ke_mpesa_phone(m_label.group(1))
+        if normalized:
+            return normalized
+
+    m_any = _PHONE_RE.search(stripped)
+    if m_any:
+        normalized = normalize_ke_mpesa_phone(m_any.group(1))
+        if normalized:
+            return normalized
+
+    return normalize_ke_mpesa_phone(stripped)
+
+
+def mask_mpesa_phone(phone: str) -> str:
+    """Mask phone for customer-facing messages (254712***678)."""
+    digits = re.sub(r"\D", "", phone or "")
+    if len(digits) < 6:
+        return phone or ""
+    return f"{digits[:5]}***{digits[-3:]}"
 
 
 def is_checkout_intent_message(message: str) -> bool:

@@ -314,6 +314,14 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                             )
                         msg_type = "text"
 
+                    elif btn_id.startswith("pay_mpesa_other:"):
+                        from ..services.whatsapp_ordering_helpers import (
+                            PAY_MPESA_OTHER_PREFIX,
+                        )
+                        pay_order_id = btn_id.split(":", 1)[1].strip()
+                        content = f"{PAY_MPESA_OTHER_PREFIX}{pay_order_id}"
+                        msg_type = "text"
+
                     # ── Pay with M-Pesa button → deterministic STK push ──
                     # Format: "pay_mpesa:{order_id}". Convert to an internal marker
                     # the conversational agent recognises and acts on without the LLM.
