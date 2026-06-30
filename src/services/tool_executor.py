@@ -3482,11 +3482,18 @@ class ToolExecutor:
 
             if action == "send_message":
                 message = arguments.get("message", "")
-                if not to_number or not message:
+                if not to_number:
                     return {
                         "success": False,
-                        "error": "Phone number and message are required",
+                        "error": "Phone number is required",
                         "result": None
+                    }
+                if not message or not str(message).strip():
+                    return {
+                        "success": True,
+                        "skipped": True,
+                        "reason": "empty_message",
+                        "result": None,
                     }
 
                 # ── Smart Image Dispatcher ──────────────────────────

@@ -7,14 +7,14 @@ and status/shipping alerts when order status changes.
 
 from __future__ import annotations
 
+import base64
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..config import settings
 from ..models import Connection, ConnectionStatus, User
 from .cache_service import cache_service
 from .order_service import ORDER_STATUSES, OrderService
@@ -22,6 +22,8 @@ from .order_service import ORDER_STATUSES, OrderService
 logger = logging.getLogger(__name__)
 
 TRACKING_TTL_SECONDS = 60 * 60 * 24 * 45  # 45 days
+
+PaymentStatus = Literal["pending", "paid"]
 
 # Statuses that trigger a proactive customer WhatsApp alert
 NOTIFY_STATUSES = {
@@ -70,16 +72,20 @@ class OrderTrackingService:
         """Store order → customer mapping for later status push notifications."""
         if not order_id or not customer_phone:
             return
+        existing = self.get_registered_order(owner_user_id, order_id) or {}
         payload = {
             "order_id": order_id,
             "customer_phone": customer_phone,
-            "business_name": business_name,
-            "business_phone": business_phone,
-            "currency": currency,
-            "status": (order_snapshot.get("status") or "pending"),
+            "business_name": business_name or existing.get("business_name", ""),
+            "business_phone": business_phone or existing.get("business_phone", ""),
+            "currency": currency or existing.get("currency", "KES"),
+            "status": (order_snapshot.get("status") or existing.get("status") or "pending"),
             "order": order_snapshot,
-            "registered_at": datetime.utcnow().isoformat(),
-            "placement_notified": False,
+            "registered_at": existing.get("registered_at") or datetime.utcnow().isoformat(),
+            "placement_notified": existing.get("placement_notified", False),
+            "placement_receipt_sent": existing.get("placement_receipt_sent", False),
+            "payment_notified": existing.get("payment_notified", False),
+            "stk_initiated": existing.get("stk_initiated", False),
         }
         cache_service.set(
             self._tracking_key(owner_user_id, order_id),
@@ -87,10 +93,124 @@ class OrderTrackingService:
             expire_seconds=TRACKING_TTL_SECONDS,
         )
 
+    def mark_stk_initiated(self, owner_user_id: str, order_id: str) -> None:
+        """Flag that an M-Pesa STK push was already sent for this order."""
+        registry = self.get_registered_order(owner_user_id, order_id) or {}
+        if not registry:
+            return
+        registry["stk_initiated"] = True
+        cache_service.set(
+            self._tracking_key(owner_user_id, order_id),
+            registry,
+            expire_seconds=TRACKING_TTL_SECONDS,
+        )
+
     def get_registered_order(
         self, owner_user_id: str, order_id: str
     ) -> Optional[Dict[str, Any]]:
         return cache_service.get(self._tracking_key(owner_user_id, order_id))
+
+    def _order_amount(self, order: Dict[str, Any]) -> float:
+        for key in ("grand_total", "total_amount", "total", "subtotal"):
+            val = order.get(key)
+            if val is not None:
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
+                    continue
+        return 0.0
+
+    async def _generate_receipt_pdf_bytes(
+        self,
+        *,
+        order: Dict[str, Any],
+        order_id: str,
+        business_name: str,
+        business_phone: str,
+        currency: str,
+        payment_status: PaymentStatus,
+        mpesa_receipt: str = "",
+        amount: float = 0.0,
+        filename: str,
+    ) -> Optional[bytes]:
+        if not amount:
+            amount = self._order_amount(order)
+
+        html = self._build_receipt_html(
+            order=order,
+            order_id=order_id,
+            business_name=business_name,
+            business_phone=business_phone,
+            mpesa_receipt=mpesa_receipt,
+            amount=amount,
+            currency=currency,
+            payment_status=payment_status,
+        )
+
+        try:
+            from .file_management_service import FileManagementService
+
+            fms = FileManagementService()
+            pdf_res = await fms.generate_pdf_from_html(html, filename=filename)
+            if pdf_res.get("success") and pdf_res.get("content"):
+                return base64.b64decode(pdf_res["content"])
+            logger.warning(
+                "[ORDER_TRACK] PDF generation returned no content for order %s: %s",
+                order_id,
+                pdf_res.get("error"),
+            )
+        except Exception as pdf_err:
+            logger.warning(
+                "[ORDER_TRACK] Receipt PDF generation failed for order %s: %s",
+                order_id,
+                pdf_err,
+            )
+        return None
+
+    async def _send_receipt_pdf(
+        self,
+        wa: Any,
+        *,
+        customer_phone: str,
+        business_phone: str,
+        pdf_bytes: bytes,
+        filename: str,
+        customer_caption: str,
+        business_caption: str,
+        wa_config: Dict[str, Any],
+    ) -> List[str]:
+        sent: List[str] = []
+        if customer_phone:
+            r = await wa.upload_and_send_document(
+                to_number=customer_phone,
+                file_bytes=pdf_bytes,
+                filename=filename,
+                caption=customer_caption,
+                config=wa_config,
+            )
+            sent.append("customer_receipt" if r.get("success") else "customer_receipt_failed")
+            if not r.get("success"):
+                logger.warning(
+                    "[ORDER_TRACK] Customer PDF send failed for %s: %s",
+                    customer_phone,
+                    r.get("error"),
+                )
+        if business_phone:
+            r = await wa.upload_and_send_document(
+                to_number=business_phone,
+                file_bytes=pdf_bytes,
+                filename=filename,
+                caption=business_caption,
+                config=wa_config,
+            )
+            sent.append("business_receipt" if r.get("success") else "business_receipt_failed")
+            if not r.get("success"):
+                logger.warning(
+                    "[ORDER_TRACK] Business PDF send failed for %s: %s",
+                    business_phone,
+                    r.get("error"),
+                )
+        return sent
 
     async def notify_order_placed(
         self,
@@ -102,9 +222,10 @@ class OrderTrackingService:
         business_name: str,
         business_phone: str = "",
         currency: str = "KES",
+        skip_payment_prompt: bool = False,
     ) -> Dict[str, Any]:
         """
-        Send confirmation + digital receipt when an order is created.
+        Send confirmation + PDF receipt when an order is created.
         """
         order = order_data.get("order") if isinstance(order_data.get("order"), dict) else order_data
         order_id = order.get("order_id") or order_data.get("order_id", "")
@@ -120,15 +241,19 @@ class OrderTrackingService:
                 "reason": "placement_already_notified",
             }
 
-        self.register_order(
-            str(user.id),
-            order_id,
-            customer_phone,
-            order,
-            business_name=business_name,
-            business_phone=business_phone,
-            currency=currency,
-        )
+        if not existing.get("order_id"):
+            self.register_order(
+                str(user.id),
+                order_id,
+                customer_phone,
+                order,
+                business_name=business_name,
+                business_phone=business_phone,
+                currency=currency,
+            )
+
+        registry = self.get_registered_order(str(user.id), order_id) or {}
+        skip_payment_prompt = skip_payment_prompt or registry.get("stk_initiated", False)
 
         receipt_result = await self.order_service.format_order_receipt(
             order_data=order,
@@ -157,7 +282,39 @@ class OrderTrackingService:
         r1 = await wa.send_message(customer_phone, confirmation, config=wa_config)
         sent.append("confirmation" if r1.get("success") else "confirmation_failed")
 
-        if receipt_text:
+        pdf_bytes = None
+        if not registry.get("placement_receipt_sent"):
+            amount = self._order_amount(order)
+            pdf_bytes = await self._generate_receipt_pdf_bytes(
+                order=order,
+                order_id=order_id,
+                business_name=business_name,
+                business_phone=business_phone,
+                currency=currency,
+                payment_status="pending",
+                amount=amount,
+                filename=f"receipt_{order_id}.pdf",
+            )
+            if pdf_bytes:
+                pdf_sent = await self._send_receipt_pdf(
+                    wa,
+                    customer_phone=customer_phone,
+                    business_phone="",
+                    pdf_bytes=pdf_bytes,
+                    filename=f"Receipt-{order_id}.pdf",
+                    customer_caption=f"🧾 Here is your receipt for order {order_id}.",
+                    business_caption="",
+                    wa_config=wa_config,
+                )
+                sent.extend(pdf_sent)
+                if any(s == "customer_receipt" for s in pdf_sent):
+                    registry["placement_receipt_sent"] = True
+                else:
+                    sent.append("pdf_generation_failed")
+            else:
+                sent.append("pdf_generation_failed")
+
+        if not registry.get("placement_receipt_sent") and receipt_text:
             r2 = await wa.send_message(customer_phone, receipt_text, config=wa_config)
             sent.append("receipt" if r2.get("success") else "receipt_failed")
 
@@ -170,17 +327,19 @@ class OrderTrackingService:
             )
             sent.append("location_link" if r3.get("success") else "location_link_failed")
 
-        # Send payment options
-        payment_buttons = [
-            {"id": f"pay_mpesa:{order_id}", "title": "Pay with Mpesa"}
-        ]
-        r4 = await wa.send_quick_reply_buttons(
-            to_number=customer_phone,
-            body_text="How would you like to pay for your order?",
-            buttons=payment_buttons,
-            config=wa_config
-        )
-        sent.append("payment_prompt" if r4.get("success") else "payment_prompt_failed")
+        if not skip_payment_prompt:
+            payment_buttons = [
+                {"id": f"pay_mpesa:{order_id}", "title": "Pay with Mpesa"}
+            ]
+            r4 = await wa.send_quick_reply_buttons(
+                to_number=customer_phone,
+                body_text="How would you like to pay for your order?",
+                buttons=payment_buttons,
+                config=wa_config,
+            )
+            sent.append("payment_prompt" if r4.get("success") else "payment_prompt_failed")
+        else:
+            sent.append("payment_prompt_skipped")
 
         registry = self.get_registered_order(str(user.id), order_id) or {}
         registry["placement_notified"] = True
@@ -191,6 +350,7 @@ class OrderTrackingService:
             expire_seconds=TRACKING_TTL_SECONDS,
         )
 
+        logger.info("[ORDER_TRACK] notify_order_placed order=%s sent=%s", order_id, sent)
         return {"success": True, "order_id": order_id, "sent": sent}
 
     async def notify_status_change(
@@ -296,9 +456,10 @@ class OrderTrackingService:
         mpesa_receipt: str = "",
         amount_paid: float = 0.0,
         currency: str = "KES",
+        customer_phone: str = "",
     ) -> Dict[str, Any]:
         """
-        Generate a downloadable PDF receipt on confirmed payment and send it
+        Generate a downloadable PAID PDF receipt on confirmed payment and send it
         to BOTH the customer and the business as a WhatsApp document.
         Idempotent per order (guarded by `payment_notified`).
         """
@@ -308,34 +469,42 @@ class OrderTrackingService:
 
         order = dict(registry.get("order") or {})
         order["order_id"] = order_id
-        customer_phone = registry.get("customer_phone") or order.get("customer_phone", "")
+        customer_phone = (
+            customer_phone
+            or registry.get("customer_phone")
+            or order.get("customer_phone", "")
+        )
         business_name = registry.get("business_name", "Our Business")
         business_phone = registry.get("business_phone", "")
         currency = currency or registry.get("currency", "KES")
         if not amount_paid:
-            amount_paid = float(order.get("subtotal") or order.get("grand_total") or 0)
+            amount_paid = self._order_amount(order)
 
-        html = self._build_receipt_html(
+        if not customer_phone and not order:
+            logger.warning(
+                "[ORDER_TRACK] notify_payment_received: no registry for order %s",
+                order_id,
+            )
+            return {"success": False, "error": "order not found in tracking registry"}
+
+        if not order and customer_phone:
+            order = {
+                "order_id": order_id,
+                "customer_phone": customer_phone,
+                "subtotal": amount_paid,
+            }
+
+        pdf_bytes = await self._generate_receipt_pdf_bytes(
             order=order,
             order_id=order_id,
             business_name=business_name,
             business_phone=business_phone,
-            mpesa_receipt=mpesa_receipt,
-            amount_paid=amount_paid,
             currency=currency,
+            payment_status="paid",
+            mpesa_receipt=mpesa_receipt,
+            amount=amount_paid,
+            filename=f"receipt_{order_id}_paid.pdf",
         )
-
-        # Generate the PDF (base64) then decode to bytes for upload
-        import base64
-        pdf_bytes = None
-        try:
-            from .file_management_service import FileManagementService
-            fms = FileManagementService()
-            pdf_res = await fms.generate_pdf_from_html(html, filename=f"receipt_{order_id}.pdf")
-            if pdf_res.get("success") and pdf_res.get("content"):
-                pdf_bytes = base64.b64decode(pdf_res["content"])
-        except Exception as pdf_err:
-            logger.warning(f"[ORDER_TRACK] Receipt PDF generation failed: {pdf_err}")
 
         wa_config = await self._get_whatsapp_config(user, db)
         if not wa_config:
@@ -344,30 +513,21 @@ class OrderTrackingService:
         from .whatsapp_service import WhatsAppService
 
         wa = WhatsAppService()
-        filename = f"Receipt-{order_id}.pdf"
+        filename = f"Receipt-{order_id}-PAID.pdf"
         sent: List[str] = []
 
         if pdf_bytes:
-            if customer_phone:
-                r = await wa.upload_and_send_document(
-                    to_number=customer_phone,
-                    file_bytes=pdf_bytes,
-                    filename=filename,
-                    caption=f"🧾 Thank you! Here's your receipt for order {order_id}.",
-                    config=wa_config,
-                )
-                sent.append("customer_receipt" if r.get("success") else "customer_receipt_failed")
-            if business_phone:
-                r = await wa.upload_and_send_document(
-                    to_number=business_phone,
-                    file_bytes=pdf_bytes,
-                    filename=filename,
-                    caption=f"💰 Payment received for order {order_id} ({currency} {amount_paid:,.0f}).",
-                    config=wa_config,
-                )
-                sent.append("business_receipt" if r.get("success") else "business_receipt_failed")
+            sent = await self._send_receipt_pdf(
+                wa,
+                customer_phone=customer_phone,
+                business_phone=business_phone,
+                pdf_bytes=pdf_bytes,
+                filename=filename,
+                customer_caption=f"🧾 Thank you! Here's your paid receipt for order {order_id}.",
+                business_caption=f"💰 Payment received for order {order_id} ({currency} {amount_paid:,.0f}).",
+                wa_config=wa_config,
+            )
         else:
-            # PDF unavailable — fall back to a text receipt so the customer is still served
             text_receipt = await self.order_service.format_order_receipt(
                 order_data=order,
                 format_type="whatsapp",
@@ -383,6 +543,18 @@ class OrderTrackingService:
             if business_phone and body:
                 await wa.send_message(business_phone, body + paid_line, config=wa_config)
                 sent.append("business_text_receipt")
+            if not sent:
+                sent.append("pdf_generation_failed")
+
+        if not registry:
+            registry = {
+                "order_id": order_id,
+                "customer_phone": customer_phone,
+                "business_name": business_name,
+                "business_phone": business_phone,
+                "currency": currency,
+                "order": order,
+            }
 
         registry["status"] = "paid"
         registry["payment_notified"] = True
@@ -394,6 +566,7 @@ class OrderTrackingService:
             expire_seconds=TRACKING_TTL_SECONDS,
         )
 
+        logger.info("[ORDER_TRACK] notify_payment_received order=%s sent=%s", order_id, sent)
         return {"success": True, "order_id": order_id, "sent": sent}
 
     def _build_receipt_html(
@@ -404,8 +577,9 @@ class OrderTrackingService:
         business_name: str,
         business_phone: str,
         mpesa_receipt: str,
-        amount_paid: float,
+        amount: float,
         currency: str,
+        payment_status: PaymentStatus = "paid",
     ) -> str:
         """Build a clean, printable HTML receipt for PDF rendering."""
         from html import escape
@@ -427,15 +601,30 @@ class OrderTrackingService:
         customer_phone = escape(str(order.get("customer_phone", "")))
         delivery_method = escape(str(order.get("delivery_method", "")))
         delivery_address = escape(str(order.get("delivery_address", "")))
-        paid_at = datetime.utcnow().strftime("%d %b %Y, %H:%M UTC")
+        issued_at = datetime.utcnow().strftime("%d %b %Y, %H:%M UTC")
+
+        if payment_status == "paid":
+            badge_label = "PAID"
+            badge_color = "#16a34a"
+            total_label = "Total Paid"
+            mpesa_line = (
+                f"M-Pesa Receipt: <strong>{escape(str(mpesa_receipt))}</strong><br/>"
+                if mpesa_receipt
+                else ""
+            )
+        else:
+            badge_label = "ORDER RECEIVED"
+            badge_color = "#2563eb"
+            total_label = "Total Due"
+            mpesa_line = ""
 
         return f"""
         <!DOCTYPE html>
         <html><head><meta charset="utf-8"><style>
             body {{ font-family: Arial, Helvetica, sans-serif; color: #1a1a1a; margin: 32px; }}
-            .header {{ text-align: center; border-bottom: 2px solid #16a34a; padding-bottom: 12px; }}
+            .header {{ text-align: center; border-bottom: 2px solid {badge_color}; padding-bottom: 12px; }}
             .header h1 {{ margin: 0; font-size: 22px; }}
-            .paid {{ display: inline-block; background: #16a34a; color: #fff;
+            .badge {{ display: inline-block; background: {badge_color}; color: #fff;
                      padding: 4px 12px; border-radius: 6px; font-weight: bold; margin-top: 8px; }}
             .meta {{ margin: 16px 0; font-size: 13px; line-height: 1.6; }}
             table {{ width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }}
@@ -446,13 +635,13 @@ class OrderTrackingService:
         </style></head><body>
             <div class="header">
                 <h1>{escape(business_name)}</h1>
-                <div class="paid">PAID</div>
+                <div class="badge">{badge_label}</div>
             </div>
             <div class="meta">
                 <strong>Receipt</strong><br/>
                 Order: <strong>{escape(order_id)}</strong><br/>
-                Date: {paid_at}<br/>
-                {f"M-Pesa Receipt: <strong>{escape(str(mpesa_receipt))}</strong><br/>" if mpesa_receipt else ""}
+                Date: {issued_at}<br/>
+                {mpesa_line}
                 {f"Customer: {customer_name}<br/>" if customer_name else ""}
                 {f"Phone: {customer_phone}<br/>" if customer_phone else ""}
                 {f"Delivery: {delivery_method}<br/>" if delivery_method else ""}
@@ -464,8 +653,8 @@ class OrderTrackingService:
                     <th style="text-align:right">Unit</th><th style="text-align:right">Total</th></tr></thead>
                 <tbody>{rows}</tbody>
             </table>
-            <div class="total">Total Paid: {currency} {amount_paid:,.0f}</div>
-            <div class="footer">Thank you for your business! 🙏<br/>This is a computer-generated receipt.</div>
+            <div class="total">{total_label}: {currency} {amount:,.0f}</div>
+            <div class="footer">Thank you for your business!<br/>This is a computer-generated receipt.</div>
         </body></html>
         """
 

@@ -510,6 +510,7 @@ async def _handle_mpesa_callback_background(webhook_secret: str, body: bytes):
                                     mpesa_receipt=(parsed or {}).get("transaction_id") or "",
                                     amount_paid=float((parsed or {}).get("amount") or 0),
                                     currency="KES",
+                                    customer_phone=customer_phone or sender_id or "",
                                 )
                             except Exception as receipt_err:
                                 logger.warning(f"Failed to send payment receipt: {receipt_err}")

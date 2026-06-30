@@ -1384,19 +1384,22 @@ class ConversationalAgentService:
                 )
 
                 if pay_res.get("success"):
+                    from .order_tracking_service import order_tracking_service
+
+                    order_tracking_service.mark_stk_initiated(str(user.id), new_order_id)
                     reply = self._t(
                         lang,
                         (
                             f"✅ Order *{new_order_id}* placed!\n\n"
                             f"📲 I've sent an M-Pesa request to {pay_phone}. "
                             "Enter your M-Pesa PIN to complete payment. "
-                            "You'll get a receipt here once it's confirmed. 🙏"
+                            "You'll receive a paid PDF receipt here once payment is confirmed. 🙏"
                         ),
                         (
                             f"✅ Oda *{new_order_id}* imewekwa!\n\n"
                             f"📲 Nimetuma ombi la M-Pesa kwa {pay_phone}. "
                             "Weka PIN yako ya M-Pesa kukamilisha malipo. "
-                            "Utapokea risiti hapa mara itakapothibitishwa. 🙏"
+                            "Utapokea risiti ya PDF baada ya malipo kuthibitishwa. 🙏"
                         ),
                     )
                     summary = "confirm_pay_stk_initiated"
@@ -2687,7 +2690,7 @@ class ConversationalAgentService:
 12. If a customer wants to cancel an order, FIRST call `get_user_orders` to show their orders with Cancel buttons — do NOT guess the Order ID and do NOT ask them to type it. NEVER ask the customer for their phone number — their orders are looked up automatically and securely from the WhatsApp number they are messaging from. If the order_id is already provided (e.g. from a button click), proceed directly with `cancel_order`
 13. If a customer wants to see their order history, check, or track an order status, call `get_user_orders` (with no arguments — NEVER ask for or accept a typed phone number) then ALWAYS call `display_order_cards` with the results
 14. If the customer has items in their cart (see Cart section below), reference the cart when summarizing their order
-15. After placing an order, the customer automatically receives a receipt and status updates on WhatsApp — you do not need to send the receipt manually unless asked
+15. After placing an order, the customer automatically receives a PDF receipt on WhatsApp, then an updated PAID PDF after M-Pesa payment — plus status updates. Do not send receipts manually unless asked
 
 ## Cart Management (IMPORTANT)
 - Customers can tap *View my cart*, *Clear cart*, or *Checkout* buttons, or type things like "my cart", "clear cart", "remove chicken", "change pilau to 2"
@@ -4341,8 +4344,21 @@ class ConversationalAgentService:
                     except Exception as e:
                         logger.warning(f"[CONV_AGENT] clear_pending_confirmation: {e}")
 
+                notify_phone = arguments.get("customer_phone", "")
+                if notify_phone and user and order_obj.get("order_id"):
+                    from .order_tracking_service import order_tracking_service
+
+                    order_tracking_service.register_order(
+                        str(user.id),
+                        order_obj["order_id"],
+                        notify_phone,
+                        order_obj,
+                        business_name=business_name,
+                        business_phone=business_phone,
+                        currency=currency,
+                    )
+
                 if getattr(settings, "ORDER_TRACKING_ENABLED", True):
-                    notify_phone = arguments.get("customer_phone", "")
                     if notify_phone and user:
                         if background_tasks:
                             background_tasks.add_task(
