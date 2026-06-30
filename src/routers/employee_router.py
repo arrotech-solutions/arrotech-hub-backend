@@ -527,6 +527,54 @@ class AdminRenewSubscriptionRequest(BaseModel):
     tier: Optional[str] = None
 
 
+class AdminRevokeSubscriptionRequest(BaseModel):
+    confirm_email: str
+
+
+@router.post("/users/{user_id}/subscription/revoke")
+async def admin_revoke_user_subscription(
+    user_id: uuid.UUID,
+    body: AdminRevokeSubscriptionRequest,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Immediately revoke a user's subscription (downgrade to free, end access now)."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    target = result.scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    confirm = (body.confirm_email or "").strip().lower()
+    if confirm != target.email.strip().lower():
+        raise HTTPException(
+            status_code=400,
+            detail="Confirmation email does not match this user's account email",
+        )
+
+    if (
+        (target.subscription_tier or SubscriptionTier.FREE) == SubscriptionTier.FREE
+        and (target.subscription_status or SubscriptionStatus.EXPIRED) == SubscriptionStatus.EXPIRED
+    ):
+        raise HTTPException(status_code=400, detail="This user has no active subscription to revoke")
+
+    now = datetime.now(timezone.utc)
+    target.subscription_end_date = now
+    await subscription_service.expire_user(target, db)
+    await db.refresh(target)
+
+    logger.warning(
+        "Admin %s revoked subscription for user %s (%s)",
+        admin.id,
+        user_id,
+        target.email,
+    )
+    return {
+        "success": True,
+        "message": "Subscription revoked. User downgraded to Free immediately.",
+        "subscription": subscription_service.build_status_snapshot(target),
+    }
+
+
 @router.post("/users/{user_id}/subscription/renew")
 async def admin_renew_user_subscription(
     user_id: uuid.UUID,
