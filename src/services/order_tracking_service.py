@@ -86,6 +86,7 @@ class OrderTrackingService:
             "placement_receipt_sent": existing.get("placement_receipt_sent", False),
             "payment_notified": existing.get("payment_notified", False),
             "stk_initiated": existing.get("stk_initiated", False),
+            "whatsapp_sender": existing.get("whatsapp_sender") or customer_phone,
         }
         cache_service.set(
             self._tracking_key(owner_user_id, order_id),
@@ -115,6 +116,76 @@ class OrderTrackingService:
             registry,
             expire_seconds=TRACKING_TTL_SECONDS,
         )
+
+    def record_stk_context(
+        self,
+        owner_user_id: str,
+        order_id: str,
+        *,
+        checkout_request_id: str = "",
+        merchant_request_id: str = "",
+        whatsapp_sender: str = "",
+        mpesa_phone: str = "",
+        storage_config: Optional[Dict[str, Any]] = None,
+        platform: str = "whatsapp",
+        session_key: str = "",
+    ) -> None:
+        """Persist STK IDs on the order registry so callbacks survive Redis ctx loss."""
+        if not order_id:
+            return
+        registry = self.get_registered_order(owner_user_id, order_id) or {"order_id": order_id}
+        if whatsapp_sender:
+            registry["whatsapp_sender"] = whatsapp_sender
+            registry["customer_phone"] = whatsapp_sender
+        if mpesa_phone:
+            registry["mpesa_phone"] = mpesa_phone
+        if checkout_request_id:
+            registry["stk_checkout_request_id"] = checkout_request_id
+        if merchant_request_id:
+            registry["stk_merchant_request_id"] = merchant_request_id
+        if storage_config:
+            registry["storage_config"] = storage_config
+        if platform:
+            registry["platform"] = platform
+        if session_key:
+            registry["session_key"] = session_key
+        registry["stk_initiated"] = True
+        if not cache_service.set(
+            self._tracking_key(owner_user_id, order_id),
+            registry,
+            expire_seconds=TRACKING_TTL_SECONDS,
+        ):
+            logger.error(
+                "[ORDER_TRACK] Failed to persist STK context for order %s (owner %s)",
+                order_id,
+                owner_user_id,
+            )
+
+    def find_order_by_stk_ids(
+        self,
+        owner_user_id: str,
+        checkout_request_id: str = "",
+        merchant_request_id: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve order registry when ephemeral mpesa:stk:* Redis keys are missing."""
+        if not checkout_request_id and not merchant_request_id:
+            return None
+        pattern = f"wa_order_track:{owner_user_id}:*"
+        for key in cache_service.keys(pattern):
+            registry = cache_service.get(key)
+            if not registry:
+                continue
+            if (
+                checkout_request_id
+                and registry.get("stk_checkout_request_id") == checkout_request_id
+            ):
+                return registry
+            if (
+                merchant_request_id
+                and registry.get("stk_merchant_request_id") == merchant_request_id
+            ):
+                return registry
+        return None
 
     def get_registered_order(
         self, owner_user_id: str, order_id: str
@@ -547,11 +618,13 @@ class OrderTrackingService:
 
         order = dict(registry.get("order") or {})
         order["order_id"] = order_id
-        customer_phone = (
-            customer_phone
+        notify_phone = (
+            registry.get("whatsapp_sender")
+            or customer_phone
             or registry.get("customer_phone")
             or order.get("customer_phone", "")
         )
+        customer_phone = notify_phone
         business_name = registry.get("business_name", "Our Business")
         business_phone = registry.get("business_phone", "")
         currency = currency or registry.get("currency", "KES")

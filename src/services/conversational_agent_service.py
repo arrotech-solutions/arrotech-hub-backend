@@ -5337,14 +5337,31 @@ class ConversationalAgentService:
             owner_id = order_tracking_service.owner_id_from_session_key(
                 session_key or "", str(user.id)
             )
+
+            # WhatsApp chat number (receipts) vs M-Pesa line (STK target)
+            platform = "whatsapp"
+            whatsapp_sender = phone_number
+            if session_key and session_key.startswith("ccm:"):
+                parts = session_key.split(":")
+                if len(parts) >= 4:
+                    platform = parts[1] or "whatsapp"
+                    whatsapp_sender = parts[3] or whatsapp_sender
+
             if order_snapshot:
-                order_tracking_service.register_order(
-                    owner_id,
-                    order_id,
-                    phone_number,
-                    order_snapshot,
-                    business_name=business_name,
+                existing_reg = order_tracking_service.get_registered_order(owner_id, order_id)
+                notify_phone = (
+                    (existing_reg or {}).get("whatsapp_sender")
+                    or (existing_reg or {}).get("customer_phone")
+                    or whatsapp_sender
                 )
+                if not existing_reg:
+                    order_tracking_service.register_order(
+                        owner_id,
+                        order_id,
+                        notify_phone,
+                        order_snapshot,
+                        business_name=business_name,
+                    )
 
             from sqlalchemy import select
             from ..models import MpesaAgentConfig
@@ -5373,20 +5390,6 @@ class ConversationalAgentService:
             base_url = (cfg.callback_url_override or settings.API_BASE_URL).rstrip("/")
             callback_url = f"{base_url}/api/agents/daraja/callback/{cfg.webhook_secret}"
 
-            # Build callback routing metadata
-            platform = "whatsapp"
-            sender_id = phone_number
-            if session_key and session_key.startswith("ccm:"):
-                # session_key format: ccm:{platform}:{owner_user_id}:{sender_id}
-                parts = session_key.split(":")
-                if len(parts) >= 4:
-                    platform = parts[1] or "whatsapp"
-                    sender_id = parts[3] or sender_id
-            else:
-                # Derive from phone; WhatsApp default
-                platform = "whatsapp"
-                sender_id = phone_number
-
             tenant_env = (cfg.daraja_environment or "sandbox").lower()
             daraja = DarajaService(environment=tenant_env)
             stk_res = await daraja.stk_push(
@@ -5407,13 +5410,15 @@ class ConversationalAgentService:
             merchant_request_id = stk_res.get("merchant_request_id")
             checkout_request_id = stk_res.get("checkout_request_id")
 
-            # Ephemeral callback mapping (24h TTL)
+            # Ephemeral callback mapping (24h TTL) + durable registry backup
             payload = {
                 "user_id": str(user.id),
                 "session_key": session_key or "",
                 "platform": platform,
-                "sender_id": sender_id,
+                "sender_id": whatsapp_sender,
+                "whatsapp_sender": whatsapp_sender,
                 "customer_phone": phone_number,
+                "mpesa_phone": phone_number,
                 "order_id": order_id,
                 "amount": amount_int,
                 "currency": "KES",
@@ -5422,9 +5427,39 @@ class ConversationalAgentService:
                 "created_at": datetime.utcnow().isoformat(),
             }
             if checkout_request_id:
-                cache_service.set(f"mpesa:stk:checkout:{checkout_request_id}", payload, expire_seconds=86400)
+                if not cache_service.set(
+                    f"mpesa:stk:checkout:{checkout_request_id}",
+                    payload,
+                    expire_seconds=86400,
+                ):
+                    logger.error(
+                        "[CONV_AGENT] Failed to cache STK checkout mapping for order %s (checkout=%s)",
+                        order_id,
+                        checkout_request_id,
+                    )
             if merchant_request_id:
-                cache_service.set(f"mpesa:stk:merchant:{merchant_request_id}", payload, expire_seconds=86400)
+                if not cache_service.set(
+                    f"mpesa:stk:merchant:{merchant_request_id}",
+                    payload,
+                    expire_seconds=86400,
+                ):
+                    logger.error(
+                        "[CONV_AGENT] Failed to cache STK merchant mapping for order %s (merchant=%s)",
+                        order_id,
+                        merchant_request_id,
+                    )
+
+            order_tracking_service.record_stk_context(
+                owner_id,
+                order_id,
+                checkout_request_id=checkout_request_id or "",
+                merchant_request_id=merchant_request_id or "",
+                whatsapp_sender=whatsapp_sender,
+                mpesa_phone=phone_number,
+                storage_config=storage_config or {},
+                platform=platform,
+                session_key=session_key or "",
+            )
 
             return {
                 "success": True,

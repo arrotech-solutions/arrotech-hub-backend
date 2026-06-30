@@ -307,3 +307,107 @@ async def test_initiate_mpesa_allowlist_overrides_random_llm_phone(sample_order_
 
         stk.assert_called_once()
         assert stk.call_args.kwargs["phone_number"] == "254711371265"
+
+
+def test_record_stk_context_and_find_by_stk_ids(sample_order_fixture):
+    from src.services.order_tracking_service import OrderTrackingService
+
+    svc = OrderTrackingService()
+    owner_id = "user-uuid-1"
+    order_id = sample_order_fixture["order_id"]
+    checkout_id = "ws_CO_12345"
+    merchant_id = "mr_67890"
+
+    stored = {}
+
+    def fake_set(key, value, expire_seconds=3600):
+        stored[key] = value
+        return True
+
+    def fake_get(key):
+        return stored.get(key)
+
+    def fake_keys(pattern):
+        prefix = pattern.replace("*", "")
+        return [k for k in stored if k.startswith(prefix.rstrip(":"))]
+
+    with patch("src.services.order_tracking_service.cache_service") as cache:
+        cache.set.side_effect = fake_set
+        cache.get.side_effect = fake_get
+        cache.keys.side_effect = fake_keys
+
+        svc.register_order(
+            owner_id,
+            order_id,
+            "254711371265",
+            sample_order_fixture,
+            business_name="Test Cafe",
+        )
+        svc.record_stk_context(
+            owner_id,
+            order_id,
+            checkout_request_id=checkout_id,
+            merchant_request_id=merchant_id,
+            whatsapp_sender="254711371265",
+            mpesa_phone="254797568564",
+        )
+
+        reg = svc.get_registered_order(owner_id, order_id)
+        assert reg["whatsapp_sender"] == "254711371265"
+        assert reg["customer_phone"] == "254711371265"
+        assert reg["mpesa_phone"] == "254797568564"
+        assert reg["stk_checkout_request_id"] == checkout_id
+        assert reg["stk_initiated"] is True
+
+        found = svc.find_order_by_stk_ids(owner_id, checkout_request_id=checkout_id)
+        assert found is not None
+        assert found["order_id"] == order_id
+
+        found_m = svc.find_order_by_stk_ids(owner_id, merchant_request_id=merchant_id)
+        assert found_m is not None
+
+
+@pytest.mark.asyncio
+async def test_notify_payment_received_prefers_whatsapp_sender(sample_order_fixture):
+    from src.services.order_tracking_service import OrderTrackingService
+
+    svc = OrderTrackingService()
+    mock_user = MagicMock()
+    mock_user.id = "user-uuid-1"
+    db = AsyncMock()
+    order_id = sample_order_fixture["order_id"]
+
+    registry = {
+        "order_id": order_id,
+        "whatsapp_sender": "254711371265",
+        "customer_phone": "254711371265",
+        "mpesa_phone": "254797568564",
+        "business_name": "Test Cafe",
+        "currency": "KES",
+        "order": sample_order_fixture,
+        "payment_notified": False,
+    }
+
+    with patch("src.services.order_tracking_service.cache_service") as cache, \
+         patch.object(svc, "_get_whatsapp_config", new_callable=AsyncMock) as wa_cfg, \
+         patch.object(svc, "_generate_receipt_pdf_bytes", new_callable=AsyncMock) as gen_pdf, \
+         patch("src.services.whatsapp_service.WhatsAppService") as WaCls:
+
+        cache.get.return_value = registry
+        wa_cfg.return_value = {"access_token": "tok", "phone_number_id": "pnid"}
+        gen_pdf.return_value = b"%PDF-PAID"
+
+        wa = WaCls.return_value
+        wa.upload_and_send_document = AsyncMock(return_value={"success": True})
+
+        await svc.notify_payment_received(
+            user=mock_user,
+            db=db,
+            order_id=order_id,
+            mpesa_receipt="QHX111",
+            amount_paid=500,
+            customer_phone="254797568564",
+        )
+
+        call_kwargs = wa.upload_and_send_document.call_args.kwargs
+        assert call_kwargs["to_number"] == "254711371265"
