@@ -333,7 +333,7 @@ class MpesaReconciliationService:
         if existing_payment:
             return existing_payment
 
-        status = "pending" if parsed.get("result_code") in (None, "0") else "failed"
+        status = "paid" if str(parsed.get("result_code") or "") == "0" else "failed"
         payment = MpesaPayment(
             user_id=user_id,
             transaction_id=transaction_id,

@@ -367,7 +367,42 @@ def test_record_stk_context_and_find_by_stk_ids(sample_order_fixture):
         assert found_m is not None
 
 
-@pytest.mark.asyncio
+def test_resolve_stk_notify_context_uses_lookup_key(sample_order_fixture):
+    from src.services.order_tracking_service import OrderTrackingService
+
+    svc = OrderTrackingService()
+    owner_id = "user-uuid-1"
+    order_id = sample_order_fixture["order_id"]
+    checkout_id = "ws_CO_LOOKUP123"
+
+    stored = {}
+
+    def fake_set(key, value, expire_seconds=3600):
+        stored[key] = value
+        return True
+
+    def fake_get(key):
+        return stored.get(key)
+
+    with patch("src.services.order_tracking_service.cache_service") as cache:
+        cache.set.side_effect = fake_set
+        cache.get.side_effect = fake_get
+        cache.keys.return_value = []
+
+        svc.store_stk_lookup_keys(
+            owner_user_id=owner_id,
+            order_id=order_id,
+            checkout_request_id=checkout_id,
+            whatsapp_sender="254711371265",
+            mpesa_phone="254797568564",
+            amount=2.0,
+        )
+
+        ctx = svc.resolve_stk_notify_context(owner_id, checkout_id)
+        assert ctx is not None
+        assert ctx["order_id"] == order_id
+        assert ctx["whatsapp_sender"] == "254711371265"
+
 async def test_notify_payment_received_prefers_whatsapp_sender(sample_order_fixture):
     from src.services.order_tracking_service import OrderTrackingService
 

@@ -439,55 +439,32 @@ async def _handle_mpesa_callback_background(webhook_secret: str, body: bytes):
                 merchant_request_id = (parsed or {}).get("merchant_request_id")
                 map_key_checkout = f"mpesa:stk:checkout:{checkout_request_id}" if checkout_request_id else ""
                 map_key_merchant = f"mpesa:stk:merchant:{merchant_request_id}" if merchant_request_id else ""
-                ctx = cache_service.get(map_key_checkout) if map_key_checkout else None
-                if not ctx and map_key_merchant:
-                    ctx = cache_service.get(map_key_merchant)
 
                 from ..services.order_tracking_service import order_tracking_service
 
-                registry_fallback = None
-                if not ctx and (checkout_request_id or merchant_request_id):
-                    registry_fallback = order_tracking_service.find_order_by_stk_ids(
-                        str(config.user_id),
-                        checkout_request_id or "",
-                        merchant_request_id or "",
+                notify_ctx = order_tracking_service.resolve_stk_notify_context(
+                    str(config.user_id),
+                    checkout_request_id or "",
+                    merchant_request_id or "",
+                )
+                if notify_ctx:
+                    logger.info(
+                        "STK callback resolved order %s (checkout=%s)",
+                        notify_ctx.get("order_id"),
+                        checkout_request_id,
                     )
-                    if registry_fallback:
-                        logger.info(
-                            "STK callback resolved order %s from registry fallback (checkout=%s)",
-                            registry_fallback.get("order_id"),
-                            checkout_request_id,
-                        )
-                    else:
-                        logger.warning(
-                            "STK callback: no Redis ctx and no registry match "
-                            "(checkout=%s merchant=%s user=%s result=%s)",
-                            checkout_request_id,
-                            merchant_request_id,
-                            config.user_id,
-                            (parsed or {}).get("result_code"),
-                        )
-
-                notify_ctx = ctx
-                if not notify_ctx and registry_fallback:
-                    notify_ctx = {
-                        "order_id": registry_fallback.get("order_id"),
-                        "sender_id": (
-                            registry_fallback.get("whatsapp_sender")
-                            or registry_fallback.get("customer_phone")
-                        ),
-                        "whatsapp_sender": (
-                            registry_fallback.get("whatsapp_sender")
-                            or registry_fallback.get("customer_phone")
-                        ),
-                        "mpesa_phone": registry_fallback.get("mpesa_phone", ""),
-                        "customer_phone": registry_fallback.get("mpesa_phone", ""),
-                        "platform": registry_fallback.get("platform", "whatsapp"),
-                        "storage_config": registry_fallback.get("storage_config") or {},
-                    }
+                else:
+                    logger.warning(
+                        "STK callback: could not resolve order context "
+                        "(checkout=%s merchant=%s user=%s result=%s)",
+                        checkout_request_id,
+                        merchant_request_id,
+                        config.user_id,
+                        (parsed or {}).get("result_code"),
+                    )
 
                 # Persist payment record (with order reference if we have it)
-                reference_override = (notify_ctx or registry_fallback or {}).get("order_id")
+                reference_override = (notify_ctx or {}).get("order_id")
                 description_override = f"Order payment {reference_override}" if reference_override else "Order payment"
                 payment = await service.process_stk_callback(
                     config.user_id,
@@ -498,19 +475,18 @@ async def _handle_mpesa_callback_background(webhook_secret: str, body: bytes):
                 )
 
                 # Notify + persist transaction into connected storage (best effort)
-                if notify_ctx:
-                    is_paid = (parsed or {}).get("result_code") in (None, "0")
+                result_code = str((parsed or {}).get("result_code") or "")
+                is_paid = result_code in ("", "0")
+                if notify_ctx and is_paid:
                     order_id = (notify_ctx or {}).get("order_id")
                     whatsapp_sender = (
                         (notify_ctx or {}).get("whatsapp_sender")
                         or (notify_ctx or {}).get("sender_id")
-                        or (registry_fallback or {}).get("whatsapp_sender")
-                        or (registry_fallback or {}).get("customer_phone")
+                        or ""
                     )
                     mpesa_phone = (
                         (notify_ctx or {}).get("mpesa_phone")
                         or (notify_ctx or {}).get("customer_phone")
-                        or (registry_fallback or {}).get("mpesa_phone")
                         or ""
                     )
                     platform = (notify_ctx or {}).get("platform") or "whatsapp"
@@ -527,23 +503,42 @@ async def _handle_mpesa_callback_background(webhook_secret: str, body: bytes):
                             mpesa_phone=mpesa_phone,
                             platform=platform,
                             storage_config=storage_config,
-                            is_paid=is_paid,
+                            is_paid=True,
                             mpesa_receipt=(parsed or {}).get("transaction_id") or "",
-                            amount_paid=float((parsed or {}).get("amount") or 0),
-                            currency="KES",
-                            result_code=str((parsed or {}).get("result_code") or ""),
+                            amount_paid=float((parsed or {}).get("amount") or notify_ctx.get("amount") or 0),
+                            currency=str(notify_ctx.get("currency") or "KES"),
+                            result_code=result_code,
                             result_desc=str((parsed or {}).get("result_desc") or ""),
                             checkout_request_id=checkout_request_id or "",
                             merchant_request_id=merchant_request_id or "",
-                            payment_record=payment if is_paid else None,
+                            payment_record=payment,
                         )
 
                         if map_key_checkout:
                             cache_service.delete(map_key_checkout)
                         if map_key_merchant:
                             cache_service.delete(map_key_merchant)
+                        if checkout_request_id:
+                            cache_service.delete(
+                                f"mpesa:stk:lookup:checkout:{checkout_request_id}"
+                            )
+                        if merchant_request_id:
+                            cache_service.delete(
+                                f"mpesa:stk:lookup:merchant:{merchant_request_id}"
+                            )
                     except Exception as notify_err:
-                        logger.warning(f"Failed to notify customer for STK callback: {notify_err}")
+                        logger.warning(
+                            "Failed to notify customer for STK callback: %s",
+                            notify_err,
+                            exc_info=True,
+                        )
+                elif is_paid and not notify_ctx:
+                    logger.error(
+                        "STK payment succeeded (receipt=%s) but order context missing — "
+                        "no WhatsApp receipt sent (checkout=%s)",
+                        (parsed or {}).get("transaction_id"),
+                        checkout_request_id,
+                    )
 
                 logger.info(f"Successfully processed STK callback for user {config.user_id}")
                 return

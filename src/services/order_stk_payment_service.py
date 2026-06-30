@@ -185,8 +185,12 @@ async def poll_stk_and_finalize_order_payment(
             logger.info("[STK_PAY] Poll stopped — callback already finalized order %s", order_id)
             return
 
-        ctx = _notify_context_from_registry(registry)
-        whatsapp_sender = ctx.get("whatsapp_sender") or ""
+        ctx = order_tracking_service.resolve_stk_notify_context(
+            owner_user_id,
+            checkout_request_id,
+            merchant_request_id,
+        ) or _notify_context_from_registry(registry)
+        whatsapp_sender = ctx.get("whatsapp_sender") or ctx.get("sender_id") or ""
         mpesa_phone = ctx.get("mpesa_phone") or ""
         platform = ctx.get("platform") or "whatsapp"
         storage_config = ctx.get("storage_config") or {}

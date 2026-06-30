@@ -166,6 +166,115 @@ class OrderTrackingService:
                 order_id,
                 owner_user_id,
             )
+        self.store_stk_lookup_keys(
+            owner_user_id=owner_user_id,
+            order_id=order_id,
+            checkout_request_id=checkout_request_id,
+            merchant_request_id=merchant_request_id,
+            whatsapp_sender=whatsapp_sender,
+            mpesa_phone=mpesa_phone,
+            platform=platform,
+            storage_config=storage_config or {},
+            amount=amount,
+            currency=currency,
+        )
+
+    def store_stk_lookup_keys(
+        self,
+        *,
+        owner_user_id: str,
+        order_id: str,
+        checkout_request_id: str = "",
+        merchant_request_id: str = "",
+        whatsapp_sender: str = "",
+        mpesa_phone: str = "",
+        platform: str = "whatsapp",
+        storage_config: Optional[Dict[str, Any]] = None,
+        amount: float = 0,
+        currency: str = "KES",
+    ) -> None:
+        """O(1) Redis keys for STK callback (avoids KEYS scan on managed Redis)."""
+        notify_payload = {
+            "order_id": order_id,
+            "user_id": owner_user_id,
+            "sender_id": whatsapp_sender,
+            "whatsapp_sender": whatsapp_sender,
+            "mpesa_phone": mpesa_phone,
+            "customer_phone": mpesa_phone,
+            "platform": platform,
+            "storage_config": storage_config or {},
+            "amount": amount,
+            "currency": currency,
+        }
+        ttl = 86400
+        if checkout_request_id:
+            cache_service.set(
+                f"mpesa:stk:lookup:checkout:{checkout_request_id}",
+                notify_payload,
+                expire_seconds=ttl,
+            )
+            cache_service.set(
+                f"mpesa:stk:order:{owner_user_id}:{checkout_request_id}",
+                {"order_id": order_id, "owner_user_id": owner_user_id},
+                expire_seconds=ttl,
+            )
+        if merchant_request_id:
+            cache_service.set(
+                f"mpesa:stk:lookup:merchant:{merchant_request_id}",
+                notify_payload,
+                expire_seconds=ttl,
+            )
+
+    @staticmethod
+    def _registry_to_notify_ctx(registry: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "order_id": registry.get("order_id"),
+            "sender_id": registry.get("whatsapp_sender") or registry.get("customer_phone"),
+            "whatsapp_sender": registry.get("whatsapp_sender") or registry.get("customer_phone"),
+            "mpesa_phone": registry.get("mpesa_phone", ""),
+            "customer_phone": registry.get("mpesa_phone", ""),
+            "platform": registry.get("platform", "whatsapp"),
+            "storage_config": registry.get("storage_config") or {},
+            "amount": registry.get("amount") or 0,
+            "currency": registry.get("currency", "KES"),
+        }
+
+    def resolve_stk_notify_context(
+        self,
+        owner_user_id: str,
+        checkout_request_id: str = "",
+        merchant_request_id: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve STK → order notify context without Redis KEYS scan."""
+        if checkout_request_id:
+            ctx = cache_service.get(f"mpesa:stk:checkout:{checkout_request_id}")
+            if ctx:
+                return ctx
+            ctx = cache_service.get(f"mpesa:stk:lookup:checkout:{checkout_request_id}")
+            if ctx:
+                return ctx
+            ref = cache_service.get(
+                f"mpesa:stk:order:{owner_user_id}:{checkout_request_id}"
+            )
+            if ref and ref.get("order_id"):
+                reg = self.get_registered_order(owner_user_id, ref["order_id"])
+                if reg:
+                    return self._registry_to_notify_ctx(reg)
+
+        if merchant_request_id:
+            ctx = cache_service.get(f"mpesa:stk:merchant:{merchant_request_id}")
+            if ctx:
+                return ctx
+            ctx = cache_service.get(f"mpesa:stk:lookup:merchant:{merchant_request_id}")
+            if ctx:
+                return ctx
+
+        registry = self.find_order_by_stk_ids(
+            owner_user_id, checkout_request_id, merchant_request_id
+        )
+        if registry:
+            return self._registry_to_notify_ctx(registry)
+        return None
 
     def find_order_by_stk_ids(
         self,
