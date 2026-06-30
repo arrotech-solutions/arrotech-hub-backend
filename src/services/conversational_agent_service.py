@@ -1520,6 +1520,15 @@ class ConversationalAgentService:
                         ),
                     )
                     summary = "stk_failed"
+                if not pay_res.get("success") and pay_order_id:
+                    await self._offer_payment_retry_buttons(
+                        user,
+                        db,
+                        order_id=pay_order_id,
+                        customer_phone=pay_phone or customer_phone,
+                        body_text=reply,
+                        lang=lang,
+                    )
                 return await self._cart_fast_path_result(
                     session_key, reply,
                     actions_taken=[{"tool": "initiate_mpesa_payment", "result_summary": summary}],
@@ -1680,6 +1689,16 @@ class ConversationalAgentService:
                         ),
                     )
                     summary = "confirm_pay_stk_failed"
+
+                if not pay_res.get("success") and new_order_id:
+                    await self._offer_payment_retry_buttons(
+                        user,
+                        db,
+                        order_id=new_order_id,
+                        customer_phone=pay_phone or customer_phone,
+                        body_text=reply,
+                        lang=lang,
+                    )
 
                 await self._save_to_ccm(session_key, "assistant", reply)
                 return {
@@ -2946,10 +2965,11 @@ class ConversationalAgentService:
 9. Call `validate_order`, then show a clear summary and ask the customer to reply *YES* to confirm
 10. Only after they confirm, create the order using `create_order`
 11. After order is created, offer M-Pesa payment using `initiate_mpesa_payment` (STK defaults to the customer's WhatsApp number). After placement they also get payment buttons: *Pay on this number* or *Other number* — alternate M-Pesa lines are only accepted via the Other-number flow or when the customer explicitly provides a number for payment
-12. If a customer wants to cancel an order, FIRST call `get_user_orders` to show their orders with Cancel buttons — do NOT guess the Order ID and do NOT ask them to type it. NEVER ask the customer for their phone number — their orders are looked up automatically and securely from the WhatsApp number they are messaging from. If the order_id is already provided (e.g. from a button click), proceed directly with `cancel_order`
-13. If a customer wants to see their order history, check, or track an order status, call `get_user_orders` (with no arguments — NEVER ask for or accept a typed phone number) then ALWAYS call `display_order_cards` with the results
-14. If the customer has items in their cart (see Cart section below), reference the cart when summarizing their order
-15. After placing an order, the customer automatically receives a PDF receipt on WhatsApp, then an updated PAID PDF after M-Pesa payment — plus status updates. Do not send receipts manually unless asked
+12. PAYMENT RETRY (IMPORTANT): If M-Pesa payment failed, was cancelled, timed out, had insufficient funds, or wrong PIN — call `initiate_mpesa_payment` again for the **same order_id**. NEVER create a duplicate order just to retry payment. If the customer says "pay again" or "retry payment", use the existing pending order.
+13. If a customer wants to cancel an order, FIRST call `get_user_orders` to show their orders with Cancel buttons — do NOT guess the Order ID and do NOT ask them to type it. NEVER ask the customer for their phone number — their orders are looked up automatically and securely from the WhatsApp number they are messaging from. If the order_id is already provided (e.g. from a button click), proceed directly with `cancel_order`
+14. If a customer wants to see their order history, check, or track an order status, call `get_user_orders` (with no arguments — NEVER ask for or accept a typed phone number) then ALWAYS call `display_order_cards` with the results
+15. If the customer has items in their cart (see Cart section below), reference the cart when summarizing their order
+16. After placing an order, the customer automatically receives a PDF receipt on WhatsApp, then an updated PAID PDF after M-Pesa payment — plus status updates. Do not send receipts manually unless asked
 
 ## Cart Management (IMPORTANT)
 - Customers can tap *View my cart*, *Clear cart*, or *Checkout* buttons, or type things like "my cart", "clear cart", "remove chicken", "change pilau to 2"
@@ -5032,7 +5052,8 @@ class ConversationalAgentService:
                     "date": o.get('Created At'),
                     "total": f"{o.get('Subtotal')} {o.get('Currency', 'KES')}",
                     "items": o.get('Items'),
-                    "can_cancel": is_cancellable
+                    "can_cancel": is_cancellable,
+                    "can_pay": status_raw == "pending",
                 })
             
             import json
@@ -5237,6 +5258,38 @@ class ConversationalAgentService:
                     storage_err,
                 )
 
+        if not order_snapshot:
+            try:
+                from sqlalchemy import select
+                from ..models import StkOrderMapping
+                import uuid as uuid_mod
+
+                for owner_id in owner_ids:
+                    owner_uuid = uuid_mod.UUID(str(owner_id))
+                    res = await db.execute(
+                        select(StkOrderMapping)
+                        .where(
+                            StkOrderMapping.user_id == owner_uuid,
+                            StkOrderMapping.order_id == order_id,
+                        )
+                        .order_by(StkOrderMapping.created_at.desc())
+                        .limit(1)
+                    )
+                    mapping = res.scalar_one_or_none()
+                    if mapping and mapping.amount:
+                        order_snapshot = {
+                            "order_id": order_id,
+                            "subtotal": float(mapping.amount),
+                            "currency": mapping.currency or "KES",
+                        }
+                        break
+            except Exception as map_err:
+                logger.warning(
+                    "[CONV_AGENT] STK mapping order lookup failed for %s: %s",
+                    order_id,
+                    map_err,
+                )
+
         amount = order_tracking_service._order_amount(order_snapshot or {})
         if amount < 1:
             try:
@@ -5368,6 +5421,33 @@ class ConversationalAgentService:
 
         return None
 
+    async def _offer_payment_retry_buttons(
+        self,
+        user: User,
+        db: AsyncSession,
+        *,
+        order_id: str,
+        customer_phone: str,
+        body_text: str,
+        lang: str = "en",
+    ) -> None:
+        from .order_tracking_service import order_tracking_service
+        from .stk_result_messages import stk_api_error_message
+
+        if not order_id or not customer_phone:
+            return
+        text = body_text or stk_api_error_message(lang=lang)
+        try:
+            await order_tracking_service.send_payment_retry_buttons(
+                user,
+                db,
+                order_id=order_id,
+                customer_phone=customer_phone,
+                body_text=text,
+            )
+        except Exception as e:
+            logger.warning("[CONV_AGENT] payment retry buttons failed: %s", e)
+
     async def _sub_initiate_mpesa_payment(
         self,
         *,
@@ -5391,6 +5471,26 @@ class ConversationalAgentService:
             if not phone_number:
                 return {"success": False, "error": "phone_number is required"}
 
+            from .order_tracking_service import order_tracking_service
+
+            owner_id = order_tracking_service.owner_id_from_session_key(
+                session_key or "", str(user.id)
+            )
+
+            registry = order_tracking_service.get_registered_order(owner_id, order_id) or {}
+            if registry.get("payment_notified"):
+                return {"success": False, "error": "This order is already paid."}
+            if _safe_str(registry.get("status", "")).lower() == "cancelled":
+                return {
+                    "success": False,
+                    "error": "This order was cancelled. Please place a new order to continue.",
+                }
+            if order_tracking_service.is_stk_debounced(owner_id, order_id):
+                return {
+                    "success": False,
+                    "error": "Please wait a moment before requesting another M-Pesa prompt.",
+                }
+
             order_snapshot, resolved_amount = await self._resolve_order_for_payment(
                 order_id=order_id,
                 user=user,
@@ -5402,8 +5502,6 @@ class ConversationalAgentService:
             if resolved_amount >= 1:
                 amount = resolved_amount
             elif order_snapshot:
-                from .order_tracking_service import order_tracking_service
-
                 amount = order_tracking_service._order_amount(order_snapshot)
 
             # Format phone number to 254XXXXXXXXX for M-Pesa
@@ -5428,12 +5526,6 @@ class ConversationalAgentService:
                         + (f" (order {order_id} not found or has zero total)" if order_id else "")
                     ),
                 }
-
-            from .order_tracking_service import order_tracking_service
-
-            owner_id = order_tracking_service.owner_id_from_session_key(
-                session_key or "", str(user.id)
-            )
 
             # WhatsApp chat number (receipts) vs M-Pesa line (STK target)
             platform = "whatsapp"
@@ -5597,6 +5689,30 @@ class ConversationalAgentService:
                 short_code=cfg.daraja_shortcode,
                 passkey=decrypted.get("daraja_passkey") or "",
             )
+
+            order_tracking_service.mark_last_stk_at(owner_id, order_id)
+            await order_tracking_service.record_payment_attempt(
+                db,
+                owner_user_id=owner_id,
+                order_id=order_id,
+                status="initiated",
+                checkout_request_id=checkout_request_id or "",
+                merchant_request_id=merchant_request_id or "",
+                mpesa_phone=phone_number,
+                whatsapp_phone=whatsapp_sender,
+                amount=float(amount_int),
+            )
+            if session_key:
+                try:
+                    await context_manager.update_session_metadata(
+                        session_key,
+                        {
+                            "active_payment_order_id": order_id,
+                            "awaiting_mpesa_payment": None,
+                        },
+                    )
+                except Exception:
+                    pass
 
             return {
                 "success": True,
@@ -6146,6 +6262,7 @@ class ConversationalAgentService:
                         total=total,
                         items=items,
                         is_cancellable=status_lower in CANCELLABLE_STATUSES,
+                        is_unpaid=is_unpaid,
                         config=wa_config,
                     )
                     if send_result.get("success"):
@@ -6584,17 +6701,18 @@ class ConversationalAgentService:
         order_data: Optional[Dict[str, Any]] = None,
     ):
         """
-        Persist successful payment: update Orders row to paid (full fields) + append Transactions row.
+        Persist payment to storage: paid updates Orders row; failed appends Transactions only.
         """
         provider = (storage_config or {}).get("provider", "none")
         if provider in (None, "", "none"):
             return
+        tx_status = _safe_str((transaction_data or {}).get("status", "paid")).strip().lower()
         try:
             from .tool_executor import ToolExecutor
             executor = ToolExecutor()
             if provider == "google_sheets":
                 order_id = _safe_str((transaction_data or {}).get("order_id", "")).strip()
-                if order_id and order_data:
+                if order_id and order_data and tx_status == "paid":
                     await self._mark_order_paid_in_google_sheets(
                         executor=executor,
                         order_id=order_id,

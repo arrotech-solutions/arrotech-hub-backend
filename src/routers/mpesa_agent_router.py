@@ -539,6 +539,47 @@ async def _handle_mpesa_callback_background(webhook_secret: str, body: bytes):
                             notify_err,
                             exc_info=True,
                         )
+                elif notify_ctx and not is_paid:
+                    order_id = (notify_ctx or {}).get("order_id")
+                    whatsapp_sender = (
+                        (notify_ctx or {}).get("whatsapp_sender")
+                        or (notify_ctx or {}).get("sender_id")
+                        or ""
+                    )
+                    mpesa_phone = (
+                        (notify_ctx or {}).get("mpesa_phone")
+                        or (notify_ctx or {}).get("customer_phone")
+                        or ""
+                    )
+                    platform = (notify_ctx or {}).get("platform") or "whatsapp"
+                    storage_config = (notify_ctx or {}).get("storage_config") or {}
+
+                    try:
+                        from ..services.order_stk_payment_service import finalize_order_stk_payment
+
+                        await finalize_order_stk_payment(
+                            db=db,
+                            owner_user_id=str(config.user_id),
+                            order_id=order_id,
+                            whatsapp_sender=whatsapp_sender or "",
+                            mpesa_phone=mpesa_phone,
+                            platform=platform,
+                            storage_config=storage_config,
+                            is_paid=False,
+                            amount_paid=float((parsed or {}).get("amount") or notify_ctx.get("amount") or 0),
+                            currency=str(notify_ctx.get("currency") or "KES"),
+                            result_code=result_code,
+                            result_desc=str((parsed or {}).get("result_desc") or ""),
+                            checkout_request_id=checkout_request_id or "",
+                            merchant_request_id=merchant_request_id or "",
+                            payment_record=payment,
+                        )
+                    except Exception as fail_notify_err:
+                        logger.warning(
+                            "Failed to notify customer of STK failure: %s",
+                            fail_notify_err,
+                            exc_info=True,
+                        )
                 elif is_paid and not notify_ctx:
                     logger.error(
                         "STK payment succeeded (receipt=%s) but order context missing — "

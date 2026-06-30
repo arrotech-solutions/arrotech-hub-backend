@@ -371,6 +371,7 @@ class WhatsAppService:
         total: str,
         items: str,
         is_cancellable: bool = True,
+        is_unpaid: bool = False,
         config: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Send an order card with interactive action buttons.
@@ -427,6 +428,22 @@ class WhatsAppService:
 
             # Build contextual buttons (max 3 per WhatsApp interactive message)
             buttons = []
+            status_lower_unpaid = status_lower == "pending" and is_unpaid
+            if status_lower_unpaid:
+                buttons.append({
+                    "type": "reply",
+                    "reply": {
+                        "id": f"pay_mpesa:{order_id}",
+                        "title": "💳 Pay now"
+                    }
+                })
+                buttons.append({
+                    "type": "reply",
+                    "reply": {
+                        "id": f"pay_mpesa_other:{order_id}",
+                        "title": "Other number"
+                    }
+                })
             if is_cancellable:
                 buttons.append({
                     "type": "reply",
@@ -435,13 +452,14 @@ class WhatsAppService:
                         "title": "❌ Cancel Order"
                     }
                 })
-            buttons.append({
-                "type": "reply",
-                "reply": {
-                    "id": f"order_details:{order_id}",
-                    "title": "📋 Order Details"
-                }
-            })
+            if not status_lower_unpaid:
+                buttons.append({
+                    "type": "reply",
+                    "reply": {
+                        "id": f"order_details:{order_id}",
+                        "title": "📋 Order Details"
+                    }
+                })
 
             payload = {
                 "messaging_product": "whatsapp",

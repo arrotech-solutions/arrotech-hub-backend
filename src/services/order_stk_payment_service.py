@@ -14,13 +14,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import User
+from .cache_service import cache_service
 from .daraja_service import DarajaService
 from .order_tracking_service import order_tracking_service
+from .stk_result_messages import STK_TERMINAL_FAILURE_CODES, stk_customer_message
 
 logger = logging.getLogger(__name__)
 
-# Daraja STK terminal failure codes (stop polling)
-_STK_TERMINAL_FAILURE_CODES = frozenset({"1032", "1037", "1", "2001", "17"})
+
+def _failure_notified_key(checkout_request_id: str) -> str:
+    return f"mpesa:stk:failure_notified:{checkout_request_id}"
 
 
 async def finalize_order_stk_payment(
@@ -41,15 +44,28 @@ async def finalize_order_stk_payment(
     checkout_request_id: str = "",
     merchant_request_id: str = "",
     payment_record: Any = None,
+    lang: str = "en",
 ) -> None:
-    """Send payment confirmation + PAID PDF (idempotent per order)."""
+    """Send payment confirmation or failure notice (idempotent per checkout attempt)."""
     if not order_id:
         return
 
     registry = order_tracking_service.get_registered_order(owner_user_id, order_id) or {}
+
     if is_paid and registry.get("payment_notified"):
         logger.info("[STK_PAY] Order %s already has payment_notified — skip", order_id)
         return
+
+    if not is_paid and checkout_request_id:
+        if cache_service.get(_failure_notified_key(checkout_request_id)):
+            logger.info(
+                "[STK_PAY] Failure already notified for checkout %s — skip",
+                checkout_request_id,
+            )
+            return
+        if registry.get("payment_notified"):
+            logger.info("[STK_PAY] Order %s paid — ignore late failure callback", order_id)
+            return
 
     owner_uuid = uuid.UUID(str(owner_user_id))
     owner_stmt = select(User).where(User.id == owner_uuid)
@@ -59,35 +75,29 @@ async def finalize_order_stk_payment(
         logger.warning("[STK_PAY] Owner user %s not found for order %s", owner_user_id, order_id)
         return
 
-    wa_config = None
-    if platform == "whatsapp" and whatsapp_sender:
-        try:
-            wa_config = await order_tracking_service._get_whatsapp_config(owner_user, db)
-        except Exception as cfg_err:
-            logger.warning("[STK_PAY] WhatsApp config failed: %s", cfg_err)
-
-    msg_ok = (
-        f"✅ Payment received for order {order_id}. "
-        f"Receipt: {mpesa_receipt or 'pending'}"
-        if is_paid
-        else f"⚠️ Payment failed for order {order_id}. {result_desc or ''}".strip()
-    )
-
-    try:
-        if platform == "whatsapp" and whatsapp_sender and wa_config:
-            from .whatsapp_service import WhatsAppService
-
-            wa = WhatsAppService()
-            await wa.send_message(to_number=whatsapp_sender, message=msg_ok, config=wa_config)
-        elif platform == "telegram" and whatsapp_sender:
-            from .telegram_service import TelegramService
-
-            tg = TelegramService()
-            await tg.send_message(chat_id=whatsapp_sender, message=msg_ok)
-    except Exception as msg_err:
-        logger.warning("[STK_PAY] Failed to send payment text for %s: %s", order_id, msg_err)
-
     if is_paid:
+        msg_ok = (
+            f"✅ Payment received for order {order_id}. "
+            f"Receipt: {mpesa_receipt or 'pending'}"
+        )
+        try:
+            if platform == "whatsapp" and whatsapp_sender:
+                wa_config = await order_tracking_service._get_whatsapp_config(owner_user, db)
+                if wa_config:
+                    from .whatsapp_service import WhatsAppService
+
+                    wa = WhatsAppService()
+                    await wa.send_message(
+                        to_number=whatsapp_sender, message=msg_ok, config=wa_config
+                    )
+            elif platform == "telegram" and whatsapp_sender:
+                from .telegram_service import TelegramService
+
+                tg = TelegramService()
+                await tg.send_message(chat_id=whatsapp_sender, message=msg_ok)
+        except Exception as msg_err:
+            logger.warning("[STK_PAY] Failed to send payment text for %s: %s", order_id, msg_err)
+
         try:
             await order_tracking_service.notify_payment_received(
                 user=owner_user,
@@ -101,7 +111,22 @@ async def finalize_order_stk_payment(
         except Exception as receipt_err:
             logger.warning("[STK_PAY] PAID receipt failed for %s: %s", order_id, receipt_err)
 
-        if payment_record and storage_config.get("provider") not in (None, "", "none"):
+        await order_tracking_service.record_payment_attempt(
+            db,
+            owner_user_id=owner_user_id,
+            order_id=order_id,
+            status="paid",
+            checkout_request_id=checkout_request_id,
+            merchant_request_id=merchant_request_id,
+            mpesa_phone=mpesa_phone,
+            whatsapp_phone=whatsapp_sender,
+            amount=amount_paid,
+            currency=currency,
+            result_code=result_code,
+            result_desc=result_desc,
+        )
+
+        if storage_config.get("provider") not in (None, "", "none"):
             try:
                 from .conversational_agent_service import ConversationalAgentService
 
@@ -138,6 +163,99 @@ async def finalize_order_stk_payment(
                 )
             except Exception as tx_err:
                 logger.warning("[STK_PAY] Transaction storage failed for %s: %s", order_id, tx_err)
+        return
+
+    # ── Failure path ──
+    customer_msg = stk_customer_message(result_code, lang=lang, result_desc=result_desc)
+    body = f"⚠️ Payment for order *{order_id}* was not completed.\n\n{customer_msg}"
+
+    try:
+        if platform == "whatsapp" and whatsapp_sender:
+            await order_tracking_service.send_payment_retry_buttons(
+                owner_user,
+                db,
+                order_id=order_id,
+                customer_phone=whatsapp_sender,
+                body_text=body,
+            )
+        elif platform == "telegram" and whatsapp_sender:
+            from .telegram_service import TelegramService
+
+            tg = TelegramService()
+            await tg.send_message(chat_id=whatsapp_sender, message=body)
+    except Exception as msg_err:
+        logger.warning("[STK_PAY] Failed to send failure notice for %s: %s", order_id, msg_err)
+
+    if checkout_request_id:
+        cache_service.set(_failure_notified_key(checkout_request_id), True, expire_seconds=86400)
+
+    failure_count = order_tracking_service.record_payment_failure_metadata(
+        owner_user_id,
+        order_id,
+        result_code=result_code,
+        result_desc=result_desc,
+        checkout_request_id=checkout_request_id,
+    )
+
+    await order_tracking_service.record_payment_attempt(
+        db,
+        owner_user_id=owner_user_id,
+        order_id=order_id,
+        status="failed",
+        checkout_request_id=checkout_request_id,
+        merchant_request_id=merchant_request_id,
+        mpesa_phone=mpesa_phone,
+        whatsapp_phone=whatsapp_sender,
+        amount=float(amount_paid or registry.get("amount") or 0),
+        currency=currency,
+        result_code=result_code,
+        result_desc=result_desc,
+        customer_message=customer_msg,
+        failure_notified=True,
+    )
+
+    if storage_config.get("provider") not in (None, "", "none"):
+        try:
+            from .conversational_agent_service import ConversationalAgentService
+
+            tx_data = {
+                "order_id": order_id,
+                "transaction_id": checkout_request_id or f"fail-{order_id}-{datetime.utcnow().timestamp():.0f}",
+                "checkout_request_id": checkout_request_id,
+                "merchant_request_id": merchant_request_id,
+                "amount": float(amount_paid or registry.get("amount") or 0),
+                "currency": currency,
+                "customer_phone": mpesa_phone or whatsapp_sender,
+                "mpesa_phone": mpesa_phone or whatsapp_sender,
+                "whatsapp_phone": whatsapp_sender or "",
+                "status": "failed",
+                "result_code": result_code,
+                "result_desc": result_desc,
+                "paid_at": datetime.utcnow().isoformat(),
+            }
+            conv_service = ConversationalAgentService()
+            await conv_service.persist_payment_transaction_to_storage(
+                transaction_data=tx_data,
+                storage_config=storage_config,
+                user=owner_user,
+                db=db,
+                order_data=None,
+            )
+        except Exception as tx_err:
+            logger.warning("[STK_PAY] Failed transaction storage for %s: %s", order_id, tx_err)
+
+    try:
+        await order_tracking_service.maybe_alert_business_payment_failures(
+            owner_user,
+            db,
+            owner_user_id=owner_user_id,
+            order_id=order_id,
+            customer_phone=whatsapp_sender or mpesa_phone,
+            failure_count=failure_count,
+            last_reason=customer_msg,
+        )
+    except Exception as alert_err:
+        logger.warning("[STK_PAY] Business alert failed for %s: %s", order_id, alert_err)
 
 
 def _notify_context_from_registry(registry: Dict[str, Any]) -> Dict[str, Any]:
@@ -271,13 +389,31 @@ async def poll_stk_and_finalize_order_payment(
                 )
             return
 
-        if result_code in _STK_TERMINAL_FAILURE_CODES:
+        if result_code in STK_TERMINAL_FAILURE_CODES:
             logger.info(
                 "[STK_PAY] Poll terminal failure order=%s code=%s desc=%s",
                 order_id,
                 result_code,
                 result_desc,
             )
+            session_maker = get_session_maker()
+            async with session_maker() as db:
+                await finalize_order_stk_payment(
+                    db=db,
+                    owner_user_id=owner_user_id,
+                    order_id=order_id,
+                    whatsapp_sender=whatsapp_sender,
+                    mpesa_phone=mpesa_phone,
+                    platform=platform,
+                    storage_config=storage_config,
+                    is_paid=False,
+                    amount_paid=amount_paid,
+                    currency=currency,
+                    result_code=result_code,
+                    result_desc=result_desc,
+                    checkout_request_id=checkout_request_id,
+                    merchant_request_id=merchant_request_id,
+                )
             return
 
         await asyncio.sleep(interval)
@@ -287,6 +423,24 @@ async def poll_stk_and_finalize_order_payment(
         order_id,
         checkout_request_id,
     )
+    session_maker = get_session_maker()
+    async with session_maker() as db:
+        owner_uuid = uuid.UUID(str(owner_user_id))
+        owner_res = await db.execute(select(User).where(User.id == owner_uuid))
+        owner_user = owner_res.scalar_one_or_none()
+        if owner_user:
+            registry = order_tracking_service.get_registered_order(owner_user_id, order_id) or {}
+            whatsapp_sender = (
+                registry.get("whatsapp_sender") or registry.get("customer_phone") or ""
+            )
+            await order_tracking_service.notify_stk_payment_inconclusive(
+                owner_user,
+                db,
+                owner_user_id=owner_user_id,
+                order_id=order_id,
+                whatsapp_sender=whatsapp_sender,
+                checkout_request_id=checkout_request_id,
+            )
 
 
 def schedule_stk_payment_poll(**kwargs: Any) -> None:

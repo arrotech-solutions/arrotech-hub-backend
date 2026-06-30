@@ -77,6 +77,7 @@ app.config_from_object({
         "src.tasks.rag_tasks.*": {"queue": "low"},
         "src.tasks.drive_sync_tasks.*": {"queue": "low"},
         "src.tasks.subscription_tasks.*": {"queue": "low"},
+        "src.tasks.order_payment_tasks.*": {"queue": "low"},
     },
 
     # ── Retry Defaults ──
@@ -96,6 +97,7 @@ app.autodiscover_tasks([
     "src.tasks.scheduled_broadcast_beat",
     "src.tasks.drive_sync_tasks",
     "src.tasks.subscription_tasks",
+    "src.tasks.order_payment_tasks",
 ])
 
 
@@ -166,6 +168,13 @@ app.conf.beat_schedule = {
     "subscription-auto-renew-daily": {
         "task": "src.tasks.subscription_tasks.attempt_subscription_renewal_task",
         "schedule": crontab(hour=6, minute=0),
+        "options": {"queue": "low"},
+    },
+
+    # ── Expire unpaid WhatsApp orders (hourly) ──
+    "expire-unpaid-orders-hourly": {
+        "task": "src.tasks.order_payment_tasks.expire_unpaid_orders_task",
+        "schedule": crontab(minute=0),
         "options": {"queue": "low"},
     },
 

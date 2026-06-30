@@ -15,13 +15,16 @@ from typing import Any, Dict, List, Literal, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import Connection, ConnectionStatus, StkOrderMapping, User
+from ..models import Connection, ConnectionStatus, StkOrderMapping, StkPaymentAttempt, User
 from .cache_service import cache_service
 from .order_service import ORDER_STATUSES, OrderService
 
 logger = logging.getLogger(__name__)
 
 TRACKING_TTL_SECONDS = 60 * 60 * 24 * 45  # 45 days
+STK_DEBOUNCE_SECONDS = 30
+PAYMENT_FAILURE_ALERT_THRESHOLD = 3
+UNPAID_ORDER_TTL_HOURS = 24
 
 PaymentStatus = Literal["pending", "paid"]
 
@@ -87,6 +90,9 @@ class OrderTrackingService:
             "payment_notified": existing.get("payment_notified", False),
             "stk_initiated": existing.get("stk_initiated", False),
             "whatsapp_sender": existing.get("whatsapp_sender") or customer_phone,
+            "payment_attempt_count": existing.get("payment_attempt_count", 0),
+            "last_stk_at": existing.get("last_stk_at", ""),
+            "last_payment_failure": existing.get("last_payment_failure"),
         }
         cache_service.set(
             self._tracking_key(owner_user_id, order_id),
@@ -156,6 +162,7 @@ class OrderTrackingService:
         if currency:
             registry["currency"] = currency
         registry["stk_initiated"] = True
+        registry["last_stk_at"] = datetime.utcnow().isoformat()
         if not cache_service.set(
             self._tracking_key(owner_user_id, order_id),
             registry,
@@ -984,6 +991,191 @@ class OrderTrackingService:
             from urllib.parse import quote_plus
             return f"https://maps.google.com/?q={quote_plus(address)}"
         return ""
+
+    def _save_registry(self, owner_user_id: str, order_id: str, registry: Dict[str, Any]) -> None:
+        cache_service.set(
+            self._tracking_key(owner_user_id, order_id),
+            registry,
+            expire_seconds=TRACKING_TTL_SECONDS,
+        )
+
+    def is_stk_debounced(self, owner_user_id: str, order_id: str) -> bool:
+        registry = self.get_registered_order(owner_user_id, order_id) or {}
+        last = registry.get("last_stk_at") or ""
+        if not last:
+            return False
+        try:
+            last_dt = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+            if last_dt.tzinfo:
+                last_dt = last_dt.replace(tzinfo=None)
+            elapsed = (datetime.utcnow() - last_dt).total_seconds()
+            return elapsed < STK_DEBOUNCE_SECONDS
+        except (TypeError, ValueError):
+            return False
+
+    def mark_last_stk_at(self, owner_user_id: str, order_id: str) -> None:
+        registry = self.get_registered_order(owner_user_id, order_id) or {}
+        if not registry:
+            return
+        registry["last_stk_at"] = datetime.utcnow().isoformat()
+        registry["stk_initiated"] = True
+        self._save_registry(owner_user_id, order_id, registry)
+
+    def record_payment_failure_metadata(
+        self,
+        owner_user_id: str,
+        order_id: str,
+        *,
+        result_code: str,
+        result_desc: str,
+        checkout_request_id: str = "",
+    ) -> int:
+        registry = self.get_registered_order(owner_user_id, order_id) or {}
+        count = int(registry.get("payment_attempt_count") or 0) + 1
+        registry["payment_attempt_count"] = count
+        registry["last_payment_failure"] = {
+            "code": result_code,
+            "desc": result_desc,
+            "at": datetime.utcnow().isoformat(),
+            "checkout_request_id": checkout_request_id,
+        }
+        self._save_registry(owner_user_id, order_id, registry)
+        return count
+
+    async def record_payment_attempt(
+        self,
+        db: AsyncSession,
+        *,
+        owner_user_id: str,
+        order_id: str,
+        status: str,
+        checkout_request_id: str = "",
+        merchant_request_id: str = "",
+        mpesa_phone: str = "",
+        whatsapp_phone: str = "",
+        amount: float = 0,
+        currency: str = "KES",
+        result_code: str = "",
+        result_desc: str = "",
+        customer_message: str = "",
+        failure_notified: bool = False,
+    ) -> None:
+        import uuid as uuid_mod
+
+        try:
+            owner_uuid = uuid_mod.UUID(str(owner_user_id))
+            row = StkPaymentAttempt(
+                user_id=owner_uuid,
+                order_id=order_id,
+                checkout_request_id=checkout_request_id or None,
+                merchant_request_id=merchant_request_id or None,
+                mpesa_phone=mpesa_phone or None,
+                whatsapp_phone=whatsapp_phone or None,
+                amount=amount or None,
+                currency=currency or "KES",
+                status=status,
+                result_code=result_code or None,
+                result_desc=result_desc or None,
+                customer_message=customer_message or None,
+                failure_notified=failure_notified,
+            )
+            db.add(row)
+            await db.flush()
+        except Exception as e:
+            logger.warning("[ORDER_TRACK] record_payment_attempt failed: %s", e)
+
+    async def send_payment_retry_buttons(
+        self,
+        user: User,
+        db: AsyncSession,
+        *,
+        order_id: str,
+        customer_phone: str,
+        body_text: str,
+    ) -> Dict[str, Any]:
+        """Send Pay on this number / Other number quick-reply buttons."""
+        wa_config = await self._get_whatsapp_config(user, db)
+        if not wa_config or not customer_phone:
+            return {"success": False, "error": "WhatsApp not configured"}
+        from .whatsapp_service import WhatsAppService
+
+        wa = WhatsAppService()
+        buttons = [
+            {"id": f"pay_mpesa:{order_id}", "title": "Pay on this number"},
+            {"id": f"pay_mpesa_other:{order_id}", "title": "Other number"},
+        ]
+        return await wa.send_quick_reply_buttons(
+            to_number=customer_phone,
+            body_text=body_text,
+            buttons=buttons,
+            config=wa_config,
+        )
+
+    async def maybe_alert_business_payment_failures(
+        self,
+        user: User,
+        db: AsyncSession,
+        *,
+        owner_user_id: str,
+        order_id: str,
+        customer_phone: str,
+        failure_count: int,
+        last_reason: str,
+    ) -> None:
+        if failure_count < PAYMENT_FAILURE_ALERT_THRESHOLD:
+            return
+        alert_key = f"mpesa:stk:business_alert:{order_id}"
+        if cache_service.get(alert_key):
+            return
+        business_phone = (self.get_registered_order(owner_user_id, order_id) or {}).get(
+            "business_phone", ""
+        )
+        if not business_phone:
+            return
+        wa_config = await self._get_whatsapp_config(user, db)
+        if not wa_config:
+            return
+        from .whatsapp_service import WhatsAppService
+
+        msg = (
+            f"⚠️ Customer {customer_phone} had {failure_count} failed M-Pesa payment(s) "
+            f"for order {order_id}. Last reason: {last_reason}"
+        )
+        wa = WhatsAppService()
+        res = await wa.send_message(business_phone, msg, config=wa_config)
+        if res.get("success"):
+            cache_service.set(alert_key, True, expire_seconds=TRACKING_TTL_SECONDS)
+
+    async def notify_stk_payment_inconclusive(
+        self,
+        user: User,
+        db: AsyncSession,
+        *,
+        owner_user_id: str,
+        order_id: str,
+        whatsapp_sender: str,
+        checkout_request_id: str = "",
+        lang: str = "en",
+    ) -> None:
+        from .stk_result_messages import stk_inconclusive_message
+
+        inconclusive_key = f"mpesa:stk:inconclusive:{checkout_request_id or order_id}"
+        if cache_service.get(inconclusive_key):
+            return
+        msg = stk_inconclusive_message(lang=lang)
+        await self.send_payment_retry_buttons(
+            user, db, order_id=order_id, customer_phone=whatsapp_sender, body_text=msg
+        )
+        await self.record_payment_attempt(
+            db,
+            owner_user_id=owner_user_id,
+            order_id=order_id,
+            status="timeout",
+            checkout_request_id=checkout_request_id,
+            whatsapp_phone=whatsapp_sender,
+            customer_message=msg,
+        )
+        cache_service.set(inconclusive_key, True, expire_seconds=86400)
 
     async def _get_whatsapp_config(
         self, user: User, db: AsyncSession

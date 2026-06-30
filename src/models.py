@@ -877,6 +877,29 @@ class MpesaPayment(Base):
     locked_by_user = relationship("User", foreign_keys=[locked_by])
 
 
+class StkPaymentAttempt(Base):
+    """Audit log for each M-Pesa STK payment attempt on an order."""
+    __tablename__ = "stk_payment_attempts"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    order_id = Column(String, nullable=False, index=True)
+    checkout_request_id = Column(String, nullable=True, index=True)
+    merchant_request_id = Column(String, nullable=True)
+    mpesa_phone = Column(String(20), nullable=True)
+    whatsapp_phone = Column(String(20), nullable=True)
+    amount = Column(Numeric(10, 2), nullable=True)
+    currency = Column(String(8), nullable=False, default="KES", server_default="KES")
+    status = Column(String(32), nullable=False, index=True)  # initiated, failed, paid, timeout, api_error
+    result_code = Column(String(16), nullable=True)
+    result_desc = Column(Text, nullable=True)
+    customer_message = Column(Text, nullable=True)
+    failure_notified = Column(Boolean, default=False, nullable=False, server_default="false")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", foreign_keys=[user_id], backref="stk_payment_attempts")
+
+
 class StkOrderMapping(Base):
     """Durable STK checkout → WhatsApp order mapping (survives Redis loss)."""
     __tablename__ = "stk_order_mappings"
