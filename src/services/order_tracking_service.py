@@ -136,7 +136,7 @@ class OrderTrackingService:
         if not amount:
             amount = self._order_amount(order)
 
-        html = self._build_receipt_html(
+        receipt_data = self._build_receipt_data(
             order=order,
             order_id=order_id,
             business_name=business_name,
@@ -151,7 +151,7 @@ class OrderTrackingService:
             from .file_management_service import FileManagementService
 
             fms = FileManagementService()
-            pdf_res = await fms.generate_pdf_from_html(html, filename=filename)
+            pdf_res = await fms.generate_order_receipt_pdf(receipt_data, filename=filename)
             if pdf_res.get("success") and pdf_res.get("content"):
                 return base64.b64decode(pdf_res["content"])
             logger.warning(
@@ -166,6 +166,35 @@ class OrderTrackingService:
                 pdf_err,
             )
         return None
+
+    def _build_receipt_data(
+        self,
+        *,
+        order: Dict[str, Any],
+        order_id: str,
+        business_name: str,
+        business_phone: str,
+        mpesa_receipt: str,
+        amount: float,
+        currency: str,
+        payment_status: PaymentStatus = "paid",
+    ) -> Dict[str, Any]:
+        """Structured receipt payload for ReportLab PDF generation."""
+        return {
+            "order_id": order_id,
+            "business_name": business_name,
+            "business_phone": business_phone,
+            "customer_name": order.get("customer_name", ""),
+            "customer_phone": order.get("customer_phone", ""),
+            "delivery_method": order.get("delivery_method", ""),
+            "delivery_address": order.get("delivery_address", ""),
+            "items": order.get("items") or [],
+            "currency": currency,
+            "amount": amount,
+            "payment_status": payment_status,
+            "mpesa_receipt": mpesa_receipt,
+            "issued_at": datetime.utcnow().strftime("%d %b %Y, %H:%M UTC"),
+        }
 
     async def _send_receipt_pdf(
         self,
@@ -568,95 +597,6 @@ class OrderTrackingService:
 
         logger.info("[ORDER_TRACK] notify_payment_received order=%s sent=%s", order_id, sent)
         return {"success": True, "order_id": order_id, "sent": sent}
-
-    def _build_receipt_html(
-        self,
-        *,
-        order: Dict[str, Any],
-        order_id: str,
-        business_name: str,
-        business_phone: str,
-        mpesa_receipt: str,
-        amount: float,
-        currency: str,
-        payment_status: PaymentStatus = "paid",
-    ) -> str:
-        """Build a clean, printable HTML receipt for PDF rendering."""
-        from html import escape
-
-        items = order.get("items") or []
-        rows = ""
-        for item in items:
-            name = escape(str(item.get("name", "Item")))
-            qty = item.get("quantity", 1)
-            unit = float(item.get("unit_price", 0) or item.get("price", 0) or 0)
-            line_total = float(item.get("total", 0) or (float(qty) * unit))
-            rows += (
-                f"<tr><td>{name}</td><td style='text-align:center'>{qty}</td>"
-                f"<td style='text-align:right'>{currency} {unit:,.0f}</td>"
-                f"<td style='text-align:right'>{currency} {line_total:,.0f}</td></tr>"
-            )
-
-        customer_name = escape(str(order.get("customer_name", "")))
-        customer_phone = escape(str(order.get("customer_phone", "")))
-        delivery_method = escape(str(order.get("delivery_method", "")))
-        delivery_address = escape(str(order.get("delivery_address", "")))
-        issued_at = datetime.utcnow().strftime("%d %b %Y, %H:%M UTC")
-
-        if payment_status == "paid":
-            badge_label = "PAID"
-            badge_color = "#16a34a"
-            total_label = "Total Paid"
-            mpesa_line = (
-                f"M-Pesa Receipt: <strong>{escape(str(mpesa_receipt))}</strong><br/>"
-                if mpesa_receipt
-                else ""
-            )
-        else:
-            badge_label = "ORDER RECEIVED"
-            badge_color = "#2563eb"
-            total_label = "Total Due"
-            mpesa_line = ""
-
-        return f"""
-        <!DOCTYPE html>
-        <html><head><meta charset="utf-8"><style>
-            body {{ font-family: Arial, Helvetica, sans-serif; color: #1a1a1a; margin: 32px; }}
-            .header {{ text-align: center; border-bottom: 2px solid {badge_color}; padding-bottom: 12px; }}
-            .header h1 {{ margin: 0; font-size: 22px; }}
-            .badge {{ display: inline-block; background: {badge_color}; color: #fff;
-                     padding: 4px 12px; border-radius: 6px; font-weight: bold; margin-top: 8px; }}
-            .meta {{ margin: 16px 0; font-size: 13px; line-height: 1.6; }}
-            table {{ width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }}
-            th, td {{ padding: 8px; border-bottom: 1px solid #e5e5e5; }}
-            th {{ text-align: left; background: #f5f5f5; }}
-            .total {{ text-align: right; font-size: 16px; font-weight: bold; margin-top: 14px; }}
-            .footer {{ margin-top: 24px; text-align: center; font-size: 12px; color: #666; }}
-        </style></head><body>
-            <div class="header">
-                <h1>{escape(business_name)}</h1>
-                <div class="badge">{badge_label}</div>
-            </div>
-            <div class="meta">
-                <strong>Receipt</strong><br/>
-                Order: <strong>{escape(order_id)}</strong><br/>
-                Date: {issued_at}<br/>
-                {mpesa_line}
-                {f"Customer: {customer_name}<br/>" if customer_name else ""}
-                {f"Phone: {customer_phone}<br/>" if customer_phone else ""}
-                {f"Delivery: {delivery_method}<br/>" if delivery_method else ""}
-                {f"Address: {delivery_address}<br/>" if delivery_address else ""}
-                {f"Business contact: {escape(str(business_phone))}<br/>" if business_phone else ""}
-            </div>
-            <table>
-                <thead><tr><th>Item</th><th style="text-align:center">Qty</th>
-                    <th style="text-align:right">Unit</th><th style="text-align:right">Total</th></tr></thead>
-                <tbody>{rows}</tbody>
-            </table>
-            <div class="total">{total_label}: {currency} {amount:,.0f}</div>
-            <div class="footer">Thank you for your business!<br/>This is a computer-generated receipt.</div>
-        </body></html>
-        """
 
     @staticmethod
     def _summarize_items(items: List[Dict[str, Any]]) -> str:

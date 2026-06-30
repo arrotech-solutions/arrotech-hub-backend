@@ -35,8 +35,8 @@ def mock_user():
     return user
 
 
-def test_build_receipt_html_pending_vs_paid(tracking_service, sample_order):
-    pending_html = tracking_service._build_receipt_html(
+def test_build_receipt_data_pending_vs_paid(tracking_service, sample_order):
+    pending = tracking_service._build_receipt_data(
         order=sample_order,
         order_id=sample_order["order_id"],
         business_name="Test Cafe",
@@ -46,7 +46,7 @@ def test_build_receipt_html_pending_vs_paid(tracking_service, sample_order):
         currency="KES",
         payment_status="pending",
     )
-    paid_html = tracking_service._build_receipt_html(
+    paid = tracking_service._build_receipt_data(
         order=sample_order,
         order_id=sample_order["order_id"],
         business_name="Test Cafe",
@@ -57,13 +57,38 @@ def test_build_receipt_html_pending_vs_paid(tracking_service, sample_order):
         payment_status="paid",
     )
 
-    assert "ORDER RECEIVED" in pending_html
-    assert "Total Due" in pending_html
-    assert "M-Pesa Receipt" not in pending_html
+    assert pending["payment_status"] == "pending"
+    assert paid["payment_status"] == "paid"
+    assert paid["mpesa_receipt"] == "QHX123"
+    assert pending["items"][0]["name"] == "Burger"
 
-    assert "PAID" in paid_html
-    assert "Total Paid" in paid_html
-    assert "QHX123" in paid_html
+
+@pytest.mark.asyncio
+async def test_generate_order_receipt_pdf_produces_valid_pdf(sample_order):
+    from src.services.file_management_service import FileManagementService
+
+    fms = FileManagementService()
+    data = {
+        "order_id": sample_order["order_id"],
+        "business_name": "ATC Collections",
+        "business_phone": "254711371265",
+        "customer_name": "Jane Doe",
+        "customer_phone": sample_order["customer_phone"],
+        "delivery_method": "pickup",
+        "items": [{"name": "Coca-Cola", "quantity": 1, "unit_price": 1, "total": 1}],
+        "currency": "KES",
+        "amount": 1,
+        "payment_status": "pending",
+        "issued_at": "30 Jun 2026, 11:55 UTC",
+    }
+    result = await fms.generate_order_receipt_pdf(data, filename="test_receipt.pdf")
+
+    assert result["success"] is True
+    assert result["method"] == "reportlab_receipt"
+    raw = base64.b64decode(result["content"])
+    assert raw.startswith(b"%PDF")
+    assert b"font-family" not in raw
+    assert b"ORDER RECEIVED" not in raw  # text is compressed/encoded in PDF stream
 
 
 def test_register_order_preserves_existing_flags(tracking_service, sample_order):
