@@ -189,7 +189,18 @@ async def poll_stk_and_finalize_order_payment(
             owner_user_id,
             checkout_request_id,
             merchant_request_id,
-        ) or _notify_context_from_registry(registry)
+        )
+        if not ctx:
+            session_maker = get_session_maker()
+            async with session_maker() as lookup_db:
+                ctx = await order_tracking_service.resolve_stk_notify_context_from_db(
+                    lookup_db,
+                    owner_user_id,
+                    checkout_request_id,
+                    merchant_request_id,
+                )
+        if not ctx:
+            ctx = _notify_context_from_registry(registry)
         whatsapp_sender = ctx.get("whatsapp_sender") or ctx.get("sender_id") or ""
         mpesa_phone = ctx.get("mpesa_phone") or ""
         platform = ctx.get("platform") or "whatsapp"
@@ -268,8 +279,19 @@ async def poll_stk_and_finalize_order_payment(
 
 
 def schedule_stk_payment_poll(**kwargs: Any) -> None:
-    """Fire-and-forget STK poll task."""
+    """Schedule STK poll fallback (Celery when available, else asyncio task)."""
+    order_id = kwargs.get("order_id")
+    try:
+        from src.tasks.webhook_tasks import poll_stk_order_payment_task
+
+        poll_stk_order_payment_task.delay(**kwargs)
+        logger.info("[STK_PAY] Scheduled Celery poll for order %s", order_id)
+        return
+    except Exception as celery_err:
+        logger.debug("[STK_PAY] Celery poll unavailable for order %s: %s", order_id, celery_err)
+
     try:
         asyncio.create_task(poll_stk_and_finalize_order_payment(**kwargs))
+        logger.info("[STK_PAY] Scheduled asyncio poll for order %s", order_id)
     except RuntimeError:
-        logger.warning("[STK_PAY] Could not schedule poll for order %s", kwargs.get("order_id"))
+        logger.warning("[STK_PAY] Could not schedule poll for order %s", order_id)

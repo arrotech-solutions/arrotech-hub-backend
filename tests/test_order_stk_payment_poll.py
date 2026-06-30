@@ -45,6 +45,7 @@ async def test_poll_stk_finalizes_when_query_returns_success():
 
         track.get_registered_order.return_value = registry
         track.resolve_stk_notify_context.return_value = None
+        track.resolve_stk_notify_context_from_db = AsyncMock(return_value=None)
         daraja = DarajaCls.return_value
         daraja.stk_push_query = AsyncMock(
             return_value={

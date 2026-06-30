@@ -446,3 +446,61 @@ async def test_notify_payment_received_prefers_whatsapp_sender(sample_order_fixt
 
         call_kwargs = wa.upload_and_send_document.call_args.kwargs
         assert call_kwargs["to_number"] == "254711371265"
+
+
+@pytest.mark.asyncio
+async def test_resolve_stk_notify_context_from_db(sample_order_fixture):
+    from src.services.order_tracking_service import OrderTrackingService
+    from src.models import StkOrderMapping
+    import uuid
+
+    svc = OrderTrackingService()
+    owner_id = "f90eb4b7-f155-49ce-b76f-518f8ca9b673"
+    order_id = sample_order_fixture["order_id"]
+    checkout_id = "ws_CO_DB_LOOKUP"
+
+    row = StkOrderMapping(
+        id=uuid.uuid4(),
+        user_id=uuid.UUID(owner_id),
+        order_id=order_id,
+        checkout_request_id=checkout_id,
+        whatsapp_sender="254711371265",
+        mpesa_phone="254797568564",
+        platform="whatsapp",
+        storage_config={"provider": "none"},
+        amount=2,
+        currency="KES",
+    )
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = row
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=mock_result)
+
+    with patch("src.services.order_tracking_service.cache_service") as cache:
+        cache.get.return_value = None
+        ctx = await svc.resolve_stk_notify_context_from_db(
+            db, owner_id, checkout_id, ""
+        )
+
+    assert ctx is not None
+    assert ctx["order_id"] == order_id
+    assert ctx["whatsapp_sender"] == "254711371265"
+    assert svc.resolve_stk_notify_context(owner_id, checkout_id) is None
+
+
+def test_cache_service_lazy_redis_connect():
+    from src.services.cache_service import CacheService
+
+    svc = CacheService()
+    assert svc.redis_client is None
+
+    with patch("src.services.cache_service.redis") as redis_mod:
+        client = MagicMock()
+        redis_mod.from_url.return_value = client
+        client.ping.return_value = True
+        client.get.return_value = None
+
+        assert svc.get("missing-key") is None
+        redis_mod.from_url.assert_called_once()
+        client.ping.assert_called_once()

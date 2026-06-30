@@ -877,6 +877,28 @@ class MpesaPayment(Base):
     locked_by_user = relationship("User", foreign_keys=[locked_by])
 
 
+class StkOrderMapping(Base):
+    """Durable STK checkout → WhatsApp order mapping (survives Redis loss)."""
+    __tablename__ = "stk_order_mappings"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    order_id = Column(String, nullable=False, index=True)
+    checkout_request_id = Column(String, unique=True, nullable=True, index=True)
+    merchant_request_id = Column(String, nullable=True, index=True)
+    whatsapp_sender = Column(String(20), nullable=True)
+    mpesa_phone = Column(String(20), nullable=True)
+    platform = Column(String(32), nullable=False, default="whatsapp", server_default="whatsapp")
+    storage_config = Column(JSON, nullable=True)
+    amount = Column(Numeric(10, 2), nullable=True)
+    currency = Column(String(8), nullable=False, default="KES", server_default="KES")
+    payment_notified = Column(Boolean, default=False, nullable=False, server_default="false")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    user = relationship("User", foreign_keys=[user_id], backref="stk_order_mappings")
+
+
 class MpesaAgentConfig(Base):
     """M-Pesa agent configuration per user."""
     __tablename__ = "mpesa_agent_configs"

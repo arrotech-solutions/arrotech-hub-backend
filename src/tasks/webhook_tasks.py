@@ -170,3 +170,26 @@ def process_drive_webhook_task(self, payload: Dict[str, Any]):
 
     _run_async(_process())
     return {"status": "processed", "type": "google_drive"}
+
+
+@app.task(
+    name="src.tasks.webhook_tasks.poll_stk_order_payment_task",
+    bind=True,
+    max_retries=0,
+    acks_late=True,
+)
+def poll_stk_order_payment_task(self, **kwargs):
+    """Poll Daraja STK status when callback mapping is missing or delayed."""
+    logger.info(
+        "[CeleryWebhook] STK poll fallback order=%s checkout=%s",
+        kwargs.get("order_id"),
+        kwargs.get("checkout_request_id"),
+    )
+
+    async def _poll():
+        from src.services.order_stk_payment_service import poll_stk_and_finalize_order_payment
+
+        await poll_stk_and_finalize_order_payment(**kwargs)
+
+    _run_async(_poll())
+    return {"status": "polled", "order_id": kwargs.get("order_id")}

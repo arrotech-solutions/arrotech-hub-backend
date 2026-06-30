@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Literal, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import Connection, ConnectionStatus, User
+from ..models import Connection, ConnectionStatus, StkOrderMapping, User
 from .cache_service import cache_service
 from .order_service import ORDER_STATUSES, OrderService
 
@@ -275,6 +275,132 @@ class OrderTrackingService:
         if registry:
             return self._registry_to_notify_ctx(registry)
         return None
+
+    @staticmethod
+    def _stk_mapping_to_notify_ctx(row: StkOrderMapping) -> Dict[str, Any]:
+        return {
+            "order_id": row.order_id,
+            "user_id": str(row.user_id),
+            "sender_id": row.whatsapp_sender,
+            "whatsapp_sender": row.whatsapp_sender,
+            "mpesa_phone": row.mpesa_phone or "",
+            "customer_phone": row.mpesa_phone or "",
+            "platform": row.platform or "whatsapp",
+            "storage_config": row.storage_config or {},
+            "amount": float(row.amount or 0),
+            "currency": row.currency or "KES",
+        }
+
+    async def persist_stk_order_mapping(
+        self,
+        db: AsyncSession,
+        *,
+        owner_user_id: str,
+        order_id: str,
+        checkout_request_id: str = "",
+        merchant_request_id: str = "",
+        whatsapp_sender: str = "",
+        mpesa_phone: str = "",
+        platform: str = "whatsapp",
+        storage_config: Optional[Dict[str, Any]] = None,
+        amount: float = 0,
+        currency: str = "KES",
+    ) -> None:
+        """Write STK → order mapping to Postgres (survives Redis/Celery worker gaps)."""
+        import uuid as uuid_mod
+
+        if not order_id or (not checkout_request_id and not merchant_request_id):
+            return
+
+        owner_uuid = uuid_mod.UUID(str(owner_user_id))
+        existing: Optional[StkOrderMapping] = None
+        if checkout_request_id:
+            res = await db.execute(
+                select(StkOrderMapping).where(
+                    StkOrderMapping.checkout_request_id == checkout_request_id
+                )
+            )
+            existing = res.scalar_one_or_none()
+
+        if existing:
+            existing.user_id = owner_uuid
+            existing.order_id = order_id
+            if merchant_request_id:
+                existing.merchant_request_id = merchant_request_id
+            if whatsapp_sender:
+                existing.whatsapp_sender = whatsapp_sender
+            if mpesa_phone:
+                existing.mpesa_phone = mpesa_phone
+            if platform:
+                existing.platform = platform
+            if storage_config:
+                existing.storage_config = storage_config
+            if amount:
+                existing.amount = amount
+            if currency:
+                existing.currency = currency
+        else:
+            db.add(
+                StkOrderMapping(
+                    user_id=owner_uuid,
+                    order_id=order_id,
+                    checkout_request_id=checkout_request_id or None,
+                    merchant_request_id=merchant_request_id or None,
+                    whatsapp_sender=whatsapp_sender or None,
+                    mpesa_phone=mpesa_phone or None,
+                    platform=platform or "whatsapp",
+                    storage_config=storage_config or {},
+                    amount=amount or None,
+                    currency=currency or "KES",
+                )
+            )
+        await db.flush()
+        logger.info(
+            "[ORDER_TRACK] Persisted STK DB mapping order=%s checkout=%s",
+            order_id,
+            checkout_request_id,
+        )
+
+    async def resolve_stk_notify_context_from_db(
+        self,
+        db: AsyncSession,
+        owner_user_id: str,
+        checkout_request_id: str = "",
+        merchant_request_id: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """Fallback when Redis keys were never written (e.g. Celery before lazy Redis fix)."""
+        import uuid as uuid_mod
+
+        if not checkout_request_id and not merchant_request_id:
+            return None
+
+        owner_uuid = uuid_mod.UUID(str(owner_user_id))
+        row: Optional[StkOrderMapping] = None
+        if checkout_request_id:
+            res = await db.execute(
+                select(StkOrderMapping).where(
+                    StkOrderMapping.user_id == owner_uuid,
+                    StkOrderMapping.checkout_request_id == checkout_request_id,
+                )
+            )
+            row = res.scalar_one_or_none()
+        if not row and merchant_request_id:
+            res = await db.execute(
+                select(StkOrderMapping).where(
+                    StkOrderMapping.user_id == owner_uuid,
+                    StkOrderMapping.merchant_request_id == merchant_request_id,
+                )
+            )
+            row = res.scalar_one_or_none()
+
+        if not row:
+            return None
+        logger.info(
+            "[ORDER_TRACK] Resolved STK context from DB order=%s checkout=%s",
+            row.order_id,
+            checkout_request_id,
+        )
+        return self._stk_mapping_to_notify_ctx(row)
 
     def find_order_by_stk_ids(
         self,

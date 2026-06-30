@@ -447,6 +447,13 @@ async def _handle_mpesa_callback_background(webhook_secret: str, body: bytes):
                     checkout_request_id or "",
                     merchant_request_id or "",
                 )
+                if not notify_ctx:
+                    notify_ctx = await order_tracking_service.resolve_stk_notify_context_from_db(
+                        db,
+                        str(config.user_id),
+                        checkout_request_id or "",
+                        merchant_request_id or "",
+                    )
                 if notify_ctx:
                     logger.info(
                         "STK callback resolved order %s (checkout=%s)",

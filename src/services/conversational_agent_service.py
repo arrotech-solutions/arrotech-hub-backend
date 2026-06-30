@@ -5459,6 +5459,19 @@ class ConversationalAgentService:
                 amount=float(amount_int),
                 currency="KES",
             )
+            await order_tracking_service.persist_stk_order_mapping(
+                db,
+                owner_user_id=owner_id,
+                order_id=order_id,
+                checkout_request_id=checkout_request_id or "",
+                merchant_request_id=merchant_request_id or "",
+                whatsapp_sender=whatsapp_sender,
+                mpesa_phone=phone_number,
+                platform=platform,
+                storage_config=storage_config or {},
+                amount=float(amount_int),
+                currency="KES",
+            )
 
             logger.info(
                 "[CONV_AGENT] STK initiated order=%s checkout=%s callback_url=%s whatsapp=%s mpesa=%s",
