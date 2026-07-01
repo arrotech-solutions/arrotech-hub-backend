@@ -379,6 +379,9 @@ async def google_auth(
             db.add(user)
             await db.commit()
             await db.refresh(user)
+
+            from ..services.subscription_service import subscription_service
+            await subscription_service.start_trial(user, db)
         
         # Create tokens
         access_token = create_access_token(
@@ -457,6 +460,9 @@ async def microsoft_auth(
             db.add(user)
             await db.commit()
             await db.refresh(user)
+
+            from ..services.subscription_service import subscription_service
+            await subscription_service.start_trial(user, db)
         
         # Create tokens
         access_token = create_access_token(
