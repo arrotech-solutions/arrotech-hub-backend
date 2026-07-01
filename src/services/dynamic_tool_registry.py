@@ -728,6 +728,105 @@ class DynamicToolRegistry:
                     }
                 ]
             },
+            # Rent Collection Agent - Always available
+            "rent_collection": {
+                "name": "rent_collection",
+                "description": "Property Management and Rent Collection Tool. Use for generating unified invoices, checking balances, calculating utilities, and processing payments. Operations: 'generate_consolidated_invoice', 'format_utility_reminder', 'process_partial_payment', 'generate_tenant_statement', 'calculate_utility_charges', 'format_payment_confirmation', 'classify_tenant_intent', 'generate_collection_summary', 'format_overdue_notice', 'format_utility_bill_breakdown', 'lookup_tenant', 'register_tenant'.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": [
+                                "generate_consolidated_invoice",
+                                "format_utility_reminder",
+                                "process_partial_payment",
+                                "generate_tenant_statement",
+                                "calculate_utility_charges",
+                                "format_payment_confirmation",
+                                "classify_tenant_intent",
+                                "generate_collection_summary",
+                                "format_overdue_notice",
+                                "format_utility_bill_breakdown",
+                                "lookup_tenant",
+                                "register_tenant"
+                            ],
+                            "description": "Operation to perform."
+                        },
+                        "tenant_name": {"type": "string", "description": "Name of the tenant"},
+                        "phone_number": {"type": "string", "description": "Phone number for lookup/registration"},
+                        "unit": {"type": "string", "description": "Unit number/name"},
+                        "property_name": {"type": "string", "description": "Name of the property"},
+                        "period": {"type": "string", "description": "Billing period (e.g., 'July 2026')"},
+                        "rent_amount": {"type": "number", "description": "Amount for rent"},
+                        "water_amount": {"type": "number", "description": "Amount for water"},
+                        "electricity_amount": {"type": "number", "description": "Amount for electricity"},
+                        "garbage_amount": {"type": "number", "description": "Amount for garbage"},
+                        "total_amount": {"type": "number", "description": "Total amount expected"},
+                        "paid_amount": {"type": "number", "description": "Amount paid by tenant"},
+                        "balance": {"type": "number", "description": "Outstanding balance"},
+                        "previous_balance": {"type": "number", "description": "Previous outstanding balance"},
+                        "utility_type": {"type": "string", "description": "Type of utility (water, electricity, garbage)"},
+                        "meter_reading_current": {"type": "number", "description": "Current meter reading"},
+                        "meter_reading_previous": {"type": "number", "description": "Previous meter reading"},
+                        "rate_per_unit": {"type": "number", "description": "Rate per unit of utility"},
+                        "flat_rate": {"type": "number", "description": "Flat rate for utility"},
+                        "water_units": {"type": "number", "description": "Water units consumed"},
+                        "water_rate": {"type": "number", "description": "Rate per water unit"},
+                        "electricity_units": {"type": "number", "description": "Electricity units consumed"},
+                        "electricity_rate": {"type": "number", "description": "Rate per electricity unit"},
+                        "water_billing_enabled": {"type": "boolean", "description": "Is water billing enabled?"},
+                        "electricity_billing_enabled": {"type": "boolean", "description": "Is electricity billing enabled?"},
+                        "garbage_billing_enabled": {"type": "boolean", "description": "Is garbage billing enabled?"},
+                        "paybill_number": {"type": "string", "description": "M-Pesa paybill number"},
+                        "account_number": {"type": "string", "description": "M-Pesa account number"},
+                        "transaction_id": {"type": "string", "description": "M-Pesa transaction ID"},
+                        "payment_type": {"type": "string", "description": "Type of payment (rent, water, etc.)"},
+                        "payment_method": {"type": "string", "description": "Payment method used (e.g., 'M-Pesa')"},
+                        "currency": {"type": "string", "description": "Currency code (default KES)", "default": "KES"},
+                        "language": {"type": "string", "description": "Language code (en or sw)", "default": "en"},
+                        "due_date": {"type": "string", "description": "Due date for payment"},
+                        "days_overdue": {"type": "integer", "description": "Number of days overdue"},
+                        "reminder_level": {"type": "string", "description": "Level of reminder (first, second, final)", "enum": ["first", "second", "final"]},
+                        "landlord_name": {"type": "string", "description": "Name of the landlord/manager"},
+                        "message": {"type": "string", "description": "Raw message for intent classification"},
+                        "payments": {"type": "array", "description": "List of previous payments", "items": {"type": "object"}},
+                        "tenants_data": {"type": "array", "description": "List of tenant data for lookup", "items": {"type": "object"}},
+                        "total_units": {"type": "integer", "description": "Total units in property"},
+                        "occupied_units": {"type": "integer", "description": "Number of occupied units"},
+                        "total_expected": {"type": "number", "description": "Total expected collection"},
+                        "total_collected": {"type": "number", "description": "Total collected amount"},
+                        "rent_collected": {"type": "number", "description": "Total rent collected"},
+                        "water_collected": {"type": "number", "description": "Total water collected"},
+                        "electricity_collected": {"type": "number", "description": "Total electricity collected"},
+                        "garbage_collected": {"type": "number", "description": "Total garbage collected"},
+                        "paid_count": {"type": "integer", "description": "Number of tenants who paid"},
+                        "unpaid_count": {"type": "integer", "description": "Number of unpaid tenants"},
+                        "unpaid_tenants": {"type": "array", "description": "List of unpaid tenant names", "items": {"type": "string"}},
+                        "move_in_date": {"type": "string", "description": "Move in date for registration"}
+                    },
+                    "required": ["operation"]
+                },
+                "category": "real_estate",
+                "always_available": True,
+                "few_shot_examples": [
+                    {
+                        "user": "Generate a rent invoice for John Doe in Unit A1 for 15,000 KES",
+                        "tool_call": 'rent_collection(operation="generate_consolidated_invoice", tenant_name="John Doe", unit="A1", rent_amount=15000)',
+                        "response": "📋 *MONTHLY INVOICE*..."
+                    },
+                    {
+                        "user": "Process a partial payment of 5,000 for John Doe",
+                        "tool_call": 'rent_collection(operation="process_partial_payment", tenant_name="John Doe", total_amount=15000, paid_amount=5000)',
+                        "response": "✅ *PAYMENT RECEIVED*..."
+                    },
+                    {
+                         "user": "What did the tenant just ask?",
+                         "tool_call": 'rent_collection(operation="classify_tenant_intent", message="how much do i owe?")',
+                         "response": "Classified as 'check_balance' (en)"
+                    }
+                ]
+            },
             # Bilingual & Context Intelligence - Always available
             "context_intelligence": {
                 "name": "context_intelligence",

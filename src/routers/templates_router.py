@@ -23,6 +23,70 @@ router = APIRouter()
 # Pre-built workflow templates
 WORKFLOW_TEMPLATES = [
     {
+        "id": "whatsapp_rent_collection_agent",
+        "name": "WhatsApp Rent Collection Agent",
+        "description": "AI-powered WhatsApp agent for property managers. Automates rent collection, utility billing, and M-Pesa payments.",
+        "icon": "🏢",
+        "category": "Real Estate",
+        "difficulty": "intermediate",
+        "estimated_time": "15 mins",
+        "tags": ["whatsapp", "real estate", "rent", "mpesa", "utilities"],
+        "required_connections": ["whatsapp"],
+        "steps": [
+            {
+                "step_number": 1,
+                "tool_name": "conversational_agent",
+                "tool_parameters": {
+                    "session_key": "{{session_key}}",
+                    "user_message": "{{whatsapp_message_content}}",
+                    "business_config": {
+                        "order_type": "rent_collection",
+                        "property_name": "{{variables.property_name}}",
+                        "landlord_name": "{{variables.landlord_name}}",
+                        "business_phone": "{{variables.business_phone}}",
+                        "paybill_number": "{{variables.paybill_number}}",
+                        "kb_id": "{{variables.kb_id}}",
+                        "currency": "{{variables.currency}}",
+                        "water_billing_enabled": "{{variables.water_billing_enabled}}",
+                        "electricity_billing_enabled": "{{variables.electricity_billing_enabled}}",
+                        "garbage_billing_enabled": "{{variables.garbage_billing_enabled}}",
+                        "storage_provider": "{{variables.storage_provider}}"
+                    }
+                },
+                "description": "AI handles tenant queries, checks balance, and guides M-Pesa payments"
+            },
+            {
+                "step_number": 2,
+                "tool_name": "whatsapp_send_message",
+                "tool_parameters": {
+                    "operation": "send_message",
+                    "to_number": "{{whatsapp_contact_phone}}",
+                    "message": "{{step_1.response_text}}",
+                    "session_key": "{{session_key}}"
+                },
+                "description": "Send AI response to tenant"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "whatsapp_send_message",
+                "tool_parameters": {
+                    "operation": "send_message",
+                    "to_number": "{{variables.business_phone}}",
+                    "message": "{{step_1.landlord_notification}}"
+                },
+                "description": "Notify landlord of payments or escalations",
+                "condition": {"if": "step_1.notify_landlord == True"}
+            }
+        ],
+        "variables": {
+            "property_name": { "type": "string", "required": True, "description": "Property Name" },
+            "landlord_name": { "type": "string", "required": True, "description": "Landlord Name" },
+            "business_phone": { "type": "string", "required": True, "description": "Notification Phone", "connection_for": "whatsapp" },
+            "paybill_number": { "type": "string", "required": True, "description": "M-Pesa Paybill" },
+            "currency": { "type": "string", "default": "KES" }
+        }
+    },
+    {
         "id": "whatsapp_real_estate_agent",
         "name": "WhatsApp Real Estate Agent",
         "description": "AI-powered WhatsApp real estate agent that answers property inquiries, captures leads, sends brochures, and schedules viewings.",

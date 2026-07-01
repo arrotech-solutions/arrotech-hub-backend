@@ -1950,6 +1950,11 @@ class ConversationalAgentService:
                 schema = dynamic_tool_registry.get_tool(t_name)
                 if schema:
                     dynamic_tools.append(dynamic_tool_registry.convert_tools_to_openai_format([schema])[0])
+            
+            if order_type == "rent_collection":
+                schema = dynamic_tool_registry.get_tool("rent_collection")
+                if schema:
+                    dynamic_tools.append(dynamic_tool_registry.convert_tools_to_openai_format([schema])[0])
 
             for iteration in range(max_iterations):
                 # Call LLM with sub-tools
@@ -2905,6 +2910,11 @@ class ConversationalAgentService:
                 "5. **Escalation:** If a customer expresses high urgency, says they want to buy immediately, or books a viewing, label them internally as a HOT LEAD so the human team gets notified.\n"
                 "6. **Locations:** Always provide the property location. When a viewing is booked, ensure you provide the exact map location if available."
             ),
+            "rent_collection": (
+                f"You are the property management assistant for {business_name}. "
+                "Help tenants check their balances, generate unified invoices, and guide them on paying rent and utilities. "
+                "You manage water, electricity, garbage, and rent consolidated together."
+            ),
             "general": (
                 f"You are the customer service assistant for {business_name}. "
                 "Help customers with inquiries, browse products/services, and place orders."
@@ -2915,7 +2925,7 @@ class ConversationalAgentService:
             catalog_word = "menu"
         elif order_type in ("clothing", "apparel"):
             catalog_word = "collection"
-        elif order_type == "real_estate":
+        elif order_type in ("real_estate", "rent_collection"):
             catalog_word = "properties"
         elif order_type == "services":
             catalog_word = "services"
@@ -2940,6 +2950,25 @@ class ConversationalAgentService:
 5. Always use {currency} for prices.
 6. Use emojis naturally but sparingly (1-3 per message).
 7. Do NOT mention "carts", "checkout", "orders", or "delivery" as this is a real estate service.
+"""
+        elif order_type == "rent_collection":
+            paybill = business_config.get('paybill_number', '')
+            prompt = f"""{base_context}
+
+## Your Capabilities
+- Generate unified rent and utility invoices for tenants using `rent_collection(operation='generate_consolidated_invoice')`.
+- Look up tenant information using `rent_collection(operation='lookup_tenant')`.
+- Classify tenant intents using `rent_collection(operation='classify_tenant_intent')`.
+- Escalate to a live human agent using `escalate_to_human` when needed.
+
+## Conversation Flow
+1. Greet the tenant warmly and ask how you can assist them today.
+2. If they ask about their balance or bill, use `rent_collection(operation='lookup_tenant')` to find their unit, then `generate_consolidated_invoice`.
+3. If they ask how to pay, provide the M-Pesa Paybill number {paybill} and their unit as the account number.
+4. Keep responses brief and friendly (WhatsApp chat style, under 150 words).
+5. Always use {currency} for prices.
+6. Use emojis naturally but sparingly.
+7. Do NOT mention "carts", "checkout", "orders", or "delivery" as this is a property management service.
 """
         else:
             prompt = f"""{base_context}

@@ -25,6 +25,99 @@ logger = logging.getLogger(__name__)
 
 AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
 
+    # ── WhatsApp Rent Collection Agent ──────────────────────────────
+    "whatsapp_rent_collection_agent": {
+        "name": "WhatsApp Rent Collection Agent",
+        "description": (
+            "AI-powered WhatsApp agent for property managers. Automates rent collection, "
+            "utility billing (water, electricity, garbage), tenant inquiries, and M-Pesa payments."
+        ),
+        "icon": "🏢",
+        "industry_tags": ["real_estate", "property_management", "rent_collection"],
+        "platform": "whatsapp",
+        
+        "estimated_setup": "5 minutes",
+        "trigger": {
+            "type": "event",
+            "platform": "whatsapp",
+            "event_type": "whatsapp_message_received"
+        },
+        "required_config": {
+            "property_name": {
+                "label": "Property Name",
+                "type": "text",
+                "description": "Name of the property/estate",
+                "required": True
+            },
+            "landlord_name": {
+                "label": "Landlord / Manager Name",
+                "type": "text",
+                "required": True
+            },
+            "business_phone": {
+                "label": "Notification Phone",
+                "type": "phone",
+                "description": "Phone number to receive collection reports",
+                "required": True
+            },
+            "paybill_number": {
+                "label": "M-Pesa Paybill / Till Number",
+                "type": "text",
+                "description": "Your M-Pesa collection Paybill or Till number",
+                "required": True
+            },
+            "kb_id": {
+                "label": "Knowledge Base (Optional)",
+                "type": "kb_select",
+                "description": "KB with property rules, FAQs, lease terms",
+                "required": False
+            },
+            "water_billing_enabled": { "type": "boolean", "default": True, "label": "Enable Water Billing" },
+            "electricity_billing_enabled": { "type": "boolean", "default": True, "label": "Enable Electricity Billing" },
+            "garbage_billing_enabled": { "type": "boolean", "default": True, "label": "Enable Garbage Billing" },
+            "water_flat_rate": { "type": "number", "default": 0, "description": "Flat water rate per unit (0 = meter-based)", "label": "Water Flat Rate" },
+            "garbage_monthly_fee": { "type": "number", "default": 300, "label": "Garbage Monthly Fee" },
+            "rent_due_day": { "type": "number", "default": 5, "description": "Day of month rent is due", "label": "Rent Due Day" },
+            "storage_provider": {
+                "label": "Tenant Data Storage",
+                "type": "select",
+                "description": "Where to store tenant records and payments",
+                "required": True,
+                "options": [
+                    {"value": "google_sheets", "label": "📊 Google Sheets"},
+                    {"value": "airtable",      "label": "🔲 Airtable"}
+                ],
+                "default": "google_sheets"
+            },
+            "storage_spreadsheet_id": {
+                "label": "Google Sheets Spreadsheet ID",
+                "type": "text",
+                "required": False,
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
+            "storage_tenants_sheet_name": { 
+                "label": "Tenants Sheet Name", "type": "text", "default": "Tenants",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
+            "storage_payments_sheet_name": { 
+                "label": "Payments Sheet Name", "type": "text", "default": "Payments",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
+            "currency": { "label": "Currency", "type": "text", "default": "KES" },
+            "supported_languages": { "label": "Languages", "type": "text", "default": "en,sw" },
+            "reminder_schedule": {
+                "type": "select",
+                "label": "Reminder Schedule",
+                "options": [
+                    {"value": "5_before_due_after", "label": "5 days before + on due date + 5 days after"},
+                    {"value": "on_due_only", "label": "On due date only"},
+                    {"value": "manual_only", "label": "Manual only (no auto-reminders)"}
+                ],
+                "default": "5_before_due_after"
+            }
+        }
+    },
+
     # ── WhatsApp Ordering Agent ──────────────────────────────
     "whatsapp_ordering_agent": {
         "name": "WhatsApp Ordering Agent",

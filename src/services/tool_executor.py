@@ -114,6 +114,7 @@ class ToolExecutor:
             "accounting": AccountingService(),
             "agritech": AgritechService(),
             "health": HealthService(),
+            "rent_collection": __import__('src.services.rent_collection_service', fromlist=['rent_collection_service']).rent_collection_service,
             "ai_embeddings": {
                 "openai": OpenAIEmbeddingService(),
                 "cohere": CohereService(),
@@ -263,6 +264,8 @@ class ToolExecutor:
                 return await self._execute_content_creation_tool(arguments, user, db)
             elif tool_name == "mpesa_payment_reconciliation":
                 return await self._execute_mpesa_tool(arguments, user, db)
+            elif tool_name == "rent_collection":
+                return await self._execute_rent_collection_tool(arguments, user, db)
             elif tool_name == "context_intelligence":
                 return await self._execute_context_intelligence_tool(arguments, user, db)
             elif tool_name.startswith("hr_"):
@@ -593,6 +596,7 @@ class ToolExecutor:
         if tool_name.endswith("_agri_ops"): return tool_name.replace("_agri_ops", "")
         if tool_name.endswith("_health_ops"): return tool_name.replace("_health_ops", "")
         if tool_name.endswith("_utility_ops"): return tool_name.replace("_utility_ops", "")
+        if tool_name == "rent_collection": return "rent_collection"
         
         return None
 
@@ -732,6 +736,26 @@ class ToolExecutor:
             res = await service.pinecone_delete_namespace(arguments.get("index_name"), arguments.get("namespace"))
             return {"success": True, "result": res}
         return {"success": False, "error": f"Unknown tool: {tool_name}"}
+
+    async def _execute_real_estate_tool(self, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute real estate specific operations."""
+        operation = arguments.get("operation")
+        
+        try:
+            res = await self.services["real_estate"].handle_operation(operation=operation, **arguments)
+            return {"success": True, "result": res}
+        except Exception as e:
+            return {"success": False, "error": f"Real Estate operation failed: {str(e)}"}
+
+    async def _execute_rent_collection_tool(self, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
+        """Execute rent collection specific operations."""
+        operation = arguments.get("operation")
+        
+        try:
+            res = await self.services["rent_collection"].handle_operation(operation=operation, **arguments)
+            return {"success": True, "result": res}
+        except Exception as e:
+            return {"success": False, "error": f"Rent Collection operation failed: {str(e)}"}
 
     async def _execute_qdrant_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
         """Execute Qdrant vector DB operations."""
