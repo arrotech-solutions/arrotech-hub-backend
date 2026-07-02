@@ -55,7 +55,15 @@ WORKFLOW_TEMPLATES = [
                         "water_billing_enabled": "{{variables.water_billing_enabled}}",
                         "electricity_billing_enabled": "{{variables.electricity_billing_enabled}}",
                         "garbage_billing_enabled": "{{variables.garbage_billing_enabled}}",
-                        "storage_provider": "{{variables.storage_provider}}"
+                        "rent_due_day": "{{variables.rent_due_day}}",
+                        "water_flat_rate": "{{variables.water_flat_rate}}",
+                        "garbage_monthly_fee": "{{variables.garbage_monthly_fee}}",
+                        "reminder_schedule": "{{variables.reminder_schedule}}",
+                        "storage_provider": "{{variables.storage_provider}}",
+                        "storage_spreadsheet_id": "{{variables.storage_spreadsheet_id}}",
+                        "storage_tenants_sheet_name": "{{variables.storage_tenants_sheet_name}}",
+                        "storage_payments_sheet_name": "{{variables.storage_payments_sheet_name}}",
+                        "supported_languages": "{{variables.supported_languages}}"
                     }
                 },
                 "description": "AI handles tenant queries, checks balance, and guides M-Pesa payments"
