@@ -94,7 +94,19 @@ WORKFLOW_TEMPLATES = [
             "electricity_billing_enabled": { "type": "boolean", "default": True, "description": "Enable Electricity Billing" },
             "garbage_billing_enabled": { "type": "boolean", "default": True, "description": "Enable Garbage Billing" },
             "rent_due_day": { "type": "number", "default": 5, "description": "Rent Due Day" },
-            "storage_provider": { "type": "string", "default": "google_sheets", "description": "Tenant Data Storage" }
+            "water_flat_rate": { "type": "number", "default": 0, "description": "Flat water rate per unit (0 = meter-based)", "label": "Water Flat Rate" },
+            "garbage_monthly_fee": { "type": "number", "default": 300, "label": "Garbage Monthly Fee" },
+            "reminder_schedule": {
+                "type": "string",
+                "enum": ["5_before_due_after", "on_due_only", "manual_only"],
+                "default": "5_before_due_after",
+                "description": "Reminder Schedule (e.g., 5 days before, on due date, 5 days after)"
+            },
+            "storage_provider": { "type": "string", "default": "google_sheets", "description": "Tenant Data Storage" },
+            "storage_spreadsheet_id": { "type": "string", "required": False, "description": "Google Sheets Spreadsheet ID", "ui_hint": "spreadsheet_picker" },
+            "storage_tenants_sheet_name": { "type": "string", "default": "Tenants", "description": "Tenants Sheet Name" },
+            "storage_payments_sheet_name": { "type": "string", "default": "Payments", "description": "Payments Sheet Name" },
+            "supported_languages": { "type": "string", "default": "en,sw", "description": "Languages" }
         }
     },
     {
@@ -2593,6 +2605,83 @@ async def list_drive_folders(
         )
 
 
+@router.get("/helpers/drive-spreadsheets", response_model=TemplateResponse)
+async def list_drive_spreadsheets(
+    folder_id: Optional[str] = Query(None, description="Optional folder ID to filter spreadsheets"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List Google Drive spreadsheets for picker dropdowns."""
+    try:
+        # Find user's google_workspace connection
+        from ..models import Connection, ConnectionStatus
+        result = await db.execute(
+            select(Connection).where(
+                Connection.user_id == current_user.id,
+                Connection.platform == "google_workspace",
+                Connection.status == ConnectionStatus.ACTIVE,
+            )
+        )
+        connection = result.scalar_one_or_none()
+
+        if not connection:
+            return TemplateResponse(
+                success=False,
+                message="Google Workspace not connected",
+                data=[]
+            )
+
+        # Build credentials and initialize Drive service
+        from ..services.google_workspace.base_client import GoogleWorkspaceBaseClient
+        from ..services.google_workspace.drive_service import DriveService
+
+        client_id = connection.config.get("client_id")
+        client_secret = connection.config.get("client_secret")
+        refresh_token = connection.config.get("refresh_token")
+
+        if not all([client_id, client_secret, refresh_token]):
+            return TemplateResponse(
+                success=False,
+                message="Incomplete Google Workspace credentials",
+                data=[]
+            )
+
+        credentials_data = {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+            "access_token": connection.config.get("access_token"),
+            "scopes": connection.config.get("scopes"),
+        }
+        base_client = GoogleWorkspaceBaseClient(credentials_data)
+        drive_service = DriveService(base_client)
+
+        spreadsheets_result = await drive_service.list_spreadsheets(folder_id)
+
+        if not spreadsheets_result.get("success"):
+            return TemplateResponse(
+                success=False,
+                message=spreadsheets_result.get("error", "Failed to list spreadsheets"),
+                data=[]
+            )
+
+        # Map {label, value} from list_spreadsheets() to {id, name} for the frontend
+        sheet_list = [
+            {"id": opt.get("value"), "name": opt.get("label")}
+            for opt in spreadsheets_result.get("options", [])
+        ]
+
+        return TemplateResponse(success=True, data=sheet_list)
+
+    except Exception as e:
+        logger.error(f"Failed to list Drive spreadsheets: {e}")
+        return TemplateResponse(
+            success=False,
+            message="Failed to fetch Google Drive spreadsheets",
+            data=[]
+        )
+
+
 @router.get("/", response_model=TemplateResponse)
 async def list_templates(
     category: Optional[str] = Query(None, description="Filter by category"),
@@ -2663,6 +2752,7 @@ async def get_template(template_id: str):
 @router.post("/{template_id}/use", response_model=TemplateResponse)
 async def use_template(
     template_id: str,
+    config: Optional[Dict[str, Any]] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -2675,12 +2765,23 @@ async def use_template(
             detail="Template not found"
         )
     
+    # Process variables with user provided config
+    variables = template.get("variables", {})
+    workflow_variables = {}
+    config = config or {}
+    
+    for key, var_meta in variables.items():
+        if key in config:
+            workflow_variables[key] = config[key]
+        elif "default" in var_meta:
+            workflow_variables[key] = var_meta["default"]
+    
     workflow = Workflow(
         name=f"{template['name']} (from template)",
         description=template["description"],
         user_id=current_user.id,
         steps=[WorkflowStep(**step) for step in template["steps"]],
-        variables=template.get("variables"),
+        variables=workflow_variables,
         trigger_type=template.get("trigger_type", WorkflowTriggerType.MANUAL),
         trigger_config=template.get("trigger_config", {}),
         status=WorkflowStatus.ACTIVE,
