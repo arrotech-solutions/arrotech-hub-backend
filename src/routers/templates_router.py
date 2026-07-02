@@ -102,10 +102,31 @@ WORKFLOW_TEMPLATES = [
                 "default": "5_before_due_after",
                 "description": "Reminder Schedule (e.g., 5 days before, on due date, 5 days after)"
             },
-            "storage_provider": { "type": "string", "default": "google_sheets", "description": "Tenant Data Storage" },
-            "storage_spreadsheet_id": { "type": "string", "required": False, "description": "Google Sheets Spreadsheet ID", "ui_hint": "spreadsheet_picker" },
-            "storage_tenants_sheet_name": { "type": "string", "default": "Tenants", "description": "Tenants Sheet Name" },
-            "storage_payments_sheet_name": { "type": "string", "default": "Payments", "description": "Payments Sheet Name" },
+            "storage_provider": {
+                "type": "string",
+                "description": "Tenant Data Storage",
+                "enum": ["none", "google_sheets", "airtable"],
+                "default": "google_sheets"
+            },
+            "storage_spreadsheet_id": {
+                "type": "string",
+                "required": False,
+                "description": "Google Sheets Spreadsheet ID",
+                "x-dynamic-ui": "google_workspace_drive.list_spreadsheets",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
+            "storage_tenants_sheet_name": {
+                "type": "string",
+                "default": "Tenants",
+                "description": "Tenants Sheet Name",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
+            "storage_payments_sheet_name": {
+                "type": "string",
+                "default": "Payments",
+                "description": "Payments Sheet Name",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
             "supported_languages": { "type": "string", "default": "en,sw", "description": "Languages" }
         }
     },
