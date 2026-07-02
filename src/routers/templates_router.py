@@ -32,6 +32,11 @@ WORKFLOW_TEMPLATES = [
         "estimated_time": "15 mins",
         "tags": ["whatsapp", "real estate", "rent", "mpesa", "utilities"],
         "required_connections": ["whatsapp"],
+        "trigger_type": WorkflowTriggerType.EVENT,
+        "trigger_config": {
+            "platform": "whatsapp",
+            "event_type": "whatsapp_message_received"
+        },
         "steps": [
             {
                 "step_number": 1,
@@ -83,7 +88,13 @@ WORKFLOW_TEMPLATES = [
             "landlord_name": { "type": "string", "required": True, "description": "Landlord Name" },
             "business_phone": { "type": "string", "required": True, "description": "Notification Phone", "connection_for": "whatsapp" },
             "paybill_number": { "type": "string", "required": True, "description": "M-Pesa Paybill" },
-            "currency": { "type": "string", "default": "KES" }
+            "currency": { "type": "string", "default": "KES" },
+            "kb_id": { "type": "string", "required": False, "description": "Knowledge Base (Optional)" },
+            "water_billing_enabled": { "type": "boolean", "default": True, "description": "Enable Water Billing" },
+            "electricity_billing_enabled": { "type": "boolean", "default": True, "description": "Enable Electricity Billing" },
+            "garbage_billing_enabled": { "type": "boolean", "default": True, "description": "Enable Garbage Billing" },
+            "rent_due_day": { "type": "number", "default": 5, "description": "Rent Due Day" },
+            "storage_provider": { "type": "string", "default": "google_sheets", "description": "Tenant Data Storage" }
         }
     },
     {
