@@ -227,6 +227,7 @@ async def export_catalog(
             "sku": str(product.get("sku", "")).strip(),
             "brand": str(product.get("brand", "")).strip(),
             "image_url": str(product.get("image_url", "")).strip(),
+            "availability": str(product.get("availability", "")).strip(),
         }
         if not entry["name"]:
             # Skip nameless rows — name is the only hard requirement.

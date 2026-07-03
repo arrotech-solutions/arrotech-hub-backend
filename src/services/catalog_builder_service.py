@@ -24,7 +24,7 @@ PRODUCT_PHOTOS_FOLDER = "Arrotech Product Photos"
 
 # Tab + canonical headers compatible with rag_pipeline_service._rows_to_product_records.
 PRODUCTS_SHEET_NAME = "Products"
-CATALOG_HEADERS = ["name", "Price", "Description", "Category", "SKU", "Brand", "image_url"]
+CATALOG_HEADERS = ["name", "Price", "Description", "Category", "SKU", "Brand", "image_url", "Availability"]
 
 
 def _normalize_header(header: str) -> str:
@@ -41,6 +41,7 @@ _FIELD_TO_HEADER = {
     "sku": "SKU",
     "brand": "Brand",
     "imageurl": "image_url",
+    "availability": "Availability",
 }
 
 
@@ -294,6 +295,7 @@ class CatalogBuilderService:
                     "SKU": product.get("sku", ""),
                     "Brand": product.get("brand", ""),
                     "image_url": product.get("image_url", ""),
+                    "Availability": product.get("availability", ""),
                 }
 
                 image = product.get("_image")
