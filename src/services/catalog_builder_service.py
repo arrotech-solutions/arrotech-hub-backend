@@ -171,7 +171,12 @@ class CatalogBuilderService:
     ) -> Tuple[str, List[str]]:
         """
         Ensure a usable header row exists on `sheet_name`. If the tab has no
-        header row, write CATALOG_HEADERS. Returns (sheet_name, headers).
+        header row, write CATALOG_HEADERS.  If the tab already has headers but
+        is missing newer canonical columns (e.g. Availability added after the
+        sheet was created), append those columns to the header row so that
+        product data is never silently dropped.
+
+        Returns (sheet_name, headers).
         """
         read = await sheets_service.read_range(
             spreadsheet_id, f"{sheet_name}!A1:ZZ1"
@@ -184,6 +189,33 @@ class CatalogBuilderService:
                 while header_row and not header_row[-1].strip():
                     header_row.pop()
                 if header_row:
+                    # Detect canonical columns missing from this sheet and
+                    # append them so newer fields (like Availability) are not
+                    # silently dropped on sheets created before those columns
+                    # were added.
+                    existing_norm = {_normalize_header(h) for h in header_row}
+                    missing = [
+                        h for h in CATALOG_HEADERS
+                        if _normalize_header(h) not in existing_norm
+                    ]
+                    if missing:
+                        next_col = chr(ord('A') + min(len(header_row), 25))
+                        write = await sheets_service.write_range(
+                            spreadsheet_id,
+                            f"{sheet_name}!{next_col}1",
+                            [missing],
+                        )
+                        if write.get("success"):
+                            header_row.extend(missing)
+                            logger.info(
+                                f"[CATALOG] Appended missing headers {missing} "
+                                f"to sheet '{sheet_name}'"
+                            )
+                        else:
+                            logger.warning(
+                                f"[CATALOG] Could not append headers {missing}: "
+                                f"{write.get('error')}"
+                            )
                     return sheet_name, header_row
 
         # No headers yet — write canonical headers.
