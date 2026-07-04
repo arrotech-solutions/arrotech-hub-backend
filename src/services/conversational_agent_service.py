@@ -4956,6 +4956,14 @@ class ConversationalAgentService:
                         ),
                     }
 
+            from .order_tracking_service import order_tracking_service
+            registry = order_tracking_service.get_registered_order(str(user.id), order_id)
+            if registry and registry.get("status") == "cancelled":
+                return {
+                    "success": False,
+                    "result": "This order has already been cancelled previously.",
+                }
+
             cancel_result = await self.order_service.handle_operation(
                 operation="cancel_order",
                 order_id=order_id,
@@ -4969,11 +4977,11 @@ class ConversationalAgentService:
                     if background_tasks:
                         background_tasks.add_task(
                             self._run_update_task,
-                            provider, order_id, "cancelled", storage_config, user
+                            provider, order_id, "Cancelled", storage_config, user
                         )
                     else:
                         await self._run_update_task(
-                            provider, order_id, "cancelled", storage_config, user
+                            provider, order_id, "Cancelled", storage_config, user
                         )
 
                 if getattr(settings, "ORDER_TRACKING_ENABLED", True) and customer_phone and user:
