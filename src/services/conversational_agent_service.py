@@ -6282,6 +6282,8 @@ class ConversationalAgentService:
                     order_currency = order.get("Currency", currency)
                     total = f"{order_currency} {subtotal}"
 
+                is_unpaid = status_lower in ("pending", "unpaid", "payment_failed")
+
                 try:
                     send_result = await whatsapp.send_order_card(
                         to_number=recipient,

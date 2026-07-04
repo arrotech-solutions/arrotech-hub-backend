@@ -38,6 +38,7 @@ def expire_unpaid_orders_task():
             )
             rows = res.scalars().all()
             for row in rows:
+                row.payment_notified = True
                 owner_id = str(row.user_id)
                 order_id = row.order_id
                 registry = order_tracking_service.get_registered_order(owner_id, order_id) or {}
@@ -85,6 +86,9 @@ def expire_unpaid_orders_task():
                             sheet_err,
                         )
                 logger.info("[ORDER_EXPIRE] Expired unpaid order %s", order_id)
+            
+            if rows:
+                await db.commit()
 
     run_async(_run())
     return {"status": "completed"}
