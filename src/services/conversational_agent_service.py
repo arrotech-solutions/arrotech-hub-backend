@@ -1125,6 +1125,15 @@ class ConversationalAgentService:
                 if session
                 else {}
             )
+            msg_lower_check = (user_message or "").strip().lower()
+            is_system_button = msg_lower_check.startswith("i want to ") or msg_lower_check.startswith("show me ") or msg_lower_check.startswith("yes, ") or msg_lower_check.startswith("no, ") or msg_lower_check.startswith("remove ") or msg_lower_check in ("view my cart", "clear cart", "checkout")
+
+            if is_system_button and awaiting_mpesa.get("order_id") and session_key:
+                await context_manager.update_session_metadata(
+                    session_key, {"awaiting_mpesa_payment": None}
+                )
+                awaiting_mpesa = {}
+
             if (
                 awaiting_mpesa.get("order_id")
                 and session_key
