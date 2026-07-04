@@ -5088,7 +5088,7 @@ class ConversationalAgentService:
             import json
             summary = (
                 f"Found {len(orders)} order(s) for {customer_phone}.\n\n"
-                f"INSTRUCTION: You MUST now call `display_order_cards` and pass this exact JSON array as the 'orders' argument:\n"
+                f"INSTRUCTION: You MUST now call `display_order_cards`. You may filter this JSON array to match the customer's request (e.g., only pass 'pending' orders if they asked for pending orders) before passing it as the 'orders' argument:\n"
                 f"{json.dumps(simplified_orders, indent=2)}\n\n"
                 "CRITICAL: Do NOT list these orders in text in your response to the user. The interactive cards are the ONLY way orders should be shown."
             )
