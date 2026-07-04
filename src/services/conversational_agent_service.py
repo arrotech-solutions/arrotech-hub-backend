@@ -7128,8 +7128,24 @@ class ConversationalAgentService:
         if not tx_headers:
             return
 
+        checkout_req_id = _safe_str(transaction_data.get("checkout_request_id", "")).strip()
+        if checkout_req_id:
+            exists = await self._sheet_value_exists(
+                executor=executor,
+                spreadsheet_id=spreadsheet_id,
+                sheet_name=tx_headers["sheet_name"],
+                headers=tx_headers["headers"],
+                header_name="Checkout Request ID",
+                value=checkout_req_id,
+                user=user,
+                db=db,
+            )
+            if exists:
+                logger.info(f"[CONV_AGENT] Transaction {checkout_req_id} already exists in Sheets; skipping")
+                return
+
         transaction_id = _safe_str(transaction_data.get("transaction_id", "")).strip()
-        if transaction_id:
+        if transaction_id and not checkout_req_id:
             exists = await self._sheet_value_exists(
                 executor=executor,
                 spreadsheet_id=spreadsheet_id,
@@ -7554,10 +7570,51 @@ class ConversationalAgentService:
             return
 
         table = storage_config.get("airtable_transactions_table", "Transactions")
+        transaction_id = _safe_str(transaction_data.get("transaction_id", "")).strip()
+        checkout_req_id = _safe_str(transaction_data.get("checkout_request_id", "")).strip()
+
+        # Deduplicate using Checkout Request ID first (prevents race conditions with STK push callback/polling)
+        if checkout_req_id:
+            try:
+                search_res = await executor.execute_tool(
+                    "airtable_record_management",
+                    {
+                        "operation": "search_records",
+                        "base_id": base_id,
+                        "table_name": table,
+                        "formula": f"{{Checkout Request ID}} = '{checkout_req_id}'"
+                    },
+                    user, db
+                )
+                if search_res.get("success") and search_res.get("records"):
+                    logger.info(f"[CONV_AGENT] Transaction with Checkout Request ID {checkout_req_id} already exists in Airtable; skipping")
+                    return
+            except Exception as e:
+                logger.warning(f"[CONV_AGENT] Airtable deduplication check failed: {e}")
+
+        # Deduplicate using Transaction ID
+        if transaction_id and not checkout_req_id:
+            try:
+                search_res = await executor.execute_tool(
+                    "airtable_record_management",
+                    {
+                        "operation": "search_records",
+                        "base_id": base_id,
+                        "table_name": table,
+                        "formula": f"{{Transaction ID}} = '{transaction_id}'"
+                    },
+                    user, db
+                )
+                if search_res.get("success") and search_res.get("records"):
+                    logger.info(f"[CONV_AGENT] Transaction {transaction_id} already exists in Airtable; skipping")
+                    return
+            except Exception as e:
+                logger.warning(f"[CONV_AGENT] Airtable deduplication check failed: {e}")
+
         record = {
             "Order ID": transaction_data.get("order_id", ""),
-            "Transaction ID": transaction_data.get("transaction_id", ""),
-            "Checkout Request ID": transaction_data.get("checkout_request_id", ""),
+            "Transaction ID": transaction_id,
+            "Checkout Request ID": checkout_req_id,
             "Merchant Request ID": transaction_data.get("merchant_request_id", ""),
             "Amount": transaction_data.get("amount", 0),
             "Currency": transaction_data.get("currency", "KES"),
