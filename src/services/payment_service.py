@@ -202,7 +202,9 @@ class PaymentService:
             }
 
             print(f"M-Pesa API URL: {url}")
-            print(f"M-Pesa Payload: {payload}")
+            safe_payload = payload.copy()
+            safe_payload["Password"] = "***MASKED***"
+            print(f"M-Pesa Payload: {safe_payload}")
 
             response = requests.post(url, json=payload, headers=headers)
 

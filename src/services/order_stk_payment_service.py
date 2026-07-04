@@ -140,7 +140,7 @@ async def finalize_order_stk_payment(
 
                 tx_data = {
                     "order_id": order_id,
-                    "transaction_id": mpesa_receipt or checkout_request_id,
+                    "transaction_id": mpesa_receipt or "",
                     "checkout_request_id": checkout_request_id,
                     "merchant_request_id": merchant_request_id,
                     "amount": float(amount_paid or 0),
@@ -379,7 +379,7 @@ async def poll_stk_and_finalize_order_payment(
                     platform=platform,
                     storage_config=storage_config,
                     is_paid=True,
-                    mpesa_receipt=checkout_request_id,
+                    mpesa_receipt="",
                     amount_paid=amount_paid,
                     currency=currency,
                     result_code=result_code,

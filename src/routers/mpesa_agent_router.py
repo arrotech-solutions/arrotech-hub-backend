@@ -415,7 +415,7 @@ async def _handle_mpesa_callback_background(webhook_secret: str, body: bytes):
                 logger.error(f"Invalid JSON in Daraja callback: {body.decode(errors='ignore')}")
                 return
 
-            logger.info(f"Daraja callback parsed payload: {payload}")
+            logger.info("Daraja callback payload parsed successfully.")
 
             # 2. Lookup tenant config by webhook secret
             stmt = select(MpesaAgentConfig).where(
@@ -484,6 +484,17 @@ async def _handle_mpesa_callback_background(webhook_secret: str, body: bytes):
                 # Notify + persist transaction into connected storage (best effort)
                 result_code = str((parsed or {}).get("result_code") or "")
                 is_paid = result_code in ("", "0")
+                
+                # Verify exact amount to prevent webhook forgery / underpayment fraud
+                if is_paid and notify_ctx and parsed:
+                    actual_paid = float(parsed.get("amount") or 0)
+                    expected_amount = float(notify_ctx.get("amount") or 0)
+                    if actual_paid > 0 and expected_amount > 0 and actual_paid < expected_amount:
+                        logger.warning(f"Fraud check failed! Underpayment detected for order {notify_ctx.get('order_id')}: paid {actual_paid}, expected {expected_amount}")
+                        is_paid = False
+                        result_code = "fraud_underpayment"
+                        parsed["result_desc"] = f"Underpayment: Paid {actual_paid} but expected {expected_amount}"
+
                 if notify_ctx and is_paid:
                     order_id = (notify_ctx or {}).get("order_id")
                     whatsapp_sender = (
