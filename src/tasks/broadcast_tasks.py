@@ -22,8 +22,6 @@ from src.models import (
 from src.services.whatsapp_service import WhatsAppService
 from src.services.whatsapp_config_helper import get_whatsapp_config
 from src.services.whatsapp_contact_service import contact_has_tag
-from src.services.websocket_manager import connection_manager
-
 logger = logging.getLogger(__name__)
 
 
@@ -250,10 +248,12 @@ def execute_broadcast_campaign_task(self, broadcast_id: str, user_id: str):
                     broadcast.failed_count = failed
                     await db.commit()
 
-                    await connection_manager.push_to_user(
-                        user_id=user_uuid,
-                        event_type="broadcast_progress",
-                        data={
+                    from ..services.whatsapp_inbox_events import emit_whatsapp_inbox_event_sync
+
+                    emit_whatsapp_inbox_event_sync(
+                        user_uuid,
+                        "broadcast_progress",
+                        {
                             "broadcast_id": str(broadcast.id),
                             "sent": sent,
                             "failed": failed,

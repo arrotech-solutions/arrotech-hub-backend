@@ -15,6 +15,11 @@ def default_inbox_settings() -> Dict[str, Any]:
         "round_robin_agent_ids": [],
         "round_robin_index": 0,
         "sla_first_response_minutes": 5,
+        "notify_new_message_browser": True,
+        "notify_new_message_sound": True,
+        "notify_new_message_email": False,
+        "notify_sla_breach": True,
+        "csat_enabled": True,
     }
 
 
@@ -23,6 +28,11 @@ def merge_inbox_settings(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if raw:
         base.update({k: v for k, v in raw.items() if v is not None})
     return base
+
+
+async def get_inbox_settings_for_user(db: AsyncSession, user_id: uuid.UUID) -> Dict[str, Any]:
+    """Alias used by contact list filters and SLA helpers."""
+    return await get_inbox_settings(db, user_id)
 
 
 async def get_inbox_settings(db: AsyncSession, user_id: uuid.UUID) -> Dict[str, Any]:

@@ -157,12 +157,23 @@ async def lifespan(app: FastAPI):
 
     cleanup_task = asyncio.create_task(orphan_cleanup_loop())
 
+    from .services.ws_event_bus import run_inbox_subscriber
+
+    ws_stop = asyncio.Event()
+    ws_subscriber_task = asyncio.create_task(run_inbox_subscriber(ws_stop))
+
     logger.info("Services ready - app is now accepting requests")
 
     yield
 
     # Shutdown
     logger.info("Shutting down Mini-Hub MCP Server...")
+    ws_stop.set()
+    ws_subscriber_task.cancel()
+    try:
+        await ws_subscriber_task
+    except asyncio.CancelledError:
+        pass
     if hasattr(app.state, "redis") and app.state.redis:
         await app.state.redis.close()
     

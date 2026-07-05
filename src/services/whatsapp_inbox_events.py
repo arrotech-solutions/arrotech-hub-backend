@@ -13,13 +13,27 @@ async def emit_whatsapp_inbox_event(
     event_type: str,
     data: Dict[str, Any],
 ) -> None:
-    """Best-effort push to connected dashboard clients."""
+    """Publish inbox events via Redis; web process subscriber delivers WebSockets."""
     try:
-        from .websocket_manager import connection_manager
+        from .ws_event_bus import publish_inbox_event_async
 
-        await connection_manager.push_to_user(user_id, event_type, data)
+        await publish_inbox_event_async(user_id, event_type, data)
     except Exception as exc:
         logger.debug("WhatsApp inbox WS emit failed: %s", exc)
+
+
+def emit_whatsapp_inbox_event_sync(
+    user_id: uuid.UUID,
+    event_type: str,
+    data: Dict[str, Any],
+) -> None:
+    """Sync emit for Celery workers — publishes via Redis for web processes."""
+    try:
+        from .ws_event_bus import publish_inbox_event_sync
+
+        publish_inbox_event_sync(user_id, event_type, data)
+    except Exception as exc:
+        logger.debug("WhatsApp inbox sync WS emit failed: %s", exc)
 
 
 async def emit_to_org_members(

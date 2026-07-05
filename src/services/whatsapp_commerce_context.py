@@ -78,6 +78,49 @@ async def get_contact_commerce_context(
 
     order_id = pending_order_id or payment_order_id
 
+    timeline: List[Dict[str, Any]] = []
+    pay_history = await db.execute(
+        select(StkPaymentAttempt)
+        .where(
+            StkPaymentAttempt.user_id == user_id,
+            StkPaymentAttempt.whatsapp_phone.in_([norm_phone, f"+{norm_phone}"]),
+        )
+        .order_by(desc(StkPaymentAttempt.created_at))
+        .limit(8)
+    )
+    for attempt in pay_history.scalars().all():
+        timeline.append(
+            {
+                "type": "payment",
+                "at": attempt.created_at.isoformat() if attempt.created_at else None,
+                "status": attempt.status,
+                "order_id": attempt.order_id,
+                "amount": float(attempt.amount) if attempt.amount else None,
+                "label": f"Payment {attempt.status}",
+            }
+        )
+
+    map_history = await db.execute(
+        select(StkOrderMapping)
+        .where(
+            StkOrderMapping.user_id == user_id,
+            StkOrderMapping.whatsapp_sender.in_([norm_phone, f"+{norm_phone}"]),
+        )
+        .order_by(desc(StkOrderMapping.created_at))
+        .limit(5)
+    )
+    for mapping in map_history.scalars().all():
+        timeline.append(
+            {
+                "type": "order",
+                "at": mapping.created_at.isoformat() if mapping.created_at else None,
+                "order_id": mapping.order_id,
+                "label": f"Order {mapping.order_id}",
+            }
+        )
+
+    timeline.sort(key=lambda e: e.get("at") or "", reverse=True)
+
     return {
         "has_cart": bool(cart),
         "cart_items": cart,
@@ -89,4 +132,5 @@ async def get_contact_commerce_context(
         "human_handoff": human_handoff,
         "ai_handling": not human_handoff,
         "session_key": session_key,
+        "order_timeline": timeline[:12],
     }

@@ -518,6 +518,25 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
             contact = await get_or_create_contact(
                 db, owner_user_id, from_number, profile_name
             )
+
+            if msg_type == "text":
+                from ..services.whatsapp_inbox_helpers import (
+                    OPT_IN_KEYWORDS,
+                    OPT_OUT_KEYWORDS,
+                    record_csat_score,
+                )
+
+                normalized = (content or "").strip().lower()
+                if normalized in OPT_OUT_KEYWORDS:
+                    contact.opted_out = True
+                    contact.opted_out_at = datetime.utcnow()
+                elif normalized in OPT_IN_KEYWORDS:
+                    contact.opted_out = False
+                    contact.opted_out_at = None
+                elif (contact.metadata_ or {}).get("csat_pending") and normalized.isdigit():
+                    score = int(normalized)
+                    if 1 <= score <= 5:
+                        record_csat_score(contact, score)
             
             # Save the message
             message = WhatsAppMessage(

@@ -4,14 +4,14 @@ CRUD operations for contacts and conversation history.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, or_
 from sqlalchemy.orm import selectinload
 from typing import Optional, List, Dict
 import uuid
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import aiofiles
 
@@ -31,6 +31,7 @@ from ..services.whatsapp_contact_service import (
     resolve_avatar_full_path,
     _remove_avatar_file,
 )
+from ..services.whatsapp_inbox_helpers import format_message_preview, is_sla_breached, media_proxy_url, record_csat_score
 from ..services.file_management_service import file_management_service
 from ..routers.auth_router import get_current_user
 from ..services import WhatsAppService
@@ -48,12 +49,93 @@ router = APIRouter(
 whatsapp_service = WhatsAppService()
 
 
+@router.get("/health")
+async def whatsapp_inbox_health(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Readiness checks for WhatsApp inbox features (migrations, Redis WS bridge)."""
+    check_connection_access(user, "whatsapp_business")
+    checks: Dict[str, str] = {}
+
+    try:
+        await db.execute(select(WhatsAppContact.snoozed_until).limit(1))
+        checks["inbox_migration"] = "ok"
+    except Exception:
+        checks["inbox_migration"] = "missing"
+
+    try:
+        from ..services.cache_service import cache_service
+
+        if cache_service.redis_client:
+            cache_service.redis_client.ping()
+            checks["redis"] = "connected"
+        else:
+            checks["redis"] = "disconnected"
+    except Exception:
+        checks["redis"] = "error"
+
+    checks["websocket_mode"] = "redis_pubsub"
+    checks["environment"] = settings.ENVIRONMENT
+
+    overall = "ok" if checks.get("inbox_migration") == "ok" else "degraded"
+    return {"success": True, "status": overall, "data": checks}
+
+
+@router.get("/messages/{message_id}/media")
+async def stream_message_media(
+    message_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Proxy inbound Meta media for authenticated dashboard users."""
+    check_connection_access(user, "whatsapp_business")
+    result = await db.execute(
+        select(WhatsAppMessage).filter(
+            WhatsAppMessage.id == message_id,
+            WhatsAppMessage.user_id == user.id,
+        )
+    )
+    message = result.scalar_one_or_none()
+    if not message or not message.media_url:
+        raise HTTPException(status_code=404, detail="Media not found")
+
+    media_id = message.media_url
+    if not str(media_id).isdigit():
+        raise HTTPException(status_code=404, detail="Media not available")
+
+    conn_result = await db.execute(
+        select(Connection).filter(
+            Connection.user_id == user.id,
+            Connection.platform == "whatsapp",
+            Connection.status == "active",
+        )
+    )
+    connection = conn_result.scalar_one_or_none()
+    wa_config = connection.config if connection else None
+
+    dl = await whatsapp_service.download_media(str(media_id), config=wa_config)
+    if not dl.get("success"):
+        raise HTTPException(status_code=502, detail=dl.get("error", "Media download failed"))
+
+    mime = dl.get("mime_type") or message.media_mime_type or "application/octet-stream"
+    return StreamingResponse(
+        iter([dl["content"]]),
+        media_type=mime,
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
 @router.get("/debug-credentials")
 async def debug_whatsapp_credentials(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Debug endpoint to check WhatsApp credentials (admin only)."""
+    """Debug endpoint to check WhatsApp credentials (admin only, disabled in production)."""
+    if settings.ENVIRONMENT == "production":
+        raise HTTPException(status_code=404, detail="Not found")
+    if getattr(user, "role", None) not in ("admin", "employee"):
+        raise HTTPException(status_code=403, detail="Admin access required")
     # Get connection config
     from ..models import Connection
     result = await db.execute(
@@ -104,6 +186,7 @@ class ContactUpdate(BaseModel):
     assigned_to_id: Optional[str] = None
     status: Optional[str] = None  # open, pending, resolved, closed
     is_starred: Optional[bool] = None
+    opted_out: Optional[bool] = None
 
 class ContactResponse(BaseModel):
     id: uuid.UUID
@@ -154,23 +237,65 @@ async def _fetch_last_message_previews(
     db: AsyncSession,
     contact_ids: List[uuid.UUID],
 ) -> Dict[uuid.UUID, str]:
-    """Latest non-empty message content per contact (batch, max 50)."""
+    """Latest message preview per contact (batch)."""
     previews: Dict[uuid.UUID, str] = {}
     for cid in contact_ids:
         result = await db.execute(
-            select(WhatsAppMessage.content)
-            .where(
-                WhatsAppMessage.contact_id == cid,
-                WhatsAppMessage.content.isnot(None),
-                WhatsAppMessage.content != "",
-            )
+            select(WhatsAppMessage.content, WhatsAppMessage.message_type)
+            .where(WhatsAppMessage.contact_id == cid)
             .order_by(desc(WhatsAppMessage.created_at))
             .limit(1)
         )
-        content = result.scalar_one_or_none()
-        if content:
-            previews[cid] = content
+        row = result.first()
+        if row:
+            previews[cid] = format_message_preview(row.content, row.message_type)
     return previews
+
+
+def _message_to_response(msg: WhatsAppMessage) -> MessageResponse:
+    data = MessageResponse.model_validate(msg)
+    if msg.media_url and msg.media_url.isdigit():
+        return data.model_copy(update={"media_url": media_proxy_url(msg.id)})
+    return data
+
+
+async def _send_csat_prompt(
+    db: AsyncSession,
+    user: User,
+    contact: WhatsAppContact,
+) -> None:
+    """Send CSAT survey prompt and mark contact as awaiting rating."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    prompt = (
+        "Thank you for chatting with us! How would you rate your experience?\n"
+        "Reply with a number from 1 (poor) to 5 (excellent)."
+    )
+    conn_result = await db.execute(
+        select(Connection).filter(
+            Connection.user_id == user.id,
+            Connection.platform == "whatsapp",
+            Connection.status == "active",
+        )
+    )
+    connection = conn_result.scalar_one_or_none()
+    wa_config = connection.config if connection else None
+    if wa_config:
+        await whatsapp_service.send_message(
+            contact.phone_number,
+            prompt,
+            config=wa_config,
+        )
+
+    meta = dict(contact.metadata_ or {})
+    meta["csat_pending"] = True
+    contact.metadata_ = meta
+    flag_modified(contact, "metadata_")
+    await db.commit()
+
+
+def _record_csat_score(contact: WhatsAppContact, score: int) -> None:
+    record_csat_score(contact, score)
 
 class MessageCreate(BaseModel):
     content: str
@@ -246,6 +371,8 @@ async def list_contacts(
     assigned_to: Optional[str] = Query(None, description="Filter by assigned agent ID"),
     is_starred: Optional[bool] = Query(None, description="Filter starred conversations"),
     has_unread: Optional[bool] = Query(None, description="Filter conversations with unread messages"),
+    sla_breached: Optional[bool] = Query(None, description="Filter SLA breached open conversations"),
+    include_snoozed: Optional[bool] = Query(False, description="Include snoozed conversations"),
     limit: int = Query(50, le=100),
     offset: int = Query(0),
     user: User = Depends(get_current_user),
@@ -286,6 +413,8 @@ async def list_contacts(
     # Starred filter
     if is_starred is not None:
         query = query.filter(WhatsAppContact.is_starred == is_starred)
+
+    now = datetime.utcnow()
     
     # Unread filter
     if has_unread is not None:
@@ -294,14 +423,36 @@ async def list_contacts(
         else:
             query = query.filter(WhatsAppContact.unread_count == 0)
 
-    # Hide snoozed conversations until snooze expires
-    now = datetime.utcnow()
-    query = query.filter(
-        or_(
-            WhatsAppContact.snoozed_until.is_(None),
-            WhatsAppContact.snoozed_until <= now,
+    if sla_breached is not None:
+        from ..services.whatsapp_inbox_settings import get_inbox_settings_for_user
+
+        inbox_cfg = await get_inbox_settings_for_user(db, user.id)
+        sla_min = int(inbox_cfg.get("sla_first_response_minutes") or 5)
+        breach_before = now - timedelta(minutes=max(1, sla_min))
+        breached_clause = (
+            WhatsAppContact.first_inbound_at.isnot(None),
+            WhatsAppContact.status.in_(["open", "pending"]),
+            WhatsAppContact.first_inbound_at < breach_before,
         )
-    )
+        if sla_breached:
+            query = query.filter(*breached_clause)
+        else:
+            query = query.filter(
+                or_(
+                    WhatsAppContact.first_inbound_at.is_(None),
+                    ~WhatsAppContact.status.in_(["open", "pending"]),
+                    WhatsAppContact.first_inbound_at >= breach_before,
+                )
+            )
+
+    # Hide snoozed conversations until snooze expires (unless explicitly included)
+    if not include_snoozed:
+        query = query.filter(
+            or_(
+                WhatsAppContact.snoozed_until.is_(None),
+                WhatsAppContact.snoozed_until <= now,
+            )
+        )
     
     # Order: starred first, then by last message (most recent first)
     query = query.order_by(
@@ -513,15 +664,30 @@ async def update_contact(
         contact.is_blocked = data.is_blocked
     if data.assigned_to_id is not None:
         contact.assigned_to_id = uuid.UUID(data.assigned_to_id) if data.assigned_to_id else None
+    if data.is_starred is not None:
+        contact.is_starred = data.is_starred
+    if data.opted_out is not None:
+        contact.opted_out = data.opted_out
+        contact.opted_out_at = datetime.utcnow() if data.opted_out else None
+
+    prev_status = contact.status
     if data.status is not None:
         if data.status not in ("open", "pending", "resolved", "closed"):
             raise HTTPException(status_code=400, detail="Invalid status. Must be: open, pending, resolved, closed")
         contact.status = data.status
-    if data.is_starred is not None:
-        contact.is_starred = data.is_starred
     
     await db.commit()
     await db.refresh(contact)
+
+    if data.status == "resolved" and prev_status != "resolved":
+        from ..services.whatsapp_inbox_settings import get_inbox_settings
+
+        inbox_cfg = await get_inbox_settings(db, user.id)
+        if inbox_cfg.get("csat_enabled", True):
+            try:
+                await _send_csat_prompt(db, user, contact)
+            except Exception:
+                pass
     
     return {
         "success": True,
@@ -766,7 +932,7 @@ async def get_messages(
     
     return {
         "success": True,
-        "data": [MessageResponse.model_validate(m) for m in merged],
+        "data": [_message_to_response(m) for m in merged],
         "contact": _contact_to_response(contact)
     }
 
@@ -814,7 +980,7 @@ async def send_message(
         await db.refresh(message)
         return {
             "success": True,
-            "data": MessageResponse.model_validate(message)
+            "data": _message_to_response(message)
         }
     
     # Get user's WhatsApp connection config
@@ -885,7 +1051,7 @@ async def send_message(
 
     return {
         "success": True,
-        "data": MessageResponse.model_validate(message)
+        "data": _message_to_response(message)
     }
 
 
@@ -949,7 +1115,7 @@ async def send_template_message_to_contact(
     contact.message_count = (contact.message_count or 0) + 1
     await db.commit()
     await db.refresh(message)
-    return {"success": True, "data": MessageResponse.model_validate(message)}
+    return {"success": True, "data": _message_to_response(message)}
 
 
 @router.post("/contacts/{contact_id}/media-upload")
@@ -1014,7 +1180,7 @@ async def upload_and_send_chat_media(
     contact.message_count = (contact.message_count or 0) + 1
     await db.commit()
     await db.refresh(message)
-    return {"success": True, "data": MessageResponse.model_validate(message)}
+    return {"success": True, "data": _message_to_response(message)}
 
 
 @router.post("/contacts/{contact_id}/media")
@@ -1084,7 +1250,7 @@ async def send_media_message(
 
     return {
         "success": True,
-        "data": MessageResponse.model_validate(message)
+        "data": _message_to_response(message)
     }
 
 
@@ -1177,6 +1343,112 @@ async def unsnooze_contact(
     return {"success": True, "data": _contact_to_response(contact)}
 
 
+class ReassignRequest(BaseModel):
+    assigned_to_id: Optional[str] = None
+    note: Optional[str] = None
+
+
+@router.post("/contacts/{contact_id}/reassign")
+async def reassign_contact(
+    contact_id: uuid.UUID,
+    data: ReassignRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reassign conversation to an agent with optional internal note."""
+    check_connection_access(user, "whatsapp_business")
+    result = await db.execute(
+        select(WhatsAppContact).filter(
+            WhatsAppContact.id == contact_id,
+            WhatsAppContact.user_id == user.id,
+        )
+    )
+    contact = result.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    if data.assigned_to_id is not None:
+        contact.assigned_to_id = (
+            uuid.UUID(data.assigned_to_id) if data.assigned_to_id else None
+        )
+
+    if data.note and data.note.strip():
+        note_msg = WhatsAppMessage(
+            user_id=user.id,
+            contact_id=contact.id,
+            direction=WhatsAppMessageDirection.OUTGOING,
+            message_type="text",
+            content=data.note.strip(),
+            status=WhatsAppMessageStatus.SENT,
+            is_internal_note=True,
+        )
+        db.add(note_msg)
+
+    await db.commit()
+    await db.refresh(contact)
+    return {"success": True, "data": _contact_to_response(contact)}
+
+
+@router.get("/team-queue")
+async def get_team_queue(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Open workload per agent plus unassigned queue for team ops view."""
+    check_connection_access(user, "whatsapp_business")
+    from ..models import OrganizationMember
+
+    org_result = await db.execute(
+        select(OrganizationMember.org_id).where(OrganizationMember.user_id == user.id)
+    )
+    org_ids = [row[0] for row in org_result.fetchall()]
+    agent_ids: List[uuid.UUID] = [user.id]
+    if org_ids:
+        members_result = await db.execute(
+            select(OrganizationMember.user_id).where(OrganizationMember.org_id.in_(org_ids))
+        )
+        agent_ids = list({row[0] for row in members_result.fetchall()})
+
+    workload = []
+    for agent_id in agent_ids:
+        count_result = await db.execute(
+            select(func.count()).select_from(WhatsAppContact).filter(
+                WhatsAppContact.user_id == user.id,
+                WhatsAppContact.assigned_to_id == agent_id,
+                WhatsAppContact.status.in_(["open", "pending"]),
+            )
+        )
+        user_result = await db.execute(select(User).where(User.id == agent_id))
+        agent_user = user_result.scalar_one_or_none()
+        workload.append(
+            {
+                "agent_id": str(agent_id),
+                "name": agent_user.name if agent_user else "Unknown",
+                "open_count": count_result.scalar() or 0,
+            }
+        )
+
+    unassigned_result = await db.execute(
+        select(WhatsAppContact)
+        .filter(
+            WhatsAppContact.user_id == user.id,
+            WhatsAppContact.assigned_to_id.is_(None),
+            WhatsAppContact.status.in_(["open", "pending"]),
+        )
+        .order_by(desc(WhatsAppContact.last_message_at))
+        .limit(25)
+    )
+    unassigned = unassigned_result.scalars().all()
+
+    return {
+        "success": True,
+        "data": {
+            "workload": workload,
+            "unassigned": [_contact_to_response(c) for c in unassigned],
+        },
+    }
+
+
 @router.get("/contacts/{contact_id}/commerce-context")
 async def get_commerce_context(
     contact_id: uuid.UUID,
@@ -1205,6 +1477,11 @@ class InboxSettingsUpdate(BaseModel):
     round_robin_enabled: Optional[bool] = None
     round_robin_agent_ids: Optional[List[str]] = None
     sla_first_response_minutes: Optional[int] = None
+    notify_new_message_browser: Optional[bool] = None
+    notify_new_message_sound: Optional[bool] = None
+    notify_new_message_email: Optional[bool] = None
+    notify_sla_breach: Optional[bool] = None
+    csat_enabled: Optional[bool] = None
 
 
 @router.get("/inbox-settings")
@@ -1242,6 +1519,16 @@ async def update_whatsapp_inbox_settings(
         current["round_robin_agent_ids"] = data.round_robin_agent_ids
     if data.sla_first_response_minutes is not None:
         current["sla_first_response_minutes"] = data.sla_first_response_minutes
+    for key in (
+        "notify_new_message_browser",
+        "notify_new_message_sound",
+        "notify_new_message_email",
+        "notify_sla_breach",
+        "csat_enabled",
+    ):
+        val = getattr(data, key, None)
+        if val is not None:
+            current[key] = val
     profile.inbox_settings = current
     await db.commit()
     return {"success": True, "data": current}
@@ -1681,18 +1968,19 @@ async def get_whatsapp_analytics(
             message_trends[day_str] = {"incoming": 0, "outgoing": 0}
         message_trends[day_str][_dir_key(row.direction)] = row.count
     
-    # Total incoming vs outgoing
+    # Total incoming vs outgoing (within period)
     result = await db.execute(
         select(
             WhatsAppMessage.direction,
             func.count(WhatsAppMessage.id).label("count")
         ).filter(
-            WhatsAppMessage.user_id == user.id
+            WhatsAppMessage.user_id == user.id,
+            func.date(WhatsAppMessage.created_at) >= start_date,
         ).group_by(WhatsAppMessage.direction)
     )
     direction_counts = {_dir_key(row.direction): row.count for row in result.fetchall()}
     
-    # Auto-reply stats
+    # Auto-reply stats (within period — approximate via times_triggered on active rules)
     result = await db.execute(
         select(func.sum(WhatsAppAutoReply.times_triggered)).filter(
             WhatsAppAutoReply.user_id == user.id
@@ -1721,12 +2009,38 @@ async def get_whatsapp_analytics(
             func.count(WhatsAppMessage.id).label("count")
         ).filter(
             WhatsAppMessage.user_id == user.id,
-            WhatsAppMessage.direction == WhatsAppMessageDirection.INCOMING
+            WhatsAppMessage.direction == WhatsAppMessageDirection.INCOMING,
+            func.date(WhatsAppMessage.created_at) >= start_date,
         ).group_by(
             func.extract('hour', WhatsAppMessage.created_at)
         ).order_by(desc("count")).limit(5)
     )
     busiest_hours = [{"hour": int(row.hour), "count": row.count} for row in result.fetchall()]
+
+    # CSAT breakdown from contact metadata (stored on resolve survey)
+    csat_result = await db.execute(
+        select(WhatsAppContact.metadata_).filter(
+            WhatsAppContact.user_id == user.id,
+            WhatsAppContact.metadata_.isnot(None),
+        )
+    )
+    csat_scores: Dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+    csat_total = 0
+    csat_sum = 0
+    for (meta,) in csat_result.fetchall():
+        if not meta or not isinstance(meta, dict):
+            continue
+        score = meta.get("csat_score")
+        if score is None:
+            continue
+        try:
+            s = int(score)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= s <= 5:
+            csat_scores[s] = csat_scores.get(s, 0) + 1
+            csat_total += 1
+            csat_sum += s
     
     return {
         "success": True,
@@ -1738,7 +2052,12 @@ async def get_whatsapp_analytics(
             "response_rate": response_rate,
             "auto_replies_sent": total_auto_replies_sent,
             "new_contacts": new_contacts,
-            "busiest_hours": busiest_hours
+            "busiest_hours": busiest_hours,
+            "csat": {
+                "total_responses": csat_total,
+                "average_score": round(csat_sum / csat_total, 2) if csat_total else None,
+                "breakdown": csat_scores,
+            },
         }
     }
 
