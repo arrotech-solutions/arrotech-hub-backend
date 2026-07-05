@@ -333,6 +333,86 @@ async def list_contacts(
     }
 
 
+@router.get("/contacts/export")
+async def export_contacts_csv(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Export contacts as CSV."""
+    check_connection_access(user, "whatsapp_business")
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+
+    result = await db.execute(
+        select(WhatsAppContact).where(WhatsAppContact.user_id == user.id)
+    )
+    contacts = result.scalars().all()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["phone_number", "name", "profile_name", "tags", "status", "notes"])
+    for c in contacts:
+        writer.writerow([
+            c.phone_number,
+            c.name or "",
+            c.profile_name or "",
+            ",".join(c.tags or []),
+            c.status or "open",
+            (c.notes or "").replace("\n", " "),
+        ])
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=whatsapp-contacts.csv"},
+    )
+
+
+@router.post("/contacts/import")
+async def import_contacts_csv(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Import contacts from CSV (phone_number, name, tags)."""
+    check_connection_access(user, "whatsapp_business")
+    import csv
+    import io
+
+    content = (await file.read()).decode("utf-8-sig", errors="replace")
+    reader = csv.DictReader(io.StringIO(content))
+    created = 0
+    skipped = 0
+    for row in reader:
+        phone = (row.get("phone_number") or row.get("phone") or "").strip().replace("+", "").replace(" ", "")
+        if not phone:
+            skipped += 1
+            continue
+        existing = await db.execute(
+            select(WhatsAppContact).where(
+                WhatsAppContact.user_id == user.id,
+                WhatsAppContact.phone_number == phone,
+            )
+        )
+        if existing.scalar_one_or_none():
+            skipped += 1
+            continue
+        tags_raw = row.get("tags") or ""
+        tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
+        contact = WhatsAppContact(
+            user_id=user.id,
+            phone_number=phone,
+            name=row.get("name") or None,
+            tags=tags,
+            notes=row.get("notes") or None,
+            message_count=0,
+        )
+        db.add(contact)
+        created += 1
+    await db.commit()
+    return {"success": True, "created": created, "skipped": skipped}
+
+
 @router.get("/contacts/{contact_id}")
 async def get_contact(
     contact_id: uuid.UUID,
@@ -1165,86 +1245,6 @@ async def update_whatsapp_inbox_settings(
     profile.inbox_settings = current
     await db.commit()
     return {"success": True, "data": current}
-
-
-@router.get("/contacts/export")
-async def export_contacts_csv(
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Export contacts as CSV."""
-    check_connection_access(user, "whatsapp_business")
-    import csv
-    import io
-    from fastapi.responses import StreamingResponse
-
-    result = await db.execute(
-        select(WhatsAppContact).where(WhatsAppContact.user_id == user.id)
-    )
-    contacts = result.scalars().all()
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["phone_number", "name", "profile_name", "tags", "status", "notes"])
-    for c in contacts:
-        writer.writerow([
-            c.phone_number,
-            c.name or "",
-            c.profile_name or "",
-            ",".join(c.tags or []),
-            c.status or "open",
-            (c.notes or "").replace("\n", " "),
-        ])
-    output.seek(0)
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=whatsapp-contacts.csv"},
-    )
-
-
-@router.post("/contacts/import")
-async def import_contacts_csv(
-    file: UploadFile = File(...),
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Import contacts from CSV (phone_number, name, tags)."""
-    check_connection_access(user, "whatsapp_business")
-    import csv
-    import io
-
-    content = (await file.read()).decode("utf-8-sig", errors="replace")
-    reader = csv.DictReader(io.StringIO(content))
-    created = 0
-    skipped = 0
-    for row in reader:
-        phone = (row.get("phone_number") or row.get("phone") or "").strip().replace("+", "").replace(" ", "")
-        if not phone:
-            skipped += 1
-            continue
-        existing = await db.execute(
-            select(WhatsAppContact).where(
-                WhatsAppContact.user_id == user.id,
-                WhatsAppContact.phone_number == phone,
-            )
-        )
-        if existing.scalar_one_or_none():
-            skipped += 1
-            continue
-        tags_raw = row.get("tags") or ""
-        tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
-        contact = WhatsAppContact(
-            user_id=user.id,
-            phone_number=phone,
-            name=row.get("name") or None,
-            tags=tags,
-            notes=row.get("notes") or None,
-            message_count=0,
-        )
-        db.add(contact)
-        created += 1
-    await db.commit()
-    return {"success": True, "created": created, "skipped": skipped}
 
 
 class OrderStatusUpdate(BaseModel):
