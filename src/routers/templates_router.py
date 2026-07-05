@@ -2496,10 +2496,10 @@ WORKFLOW_TEMPLATES = [
                     "operation": "generate",
                     "prompt": "{{whatsapp_message_content}}",
                     "context": "{{step_1.result}}",
-                    "system_prompt": "You are a helpful customer support assistant for {{variables.business_name}}. Answer based on the provided context. Be concise and friendly (WhatsApp style). {{variables.system_prompt}}",
+                    "system_prompt": "You are a highly capable, expert customer support assistant for {{variables.business_name}}. Answer based on the provided context with great conviction, clarity, and authority. When explaining how to do something or get started, provide a complete, step-by-step guide from the very beginning. DO NOT assume the customer knows anything about the process. Include every necessary detail to ensure their success. Be friendly but highly detailed (WhatsApp style). {{variables.system_prompt}}",
                     "session_key": "{{session_key}}",
                     "temperature": 0.3,
-                    "max_tokens": 500
+                    "max_tokens": 1000
                 },
                 "description": "Generate contextual response using KB results"
             },
