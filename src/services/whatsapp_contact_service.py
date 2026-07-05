@@ -6,7 +6,8 @@ import uuid
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from sqlalchemy import delete, select
+from sqlalchemy import ColumnElement, cast, delete, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
@@ -93,3 +94,11 @@ def avatar_storage_path(user_id: uuid.UUID, contact_id: uuid.UUID, ext: str) -> 
 
 def resolve_avatar_full_path(upload_dir: Path, storage_key: str) -> Path:
     return upload_dir / storage_key
+
+
+def contact_has_tag(tags_column, tag: str) -> ColumnElement[bool]:
+    """Match contacts whose tags JSON array includes tag (PostgreSQL JSONB containment)."""
+    normalized = tag.strip()
+    if not normalized:
+        raise ValueError("tag must be non-empty")
+    return cast(tags_column, JSONB).contains([normalized])

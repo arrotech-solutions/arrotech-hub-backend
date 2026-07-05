@@ -26,6 +26,7 @@ from ..services.whatsapp_contact_service import (
     MAX_AVATAR_BYTES,
     avatar_storage_path,
     bulk_delete_contacts,
+    contact_has_tag,
     delete_contact_and_related,
     resolve_avatar_full_path,
     _remove_avatar_file,
@@ -267,9 +268,9 @@ async def list_contacts(
             )
         )
     
-    # Tag filter
+    # Tag filter (JSON array column — cast to JSONB for @> containment)
     if tag:
-        query = query.filter(WhatsAppContact.tags.contains([tag]))
+        query = query.filter(contact_has_tag(WhatsAppContact.tags, tag))
     
     # Status filter
     if status:

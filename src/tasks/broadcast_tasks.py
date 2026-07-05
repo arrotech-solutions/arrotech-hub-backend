@@ -21,6 +21,7 @@ from src.models import (
 )
 from src.services.whatsapp_service import WhatsAppService
 from src.services.whatsapp_config_helper import get_whatsapp_config
+from src.services.whatsapp_contact_service import contact_has_tag
 from src.services.websocket_manager import connection_manager
 
 logger = logging.getLogger(__name__)
@@ -97,7 +98,7 @@ def execute_broadcast_campaign_task(self, broadcast_id: str, user_id: str):
 
                 if broadcast.target_type == "tag" and broadcast.target_tag:
                     contact_query = contact_query.where(
-                        WhatsAppContact.tags.contains([broadcast.target_tag])
+                        contact_has_tag(WhatsAppContact.tags, broadcast.target_tag)
                     )
                 elif broadcast.target_type == "selected" and broadcast.target_contact_ids:
                     raw_ids = broadcast.target_contact_ids

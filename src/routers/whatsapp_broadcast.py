@@ -22,6 +22,7 @@ from ..models import (
 from ..routers.auth_router import get_current_user
 from ..services.whatsapp_service import WhatsAppService
 from ..services.whatsapp_config_helper import get_whatsapp_config_for_user
+from ..services.whatsapp_contact_service import contact_has_tag
 from ..services.llm_service import llm_service
 from ..services.tier_gate import check_broadcast_access
 from ..tasks.broadcast_tasks import execute_broadcast_campaign_task
@@ -555,7 +556,7 @@ async def _count_broadcast_recipients(
     )
     
     if data.target_type == "tag" and data.target_tag:
-        query = query.where(WhatsAppContact.tags.contains([data.target_tag]))
+        query = query.where(contact_has_tag(WhatsAppContact.tags, data.target_tag))
     elif data.target_type == "selected" and data.target_contact_ids:
         query = query.where(WhatsAppContact.id.in_(data.target_contact_ids))
     
