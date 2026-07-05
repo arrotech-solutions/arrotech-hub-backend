@@ -350,6 +350,153 @@ async def get_all_executions(
         )
 
 
+@router.get("/executions/{execution_id}")
+async def get_execution(
+    execution_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Get a specific workflow execution by ID."""
+    try:
+        from sqlalchemy import select
+        from ..models import WorkflowExecution
+        
+        result = await db.execute(
+            select(WorkflowExecution)
+            .where(WorkflowExecution.id == execution_id, WorkflowExecution.user_id == user.id)
+        )
+        execution = result.scalar_one_or_none()
+        
+        if not execution:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Workflow execution not found"
+            )
+            
+        return {
+            "success": True,
+            "data": {
+                "id": execution.id,
+                "workflow_id": execution.workflow_id,
+                "status": execution.status,
+                "trigger_type": execution.trigger_type,
+                "input_data": execution.input_data,
+                "output_data": execution.output_data,
+                "error_message": execution.error_message,
+                "started_at": execution.started_at.isoformat() if execution.started_at else None,
+                "completed_at": execution.completed_at.isoformat() if execution.completed_at else None,
+                "created_at": execution.created_at.isoformat()
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get execution: {str(e)}"
+        )
+
+
+@router.get("/executions/{execution_id}/steps")
+async def get_execution_steps(
+    execution_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Get all step executions for a specific workflow execution."""
+    try:
+        from sqlalchemy import select
+        from ..models import WorkflowExecution, WorkflowStepExecution
+        
+        # First verify the user owns this execution
+        result = await db.execute(
+            select(WorkflowExecution)
+            .where(WorkflowExecution.id == execution_id, WorkflowExecution.user_id == user.id)
+        )
+        if not result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Workflow execution not found"
+            )
+            
+        # Get all step executions
+        result = await db.execute(
+            select(WorkflowStepExecution)
+            .where(WorkflowStepExecution.workflow_execution_id == execution_id)
+            .order_by(WorkflowStepExecution.started_at.asc())
+        )
+        step_executions = result.scalars().all()
+        
+        steps_data = [
+            {
+                "id": step.id,
+                "workflow_execution_id": step.workflow_execution_id,
+                "step_id": step.step_id,
+                "status": step.status,
+                "input_data": step.input_data,
+                "output_data": step.output_data,
+                "error_message": step.error_message,
+                "retry_count": step.retry_count,
+                "started_at": step.started_at.isoformat() if step.started_at else None,
+                "completed_at": step.completed_at.isoformat() if step.completed_at else None
+            } for step in step_executions
+        ]
+        
+        return {
+            "success": True,
+            "data": steps_data
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get execution steps: {str(e)}"
+        )
+
+
+@router.post("/executions/{execution_id}/cancel")
+async def cancel_execution(
+    execution_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Cancel a running workflow execution."""
+    try:
+        from sqlalchemy import select
+        from ..models import WorkflowExecution, WorkflowExecutionStatus
+        
+        result = await db.execute(
+            select(WorkflowExecution)
+            .where(WorkflowExecution.id == execution_id, WorkflowExecution.user_id == user.id)
+        )
+        execution = result.scalar_one_or_none()
+        
+        if not execution:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Workflow execution not found"
+            )
+            
+        # Hardcoding "running" status check just in case enum is weird
+        is_running = execution.status == (WorkflowExecutionStatus.RUNNING.value if hasattr(WorkflowExecutionStatus, 'RUNNING') else "running")
+        if is_running or execution.status == "running":
+            execution.status = "cancelled"
+            await db.commit()
+            
+        return {
+            "success": True,
+            "message": "Execution cancelled successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to cancel execution: {str(e)}"
+        )
+
+
 @router.get("/{workflow_id}")
 async def get_workflow(
     workflow_id: uuid.UUID,
