@@ -1104,12 +1104,28 @@ class OrderTrackingService:
             {"id": f"pay_mpesa:{order_id}", "title": "Pay on this number"},
             {"id": f"pay_mpesa_other:{order_id}", "title": "Other number"},
         ]
-        return await wa.send_quick_reply_buttons(
+        result = await wa.send_quick_reply_buttons(
             to_number=customer_phone,
             body_text=body_text,
             buttons=buttons,
             config=wa_config,
         )
+        if result.get("success"):
+            try:
+                from .whatsapp_inbox_service import record_outbound_message
+
+                await record_outbound_message(
+                    db,
+                    user_id=user.id,
+                    phone_number=customer_phone,
+                    content=body_text,
+                    message_type="interactive",
+                    whatsapp_message_id=result.get("message_id"),
+                    is_agent=True,
+                )
+            except Exception as exc:
+                logger.warning("[ORDER_TRACK] inbox persist for retry buttons: %s", exc)
+        return result
 
     async def maybe_alert_business_payment_failures(
         self,

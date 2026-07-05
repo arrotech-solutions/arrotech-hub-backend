@@ -3537,6 +3537,23 @@ class ToolExecutor:
                         to_number, clean_message,
                         config={"access_token": access_token, "phone_number_id": phone_number_id}
                     )
+                    if text_result and text_result.get("success"):
+                        try:
+                            from .whatsapp_inbox_service import record_outbound_message
+
+                            await record_outbound_message(
+                                db,
+                                user_id=user.id,
+                                phone_number=to_number,
+                                content=clean_message,
+                                whatsapp_message_id=text_result.get("message_id"),
+                                is_agent=True,
+                            )
+                        except Exception as inbox_err:
+                            logger.warning(
+                                "[WHATSAPP] Failed to persist agent message to inbox: %s",
+                                inbox_err,
+                            )
 
                 # Cart UX: list + reply buttons after the cart summary text
                 from .whatsapp_ordering_helpers import message_requests_cart_buttons
@@ -3673,6 +3690,25 @@ class ToolExecutor:
                     to_number, media_url, media_type, caption,
                     config={"access_token": access_token, "phone_number_id": phone_number_id}
                 )
+                if result.get("success"):
+                    try:
+                        from .whatsapp_inbox_service import record_outbound_message
+
+                        await record_outbound_message(
+                            db,
+                            user_id=user.id,
+                            phone_number=to_number,
+                            content=caption or f"[{media_type} attachment]",
+                            message_type=media_type or "image",
+                            media_url=media_url,
+                            whatsapp_message_id=result.get("message_id"),
+                            is_agent=True,
+                        )
+                    except Exception as inbox_err:
+                        logger.warning(
+                            "[WHATSAPP] Failed to persist agent media to inbox: %s",
+                            inbox_err,
+                        )
                 return {
                     "success": True,
                     "result": f"Media message sent to {to_number}",

@@ -3,21 +3,34 @@ WhatsApp Contacts & Messages API.
 CRUD operations for contacts and conversation history.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, or_
 from sqlalchemy.orm import selectinload
-from typing import Optional, List
+from typing import Optional, List, Dict
 import uuid
 from pydantic import BaseModel, Field
 from datetime import datetime
+from pathlib import Path
+import aiofiles
 
 from ..database import get_db
 from ..models import (
     User, WhatsAppContact, WhatsAppMessage, WhatsAppMessageDirection,
     WhatsAppMessageStatus, WhatsAppAutoReply, WhatsAppBusinessProfile,
-    WhatsAppQuickReply, Connection
+    WhatsAppQuickReply, Connection,
 )
+from ..services.whatsapp_contact_service import (
+    ALLOWED_AVATAR_MIME,
+    MAX_AVATAR_BYTES,
+    avatar_storage_path,
+    bulk_delete_contacts,
+    delete_contact_and_related,
+    resolve_avatar_full_path,
+    _remove_avatar_file,
+)
+from ..services.file_management_service import file_management_service
 from ..routers.auth_router import get_current_user
 from ..services import WhatsAppService
 from ..services.tier_gate import check_connection_access
@@ -96,6 +109,7 @@ class ContactResponse(BaseModel):
     phone_number: str
     name: Optional[str]
     profile_name: Optional[str]
+    avatar_url: Optional[str] = None
     tags: Optional[List[str]]
     notes: Optional[str]
     assigned_to_id: Optional[uuid.UUID] = None
@@ -105,11 +119,54 @@ class ContactResponse(BaseModel):
     unread_count: int = 0
     first_message_at: Optional[datetime]
     last_message_at: Optional[datetime]
+    last_message_preview: Optional[str] = None
     is_blocked: bool
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class BulkDeleteRequest(BaseModel):
+    contact_ids: List[uuid.UUID] = Field(..., min_length=1)
+
+
+def _contact_to_response(
+    contact: WhatsAppContact,
+    last_message_preview: Optional[str] = None,
+) -> ContactResponse:
+    data = ContactResponse.model_validate(contact)
+    updates: Dict[str, object] = {}
+    if contact.avatar_url:
+        updates["avatar_url"] = f"/api/whatsapp/contacts/{contact.id}/avatar"
+    if last_message_preview is not None:
+        updates["last_message_preview"] = last_message_preview
+    if updates:
+        return data.model_copy(update=updates)
+    return data
+
+
+async def _fetch_last_message_previews(
+    db: AsyncSession,
+    contact_ids: List[uuid.UUID],
+) -> Dict[uuid.UUID, str]:
+    """Latest non-empty message content per contact (batch, max 50)."""
+    previews: Dict[uuid.UUID, str] = {}
+    for cid in contact_ids:
+        result = await db.execute(
+            select(WhatsAppMessage.content)
+            .where(
+                WhatsAppMessage.contact_id == cid,
+                WhatsAppMessage.content.isnot(None),
+                WhatsAppMessage.content != "",
+            )
+            .order_by(desc(WhatsAppMessage.created_at))
+            .limit(1)
+        )
+        content = result.scalar_one_or_none()
+        if content:
+            previews[cid] = content
+    return previews
 
 class MessageCreate(BaseModel):
     content: str
@@ -124,6 +181,7 @@ class MessageResponse(BaseModel):
     media_url: Optional[str]
     status: str
     is_auto_reply: bool
+    is_agent: bool = False
     is_internal_note: bool = False
     created_at: datetime
     delivered_at: Optional[datetime]
@@ -247,10 +305,15 @@ async def list_contacts(
     query = query.offset(offset).limit(limit)
     result = await db.execute(query)
     contacts = result.scalars().all()
+
+    previews = await _fetch_last_message_previews(db, [c.id for c in contacts])
     
     return {
         "success": True,
-        "data": [ContactResponse.model_validate(c) for c in contacts],
+        "data": [
+            _contact_to_response(c, previews.get(c.id))
+            for c in contacts
+        ],
         "total": total,
         "limit": limit,
         "offset": offset
@@ -279,7 +342,7 @@ async def get_contact(
     
     return {
         "success": True,
-        "data": ContactResponse.model_validate(contact)
+        "data": _contact_to_response(contact),
     }
 
 
@@ -321,11 +384,8 @@ async def create_contact(
     
     return {
         "success": True,
-        "data": ContactResponse.model_validate(contact)
+        "data": _contact_to_response(contact),
     }
-
-
-@router.put("/contacts/{contact_id}")
 async def update_contact(
     contact_id: uuid.UUID,
     data: ContactUpdate,
@@ -369,7 +429,7 @@ async def update_contact(
     
     return {
         "success": True,
-        "data": ContactResponse.model_validate(contact)
+        "data": _contact_to_response(contact),
     }
 
 
@@ -393,10 +453,163 @@ async def delete_contact(
     if not contact:
         raise HTTPException(status_code=404, detail="Contact not found")
     
-    await db.delete(contact)
+    await delete_contact_and_related(db, contact)
     await db.commit()
     
     return {"success": True, "message": "Contact deleted"}
+
+
+@router.post("/contacts/bulk-delete")
+async def bulk_delete_contact_list(
+    data: BulkDeleteRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete multiple contacts and their messages."""
+    check_connection_access(user, "whatsapp_business")
+
+    try:
+        deleted, failed = await bulk_delete_contacts(
+            db,
+            user_id=user.id,
+            contact_ids=data.contact_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    await db.commit()
+
+    return {
+        "success": True,
+        "deleted": deleted,
+        "failed": failed,
+    }
+
+
+_MIME_EXT = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+
+
+@router.post("/contacts/{contact_id}/avatar")
+async def upload_contact_avatar(
+    contact_id: uuid.UUID,
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a custom avatar image for a contact."""
+    check_connection_access(user, "whatsapp_business")
+
+    result = await db.execute(
+        select(WhatsAppContact).filter(
+            WhatsAppContact.id == contact_id,
+            WhatsAppContact.user_id == user.id,
+        )
+    )
+    contact = result.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    content_type = (file.content_type or "").lower()
+    if content_type not in ALLOWED_AVATAR_MIME:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid image type. Use JPEG, PNG, WebP, or GIF.",
+        )
+
+    content = await file.read()
+    if len(content) > MAX_AVATAR_BYTES:
+        raise HTTPException(status_code=400, detail="Image must be 2MB or smaller.")
+
+    ext = _MIME_EXT.get(content_type, ".jpg")
+    storage_key = avatar_storage_path(user.id, contact_id, ext)
+    full_path = resolve_avatar_full_path(file_management_service.upload_dir, storage_key)
+    full_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if contact.avatar_url:
+        _remove_avatar_file(contact.avatar_url)
+
+    async with aiofiles.open(full_path, "wb") as f:
+        await f.write(content)
+
+    contact.avatar_url = str(full_path)
+    await db.commit()
+    await db.refresh(contact)
+
+    return {
+        "success": True,
+        "data": _contact_to_response(contact),
+    }
+
+
+@router.get("/contacts/{contact_id}/avatar")
+async def get_contact_avatar(
+    contact_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve the contact's custom avatar image."""
+    check_connection_access(user, "whatsapp_business")
+
+    result = await db.execute(
+        select(WhatsAppContact).filter(
+            WhatsAppContact.id == contact_id,
+            WhatsAppContact.user_id == user.id,
+        )
+    )
+    contact = result.scalar_one_or_none()
+    if not contact or not contact.avatar_url:
+        raise HTTPException(status_code=404, detail="Avatar not found")
+
+    path = Path(contact.avatar_url)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Avatar file missing")
+
+    media_type = "image/jpeg"
+    suffix = path.suffix.lower()
+    if suffix == ".png":
+        media_type = "image/png"
+    elif suffix == ".webp":
+        media_type = "image/webp"
+    elif suffix == ".gif":
+        media_type = "image/gif"
+
+    return FileResponse(path, media_type=media_type)
+
+
+@router.delete("/contacts/{contact_id}/avatar")
+async def delete_contact_avatar(
+    contact_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove custom avatar and revert to initials."""
+    check_connection_access(user, "whatsapp_business")
+
+    result = await db.execute(
+        select(WhatsAppContact).filter(
+            WhatsAppContact.id == contact_id,
+            WhatsAppContact.user_id == user.id,
+        )
+    )
+    contact = result.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    if contact.avatar_url:
+        _remove_avatar_file(contact.avatar_url)
+        contact.avatar_url = None
+        await db.commit()
+        await db.refresh(contact)
+
+    return {
+        "success": True,
+        "data": _contact_to_response(contact),
+    }
 
 
 # ============================================================================
@@ -441,11 +654,24 @@ async def get_messages(
     
     # Reverse to get chronological order
     messages = list(reversed(messages))
+
+    from ..services.whatsapp_inbox_service import (
+        merge_ccm_assistant_messages,
+        merge_message_rows_for_api,
+    )
+
+    ccm_synthetics = await merge_ccm_assistant_messages(
+        db,
+        user_id=user.id,
+        contact=contact,
+        persisted_messages=messages,
+    )
+    merged = merge_message_rows_for_api(messages, ccm_synthetics)
     
     return {
         "success": True,
-        "data": [MessageResponse.model_validate(m) for m in messages],
-        "contact": ContactResponse.model_validate(contact)
+        "data": [MessageResponse.model_validate(m) for m in merged],
+        "contact": _contact_to_response(contact)
     }
 
 
@@ -531,7 +757,8 @@ async def send_message(
         message_type=data.message_type,
         content=data.content,
         whatsapp_message_id=send_result.get("message_id"),
-        status=WhatsAppMessageStatus.SENT
+        status=WhatsAppMessageStatus.SENT,
+        is_agent=False,
     )
     db.add(message)
     

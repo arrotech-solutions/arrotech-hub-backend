@@ -1045,6 +1045,7 @@ class WhatsAppContact(Base):
     phone_number = Column(String, nullable=False, index=True)
     name = Column(String, nullable=True)  # User-assigned name
     profile_name = Column(String, nullable=True)  # From WhatsApp profile
+    avatar_url = Column(String, nullable=True)  # Storage path for custom avatar image
     
     # Contact metadata
     tags = Column(JSON, nullable=True)  # ["vip", "new-customer", "lead"]
@@ -1106,6 +1107,9 @@ class WhatsAppMessage(Base):
     # Auto-reply tracking
     is_auto_reply = Column(Boolean, default=False)
     auto_reply_rule_id = Column(PG_UUID(as_uuid=True), ForeignKey("whatsapp_auto_replies.id"), nullable=True)
+
+    # Conversational ordering agent outbound (distinct from keyword auto-replies)
+    is_agent = Column(Boolean, default=False)
     
     # Internal notes (visible only to team, not sent to customer)
     is_internal_note = Column(Boolean, default=False)

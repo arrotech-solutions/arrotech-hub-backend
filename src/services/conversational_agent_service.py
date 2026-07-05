@@ -3364,6 +3364,7 @@ class ConversationalAgentService:
                     "phone_number_id": config.get("phone_number_id"),
                 },
             )
+            await self._persist_agent_whatsapp_outbound(db, user, recipient, body)
             session.metadata["welcome_sent"] = True
             await context_manager.save_session(session)
         except Exception as e:
@@ -3694,6 +3695,8 @@ class ConversationalAgentService:
                 logger.warning(
                     f"[CONV_AGENT] checkout pay button failed: {btn_result.get('error')}"
                 )
+            else:
+                await self._persist_agent_whatsapp_outbound(db, user, recipient, body_text)
         except Exception as e:
             logger.warning(f"[CONV_AGENT] checkout pay button failed: {e}", exc_info=True)
 
@@ -3823,6 +3826,10 @@ class ConversationalAgentService:
                 logger.warning(
                     f"[CONV_AGENT] cart action buttons failed: {btn_result.get('error')}"
                 )
+            else:
+                await self._persist_agent_whatsapp_outbound(
+                    db, user, recipient, button_body, message_type="interactive"
+                )
         except Exception as e:
             logger.warning(f"[CONV_AGENT] cart action buttons failed: {e}", exc_info=True)
 
@@ -3887,6 +3894,11 @@ class ConversationalAgentService:
                 logger.warning(
                     f"[CONV_AGENT] agent mode buttons failed: {btn_result.get('error')}"
                 )
+            else:
+                mode_body = agent_mode_button_body(handoff_active)
+                await self._persist_agent_whatsapp_outbound(
+                    db, user, recipient, mode_body, message_type="interactive"
+                )
         except Exception as e:
             logger.warning(f"[CONV_AGENT] agent mode buttons failed: {e}", exc_info=True)
 
@@ -3935,6 +3947,39 @@ class ConversationalAgentService:
                 await context_manager.add_message(session, role, content)
         except Exception as e:
             logger.warning(f"[CONV_AGENT] Failed to save to CCM: {e}")
+
+    @staticmethod
+    async def _persist_agent_whatsapp_outbound(
+        db: AsyncSession,
+        user: User,
+        phone_number: str,
+        content: Optional[str],
+        *,
+        message_type: str = "text",
+        media_url: Optional[str] = None,
+        whatsapp_message_id: Optional[str] = None,
+    ) -> None:
+        """Mirror agent outbound sends into whatsapp_messages for the dashboard inbox."""
+        if not db or not user or not phone_number:
+            return
+        try:
+            from .whatsapp_inbox_service import record_outbound_message
+
+            await record_outbound_message(
+                db,
+                user_id=user.id,
+                phone_number=phone_number,
+                content=content,
+                message_type=message_type,
+                media_url=media_url,
+                whatsapp_message_id=whatsapp_message_id,
+                is_agent=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[CONV_AGENT] Failed to persist outbound to inbox: %s",
+                exc,
+            )
 
     # ═══════════════════════════════════════════════════════════
     # SUB-TOOL EXECUTOR
@@ -6034,6 +6079,18 @@ class ConversationalAgentService:
             if failed:
                 summary += f" ({failed} failed)"
 
+            if sent > 0:
+                names = [
+                    p.get("name", "Product")
+                    for p in card_products[:5]
+                ]
+                card_summary = f"[Product cards: {', '.join(names)}]"
+                if len(card_products) > 5:
+                    card_summary += f" (+{len(card_products) - 5} more)"
+                await self._persist_agent_whatsapp_outbound(
+                    db, user, recipient, card_summary, message_type="interactive"
+                )
+
             return {
                 "success": sent > 0,
                 "result": summary,
@@ -6326,6 +6383,19 @@ class ConversationalAgentService:
             summary = f"Sent {sent} order card(s) with action buttons to the customer"
             if failed:
                 summary += f" ({failed} failed)"
+
+            if sent > 0:
+                order_ids = [
+                    order.get("order_id", order.get("Order ID", "N/A"))
+                    for order in orders[:3]
+                ]
+                await self._persist_agent_whatsapp_outbound(
+                    db,
+                    user,
+                    recipient,
+                    f"[Order cards: {', '.join(str(o) for o in order_ids)}]",
+                    message_type="interactive",
+                )
 
             return {
                 "success": sent > 0,

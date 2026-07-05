@@ -458,6 +458,25 @@ async def execute_whatsapp_action(
                     message_type="text",
                     config=wa_config
                 )
+
+                if result.get("success") and message_content:
+                    try:
+                        from ..services.whatsapp_inbox_service import record_outbound_message
+
+                        await record_outbound_message(
+                            db,
+                            user_id=user_id,
+                            phone_number=contact.phone_number,
+                            content=message_content,
+                            whatsapp_message_id=result.get("message_id"),
+                            contact_id=contact.id,
+                            is_agent=True,
+                        )
+                    except Exception as inbox_err:
+                        logger.warning(
+                            "[WA_ACTION] Failed to persist outbound to inbox: %s",
+                            inbox_err,
+                        )
                 
                 return {"success": True, "message_id": result.get("message_id")}
                 
