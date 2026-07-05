@@ -539,11 +539,35 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
             contact.unread_count = (contact.unread_count or 0) + 1
             if not contact.first_message_at:
                 contact.first_message_at = datetime.utcnow()
+            if (contact.status or "open") == "open" and not contact.first_inbound_at:
+                contact.first_inbound_at = datetime.utcnow()
+
+            from ..services.whatsapp_inbox_settings import maybe_auto_assign_contact
+            await maybe_auto_assign_contact(db, owner_user_id, contact)
             
             await db.commit()
             await db.refresh(message)
             
             logger.info(f"[WHATSAPP WEBHOOK] Saved message {msg_id} from {from_number}")
+
+            try:
+                from ..services.whatsapp_inbox_events import emit_whatsapp_inbox_event
+                await emit_whatsapp_inbox_event(
+                    owner_user_id,
+                    "whatsapp_new_message",
+                    {
+                        "contact_id": str(contact.id),
+                        "message_id": str(message.id),
+                        "direction": "incoming",
+                    },
+                )
+                await emit_whatsapp_inbox_event(
+                    owner_user_id,
+                    "whatsapp_contact_updated",
+                    {"contact_id": str(contact.id)},
+                )
+            except Exception:
+                pass
 
             if pending_cart_item:
                 try:

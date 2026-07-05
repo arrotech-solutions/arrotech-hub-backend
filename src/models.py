@@ -1047,6 +1047,10 @@ class WhatsAppContact(Base):
     profile_name = Column(String, nullable=True)  # From WhatsApp profile
     avatar_url = Column(String, nullable=True)  # Storage path for custom avatar image
     
+    # Inbox lifecycle
+    snoozed_until = Column(DateTime(timezone=True), nullable=True)
+    first_inbound_at = Column(DateTime(timezone=True), nullable=True)  # SLA: awaiting first human reply
+    
     # Contact metadata
     tags = Column(JSON, nullable=True)  # ["vip", "new-customer", "lead"]
     notes = Column(Text, nullable=True)
@@ -1199,6 +1203,7 @@ class WhatsAppBusinessProfile(Base):
     # {"monday": {"open": "08:00", "close": "18:00"}, "tuesday": {...}, ...}
     business_hours = Column(JSON, nullable=True)
     timezone = Column(String, default="Africa/Nairobi")
+    inbox_settings = Column(JSON, nullable=True)  # round_robin, sla_minutes, etc.
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

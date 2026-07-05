@@ -1,4 +1,5 @@
 import logging
+import json
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -7,7 +8,7 @@ from jose import JWTError, jwt
 from ..database import get_db
 from ..models import User
 from .auth_router import SECRET_KEY, ALGORITHM
-from ..services.websocket_manager import ConnectionManager
+from ..services.websocket_manager import connection_manager
 
 logger = logging.getLogger(__name__)
 
@@ -54,21 +55,47 @@ async def websocket_endpoint(
         return
 
     # Authenticated successfully, add to ConnectionManager
-    await ConnectionManager.connect(websocket, user.id)
+    await connection_manager.connect(websocket, user.id)
 
     try:
         while True:
-            # We don't strictly expect the client to send data, 
-            # but we need to receive to keep the connection alive
-            # and detect client disconnects.
             data = await websocket.receive_text()
-            
-            # Simple ping/pong to keep connection alive if load balancers drop idle conns
+
             if data == "ping":
                 await websocket.send_text("pong")
-                
+                continue
+
+            try:
+                payload = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+
+            if payload.get("type") == "whatsapp_presence":
+                contact_id = payload.get("contact_id")
+                presence = await connection_manager.set_contact_presence(
+                    user.id,
+                    user.name or user.email,
+                    str(contact_id) if contact_id else None,
+                )
+                await connection_manager.push_to_user(
+                    user.id,
+                    "whatsapp_inbox_presence",
+                    presence,
+                )
+                if contact_id:
+                    from ..services.whatsapp_inbox_events import emit_to_org_members
+
+                    await emit_to_org_members(
+                        user.id,
+                        "whatsapp_inbox_presence",
+                        presence,
+                        exclude_user_id=user.id,
+                        db=db,
+                    )
+
     except WebSocketDisconnect:
-        await ConnectionManager.disconnect(websocket, user.id)
+        await connection_manager.disconnect(websocket, user.id)
+        await connection_manager.set_contact_presence(user.id, user.name or user.email, None)
     except Exception as e:
         logger.error(f"WebSocket error for user {user.id}: {e}")
-        await ConnectionManager.disconnect(websocket, user.id)
+        await connection_manager.disconnect(websocket, user.id)

@@ -3,7 +3,7 @@ WhatsApp Contacts & Messages API.
 CRUD operations for contacts and conversation history.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, or_
@@ -121,6 +121,9 @@ class ContactResponse(BaseModel):
     last_message_at: Optional[datetime]
     last_message_preview: Optional[str] = None
     is_blocked: bool
+    opted_out: bool = False
+    snoozed_until: Optional[datetime] = None
+    first_inbound_at: Optional[datetime] = None
     created_at: datetime
 
     class Config:
@@ -289,6 +292,15 @@ async def list_contacts(
             query = query.filter(WhatsAppContact.unread_count > 0)
         else:
             query = query.filter(WhatsAppContact.unread_count == 0)
+
+    # Hide snoozed conversations until snooze expires
+    now = datetime.utcnow()
+    query = query.filter(
+        or_(
+            WhatsAppContact.snoozed_until.is_(None),
+            WhatsAppContact.snoozed_until <= now,
+        )
+    )
     
     # Order: starred first, then by last message (most recent first)
     query = query.order_by(
@@ -386,6 +398,9 @@ async def create_contact(
         "success": True,
         "data": _contact_to_response(contact),
     }
+
+
+@router.put("/contacts/{contact_id}")
 async def update_contact(
     contact_id: uuid.UUID,
     data: ContactUpdate,
@@ -765,14 +780,163 @@ async def send_message(
     # Update contact
     contact.last_message_at = datetime.utcnow()
     contact.message_count = (contact.message_count or 0) + 1
+    contact.first_inbound_at = None
     
     await db.commit()
     await db.refresh(message)
+
+    try:
+        from ..services.whatsapp_inbox_events import emit_whatsapp_inbox_event
+        await emit_whatsapp_inbox_event(
+            user.id,
+            "whatsapp_new_message",
+            {
+                "contact_id": str(contact.id),
+                "message_id": str(message.id),
+                "direction": "outgoing",
+            },
+        )
+        await emit_whatsapp_inbox_event(
+            user.id,
+            "whatsapp_contact_updated",
+            {"contact_id": str(contact.id)},
+        )
+    except Exception:
+        pass
 
     return {
         "success": True,
         "data": MessageResponse.model_validate(message)
     }
+
+
+@router.post("/contacts/{contact_id}/messages/template")
+async def send_template_message_to_contact(
+    contact_id: uuid.UUID,
+    body: dict,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send an approved WhatsApp template (outside 24h window)."""
+    check_connection_access(user, "whatsapp_business")
+    template_name = body.get("template_name")
+    language_code = body.get("language_code", "en")
+    components = body.get("components")
+    if not template_name:
+        raise HTTPException(status_code=400, detail="template_name is required")
+
+    result = await db.execute(
+        select(WhatsAppContact).filter(
+            WhatsAppContact.id == contact_id,
+            WhatsAppContact.user_id == user.id,
+        )
+    )
+    contact = result.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    conn_result = await db.execute(
+        select(Connection).filter(
+            Connection.user_id == user.id,
+            Connection.platform == "whatsapp",
+            Connection.status == "active",
+        )
+    )
+    connection = conn_result.scalar_one_or_none()
+    if not connection:
+        raise HTTPException(status_code=400, detail="WhatsApp not connected")
+
+    send_result = await whatsapp_service.send_template_message(
+        to_number=contact.phone_number,
+        template_name=template_name,
+        language_code=language_code,
+        components=components,
+        config=connection.config or {},
+    )
+    if not send_result.get("success"):
+        raise HTTPException(status_code=500, detail=send_result.get("error", "Template send failed"))
+
+    message = WhatsAppMessage(
+        user_id=user.id,
+        contact_id=contact.id,
+        direction=WhatsAppMessageDirection.OUTGOING,
+        message_type="template",
+        content=f"[Template: {template_name}]",
+        whatsapp_message_id=send_result.get("message_id"),
+        status=WhatsAppMessageStatus.SENT,
+    )
+    db.add(message)
+    contact.last_message_at = datetime.utcnow()
+    contact.message_count = (contact.message_count or 0) + 1
+    await db.commit()
+    await db.refresh(message)
+    return {"success": True, "data": MessageResponse.model_validate(message)}
+
+
+@router.post("/contacts/{contact_id}/media-upload")
+async def upload_and_send_chat_media(
+    contact_id: uuid.UUID,
+    file: UploadFile = File(...),
+    caption: Optional[str] = Form(None),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload file to Meta and send as WhatsApp media message."""
+    check_connection_access(user, "whatsapp_business")
+    result = await db.execute(
+        select(WhatsAppContact).filter(
+            WhatsAppContact.id == contact_id,
+            WhatsAppContact.user_id == user.id,
+        )
+    )
+    contact = result.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    conn_result = await db.execute(
+        select(Connection).filter(
+            Connection.user_id == user.id,
+            Connection.platform == "whatsapp",
+            Connection.status == "active",
+        )
+    )
+    connection = conn_result.scalar_one_or_none()
+    if not connection:
+        raise HTTPException(status_code=400, detail="WhatsApp not connected")
+
+    content = await file.read()
+    mime = (file.content_type or "application/octet-stream").lower()
+    filename = file.filename or "file"
+    config = connection.config or {}
+    msg_type = "image" if mime.startswith("image/") else "document"
+
+    send_result = await whatsapp_service.upload_and_send_document(
+        contact.phone_number,
+        content,
+        filename,
+        mime_type=mime,
+        caption=caption,
+        config=config,
+    )
+    if not send_result.get("success"):
+        raise HTTPException(status_code=500, detail=send_result.get("error", "Send failed"))
+
+    message = WhatsAppMessage(
+        user_id=user.id,
+        contact_id=contact.id,
+        direction=WhatsAppMessageDirection.OUTGOING,
+        message_type=msg_type,
+        content=caption or filename,
+        status=WhatsAppMessageStatus.SENT,
+        whatsapp_message_id=send_result.get("message_id"),
+    )
+    db.add(message)
+    contact.last_message_at = datetime.utcnow()
+    contact.message_count = (contact.message_count or 0) + 1
+    await db.commit()
+    await db.refresh(message)
+    return {"success": True, "data": MessageResponse.model_validate(message)}
+
 
 @router.post("/contacts/{contact_id}/media")
 async def send_media_message(
@@ -795,6 +959,8 @@ async def send_media_message(
     contact = result.scalar_one_or_none()
     if not contact:
         raise HTTPException(status_code=404, detail="Contact not found")
+    if contact.is_blocked:
+        raise HTTPException(status_code=400, detail="Cannot send message to blocked contact")
         
     result = await db.execute(
         select(Connection).filter(
@@ -880,6 +1046,206 @@ async def release_agent_for_contact(
         "session_key": sk,
         "message": "AI agent resumed for this contact. Customer can continue ordering via chat.",
     }
+
+
+class SnoozeRequest(BaseModel):
+    until: datetime
+
+
+@router.post("/contacts/{contact_id}/snooze")
+async def snooze_contact(
+    contact_id: uuid.UUID,
+    data: SnoozeRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Snooze a conversation until a given time."""
+    check_connection_access(user, "whatsapp_business")
+    result = await db.execute(
+        select(WhatsAppContact).filter(
+            WhatsAppContact.id == contact_id,
+            WhatsAppContact.user_id == user.id,
+        )
+    )
+    contact = result.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    contact.snoozed_until = data.until
+    await db.commit()
+    await db.refresh(contact)
+    return {"success": True, "data": _contact_to_response(contact)}
+
+
+@router.delete("/contacts/{contact_id}/snooze")
+async def unsnooze_contact(
+    contact_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    check_connection_access(user, "whatsapp_business")
+    result = await db.execute(
+        select(WhatsAppContact).filter(
+            WhatsAppContact.id == contact_id,
+            WhatsAppContact.user_id == user.id,
+        )
+    )
+    contact = result.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    contact.snoozed_until = None
+    await db.commit()
+    await db.refresh(contact)
+    return {"success": True, "data": _contact_to_response(contact)}
+
+
+@router.get("/contacts/{contact_id}/commerce-context")
+async def get_commerce_context(
+    contact_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cart, order, and payment context for inbox sidebar."""
+    check_connection_access(user, "whatsapp_business")
+    result = await db.execute(
+        select(WhatsAppContact).filter(
+            WhatsAppContact.id == contact_id,
+            WhatsAppContact.user_id == user.id,
+        )
+    )
+    contact = result.scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    from ..services.whatsapp_commerce_context import get_contact_commerce_context
+
+    ctx = await get_contact_commerce_context(db, user_id=user.id, contact=contact)
+    return {"success": True, "data": ctx}
+
+
+class InboxSettingsUpdate(BaseModel):
+    round_robin_enabled: Optional[bool] = None
+    round_robin_agent_ids: Optional[List[str]] = None
+    sla_first_response_minutes: Optional[int] = None
+
+
+@router.get("/inbox-settings")
+async def get_whatsapp_inbox_settings(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    check_connection_access(user, "whatsapp_business")
+    from ..services.whatsapp_inbox_settings import get_inbox_settings
+
+    return {"success": True, "data": await get_inbox_settings(db, user.id)}
+
+
+@router.put("/inbox-settings")
+async def update_whatsapp_inbox_settings(
+    data: InboxSettingsUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    check_connection_access(user, "whatsapp_business")
+    from ..services.whatsapp_inbox_settings import get_inbox_settings, merge_inbox_settings
+
+    result = await db.execute(
+        select(WhatsAppBusinessProfile).where(WhatsAppBusinessProfile.user_id == user.id)
+    )
+    profile = result.scalar_one_or_none()
+    if not profile:
+        profile = WhatsAppBusinessProfile(user_id=user.id)
+        db.add(profile)
+
+    current = merge_inbox_settings(profile.inbox_settings)
+    if data.round_robin_enabled is not None:
+        current["round_robin_enabled"] = data.round_robin_enabled
+    if data.round_robin_agent_ids is not None:
+        current["round_robin_agent_ids"] = data.round_robin_agent_ids
+    if data.sla_first_response_minutes is not None:
+        current["sla_first_response_minutes"] = data.sla_first_response_minutes
+    profile.inbox_settings = current
+    await db.commit()
+    return {"success": True, "data": current}
+
+
+@router.get("/contacts/export")
+async def export_contacts_csv(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Export contacts as CSV."""
+    check_connection_access(user, "whatsapp_business")
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+
+    result = await db.execute(
+        select(WhatsAppContact).where(WhatsAppContact.user_id == user.id)
+    )
+    contacts = result.scalars().all()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["phone_number", "name", "profile_name", "tags", "status", "notes"])
+    for c in contacts:
+        writer.writerow([
+            c.phone_number,
+            c.name or "",
+            c.profile_name or "",
+            ",".join(c.tags or []),
+            c.status or "open",
+            (c.notes or "").replace("\n", " "),
+        ])
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=whatsapp-contacts.csv"},
+    )
+
+
+@router.post("/contacts/import")
+async def import_contacts_csv(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Import contacts from CSV (phone_number, name, tags)."""
+    check_connection_access(user, "whatsapp_business")
+    import csv
+    import io
+
+    content = (await file.read()).decode("utf-8-sig", errors="replace")
+    reader = csv.DictReader(io.StringIO(content))
+    created = 0
+    skipped = 0
+    for row in reader:
+        phone = (row.get("phone_number") or row.get("phone") or "").strip().replace("+", "").replace(" ", "")
+        if not phone:
+            skipped += 1
+            continue
+        existing = await db.execute(
+            select(WhatsAppContact).where(
+                WhatsAppContact.user_id == user.id,
+                WhatsAppContact.phone_number == phone,
+            )
+        )
+        if existing.scalar_one_or_none():
+            skipped += 1
+            continue
+        tags_raw = row.get("tags") or ""
+        tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
+        contact = WhatsAppContact(
+            user_id=user.id,
+            phone_number=phone,
+            name=row.get("name") or None,
+            tags=tags,
+            notes=row.get("notes") or None,
+            message_count=0,
+        )
+        db.add(contact)
+        created += 1
+    await db.commit()
+    return {"success": True, "created": created, "skipped": skipped}
 
 
 class OrderStatusUpdate(BaseModel):
@@ -1306,12 +1672,15 @@ async def get_whatsapp_analytics(
     daily_messages = result.fetchall()
     
     # Format daily data
+    def _dir_key(d) -> str:
+        return d.value if hasattr(d, "value") else str(d)
+
     message_trends = {}
     for row in daily_messages:
         day_str = str(row.msg_date)
         if day_str not in message_trends:
             message_trends[day_str] = {"incoming": 0, "outgoing": 0}
-        message_trends[day_str][row.direction.value] = row.count
+        message_trends[day_str][_dir_key(row.direction)] = row.count
     
     # Total incoming vs outgoing
     result = await db.execute(
@@ -1322,7 +1691,7 @@ async def get_whatsapp_analytics(
             WhatsAppMessage.user_id == user.id
         ).group_by(WhatsAppMessage.direction)
     )
-    direction_counts = {row.direction.value: row.count for row in result.fetchall()}
+    direction_counts = {_dir_key(row.direction): row.count for row in result.fetchall()}
     
     # Auto-reply stats
     result = await db.execute(
@@ -1598,87 +1967,3 @@ async def get_team_members(
         })
     
     return {"success": True, "data": members}
-
-
-# ============================================================================
-# Media Messages API
-# ============================================================================
-
-@router.post("/contacts/{contact_id}/media")
-async def send_media_message(
-    contact_id: uuid.UUID,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-    media_url: str = Query(..., description="URL of media to send"),
-    media_type: str = Query("image", description="Type: image, document, video, audio"),
-    caption: Optional[str] = Query(None, description="Optional caption"),
-):
-    """Send a media message (image, document, etc.) to a contact."""
-    check_connection_access(user, "whatsapp_business")
-    
-    # Verify contact belongs to user
-    result = await db.execute(
-        select(WhatsAppContact).filter(
-            WhatsAppContact.id == contact_id,
-            WhatsAppContact.user_id == user.id
-        )
-    )
-    contact = result.scalar_one_or_none()
-    
-    if not contact:
-        raise HTTPException(status_code=404, detail="Contact not found")
-    
-    if contact.is_blocked:
-        raise HTTPException(status_code=400, detail="Cannot send message to blocked contact")
-    
-    # Get connection
-    result = await db.execute(
-        select(Connection).filter(
-            Connection.user_id == user.id,
-            Connection.platform == "whatsapp",
-            Connection.status == "active"
-        )
-    )
-    connection = result.scalar_one_or_none()
-    
-    if not connection:
-        raise HTTPException(status_code=400, detail="WhatsApp not connected")
-    
-    config = connection.config or {}
-    send_result = await whatsapp_service.send_media_message(
-        to_number=contact.phone_number,
-        media_url=media_url,
-        media_type=media_type,
-        caption=caption,
-        config=config
-    )
-    
-    if not send_result.get("success"):
-        raise HTTPException(
-            status_code=500,
-            detail=send_result.get("error", "Failed to send media message")
-        )
-    
-    # Save outgoing message
-    message = WhatsAppMessage(
-        user_id=user.id,
-        contact_id=contact.id,
-        direction=WhatsAppMessageDirection.OUTGOING,
-        message_type=media_type,
-        content=caption,
-        media_url=media_url,
-        whatsapp_message_id=send_result.get("message_id"),
-        status=WhatsAppMessageStatus.SENT
-    )
-    db.add(message)
-    
-    contact.last_message_at = datetime.utcnow()
-    contact.message_count = (contact.message_count or 0) + 1
-    
-    await db.commit()
-    await db.refresh(message)
-    
-    return {
-        "success": True,
-        "data": MessageResponse.model_validate(message)
-    }

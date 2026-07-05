@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from typing import Dict, List, Set, Any
+from typing import Dict, Set, Any, Optional
 import uuid
 from fastapi import WebSocket
 
@@ -14,7 +14,9 @@ class ConnectionManager:
     """
     def __init__(self):
         # Maps user_id -> set of active WebSockets
-        self.active_connections: Dict[int, Set[WebSocket]] = {}
+        self.active_connections: Dict[uuid.UUID, Set[WebSocket]] = {}
+        # contact_id -> set of {user_id, user_name}
+        self.contact_presence: Dict[str, Dict[uuid.UUID, str]] = {}
         self.lock = asyncio.Lock()
 
     async def connect(self, websocket: WebSocket, user_id: uuid.UUID):
@@ -65,6 +67,43 @@ class ConnectionManager:
                         self.active_connections[user_id].discard(ws)
                 if user_id in self.active_connections and not self.active_connections[user_id]:
                     del self.active_connections[user_id]
+
+    async def set_contact_presence(
+        self,
+        user_id: uuid.UUID,
+        user_name: str,
+        contact_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """Track which contact a user is viewing (collision detection)."""
+        async with self.lock:
+            # Remove user from all contacts first
+            for cid, viewers in list(self.contact_presence.items()):
+                viewers.pop(user_id, None)
+                if not viewers:
+                    del self.contact_presence[cid]
+
+            if contact_id:
+                if contact_id not in self.contact_presence:
+                    self.contact_presence[contact_id] = {}
+                self.contact_presence[contact_id][user_id] = user_name
+
+            if contact_id and contact_id in self.contact_presence:
+                return {
+                    "contact_id": contact_id,
+                    "viewers": [
+                        {"user_id": str(uid), "name": name}
+                        for uid, name in self.contact_presence[contact_id].items()
+                    ],
+                }
+            return {"contact_id": contact_id, "viewers": []}
+
+    def get_contact_viewers(self, contact_id: str, exclude_user_id: Optional[uuid.UUID] = None) -> list:
+        viewers = self.contact_presence.get(contact_id, {})
+        return [
+            {"user_id": str(uid), "name": name}
+            for uid, name in viewers.items()
+            if exclude_user_id is None or uid != exclude_user_id
+        ]
 
 # Singleton instance
 connection_manager = ConnectionManager()
