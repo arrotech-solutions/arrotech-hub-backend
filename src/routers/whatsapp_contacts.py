@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, or_
 from sqlalchemy.orm import selectinload
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Union, Any
 import uuid
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
@@ -275,10 +275,12 @@ class MessageResponse(BaseModel):
         from_attributes = True
 
 
-def _message_to_response(msg: WhatsAppMessage) -> MessageResponse:
+def _message_to_response(msg: Union[WhatsAppMessage, Dict[str, Any]]) -> MessageResponse:
     data = MessageResponse.model_validate(msg)
-    if msg.media_url and msg.media_url.isdigit():
-        return data.model_copy(update={"media_url": media_proxy_url(msg.id)})
+    media_url = msg.get("media_url") if isinstance(msg, dict) else msg.media_url
+    msg_id = msg.get("id") if isinstance(msg, dict) else msg.id
+    if media_url and str(media_url).isdigit():
+        return data.model_copy(update={"media_url": media_proxy_url(msg_id)})
     return data
 
 
