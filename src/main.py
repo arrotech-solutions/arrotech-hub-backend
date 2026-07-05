@@ -191,7 +191,9 @@ from starlette.responses import JSONResponse
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """
     Simple in-memory sliding-window rate limiter.
-    Auth endpoints: 5 requests/minute  |  General API: 60 requests/minute
+    Auth endpoints: 10 requests/minute
+    Authenticated API: 600 requests/minute (dashboards burst many parallel calls)
+    Unauthenticated API: 60 requests/minute
     """
     def __init__(self, app):
         super().__init__(app)
@@ -207,16 +209,26 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if os.getenv("TESTING") or os.getenv("ENVIRONMENT") == "testing":
             return await call_next(request)
 
-        client_ip = request.client.host if request.client else "unknown"
         path = request.url.path
+
+        # Health checks and WebSocket upgrades are never rate-limited
+        if path == "/health" or path.startswith("/ws/"):
+            return await call_next(request)
+
+        client_ip = request.client.host if request.client else "unknown"
 
         # Choose limits based on endpoint
         if path in self._auth_paths:
             key = f"auth:{client_ip}"
-            limit, window = 5, 60.0
+            limit, window = 10, 60.0
         elif path.startswith("/auth/") or path.startswith("/api/"):
-            key = f"api:{client_ip}"
-            limit, window = 60, 60.0
+            auth_header = request.headers.get("authorization", "")
+            if auth_header.lower().startswith("bearer "):
+                key = f"api-auth:{client_ip}"
+                limit, window = 600, 60.0
+            else:
+                key = f"api:{client_ip}"
+                limit, window = 60, 60.0
         else:
             return await call_next(request)
 
