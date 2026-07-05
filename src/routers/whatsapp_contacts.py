@@ -252,6 +252,29 @@ async def _fetch_last_message_previews(
     return previews
 
 
+class MessageCreate(BaseModel):
+    content: str
+    message_type: str = "text"
+    is_internal_note: bool = False
+
+class MessageResponse(BaseModel):
+    id: uuid.UUID
+    direction: str
+    message_type: str
+    content: Optional[str]
+    media_url: Optional[str]
+    status: str
+    is_auto_reply: bool
+    is_agent: bool = False
+    is_internal_note: bool = False
+    created_at: datetime
+    delivered_at: Optional[datetime]
+    read_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
 def _message_to_response(msg: WhatsAppMessage) -> MessageResponse:
     data = MessageResponse.model_validate(msg)
     if msg.media_url and msg.media_url.isdigit():
@@ -297,27 +320,6 @@ async def _send_csat_prompt(
 def _record_csat_score(contact: WhatsAppContact, score: int) -> None:
     record_csat_score(contact, score)
 
-class MessageCreate(BaseModel):
-    content: str
-    message_type: str = "text"
-    is_internal_note: bool = False
-
-class MessageResponse(BaseModel):
-    id: uuid.UUID
-    direction: str
-    message_type: str
-    content: Optional[str]
-    media_url: Optional[str]
-    status: str
-    is_auto_reply: bool
-    is_agent: bool = False
-    is_internal_note: bool = False
-    created_at: datetime
-    delivered_at: Optional[datetime]
-    read_at: Optional[datetime]
-
-    class Config:
-        from_attributes = True
 
 class AutoReplyCreate(BaseModel):
     name: str
