@@ -649,7 +649,7 @@ def main():
             port=port,
             reload=False if is_prod else settings.RELOAD,
             log_level="info" if is_prod else settings.LOG_LEVEL.lower(),
-            workers=int(os.getenv("WEB_CONCURRENCY", 2))
+            workers=int(os.getenv("WEB_CONCURRENCY", "1"))
         )
 
 

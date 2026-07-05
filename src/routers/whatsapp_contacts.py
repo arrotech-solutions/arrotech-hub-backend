@@ -786,20 +786,18 @@ async def send_message(
     await db.refresh(message)
 
     try:
-        from ..services.whatsapp_inbox_events import emit_whatsapp_inbox_event
-        await emit_whatsapp_inbox_event(
-            user.id,
-            "whatsapp_new_message",
-            {
-                "contact_id": str(contact.id),
-                "message_id": str(message.id),
-                "direction": "outgoing",
-            },
-        )
-        await emit_whatsapp_inbox_event(
+        from ..services.whatsapp_inbox_events import emit_to_org_members
+        payload = {
+            "contact_id": str(contact.id),
+            "message_id": str(message.id),
+            "direction": "outgoing",
+        }
+        await emit_to_org_members(user.id, "whatsapp_new_message", payload, db=db)
+        await emit_to_org_members(
             user.id,
             "whatsapp_contact_updated",
             {"contact_id": str(contact.id)},
+            db=db,
         )
     except Exception:
         pass

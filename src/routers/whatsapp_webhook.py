@@ -551,20 +551,23 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
             logger.info(f"[WHATSAPP WEBHOOK] Saved message {msg_id} from {from_number}")
 
             try:
-                from ..services.whatsapp_inbox_events import emit_whatsapp_inbox_event
-                await emit_whatsapp_inbox_event(
+                from ..services.whatsapp_inbox_events import emit_to_org_members
+                payload = {
+                    "contact_id": str(contact.id),
+                    "message_id": str(message.id),
+                    "direction": "incoming",
+                }
+                await emit_to_org_members(
                     owner_user_id,
                     "whatsapp_new_message",
-                    {
-                        "contact_id": str(contact.id),
-                        "message_id": str(message.id),
-                        "direction": "incoming",
-                    },
+                    payload,
+                    db=db,
                 )
-                await emit_whatsapp_inbox_event(
+                await emit_to_org_members(
                     owner_user_id,
                     "whatsapp_contact_updated",
                     {"contact_id": str(contact.id)},
+                    db=db,
                 )
             except Exception:
                 pass
