@@ -803,7 +803,7 @@ class ConversationalAgentService:
             if session_key:
                 try:
                     await context_manager.update_session_metadata(
-                        session_key, {"catalog_word": catalog_word}
+                        session_key, {"catalog_word": catalog_word, "order_type": order_type}
                     )
                 except Exception:
                     pass
@@ -917,7 +917,11 @@ class ConversationalAgentService:
                 if agent_intelligence.is_release_bot_command(user_message):
                     lang = context_manager.get_preferred_language(session) if session else "en"
                     await context_manager.clear_human_handoff(session_key)
-                    reply = agent_intelligence.get_release_bot_message(lang)
+                    if order_type == "rent_collection":
+                        from .whatsapp_rent_helpers import rent_release_bot_message
+                        reply = rent_release_bot_message(lang, business_name)
+                    else:
+                        reply = agent_intelligence.get_release_bot_message(lang)
                     return {
                         "response_text": reply,
                         "image_urls": [],
@@ -929,7 +933,8 @@ class ConversationalAgentService:
                         "escalation_triggered": False,
                         "escalation_notification": "",
                         "human_handoff": False,
-                        "send_agent_mode_buttons": "assistant",
+                        "send_agent_mode_buttons": None if order_type == "rent_collection" else "assistant",
+                        "send_rent_buttons": "assistant" if order_type == "rent_collection" else None,
                         "actions_taken": [{"tool": "handoff", "result_summary": "released_to_bot"}],
                     }
 
@@ -995,8 +1000,29 @@ class ConversationalAgentService:
                 except Exception as e:
                     logger.warning(f"[CONV_AGENT] mark_order_confirmed failed: {e}")
 
-            # ── Fast path: cart commands (no LLM) — reply sent via workflow step 2 ──
-            if session_key:
+            # ── Rent collection: session reset (no commerce cart UI) ──
+            if order_type == "rent_collection" and session_key:
+                if context_manager.is_reset_command(user_message):
+                    try:
+                        session = await context_manager.get_session_by_key(session_key)
+                        if session:
+                            await context_manager.clear_session(session)
+                            session.metadata["welcome_sent"] = True
+                            session.metadata["order_type"] = "rent_collection"
+                            await context_manager.save_session(session)
+                    except Exception as e:
+                        logger.warning(f"[CONV_AGENT] rent reset failed: {e}")
+                    from .whatsapp_rent_helpers import rent_reset_reply
+                    reply = rent_reset_reply(business_name, preferred_language)
+                    return await self._cart_fast_path_result(
+                        session_key,
+                        reply,
+                        actions_taken=[{"tool": "session", "result_summary": "reset"}],
+                        send_rent_buttons="assistant",
+                    )
+
+            # ── Fast path: cart commands (no LLM) — commerce agents only ──
+            if order_type != "rent_collection" and session_key:
                 cart_cmd = match_cart_command(user_message)
                 # YES / "proceed with the order" confirms an existing summary — don't restart checkout
                 if cart_cmd == "checkout":
@@ -1127,7 +1153,7 @@ class ConversationalAgentService:
                     lang = context_manager.get_preferred_language(session)
                     waiting_msg = agent_intelligence.get_handoff_waiting_message(lang)
                     await self._save_to_ccm(session_key, "assistant", waiting_msg)
-                    return {
+                    handoff_payload = {
                         "response_text": waiting_msg,
                         "image_urls": [],
                         "cards": [],
@@ -1139,9 +1165,14 @@ class ConversationalAgentService:
                         "escalation_notification": "",
                         "human_handoff": True,
                         "skip_customer_reply": False,
-                        "send_agent_mode_buttons": "staff",
                         "actions_taken": [{"tool": "handoff", "result_summary": "human_active"}],
                     }
+                    if order_type == "rent_collection":
+                        handoff_payload["send_rent_buttons"] = "staff"
+                        handoff_payload["send_agent_mode_buttons"] = None
+                    else:
+                        handoff_payload["send_agent_mode_buttons"] = "staff"
+                    return handoff_payload
 
             # ── Awaiting alternate M-Pesa number (before checkout — phone reply is payment-only) ──
             if session_key:
@@ -1917,7 +1948,8 @@ class ConversationalAgentService:
                             "escalation_triggered": True,
                             "escalation_notification": escalation_notification,
                             "human_handoff": True,
-                            "send_agent_mode_buttons": "staff",
+                            "send_rent_buttons": "staff",
+                            "send_agent_mode_buttons": None,
                             "actions_taken": [
                                 {"tool": "escalate_to_human", "result_summary": f"auto:{esc_reason}"}
                             ],
@@ -2457,8 +2489,9 @@ class ConversationalAgentService:
                 "escalation_notification": escalation_notification,
                 "human_handoff": human_handoff,
                 "actions_taken": actions_taken,
-                "send_cart_buttons": send_cart_buttons_after_turn and not order_created,
-                "send_agent_mode_buttons": send_agent_mode_buttons,
+                "send_cart_buttons": send_cart_buttons_after_turn and not order_created and order_type != "rent_collection",
+                "send_agent_mode_buttons": send_agent_mode_buttons if order_type != "rent_collection" else None,
+                "send_rent_buttons": send_agent_mode_buttons if order_type == "rent_collection" and send_agent_mode_buttons else None,
             }
             if order_type == "rent_collection":
                 return self._with_rent_landlord_fields(
@@ -4085,6 +4118,7 @@ class ConversationalAgentService:
         actions_taken: Optional[List[Dict[str, Any]]] = None,
         send_cart_buttons: bool = False,
         send_checkout_pay_button: bool = False,
+        send_rent_buttons: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Cart command result — text goes out via workflow whatsapp_send_message step
@@ -4107,6 +4141,7 @@ class ConversationalAgentService:
             "send_cart_buttons": send_cart_buttons,
             "send_checkout_pay_button": send_checkout_pay_button,
             "send_agent_mode_buttons": None,
+            "send_rent_buttons": send_rent_buttons,
         }
 
     async def _send_cart_action_buttons(
@@ -4211,6 +4246,67 @@ class ConversationalAgentService:
         except Exception as e:
             logger.warning(f"[CONV_AGENT] cart action buttons failed: {e}", exc_info=True)
 
+    async def _send_rent_quick_buttons(
+        self,
+        session_key: str,
+        user: User,
+        db: AsyncSession,
+        *,
+        handoff_active: bool,
+        to_number: str = "",
+    ) -> None:
+        """Send rent-specific quick-reply buttons (balance / pay / talk to us)."""
+        if not session_key or not session_key.startswith("ccm:whatsapp:"):
+            return
+        try:
+            parts = session_key.split(":")
+            recipient = parts[3] if len(parts) >= 4 else ""
+            if not recipient and to_number:
+                recipient = str(to_number).strip().replace(" ", "")
+            if not recipient:
+                return
+
+            from sqlalchemy import select
+            from ..models import Connection, ConnectionStatus
+            from .whatsapp_service import WhatsAppService
+            from .whatsapp_rent_helpers import rent_quick_buttons, rent_quick_button_body
+
+            result = await db.execute(
+                select(Connection).filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == "whatsapp",
+                    Connection.status == ConnectionStatus.ACTIVE,
+                )
+            )
+            connection = result.scalar_one_or_none()
+            if not connection:
+                return
+            config = connection.config or {}
+            if not config.get("access_token") or not config.get("phone_number_id"):
+                return
+
+            wa = WhatsAppService()
+            body = rent_quick_button_body(handoff_active)
+            btn_result = await wa.send_quick_reply_buttons(
+                to_number=recipient,
+                body_text=body,
+                buttons=rent_quick_buttons(handoff_active),
+                config={
+                    "access_token": config.get("access_token"),
+                    "phone_number_id": config.get("phone_number_id"),
+                },
+            )
+            if not btn_result.get("success"):
+                logger.warning(
+                    f"[CONV_AGENT] rent quick buttons failed: {btn_result.get('error')}"
+                )
+            else:
+                await self._persist_agent_whatsapp_outbound(
+                    db, user, recipient, body, message_type="interactive"
+                )
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] rent quick buttons failed: {e}", exc_info=True)
+
     async def _send_agent_mode_buttons(
         self,
         session_key: str,
@@ -4257,6 +4353,15 @@ class ConversationalAgentService:
             session = await context_manager.get_session_by_key(session_key)
             if session and session.metadata:
                 catalog_word = session.metadata.get("catalog_word", "menu")
+                if session.metadata.get("order_type") == "rent_collection":
+                    await self._send_rent_quick_buttons(
+                        session_key,
+                        user,
+                        db,
+                        handoff_active=handoff_active,
+                        to_number=to_number,
+                    )
+                    return
 
             wa = WhatsAppService()
             btn_result = await wa.send_quick_reply_buttons(

@@ -350,6 +350,20 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                         content = "/bot"
                         msg_type = "text"
 
+                    # ── Rent collection quick-reply buttons ──
+                    elif btn_id.startswith("rent:"):
+                        rent_action = btn_id.split(":", 1)[1] if ":" in btn_id else ""
+                        rent_messages = {
+                            "balance": "What's my rent balance?",
+                            "pay": "I'd like to pay my rent",
+                            "arrears": "What are my rent arrears?",
+                        }
+                        content = rent_messages.get(
+                            rent_action,
+                            title or "What's my rent balance?",
+                        )
+                        msg_type = "text"
+
                     # ── Welcome / menu quick-reply buttons ──
                     elif btn_id.startswith("menu:"):
                         menu_action = btn_id.split(":", 1)[1] if ":" in btn_id else ""

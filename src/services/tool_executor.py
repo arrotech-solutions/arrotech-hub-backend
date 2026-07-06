@@ -3699,6 +3699,41 @@ class ToolExecutor:
                             f"(to_number={to_number!r})"
                         )
 
+                # Rent collection: balance / pay / talk quick-reply buttons
+                rent_buttons = arguments.get("send_rent_buttons")
+                if not rent_buttons and isinstance(arguments.get("step_1"), dict):
+                    rent_buttons = arguments["step_1"].get("send_rent_buttons")
+                if isinstance(rent_buttons, str) and rent_buttons.startswith("{{"):
+                    rent_buttons = None
+                if rent_buttons and text_result and text_result.get("success"):
+                    session_key = (arguments.get("session_key") or "").strip()
+                    if session_key.startswith("{{"):
+                        session_key = ""
+                    if not session_key and to_number:
+                        phone_clean = str(to_number).strip().replace(" ", "")
+                        session_key = f"ccm:whatsapp:{user.id}:{phone_clean}"
+                    if session_key:
+                        try:
+                            handoff_active = str(rent_buttons).lower() in (
+                                "staff",
+                                "human",
+                                "handoff",
+                                "human_handoff",
+                            )
+                            agent = ConversationalAgentService()
+                            await agent._send_rent_quick_buttons(
+                                session_key,
+                                user,
+                                db,
+                                handoff_active=handoff_active,
+                                to_number=to_number,
+                            )
+                        except Exception as btn_err:
+                            logger.warning(
+                                f"[WHATSAPP] Rent quick buttons failed: {btn_err}",
+                                exc_info=True,
+                            )
+
                 # Staff ↔ AI toggle buttons after handoff / release messages
                 agent_mode = arguments.get("send_agent_mode_buttons")
                 if not agent_mode and isinstance(arguments.get("step_1"), dict):
