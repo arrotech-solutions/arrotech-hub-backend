@@ -1191,18 +1191,20 @@ class WhatsAppService:
             return {"success": False, "error": str(e)}
 
     def _format_phone_number(self, phone_number: str) -> str:
-        """Format phone number for WhatsApp API."""
-        # Remove common prefixes and format
-        cleaned = phone_number.replace(
-            "+", "").replace("-", "").replace(" ", "")
+        """Format phone number for WhatsApp API (E.164 without +)."""
+        cleaned = phone_number.replace("+", "").replace("-", "").replace(" ", "")
 
-        # For international numbers, keep the country code
-        # WhatsApp API expects numbers without + but with country code
-        # Examples: +254711371265 -> 254711371265, +1234567890 -> 1234567890
-
-        # If it's a 10-digit number without country code, assume US
-        if len(cleaned) == 10:
-            cleaned = "1" + cleaned  # Assume US number
+        # Kenyan mobiles: 07XXXXXXXX or 7XXXXXXXX -> 2547XXXXXXXX
+        if cleaned.startswith("0") and len(cleaned) == 10:
+            cleaned = "254" + cleaned[1:]
+        elif len(cleaned) == 9 and cleaned[0] in ("7", "1"):
+            cleaned = "254" + cleaned
+        elif len(cleaned) == 10 and cleaned[0] in ("7", "1"):
+            # 10-digit KE without leading 0
+            cleaned = "254" + cleaned
+        elif len(cleaned) == 10:
+            # US fallback only when not a Kenyan-style 10-digit number
+            cleaned = "1" + cleaned
 
         return cleaned
 

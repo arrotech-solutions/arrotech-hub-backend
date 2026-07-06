@@ -63,11 +63,23 @@ def _normalize_phone(p: str) -> str:
 
 
 def _rows_to_tenants(values: List[List[Any]]) -> List[Dict[str, Any]]:
-    if not values or len(values) < 2:
+    if not values:
         return []
-    headers = [str(h or "").strip().lower() for h in values[0]]
+
+    first_row = [str(h or "").strip().lower() for h in values[0]]
+    data_start = 1
+    headers = first_row
+
+    # If row 1 is tenant data (not column headers), use the standard schema.
+    if not headers or headers[0] != "name":
+        headers = [h.lower() for h in TENANTS_HEADERS]
+        data_start = 0
+
+    if data_start >= len(values):
+        return []
+
     tenants: List[Dict[str, Any]] = []
-    for row in values[1:]:
+    for row in values[data_start:]:
         if not any(str(c or "").strip() for c in row):
             continue
         record: Dict[str, Any] = {}
@@ -78,6 +90,18 @@ def _rows_to_tenants(values: List[List[Any]]) -> List[Dict[str, Any]]:
         if record.get("phone") or record.get("unit") or record.get("name"):
             tenants.append(record)
     return tenants
+
+
+def _values_from_sheet_read(read_res: Dict[str, Any]) -> List[List[Any]]:
+    """Unwrap sheet read results from ToolExecutor (flat or nested)."""
+    if not isinstance(read_res, dict):
+        return []
+    if read_res.get("values"):
+        return read_res.get("values") or []
+    inner = read_res.get("result")
+    if isinstance(inner, dict) and inner.get("values"):
+        return inner.get("values") or []
+    return []
 
 
 class RentTenantStorageService:
@@ -123,7 +147,14 @@ class RentTenantStorageService:
             logger.warning("[RENT_STORAGE] Failed to read tenants sheet: %s", read_res.get("error"))
             return []
 
-        tenants = _rows_to_tenants(read_res.get("values") or [])
+        tenants = _rows_to_tenants(_values_from_sheet_read(read_res))
+        if not tenants:
+            logger.warning(
+                "[RENT_STORAGE] No tenants parsed from sheet %s tab %s (rows=%s)",
+                spreadsheet_id,
+                sheet_name,
+                len(_values_from_sheet_read(read_res)),
+            )
         cache_service.set(cache_key, tenants, expire_seconds=60)
         return tenants
 
@@ -314,18 +345,24 @@ class RentTenantStorageService:
         if not read_res.get("success"):
             return
 
-        values = read_res.get("values") or []
-        if len(values) < 2:
-            return
+        values = _values_from_sheet_read(read_res)
+        if not values:
+            return []
 
-        headers = [str(h or "").strip().lower() for h in values[0]]
+        first_row = [str(h or "").strip().lower() for h in values[0]]
+        data_start = 1
+        headers = first_row
+        if not headers or headers[0] != "name":
+            headers = [h.lower() for h in TENANTS_HEADERS]
+            data_start = 0
+
         unit_idx = headers.index("unit") if "unit" in headers else -1
         balance_idx = headers.index("balance") if "balance" in headers else -1
         if unit_idx < 0 or balance_idx < 0:
             return
 
         target_row = None
-        for row_num, row in enumerate(values[1:], start=2):
+        for row_num, row in enumerate(values[data_start:], start=data_start + 1):
             cell = str(row[unit_idx] if unit_idx < len(row) else "").strip().lower()
             if cell == str(unit).strip().lower():
                 target_row = row_num

@@ -499,7 +499,22 @@ class WorkflowBuilderService:
         """
         Evaluate conditional logic for workflow steps with robust type-forgiving comparison.
         """
-        if not condition or condition.get("type") != "if":
+        if not condition:
+            return True
+
+        # Legacy template format: {"if": "step_1.notify_landlord == True"}
+        legacy_if = condition.get("if")
+        if isinstance(legacy_if, str) and legacy_if.strip():
+            try:
+                env = SandboxedEnvironment()
+                template = env.from_string("{{ " + legacy_if.strip() + " }}")
+                rendered = template.render(**(context or {}))
+                return str(rendered).strip().lower() in ("true", "1", "yes")
+            except Exception as exc:
+                logger.warning("Failed to evaluate workflow condition %r: %s", legacy_if, exc)
+                return False
+
+        if condition.get("type") != "if":
             return True
         
         field_path = condition.get("field", "")

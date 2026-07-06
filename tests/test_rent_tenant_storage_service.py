@@ -29,6 +29,18 @@ def test_rows_to_tenants_parses_headers():
     assert tenants[0]["unit"] == "A12"
 
 
+def test_rows_to_tenants_without_header_row():
+    """Sheet with only data rows (no header) still parses using standard columns."""
+    rows = [
+        ["Harun Gitundu", "254711371265", "E3", "22000", "1200", "500", "200", "14347", "", "20/10/2021", "ATC Holdings"],
+    ]
+    tenants = _rows_to_tenants(rows)
+    assert len(tenants) == 1
+    assert tenants[0]["name"] == "Harun Gitundu"
+    assert tenants[0]["phone"] == "254711371265"
+    assert tenants[0]["unit"] == "E3"
+
+
 @pytest.mark.asyncio
 async def test_load_tenants_uses_cache():
     service = RentTenantStorageService()

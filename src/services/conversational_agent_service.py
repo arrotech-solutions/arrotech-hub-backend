@@ -2316,7 +2316,7 @@ class ConversationalAgentService:
                     actions_taken.append({
                         "tool": tool_name,
                         "args": tool_args,
-                        "result_summary": str(tool_result.get("result", ""))[:200]
+                        "result_summary": self._summarize_tool_result(tool_name, tool_result)[:200]
                     })
 
                     # Capture image URLs from product search payloads even when
@@ -3840,6 +3840,22 @@ class ConversationalAgentService:
             logger.warning(f"[CONV_AGENT] checkout pay button failed: {e}", exc_info=True)
 
     @staticmethod
+    def _summarize_tool_result(tool_name: str, tool_result: Dict[str, Any]) -> str:
+        if not tool_result.get("success"):
+            return str(tool_result.get("error") or tool_result.get("result") or "failed")
+        inner = tool_result.get("result")
+        if isinstance(inner, dict):
+            if inner.get("message"):
+                return str(inner["message"])
+            if inner.get("error"):
+                return str(inner["error"])
+            if inner.get("found") is False:
+                return "tenant not found"
+            if inner.get("found") is True:
+                return str(inner.get("message") or "tenant found")
+        return str(inner or tool_result.get("result") or "ok")
+
+    @staticmethod
     def _with_rent_landlord_fields(
         result: Dict[str, Any],
         *,
@@ -3976,7 +3992,7 @@ class ConversationalAgentService:
                 actions_taken=[{"tool": "rent_collection", "result_summary": "mpesa_sms_payment"}],
             )
 
-        balance_keywords = ("balance", "bill", "kodi", "salio", "deni", "how much", "nadaiwa", "unadaiwa")
+        balance_keywords = ("balance", "bill", "kodi", "salio", "deni", "how much", "nadaiwa", "unadaiwa", "rent", "arrears", "owe")
         if any(k in msg_lower for k in balance_keywords):
             lookup = await rent_collection_service.lookup_tenant(
                 phone_number=customer_phone,
