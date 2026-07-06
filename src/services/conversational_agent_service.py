@@ -660,6 +660,34 @@ AGENT_SUB_TOOLS = [
 ]
 
 
+RENT_AGENT_TOOL_NAMES = frozenset({"escalate_to_human", "initiate_rent_stk_payment"})
+
+INITIATE_RENT_STK_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "initiate_rent_stk_payment",
+        "description": (
+            "Initiate an M-Pesa STK push for rent payment after showing the tenant their invoice. "
+            "Only available when live Daraja credentials are configured. "
+            "Requires tenant unit and amount."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "amount": {"type": "number", "description": "Amount in KES to charge"},
+                "unit": {"type": "string", "description": "Tenant unit number (Paybill account)"},
+                "period": {"type": "string", "description": "Billing period e.g. August 2026"},
+                "phone_number": {
+                    "type": "string",
+                    "description": "Optional M-Pesa phone override (defaults to WhatsApp sender)",
+                },
+            },
+            "required": ["amount", "unit"],
+        },
+    },
+}
+
+
 class ConversationalAgentService:
     """
     Agentic AI that can call sub-tools within a single workflow step.
@@ -746,7 +774,9 @@ class ConversationalAgentService:
         try:
             # Extract business config
             kb_id = business_config.get("kb_id", "")
-            business_name = business_config.get("business_name", "Our Business")
+            business_name = business_config.get("business_name") or business_config.get(
+                "property_name", "Our Business"
+            )
             business_phone = business_config.get("business_phone", "")
             business_email = business_config.get("business_email", "")
             order_type = business_config.get("order_type", "general")
@@ -1410,6 +1440,30 @@ class ConversationalAgentService:
             # Extract storage config
             storage_config = self._storage_config_from_business(business_config)
 
+            from .rent_mpesa_helpers import mpesa_live_ready
+
+            mpesa_stk_available = False
+            if order_type == "rent_collection":
+                mpesa_stk_available = await mpesa_live_ready(user.id, db)
+                business_config["mpesa_stk_available"] = mpesa_stk_available
+                business_config["business_name"] = business_name
+
+            if order_type == "rent_collection":
+                rent_fast = await self._try_rent_fast_path(
+                    user_message=user_message,
+                    session_key=session_key,
+                    business_config=business_config,
+                    business_name=business_name,
+                    currency=currency,
+                    customer_phone=customer_phone,
+                    preferred_language=preferred_language,
+                    user=user,
+                    db=db,
+                    mpesa_stk_available=mpesa_stk_available,
+                )
+                if rent_fast is not None:
+                    return rent_fast
+
             # ── "Other number" M-Pesa button → ask for payment line ──
             if (user_message or "").startswith(PAY_MPESA_OTHER_PREFIX):
                 pay_order_id = user_message[len(PAY_MPESA_OTHER_PREFIX):].strip()
@@ -1851,7 +1905,26 @@ class ConversationalAgentService:
                     await self._tag_contact_for_handoff(
                         user, customer_phone, db, reason=esc_reason
                     )
-                    return {
+                    return self._with_rent_landlord_fields(
+                        {
+                            "response_text": handoff_msg,
+                            "image_urls": [],
+                            "cards": [],
+                            "order_created": False,
+                            "order_cancelled": False,
+                            "order_data": None,
+                            "order_notification": escalation_notification,
+                            "escalation_triggered": True,
+                            "escalation_notification": escalation_notification,
+                            "human_handoff": True,
+                            "send_agent_mode_buttons": "staff",
+                            "actions_taken": [
+                                {"tool": "escalate_to_human", "result_summary": f"auto:{esc_reason}"}
+                            ],
+                        },
+                        order_notification=escalation_notification,
+                        escalated=True,
+                    ) if order_type == "rent_collection" else {
                         "response_text": handoff_msg,
                         "image_urls": [],
                         "cards": [],
@@ -1922,6 +1995,7 @@ class ConversationalAgentService:
             order_cancelled = False
             order_data = None
             order_notification = ""
+            payment_received = False
             escalation_triggered = False
             escalation_notification = ""
             human_handoff = False
@@ -1954,7 +2028,15 @@ class ConversationalAgentService:
 
             # Assemble dynamic tools
             from .dynamic_tool_registry import dynamic_tool_registry
-            dynamic_tools = list(AGENT_SUB_TOOLS)
+            if order_type == "rent_collection":
+                dynamic_tools = [
+                    t for t in AGENT_SUB_TOOLS
+                    if t.get("function", {}).get("name") in RENT_AGENT_TOOL_NAMES
+                ]
+                if mpesa_stk_available:
+                    dynamic_tools.append(INITIATE_RENT_STK_TOOL)
+            else:
+                dynamic_tools = list(AGENT_SUB_TOOLS)
             for t_name in enabled_mcp_tool_names:
                 schema = dynamic_tool_registry.get_tool(t_name)
                 if schema:
@@ -2037,6 +2119,13 @@ class ConversationalAgentService:
                         "send_cart_buttons": send_cart_buttons_after_turn and not order_created,
                         "send_agent_mode_buttons": send_agent_mode_buttons,
                     }
+                    if order_type == "rent_collection":
+                        return self._with_rent_landlord_fields(
+                            result,
+                            order_notification=order_notification,
+                            payment_received=payment_received,
+                            escalated=escalation_triggered,
+                        )
                     return result
 
                 # Process tool calls
@@ -2172,6 +2261,7 @@ class ConversationalAgentService:
                         default_customer_name=customer_name,
                         preferred_language=preferred_language,
                         business_phone=business_phone,
+                        business_config=business_config,
                     )
 
                     if tool_name == "escalate_to_human" and tool_result.get("success"):
@@ -2179,6 +2269,31 @@ class ConversationalAgentService:
                         human_handoff = True
                         send_agent_mode_buttons = "staff"
                         escalation_notification = tool_result.get("escalation_notification", "")
+                        if order_type == "rent_collection":
+                            order_notification = escalation_notification
+
+                    if tool_name == "rent_collection" and tool_result.get("success"):
+                        inner = tool_result.get("result") or {}
+                        op = tool_args.get("operation", "")
+                        if op == "process_partial_payment" and inner.get("success"):
+                            payment_received = True
+                            tenant_name = inner.get("tenant_name", "Tenant")
+                            unit = inner.get("unit", "")
+                            paid = float(inner.get("paid_amount") or 0)
+                            balance = float(inner.get("balance") or 0)
+                            order_notification = (
+                                f"💰 Rent payment recorded\n"
+                                f"Tenant: {tenant_name} ({unit})\n"
+                                f"Amount: {currency} {paid:,.0f}\n"
+                                f"Balance after: {currency} {balance:,.0f}"
+                            )
+                        elif op == "register_tenant" and inner.get("success"):
+                            order_notification = (
+                                f"🆕 New tenant registered\n"
+                                f"Name: {inner.get('tenant_name') or tool_args.get('tenant_name', '')}\n"
+                                f"Unit: {inner.get('unit') or tool_args.get('unit', '')}\n"
+                                f"Phone: {tool_args.get('phone_number', customer_phone)}"
+                            )
 
                     if tool_name == "show_options_menu" and tool_result.get("success"):
                         send_agent_mode_buttons = "assistant"
@@ -2330,7 +2445,7 @@ class ConversationalAgentService:
             else:
                 await self._save_to_ccm(session_key, "assistant", final_text)
 
-            return {
+            result = {
                 "response_text": final_text,
                 "image_urls": image_urls,
                 "cards": collected_product_cards,
@@ -2345,6 +2460,14 @@ class ConversationalAgentService:
                 "send_cart_buttons": send_cart_buttons_after_turn and not order_created,
                 "send_agent_mode_buttons": send_agent_mode_buttons,
             }
+            if order_type == "rent_collection":
+                return self._with_rent_landlord_fields(
+                    result,
+                    order_notification=order_notification,
+                    payment_received=payment_received,
+                    escalated=escalation_triggered,
+                )
+            return result
 
         except Exception as e:
             logger.error(f"[CONV_AGENT] Execute error: {e}", exc_info=True)
@@ -2962,6 +3085,21 @@ class ConversationalAgentService:
 """
         elif order_type == "rent_collection":
             paybill = business_config.get('paybill_number', '')
+            mpesa_stk_available = bool((business_config or {}).get("mpesa_stk_available"))
+            payment_instructions = ""
+            if mpesa_stk_available:
+                payment_instructions = (
+                    "- After showing the invoice, offer one-tap M-Pesa payment via `initiate_rent_stk_payment` "
+                    "(amount + unit required).\n"
+                    "- STK defaults to the tenant's WhatsApp number unless they give another M-Pesa line."
+                )
+            else:
+                payment_instructions = (
+                    f"- If they ask how to pay, give Paybill *{paybill}* and their *unit* as the account number.\n"
+                    "- When a tenant pastes an M-Pesa confirmation SMS, process it with "
+                    "`rent_collection(operation='classify_tenant_intent')` then `lookup_tenant` and "
+                    "`process_partial_payment`."
+                )
             prompt = f"""{base_context}
 
 ## Your Capabilities
@@ -2969,11 +3107,12 @@ class ConversationalAgentService:
 - Look up tenant information using `rent_collection(operation='lookup_tenant')`.
 - Classify tenant intents using `rent_collection(operation='classify_tenant_intent')`.
 - Escalate to a live human agent using `escalate_to_human` when needed.
+{f"- Initiate M-Pesa STK rent payments using `initiate_rent_stk_payment`." if mpesa_stk_available else ""}
 
 ## Conversation Flow
 1. Greet the tenant warmly and ask how you can assist them today.
 2. If they ask about their balance or bill, use `rent_collection(operation='lookup_tenant')` to find their unit, then `generate_consolidated_invoice`.
-3. If they ask how to pay, provide the M-Pesa Paybill number {paybill} and their unit as the account number.
+{payment_instructions}
 4. Keep responses brief and friendly (WhatsApp chat style, under 150 words).
 5. Always use {currency} for prices.
 6. Use emojis naturally but sparingly.
@@ -3700,6 +3839,229 @@ class ConversationalAgentService:
         except Exception as e:
             logger.warning(f"[CONV_AGENT] checkout pay button failed: {e}", exc_info=True)
 
+    @staticmethod
+    def _with_rent_landlord_fields(
+        result: Dict[str, Any],
+        *,
+        order_notification: str = "",
+        payment_received: bool = False,
+        escalated: bool = False,
+    ) -> Dict[str, Any]:
+        notify_body = order_notification or result.get("order_notification", "")
+        notify = bool(notify_body) and (
+            payment_received or escalated or result.get("escalation_triggered")
+        )
+        result["order_notification"] = notify_body
+        result["landlord_notification"] = notify_body
+        result["notify_landlord"] = notify or result.get("notify_landlord", False)
+        result["payment_received"] = payment_received or result.get("payment_received", False)
+        return result
+
+    async def _rent_fast_path_result(
+        self,
+        session_key: str,
+        reply: str,
+        *,
+        order_notification: str = "",
+        payment_received: bool = False,
+        escalated: bool = False,
+        actions_taken: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        base = await self._cart_fast_path_result(
+            session_key,
+            reply,
+            actions_taken=actions_taken,
+            send_cart_buttons=False,
+        )
+        return self._with_rent_landlord_fields(
+            base,
+            order_notification=order_notification,
+            payment_received=payment_received,
+            escalated=escalated,
+        )
+
+    async def _try_rent_fast_path(
+        self,
+        *,
+        user_message: str,
+        session_key: str,
+        business_config: Dict[str, Any],
+        business_name: str,
+        currency: str,
+        customer_phone: str,
+        preferred_language: str,
+        user: User,
+        db: AsyncSession,
+        mpesa_stk_available: bool,
+    ) -> Optional[Dict[str, Any]]:
+        from .rent_collection_service import rent_collection_service
+        from .rent_tenant_storage_service import rent_tenant_storage_service
+
+        msg = (user_message or "").strip()
+        if not msg:
+            return None
+        msg_lower = msg.lower()
+
+        tenants = await rent_tenant_storage_service.load_tenants(user, business_config, db)
+        classify = await rent_collection_service.classify_tenant_intent(message=msg)
+
+        if classify.get("primary_intent") == "payment_confirm":
+            lookup = await rent_collection_service.lookup_tenant(
+                phone_number=customer_phone,
+                tenants_data=tenants,
+            )
+            if not lookup.get("found"):
+                reply = (
+                    "I received your M-Pesa message but couldn't find your tenant record. "
+                    "Please share your unit number and name."
+                )
+                return await self._rent_fast_path_result(session_key, reply)
+
+            tenant = lookup.get("tenant") or {}
+            rent_amt = float(tenant.get("rent_amount") or 0)
+            water_amt = float(tenant.get("water_amount") or 0)
+            elec_amt = float(tenant.get("electricity_amount") or 0)
+            garbage_amt = float(tenant.get("garbage_amount") or 0)
+            prev_balance = float(tenant.get("balance") or 0)
+            total_bill = rent_amt + water_amt + elec_amt + garbage_amt + prev_balance
+            paid_amount = float(classify.get("mpesa_amount") or 0)
+            if total_bill <= 0 and paid_amount > 0:
+                total_bill = paid_amount
+
+            pay_res = await rent_collection_service.process_partial_payment(
+                tenant_name=tenant.get("name", "Tenant"),
+                unit=tenant.get("unit", ""),
+                total_amount=total_bill,
+                paid_amount=paid_amount,
+                transaction_id=classify.get("mpesa_transaction_id", ""),
+                period=datetime.now().strftime("%B %Y"),
+                currency=currency,
+                language=preferred_language,
+            )
+            if pay_res.get("success"):
+                await rent_tenant_storage_service.append_payment_row(
+                    user,
+                    business_config,
+                    db,
+                    tenant_name=pay_res.get("tenant_name", ""),
+                    unit=pay_res.get("unit", ""),
+                    phone=customer_phone,
+                    amount_paid=paid_amount,
+                    total_bill=total_bill,
+                    balance_after=float(pay_res.get("balance") or 0),
+                    transaction_id=classify.get("mpesa_transaction_id", ""),
+                    method="M-Pesa SMS",
+                    period=pay_res.get("period", ""),
+                )
+                if pay_res.get("unit"):
+                    await rent_tenant_storage_service.update_tenant_balance(
+                        user,
+                        business_config,
+                        db,
+                        unit=pay_res.get("unit", ""),
+                        new_balance=float(pay_res.get("balance") or 0),
+                    )
+
+            landlord_msg = (
+                f"💰 Rent payment received (SMS)\n"
+                f"Tenant: {tenant.get('name', 'Tenant')} ({tenant.get('unit', '')})\n"
+                f"Amount: {currency} {paid_amount:,.0f}\n"
+                f"Receipt: {classify.get('mpesa_transaction_id', '')}"
+            )
+            return await self._rent_fast_path_result(
+                session_key,
+                pay_res.get("message", "Payment recorded. Thank you!"),
+                order_notification=landlord_msg,
+                payment_received=True,
+                actions_taken=[{"tool": "rent_collection", "result_summary": "mpesa_sms_payment"}],
+            )
+
+        balance_keywords = ("balance", "bill", "kodi", "salio", "deni", "how much", "nadaiwa", "unadaiwa")
+        if any(k in msg_lower for k in balance_keywords):
+            lookup = await rent_collection_service.lookup_tenant(
+                phone_number=customer_phone,
+                tenants_data=tenants,
+            )
+            if lookup.get("found"):
+                tenant = lookup.get("tenant") or {}
+                invoice = await rent_collection_service.generate_consolidated_invoice(
+                    tenant_name=tenant.get("name", "Tenant"),
+                    unit=tenant.get("unit", ""),
+                    property_name=business_name,
+                    rent_amount=float(tenant.get("rent_amount") or 0),
+                    water_amount=float(tenant.get("water_amount") or 0),
+                    electricity_amount=float(tenant.get("electricity_amount") or 0),
+                    garbage_amount=float(tenant.get("garbage_amount") or 0),
+                    previous_balance=float(tenant.get("balance") or 0),
+                    paybill_number=business_config.get("paybill_number", ""),
+                    currency=currency,
+                    language=preferred_language,
+                    water_billing_enabled=business_config.get("water_billing_enabled", True),
+                    electricity_billing_enabled=business_config.get("electricity_billing_enabled", True),
+                    garbage_billing_enabled=business_config.get("garbage_billing_enabled", True),
+                )
+                reply = invoice.get("message", "")
+                if not mpesa_stk_available and business_config.get("paybill_number"):
+                    reply += (
+                        f"\n\n💳 Pay via M-Pesa Paybill *{business_config.get('paybill_number')}* "
+                        f"using account *{tenant.get('unit', '')}*."
+                    )
+                return await self._rent_fast_path_result(
+                    session_key,
+                    reply,
+                    actions_taken=[{"tool": "rent_collection", "result_summary": "balance_invoice"}],
+                )
+
+        if classify.get("primary_intent") == "greeting":
+            lookup = await rent_collection_service.lookup_tenant(
+                phone_number=customer_phone,
+                tenants_data=tenants,
+            )
+            if not lookup.get("found"):
+                if preferred_language == "sw":
+                    reply = (
+                        f"Karibu *{business_name}*! 🏠\n\n"
+                        "Tafadhali tuambie *nambari ya chumba* na *jina lako* ili tukupatie taarifa za kodi."
+                    )
+                else:
+                    reply = (
+                        f"Welcome to *{business_name}*! 🏠\n\n"
+                        "Please share your *unit number* and *name* so we can find your account."
+                    )
+                return await self._rent_fast_path_result(
+                    session_key,
+                    reply,
+                    actions_taken=[{"tool": "rent_collection", "result_summary": "welcome_unknown_tenant"}],
+                )
+
+        return None
+
+    async def _sub_initiate_rent_stk_payment(
+        self,
+        *,
+        amount: Any,
+        unit: str,
+        period: str,
+        phone_number: str,
+        session_key: str,
+        business_config: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        from .rent_stk_payment_service import initiate_rent_stk_payment
+
+        return await initiate_rent_stk_payment(
+            user=user,
+            db=db,
+            amount=amount,
+            unit=unit,
+            phone_number=phone_number,
+            session_key=session_key,
+            business_config=business_config,
+            period=period,
+            tenant_name=business_config.get("tenant_name", ""),
+        )
+
     async def _cart_fast_path_result(
         self,
         session_key: str,
@@ -4055,8 +4417,10 @@ class ConversationalAgentService:
         default_customer_name: str = "",
         preferred_language: str = DEFAULT_LANGUAGE,
         business_phone: str = "",
+        business_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Execute one of the agent's sub-tools."""
+        business_config = business_config or {}
 
         try:
             # ── SECURITY: order & payment tools must ALWAYS use the phone number
@@ -4176,6 +4540,18 @@ class ConversationalAgentService:
                     user=user,
                     db=db,
                 )
+
+            elif tool_name == "initiate_rent_stk_payment":
+                return await self._sub_initiate_rent_stk_payment(
+                    amount=arguments.get("amount", 0),
+                    unit=arguments.get("unit", ""),
+                    period=arguments.get("period", ""),
+                    phone_number=arguments.get("phone_number") or default_customer_phone,
+                    session_key=session_key,
+                    business_config=business_config,
+                    user=user,
+                    db=db,
+                )
                 
             elif tool_name == "display_product_cards":
                 return await self._sub_display_product_cards(
@@ -4227,6 +4603,9 @@ class ConversationalAgentService:
 
             else:
                 # Dynamic MCP Tool execution (Harness delegation)
+                if tool_name == "rent_collection":
+                    arguments.setdefault("phone_number", default_customer_phone)
+                    arguments["business_config"] = business_config
                 from .tool_executor import ToolExecutor
                 executor = ToolExecutor()
                 return await executor.execute_tool(tool_name, arguments, user, db, background_tasks=background_tasks)

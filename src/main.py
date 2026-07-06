@@ -373,6 +373,8 @@ main_router.include_router(coding_agent_router)
 # Product Catalog Builder (photo -> Google Sheet)
 from .routers.catalog_builder_router import router as catalog_builder_router
 main_router.include_router(catalog_builder_router)
+from .routers.rent_collection_router import router as rent_collection_router
+main_router.include_router(rent_collection_router)
 
 # Harness Engineering
 try:

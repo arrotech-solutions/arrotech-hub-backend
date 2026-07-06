@@ -750,12 +750,113 @@ class ToolExecutor:
     async def _execute_rent_collection_tool(self, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
         """Execute rent collection specific operations."""
         operation = arguments.get("operation")
-        
+        business_config = arguments.pop("business_config", None) or {}
+
+        if not arguments.get("phone_number") and arguments.get("tenant_phone"):
+            arguments["phone_number"] = arguments.get("tenant_phone")
+
+        if business_config:
+            for key in (
+                "property_name",
+                "paybill_number",
+                "currency",
+                "water_billing_enabled",
+                "electricity_billing_enabled",
+                "garbage_billing_enabled",
+            ):
+                if key not in arguments and business_config.get(key) is not None:
+                    arguments[key] = business_config.get(key)
+            if not arguments.get("property_name"):
+                arguments["property_name"] = (
+                    business_config.get("business_name")
+                    or business_config.get("property_name", "")
+                )
+
+        if operation in ("lookup_tenant", "register_tenant", "process_partial_payment") or not arguments.get("tenants_data"):
+            try:
+                from .rent_tenant_storage_service import rent_tenant_storage_service
+
+                tenants = await rent_tenant_storage_service.load_tenants(user, business_config, db)
+                if tenants and not arguments.get("tenants_data"):
+                    arguments["tenants_data"] = tenants
+            except Exception as exc:
+                logger.warning("[RENT_COLLECTION] Failed to load tenants sheet: %s", exc)
+
         try:
             res = await self.services["rent_collection"].handle_operation(operation=operation, **arguments)
+
+            if business_config and res.get("success"):
+                if operation == "process_partial_payment":
+                    await self._persist_rent_payment_row(user, business_config, db, arguments, res)
+                elif operation == "register_tenant":
+                    await self._persist_rent_tenant_row(user, business_config, db, arguments, res)
+
             return {"success": True, "result": res}
         except Exception as e:
             return {"success": False, "error": f"Rent Collection operation failed: {str(e)}"}
+
+    async def _persist_rent_payment_row(
+        self,
+        user: User,
+        business_config: Dict[str, Any],
+        db: AsyncSession,
+        arguments: Dict[str, Any],
+        pay_res: Dict[str, Any],
+    ) -> None:
+        from .rent_tenant_storage_service import rent_tenant_storage_service
+
+        await rent_tenant_storage_service.append_payment_row(
+            user,
+            business_config,
+            db,
+            tenant_name=pay_res.get("tenant_name") or arguments.get("tenant_name", ""),
+            unit=pay_res.get("unit") or arguments.get("unit", ""),
+            phone=arguments.get("phone_number", ""),
+            amount_paid=float(pay_res.get("paid_amount") or arguments.get("paid_amount") or 0),
+            total_bill=float(pay_res.get("total_amount") or arguments.get("total_amount") or 0),
+            balance_after=float(pay_res.get("balance") or 0),
+            transaction_id=pay_res.get("transaction_id") or arguments.get("transaction_id", ""),
+            method=arguments.get("payment_method", "M-Pesa"),
+            period=pay_res.get("period") or arguments.get("period", ""),
+        )
+        unit = pay_res.get("unit") or arguments.get("unit", "")
+        if unit:
+            await rent_tenant_storage_service.update_tenant_balance(
+                user,
+                business_config,
+                db,
+                unit=unit,
+                new_balance=float(pay_res.get("balance") or 0),
+            )
+
+    async def _persist_rent_tenant_row(
+        self,
+        user: User,
+        business_config: Dict[str, Any],
+        db: AsyncSession,
+        arguments: Dict[str, Any],
+        reg_res: Dict[str, Any],
+    ) -> None:
+        from .rent_tenant_storage_service import rent_tenant_storage_service
+
+        tenant_record = reg_res.get("tenant_record") or {
+            "name": arguments.get("tenant_name", ""),
+            "phone": arguments.get("phone_number", ""),
+            "unit": arguments.get("unit", ""),
+            "rent_amount": arguments.get("rent_amount", 0),
+            "water_amount": arguments.get("water_amount", 0),
+            "electricity_amount": arguments.get("electricity_amount", 0),
+            "garbage_amount": arguments.get("garbage_amount", 0),
+            "balance": 0,
+            "status": "active",
+            "move_in_date": arguments.get("move_in_date", ""),
+            "property_name": arguments.get("property_name")
+            or business_config.get("business_name")
+            or business_config.get("property_name", ""),
+        }
+        await rent_tenant_storage_service.append_tenant_row(
+            user, business_config, db, tenant_record
+        )
 
     async def _execute_qdrant_tool(self, tool_name: str, arguments: Dict[str, Any], user: User, db: AsyncSession) -> Dict[str, Any]:
         """Execute Qdrant vector DB operations."""

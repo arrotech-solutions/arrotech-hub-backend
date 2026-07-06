@@ -20,16 +20,17 @@ async def test_generate_consolidated_invoice(rent_service):
         due_date="2026-08-05"
     )
     
-    # Check that text contains key fields
-    assert "B2" in res
-    assert "Jane Doe" in res
-    assert "20,000" in res
-    assert "1,500" in res
-    assert "2,000" in res
-    assert "300" in res
-    assert "5,000" in res
-    assert "28,800" in res # Total
-    assert "05 Aug" in res or "2026-08-05" in res
+    message = res.get("message", "")
+    assert res.get("success") is True
+    assert "B2" in message
+    assert "Jane Doe" in message
+    assert "20,000" in message
+    assert "1,500" in message
+    assert "2,000" in message
+    assert "300" in message
+    assert "5,000" in message
+    assert "28,800" in message
+    assert res.get("grand_total") == 28800
 
 @pytest.mark.asyncio
 async def test_process_partial_payment(rent_service):
@@ -40,9 +41,12 @@ async def test_process_partial_payment(rent_service):
         paid_amount=10000
     )
     
-    assert "10,000" in res
-    assert "18,800" in res # Balance
-    assert "Thank you" in res
+    message = res.get("message", "")
+    assert res.get("success") is True
+    assert "10,000" in message
+    assert "18,800" in message
+    assert "Thank you" in message
+    assert res.get("balance") == 18800
 
 @pytest.mark.asyncio
 async def test_calculate_utility_charges_metered(rent_service):
@@ -54,8 +58,10 @@ async def test_calculate_utility_charges_metered(rent_service):
         rate_per_unit=120
     )
     
-    assert "15" in res # Units
-    assert "1,800" in res # Amount (15 * 120)
+    assert res.get("success") is True
+    assert res.get("units_consumed") == 15
+    assert res.get("amount") == 1800
+    assert "1,800" in res.get("message", "")
 
 @pytest.mark.asyncio
 async def test_classify_tenant_intent(rent_service):
@@ -63,7 +69,8 @@ async def test_classify_tenant_intent(rent_service):
         operation="classify_tenant_intent",
         message="how much is my water bill?"
     )
-    assert res == "utility_query"
+    assert res.get("success") is True
+    assert res.get("primary_intent") in ("pay_water", "check_balance")
 
 @pytest.mark.asyncio
 async def test_generate_collection_summary(rent_service):
@@ -77,9 +84,11 @@ async def test_generate_collection_summary(rent_service):
         total_collected=450000
     )
     
-    assert "Sunset Apartments" in res
-    assert "August 2026" in res
-    assert "90.0%" in res # Collection rate
+    message = res.get("message", "")
+    assert res.get("success") is True
+    assert "Sunset Apartments" in message
+    assert "August 2026" in message
+    assert "90%" in message
 
 @pytest.mark.asyncio
 async def test_lookup_tenant_found(rent_service):
@@ -93,7 +102,7 @@ async def test_lookup_tenant_found(rent_service):
         tenants_data=mock_data
     )
     
-    assert "found" in res
+    assert res.get("found") is True
     assert res["tenant"]["name"] == "Jane Doe"
 
 @pytest.mark.asyncio

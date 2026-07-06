@@ -46,6 +46,7 @@ WORKFLOW_TEMPLATES = [
                     "user_message": "{{whatsapp_message_content}}",
                     "business_config": {
                         "order_type": "rent_collection",
+                        "business_name": "{{variables.property_name}}",
                         "property_name": "{{variables.property_name}}",
                         "landlord_name": "{{variables.landlord_name}}",
                         "business_phone": "{{variables.business_phone}}",

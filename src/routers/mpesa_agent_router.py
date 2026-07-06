@@ -496,59 +496,80 @@ async def _handle_mpesa_callback_background(webhook_secret: str, body: bytes):
                         parsed["result_desc"] = f"Underpayment: Paid {actual_paid} but expected {expected_amount}"
 
                 if notify_ctx and is_paid:
-                    order_id = (notify_ctx or {}).get("order_id")
-                    whatsapp_sender = (
-                        (notify_ctx or {}).get("whatsapp_sender")
-                        or (notify_ctx or {}).get("sender_id")
-                        or ""
-                    )
-                    mpesa_phone = (
-                        (notify_ctx or {}).get("mpesa_phone")
-                        or (notify_ctx or {}).get("customer_phone")
-                        or ""
-                    )
-                    platform = (notify_ctx or {}).get("platform") or "whatsapp"
-                    storage_config = (notify_ctx or {}).get("storage_config") or {}
+                    if (notify_ctx or {}).get("payment_type") == "rent":
+                        try:
+                            from ..services.rent_stk_payment_service import finalize_rent_stk_payment
 
-                    try:
-                        from ..services.order_stk_payment_service import finalize_order_stk_payment
-
-                        await finalize_order_stk_payment(
-                            db=db,
-                            owner_user_id=str(config.user_id),
-                            order_id=order_id,
-                            whatsapp_sender=whatsapp_sender or "",
-                            mpesa_phone=mpesa_phone,
-                            platform=platform,
-                            storage_config=storage_config,
-                            is_paid=True,
-                            mpesa_receipt=(parsed or {}).get("transaction_id") or "",
-                            amount_paid=float((parsed or {}).get("amount") or notify_ctx.get("amount") or 0),
-                            currency=str(notify_ctx.get("currency") or "KES"),
-                            result_code=result_code,
-                            result_desc=str((parsed or {}).get("result_desc") or ""),
-                            checkout_request_id=checkout_request_id or "",
-                            merchant_request_id=merchant_request_id or "",
-                            payment_record=payment,
+                            await finalize_rent_stk_payment(
+                                db=db,
+                                owner_user_id=str(config.user_id),
+                                notify_ctx=notify_ctx,
+                                is_paid=True,
+                                mpesa_receipt=(parsed or {}).get("transaction_id") or "",
+                                amount_paid=float((parsed or {}).get("amount") or notify_ctx.get("amount") or 0),
+                                result_code=result_code,
+                                result_desc=str((parsed or {}).get("result_desc") or ""),
+                            )
+                        except Exception as rent_err:
+                            logger.warning(
+                                "Failed to finalize rent STK callback: %s",
+                                rent_err,
+                                exc_info=True,
+                            )
+                    else:
+                        order_id = (notify_ctx or {}).get("order_id")
+                        whatsapp_sender = (
+                            (notify_ctx or {}).get("whatsapp_sender")
+                            or (notify_ctx or {}).get("sender_id")
+                            or ""
                         )
+                        mpesa_phone = (
+                            (notify_ctx or {}).get("mpesa_phone")
+                            or (notify_ctx or {}).get("customer_phone")
+                            or ""
+                        )
+                        platform = (notify_ctx or {}).get("platform") or "whatsapp"
+                        storage_config = (notify_ctx or {}).get("storage_config") or {}
 
-                        if map_key_checkout:
-                            cache_service.delete(map_key_checkout)
-                        if map_key_merchant:
-                            cache_service.delete(map_key_merchant)
-                        if checkout_request_id:
-                            cache_service.delete(
-                                f"mpesa:stk:lookup:checkout:{checkout_request_id}"
+                        try:
+                            from ..services.order_stk_payment_service import finalize_order_stk_payment
+
+                            await finalize_order_stk_payment(
+                                db=db,
+                                owner_user_id=str(config.user_id),
+                                order_id=order_id,
+                                whatsapp_sender=whatsapp_sender or "",
+                                mpesa_phone=mpesa_phone,
+                                platform=platform,
+                                storage_config=storage_config,
+                                is_paid=True,
+                                mpesa_receipt=(parsed or {}).get("transaction_id") or "",
+                                amount_paid=float((parsed or {}).get("amount") or notify_ctx.get("amount") or 0),
+                                currency=str(notify_ctx.get("currency") or "KES"),
+                                result_code=result_code,
+                                result_desc=str((parsed or {}).get("result_desc") or ""),
+                                checkout_request_id=checkout_request_id or "",
+                                merchant_request_id=merchant_request_id or "",
+                                payment_record=payment,
                             )
-                        if merchant_request_id:
-                            cache_service.delete(
-                                f"mpesa:stk:lookup:merchant:{merchant_request_id}"
+                        except Exception as notify_err:
+                            logger.warning(
+                                "Failed to notify customer for STK callback: %s",
+                                notify_err,
+                                exc_info=True,
                             )
-                    except Exception as notify_err:
-                        logger.warning(
-                            "Failed to notify customer for STK callback: %s",
-                            notify_err,
-                            exc_info=True,
+
+                    if map_key_checkout:
+                        cache_service.delete(map_key_checkout)
+                    if map_key_merchant:
+                        cache_service.delete(map_key_merchant)
+                    if checkout_request_id:
+                        cache_service.delete(
+                            f"mpesa:stk:lookup:checkout:{checkout_request_id}"
+                        )
+                    if merchant_request_id:
+                        cache_service.delete(
+                            f"mpesa:stk:lookup:merchant:{merchant_request_id}"
                         )
                 elif notify_ctx and not is_paid:
                     order_id = (notify_ctx or {}).get("order_id")
