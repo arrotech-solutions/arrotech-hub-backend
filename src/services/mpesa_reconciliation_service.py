@@ -93,8 +93,12 @@ class MpesaReconciliationService:
                     setattr(config, key, value)
             config.updated_at = datetime.utcnow()
             
-            # Ensure webhook_secret exists if daraja fields are provided
-            if (data.get("daraja_shortcode") and not config.webhook_secret):
+            # Ensure a webhook_secret exists when Daraja is configured OR manual
+            # payment is enabled (manual uses it for the paid-confirmation webhook).
+            needs_secret = bool(data.get("daraja_shortcode")) or bool(
+                getattr(config, "manual_payment_enabled", False)
+            )
+            if needs_secret and not config.webhook_secret:
                 config.webhook_secret = secrets.token_urlsafe(32)
                 
         else:
@@ -103,7 +107,7 @@ class MpesaReconciliationService:
                 "user_id": user_id,
                 **data
             }
-            if data.get("daraja_shortcode"):
+            if data.get("daraja_shortcode") or data.get("manual_payment_enabled"):
                 config_kwargs["webhook_secret"] = secrets.token_urlsafe(32)
                 
             config = MpesaAgentConfig(**config_kwargs)

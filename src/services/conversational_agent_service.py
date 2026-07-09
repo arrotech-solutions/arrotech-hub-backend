@@ -253,6 +253,8 @@ _ORDERS_SHEET_HEADERS = [
     "Created At",
     "Payment Status",
     "Payment Ref",
+    "Receipt Sent",
+    "Receipt Sent At",
 ]
 
 def _sheet_record_get(record: Dict[str, Any], header: str) -> str:
@@ -7602,6 +7604,135 @@ class ConversationalAgentService:
         else:
             logger.info(f"[CONV_AGENT] Updated order {order_id} fields {list(fields)} in Airtable")
 
+    async def _update_order_fields_in_google_sheets(
+        self,
+        executor,
+        order_id: str,
+        fields: Dict[str, Any],
+        storage_config: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+    ) -> None:
+        """Update arbitrary fields on an existing Orders row in Sheets, matched by Order ID.
+
+        Never appends a new row — if the order is not found, it is a no-op.
+        """
+        spreadsheet_id = storage_config.get("spreadsheet_id", "")
+        if not spreadsheet_id or not order_id or not fields:
+            return
+        orders_sheet = (storage_config.get("orders_sheet_name") or "Orders").strip() or "Orders"
+        orders_headers = await self._ensure_sheet_headers_with_fallback(
+            executor=executor,
+            spreadsheet_id=spreadsheet_id,
+            preferred_sheet=orders_sheet,
+            fallback_sheets=[],
+            required_headers=list(_ORDERS_SHEET_HEADERS),
+            user=user,
+            db=db,
+            candidate_sheets=_orders_sheet_tab_candidates(orders_sheet),
+        )
+        if not orders_headers:
+            return
+
+        sheet_name = orders_headers["sheet_name"]
+        headers: List[str] = orders_headers["headers"]
+        read_res = await executor.execute_tool(
+            "google_workspace_sheets",
+            {
+                "operation": "read_range",
+                "spreadsheet_id": spreadsheet_id,
+                "range_name": f"{sheet_name}!A:ZZ",
+            },
+            user,
+            db,
+        )
+        if not read_res.get("success"):
+            return
+        values = read_res.get("values") or []
+        if not values:
+            return
+
+        header_norms = [_normalize_header(h) for h in headers]
+        order_norm = _normalize_header("Order ID")
+        if order_norm not in header_norms:
+            return
+        order_idx = header_norms.index(order_norm)
+
+        target_row_num = None
+        existing_row: List[Any] = []
+        for r_idx, row in enumerate(values):
+            if r_idx == 0:
+                continue
+            if len(row) > order_idx and _safe_str(row[order_idx]).strip() == order_id:
+                target_row_num = r_idx + 1
+                existing_row = row
+                break
+        if not target_row_num:
+            logger.info("[CONV_AGENT] Order %s not found in Sheets for field update", order_id)
+            return
+
+        merged = _merge_sheet_records(headers, existing_row, dict(fields), force_status=None)
+        row_values = _record_to_sheet_row(merged, headers)
+        await executor.execute_tool(
+            "google_workspace_sheets",
+            {
+                "operation": "write_range",
+                "spreadsheet_id": spreadsheet_id,
+                "range_name": f"{sheet_name}!A{target_row_num}",
+                "values": [row_values],
+            },
+            user,
+            db,
+        )
+        logger.info(
+            "[CONV_AGENT] Updated order %s fields %s in Sheets (row %s)",
+            order_id,
+            list(fields),
+            target_row_num,
+        )
+
+    async def mark_receipt_sent_in_storage(
+        self,
+        *,
+        order_id: str,
+        storage_config: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+    ) -> None:
+        """Stamp 'Receipt Sent' + timestamp on the Orders row after a paid receipt goes out.
+
+        Gives merchants at-a-glance visibility and lets the sheet automation skip
+        rows already receipted. Best effort — never raises.
+        """
+        provider = (storage_config or {}).get("provider", "none")
+        if provider in (None, "", "none") or not order_id:
+            return
+        fields = {"Receipt Sent": "yes", "Receipt Sent At": datetime.utcnow().isoformat()}
+        try:
+            from .tool_executor import ToolExecutor
+
+            executor = ToolExecutor()
+            if provider == "google_sheets":
+                await self._update_order_fields_in_google_sheets(
+                    executor=executor,
+                    order_id=order_id,
+                    fields=fields,
+                    storage_config=storage_config,
+                    user=user,
+                    db=db,
+                )
+            elif provider == "airtable":
+                await self._update_order_fields_in_airtable(
+                    executor=executor,
+                    order_id=order_id,
+                    fields=fields,
+                    storage_config=storage_config,
+                    user=user,
+                    db=db,
+                )
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] Receipt-sent write-back failed (non-fatal): {e}")
+
     async def persist_payment_transaction_to_storage(
         self,
         transaction_data: Dict[str, Any],
@@ -8118,7 +8249,7 @@ class ConversationalAgentService:
             "Result Code": _safe_str(transaction_data.get("result_code", "")),
             "Result Desc": _safe_str(transaction_data.get("result_desc", "")),
             "Paid At": _safe_str(transaction_data.get("paid_at", datetime.utcnow().isoformat())),
-            "Source": "mpesa_stk",
+            "Source": _safe_str(transaction_data.get("source", "mpesa_stk")) or "mpesa_stk",
         }
         await self._append_record_by_headers(
             executor=executor,
@@ -8562,7 +8693,7 @@ class ConversationalAgentService:
             "Result Code": transaction_data.get("result_code", ""),
             "Result Desc": transaction_data.get("result_desc", ""),
             "Paid At": transaction_data.get("paid_at", datetime.utcnow().isoformat()),
-            "Source": "mpesa_stk",
+            "Source": transaction_data.get("source", "mpesa_stk") or "mpesa_stk",
         }
         try:
             result = await executor.execute_tool(

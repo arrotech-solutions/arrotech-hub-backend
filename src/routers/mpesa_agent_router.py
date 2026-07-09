@@ -393,6 +393,199 @@ async def get_unmatched_payments(
         raise HTTPException(status_code=500, detail="Failed to get unmatched payments")
 
 
+@router.api_route("/manual-payment/confirmed/{webhook_secret}", methods=["POST"])
+async def manual_payment_confirmed(
+    webhook_secret: str,
+    request: Request,
+):
+    """Event-driven paid-confirmation for the manual (no-STK) payment flow.
+
+    A merchant's Google Sheets Apps Script or Airtable automation calls this the
+    moment they mark a manual order **paid**. We then send the customer AND the
+    business a PAID PDF receipt (reusing notify_payment_received, which is
+    idempotent per order). The path webhook_secret authenticates the tenant.
+
+    Expected JSON body:
+        {
+          "order_id": "ORD-...",        # required
+          "status": "paid",             # optional; only paid states act
+          "mpesa_code": "QGR7XA12B9",   # optional (goes on the receipt)
+          "amount": 1500,                # optional
+          "customer_phone": "2547..."    # optional
+        }
+    """
+    try:
+        body = await request.body()
+        if not body:
+            raise HTTPException(status_code=400, detail="Empty body")
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON")
+
+        order_id = str((payload or {}).get("order_id") or "").strip()
+        status = str((payload or {}).get("status") or "paid").strip().lower()
+        if not order_id:
+            raise HTTPException(status_code=400, detail="order_id is required")
+
+        paid_states = {"paid", "confirmed", "complete", "completed", "settled"}
+        if status not in paid_states:
+            return {"success": True, "order_id": order_id, "skipped": True, "reason": f"status '{status}' is not a paid state"}
+
+        asyncio.create_task(
+            _handle_manual_payment_confirmed_background(
+                webhook_secret=webhook_secret,
+                order_id=order_id,
+                mpesa_code=str((payload or {}).get("mpesa_code") or "").strip(),
+                amount=(payload or {}).get("amount"),
+                customer_phone=str((payload or {}).get("customer_phone") or "").strip(),
+            )
+        )
+        return {"success": True, "order_id": order_id, "queued": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"manual_payment_confirmed error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to process confirmation")
+
+
+async def _handle_manual_payment_confirmed_background(
+    *,
+    webhook_secret: str,
+    order_id: str,
+    mpesa_code: str = "",
+    amount: Any = None,
+    customer_phone: str = "",
+):
+    """Send the PAID receipt for a manually-confirmed order (own DB session)."""
+    from ..database import get_session_maker
+    from ..services.order_tracking_service import order_tracking_service
+
+    session_maker = get_session_maker()
+    async with session_maker() as db:
+        try:
+            stmt = select(MpesaAgentConfig).where(
+                MpesaAgentConfig.webhook_secret == webhook_secret
+            )
+            result = await db.execute(stmt)
+            config = result.scalar_one_or_none()
+            if not config:
+                logger.warning(
+                    "Unauthorized manual-payment webhook secret: %s...",
+                    (webhook_secret or "")[:5],
+                )
+                return
+
+            user_result = await db.execute(select(User).where(User.id == config.user_id))
+            user = user_result.scalar_one_or_none()
+            if not user:
+                return
+
+            try:
+                amount_paid = float(amount) if amount not in (None, "") else 0.0
+            except (TypeError, ValueError):
+                amount_paid = 0.0
+
+            res = await order_tracking_service.notify_payment_received(
+                user=user,
+                db=db,
+                order_id=order_id,
+                mpesa_receipt=mpesa_code,
+                amount_paid=amount_paid,
+                customer_phone=customer_phone,
+            )
+            logger.info(
+                "[MANUAL_PAY] Confirmed paid receipt for order=%s user=%s result=%s",
+                order_id,
+                config.user_id,
+                res,
+            )
+
+            # Only write back to storage on a fresh send (skip idempotent re-fires).
+            if res.get("success") and not res.get("skipped"):
+                await _record_manual_payment_in_storage(
+                    db=db,
+                    user=user,
+                    owner_user_id=str(config.user_id),
+                    order_id=order_id,
+                    mpesa_code=mpesa_code,
+                    amount_paid=amount_paid,
+                    customer_phone=customer_phone,
+                )
+        except Exception as e:
+            logger.error(
+                "[MANUAL_PAY] confirmation background failed for order %s: %s",
+                order_id,
+                e,
+                exc_info=True,
+            )
+
+
+async def _record_manual_payment_in_storage(
+    *,
+    db,
+    user: User,
+    owner_user_id: str,
+    order_id: str,
+    mpesa_code: str,
+    amount_paid: float,
+    customer_phone: str,
+):
+    """Append a manual payment to the Transactions tab and stamp Receipt Sent on the order row.
+
+    Storage location (spreadsheet/base) comes from the order registry set when the
+    manual fallback was triggered. If the registry has expired there is nowhere to
+    write, so this degrades to a no-op. Best effort — never raises to the caller.
+    """
+    from ..services.order_tracking_service import order_tracking_service
+    from ..services.conversational_agent_service import ConversationalAgentService
+
+    try:
+        registry = order_tracking_service.get_registered_order(owner_user_id, order_id) or {}
+        storage_config = registry.get("storage_config") or {}
+        if storage_config.get("provider") in (None, "", "none"):
+            logger.info(
+                "[MANUAL_PAY] No storage config for order %s (registry expired?); "
+                "skipping Transactions + Receipt Sent write-back",
+                order_id,
+            )
+            return
+
+        conv = ConversationalAgentService()
+        whatsapp_sender = registry.get("whatsapp_sender") or customer_phone
+        tx_data = {
+            "order_id": order_id,
+            "transaction_id": mpesa_code or "",
+            "amount": float(amount_paid or registry.get("amount") or 0),
+            "currency": registry.get("currency", "KES"),
+            "customer_phone": whatsapp_sender,
+            "mpesa_phone": registry.get("mpesa_phone", "") or customer_phone,
+            "whatsapp_phone": whatsapp_sender,
+            "status": "paid",
+            "paid_at": datetime.utcnow().isoformat(),
+            "source": "manual_mpesa",
+        }
+        # order_data omitted so we only append the Transactions row and do not
+        # re-touch the Orders Status the merchant already set to paid.
+        await conv.persist_payment_transaction_to_storage(
+            transaction_data=tx_data,
+            storage_config=storage_config,
+            user=user,
+            db=db,
+            order_data=None,
+        )
+        await conv.mark_receipt_sent_in_storage(
+            order_id=order_id,
+            storage_config=storage_config,
+            user=user,
+            db=db,
+        )
+    except Exception as e:
+        logger.warning(
+            "[MANUAL_PAY] storage write-back failed for order %s: %s", order_id, e
+        )
+
+
 @router.api_route("/callback/{webhook_secret}", methods=["GET", "POST"])
 async def tenant_mpesa_callback(
     webhook_secret: str,
