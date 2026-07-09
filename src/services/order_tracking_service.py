@@ -123,6 +123,102 @@ class OrderTrackingService:
             expire_seconds=TRACKING_TTL_SECONDS,
         )
 
+    async def resolve_payment_mode(self, user: User, db: AsyncSession) -> tuple:
+        """Return (mode, cfg) where mode is 'stk', 'manual', or 'none'.
+
+        'stk' when full Daraja credentials exist; 'manual' when they don't but a
+        manual payment method is configured; 'none' otherwise.
+        """
+        from ..models import MpesaAgentConfig
+        from .mpesa_reconciliation_service import MpesaReconciliationService
+        from .manual_payment_helpers import (
+            stk_credentials_ready,
+            manual_payment_configured,
+        )
+
+        try:
+            res = await db.execute(
+                select(MpesaAgentConfig).where(MpesaAgentConfig.user_id == user.id)
+            )
+            cfg = res.scalar_one_or_none()
+        except Exception as e:
+            logger.warning("[ORDER_TRACK] resolve_payment_mode failed: %s", e)
+            return ("stk", None)
+
+        decrypted = {}
+        if cfg:
+            try:
+                decrypted = MpesaReconciliationService().decrypt_config_credentials(cfg)
+            except Exception:
+                decrypted = {}
+
+        if stk_credentials_ready(cfg, decrypted):
+            return ("stk", cfg)
+        if manual_payment_configured(cfg):
+            return ("manual", cfg)
+        return ("none", cfg)
+
+    def mark_manual_payment(
+        self,
+        owner_user_id: str,
+        order_id: str,
+        *,
+        storage_config: Optional[Dict[str, Any]] = None,
+        amount: float = 0,
+        currency: str = "KES",
+        whatsapp_sender: str = "",
+        session_key: str = "",
+        platform: str = "whatsapp",
+        business_name: str = "",
+    ) -> None:
+        """Flag an order as using the manual (no-STK) payment fallback."""
+        if not order_id:
+            return
+        registry = self.get_registered_order(owner_user_id, order_id) or {"order_id": order_id}
+        registry["payment_mode"] = "manual"
+        registry["awaiting_manual_payment"] = True
+        if whatsapp_sender:
+            registry["whatsapp_sender"] = registry.get("whatsapp_sender") or whatsapp_sender
+            registry["customer_phone"] = registry.get("customer_phone") or whatsapp_sender
+        if storage_config:
+            registry["storage_config"] = storage_config
+        if amount:
+            registry["amount"] = amount
+        if currency:
+            registry["currency"] = currency
+        if session_key:
+            registry["session_key"] = session_key
+        if platform:
+            registry["platform"] = platform
+        if business_name:
+            registry["business_name"] = registry.get("business_name") or business_name
+        cache_service.set(
+            self._tracking_key(owner_user_id, order_id),
+            registry,
+            expire_seconds=TRACKING_TTL_SECONDS,
+        )
+
+    def record_reported_payment(
+        self,
+        owner_user_id: str,
+        order_id: str,
+        code: str = "",
+    ) -> None:
+        """Store a customer-reported M-Pesa code (does NOT mark the order paid)."""
+        if not order_id:
+            return
+        registry = self.get_registered_order(owner_user_id, order_id) or {"order_id": order_id}
+        registry["payment_reported"] = True
+        registry["awaiting_manual_payment"] = False
+        if code:
+            registry["reported_code"] = code
+        registry["reported_at"] = datetime.utcnow().isoformat()
+        cache_service.set(
+            self._tracking_key(owner_user_id, order_id),
+            registry,
+            expire_seconds=TRACKING_TTL_SECONDS,
+        )
+
     def record_stk_context(
         self,
         owner_user_id: str,
@@ -649,7 +745,12 @@ class OrderTrackingService:
             )
 
         registry = self.get_registered_order(str(user.id), order_id) or {}
-        skip_payment_prompt = skip_payment_prompt or registry.get("stk_initiated", False)
+        skip_payment_prompt = (
+            skip_payment_prompt
+            or registry.get("stk_initiated", False)
+            or registry.get("awaiting_manual_payment", False)
+            or registry.get("payment_reported", False)
+        )
 
         receipt_result = await self.order_service.format_order_receipt(
             order_data=order,
@@ -724,17 +825,49 @@ class OrderTrackingService:
             sent.append("location_link" if r3.get("success") else "location_link_failed")
 
         if not skip_payment_prompt:
-            payment_buttons = [
-                {"id": f"pay_mpesa:{order_id}", "title": "Pay on this number"},
-                {"id": f"pay_mpesa_other:{order_id}", "title": "Other number"},
-            ]
-            r4 = await wa.send_quick_reply_buttons(
-                to_number=customer_phone,
-                body_text="How would you like to pay with M-Pesa?",
-                buttons=payment_buttons,
-                config=wa_config,
-            )
-            sent.append("payment_prompt" if r4.get("success") else "payment_prompt_failed")
+            pay_mode, pay_cfg = await self.resolve_payment_mode(user, db)
+            if pay_mode == "manual" and pay_cfg is not None:
+                from .manual_payment_helpers import build_manual_payment_message
+
+                amount = self._order_amount(order)
+                manual_message = build_manual_payment_message(
+                    pay_cfg,
+                    order_id=order_id,
+                    amount=amount,
+                    business_name=business_name,
+                    currency=currency,
+                    lang="en",
+                )
+                self.mark_manual_payment(
+                    str(user.id),
+                    order_id,
+                    storage_config=registry.get("storage_config") or {},
+                    amount=float(amount or 0),
+                    currency=currency,
+                    whatsapp_sender=customer_phone,
+                    business_name=business_name,
+                )
+                r4 = await wa.send_message(customer_phone, manual_message, config=wa_config)
+                sent.append("manual_payment_prompt" if r4.get("success") else "manual_payment_prompt_failed")
+                r4b = await wa.send_quick_reply_buttons(
+                    to_number=customer_phone,
+                    body_text="Once you've paid, tap below to send your M-Pesa code.",
+                    buttons=[{"id": f"reported_paid:{order_id}", "title": "I've paid"}],
+                    config=wa_config,
+                )
+                sent.append("manual_paid_button" if r4b.get("success") else "manual_paid_button_failed")
+            else:
+                payment_buttons = [
+                    {"id": f"pay_mpesa:{order_id}", "title": "Pay on this number"},
+                    {"id": f"pay_mpesa_other:{order_id}", "title": "Other number"},
+                ]
+                r4 = await wa.send_quick_reply_buttons(
+                    to_number=customer_phone,
+                    body_text="How would you like to pay with M-Pesa?",
+                    buttons=payment_buttons,
+                    config=wa_config,
+                )
+                sent.append("payment_prompt" if r4.get("success") else "payment_prompt_failed")
         else:
             sent.append("payment_prompt_skipped")
 

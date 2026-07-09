@@ -251,6 +251,8 @@ _ORDERS_SHEET_HEADERS = [
     "Notes",
     "Order Type",
     "Created At",
+    "Payment Status",
+    "Payment Ref",
 ]
 
 def _sheet_record_get(record: Dict[str, Any], header: str) -> str:
@@ -837,7 +839,9 @@ class ConversationalAgentService:
                 PAY_MPESA_AGENT_PREFIX,
                 PAY_MPESA_OTHER_PREFIX,
                 CONFIRM_PAY_AGENT_MARKER,
+                REPORTED_PAID_AGENT_PREFIX,
                 extract_phone_from_text,
+                extract_mpesa_code,
                 mask_mpesa_phone,
                 normalize_ke_mpesa_phone,
             )
@@ -1174,6 +1178,60 @@ class ConversationalAgentService:
                         handoff_payload["send_agent_mode_buttons"] = "staff"
                     return handoff_payload
 
+            # ── Manual payment reporting (no STK): "I've paid" button + M-Pesa code ──
+            if session_key and not session:
+                try:
+                    session = await context_manager.get_session_by_key(session_key)
+                except Exception:
+                    session = None
+
+            from .order_tracking_service import order_tracking_service as _ots
+
+            lang_report = (
+                context_manager.get_preferred_language(session)
+                if session else preferred_language
+            )
+
+            # A) Customer tapped "I've paid" → capture code now or ask for it.
+            if (user_message or "").startswith(REPORTED_PAID_AGENT_PREFIX):
+                rep_order_id = user_message[len(REPORTED_PAID_AGENT_PREFIX):].strip()
+                code = extract_mpesa_code(user_message)
+                if code:
+                    return await self._record_manual_payment_report(
+                        order_id=rep_order_id, code=code, session_key=session_key,
+                        business_config=business_config, user=user, db=db, lang=lang_report,
+                    )
+                if session_key:
+                    await context_manager.update_session_metadata(
+                        session_key, {"awaiting_mpesa_code": rep_order_id}
+                    )
+                reply = self._t(
+                    lang_report,
+                    "Great! Please send your M-Pesa confirmation code (e.g. QGR7XXXX12) so we can record your payment. 🙏",
+                    "Vizuri! Tafadhali tuma msimbo wa uthibitisho wa M-Pesa (mf. QGR7XXXX12) ili tuweze kurekodi malipo yako. 🙏",
+                )
+                return await self._cart_fast_path_result(
+                    session_key, reply,
+                    actions_taken=[{"tool": "record_manual_payment", "result_summary": "awaiting_code"}],
+                    send_cart_buttons=False,
+                )
+
+            # B) Pasted M-Pesa code while awaiting it, or for an active manual order.
+            awaiting_code_order = (session.metadata.get("awaiting_mpesa_code") if session else "") or ""
+            active_manual_order = ""
+            if session and session.metadata.get("active_payment_order_id"):
+                active_manual_order = str(session.metadata.get("active_payment_order_id"))
+            reported_code = extract_mpesa_code(user_message or "")
+            if reported_code and (awaiting_code_order or active_manual_order):
+                rep_order_id = str(awaiting_code_order or active_manual_order).strip()
+                owner_id_rep = _ots.owner_id_from_session_key(session_key or "", str(user.id))
+                reg = _ots.get_registered_order(owner_id_rep, rep_order_id) or {}
+                if awaiting_code_order or reg.get("payment_mode") == "manual":
+                    return await self._record_manual_payment_report(
+                        order_id=rep_order_id, code=reported_code, session_key=session_key,
+                        business_config=business_config, user=user, db=db, lang=lang_report,
+                    )
+
             # ── Awaiting alternate M-Pesa number (before checkout — phone reply is payment-only) ──
             if session_key:
                 try:
@@ -1274,7 +1332,10 @@ class ConversationalAgentService:
                 )
 
                 masked = mask_mpesa_phone(parsed_phone)
-                if pay_res.get("success"):
+                if pay_res.get("mode") == "manual":
+                    reply = pay_res.get("message") or ""
+                    summary = "manual_payment_alt_phone"
+                elif pay_res.get("success"):
                     reply = self._t(
                         lang,
                         (
@@ -1583,7 +1644,10 @@ class ConversationalAgentService:
                     logger.error(f"[CONV_AGENT] pay_mpesa fast-path failed: {pay_err}", exc_info=True)
                     pay_res = {"success": False, "error": str(pay_err)}
 
-                if pay_res.get("success"):
+                if pay_res.get("mode") == "manual":
+                    reply = pay_res.get("message") or ""
+                    summary = "manual_payment"
+                elif pay_res.get("success"):
                     reply = self._t(
                         lang,
                         (
@@ -1745,7 +1809,17 @@ class ConversationalAgentService:
                     order_data, business_name, currency
                 )
 
-                if pay_res.get("success"):
+                if pay_res.get("mode") == "manual":
+                    reply = (
+                        self._t(
+                            lang,
+                            f"✅ Order *{new_order_id}* placed!\n\n",
+                            f"✅ Oda *{new_order_id}* imewekwa!\n\n",
+                        )
+                        + (pay_res.get("message") or "")
+                    )
+                    summary = "confirm_pay_manual"
+                elif pay_res.get("success"):
                     from .order_tracking_service import order_tracking_service
 
                     order_tracking_service.mark_stk_initiated(str(user.id), new_order_id)
@@ -2027,6 +2101,7 @@ class ConversationalAgentService:
             order_cancelled = False
             order_data = None
             order_notification = ""
+            forced_manual_message = ""
             payment_received = False
             escalation_triggered = False
             escalation_notification = ""
@@ -2397,6 +2472,11 @@ class ConversationalAgentService:
                     if tool_name == "manage_cart" and tool_result.get("success"):
                         send_cart_buttons_after_turn = True
 
+                    # Manual M-Pesa fallback: capture the exact instructions so we
+                    # deliver them verbatim instead of letting the LLM paraphrase.
+                    if tool_name == "initiate_mpesa_payment" and tool_result.get("mode") == "manual":
+                        forced_manual_message = tool_result.get("message") or forced_manual_message
+
                     if tool_name == "create_order" and tool_result.get("success"):
                         order_created = True
                         order_data = tool_result.get("order_data", tool_result)
@@ -2474,6 +2554,11 @@ class ConversationalAgentService:
                 hidden_context = f"[SYSTEM: Order {oid} was successfully created. Do not mention this to the user.]"
                 await self._save_to_ccm(session_key, "assistant", hidden_context)
                 final_text = ""
+            elif forced_manual_message:
+                # Deliver manual M-Pesa payment instructions verbatim (no STK).
+                # (Skip when an order was just created — the tracking service prompts instead.)
+                final_text = forced_manual_message
+                await self._save_to_ccm(session_key, "assistant", final_text)
             else:
                 await self._save_to_ccm(session_key, "assistant", final_text)
 
@@ -3848,11 +3933,24 @@ class ConversationalAgentService:
             if not config.get("access_token") or not config.get("phone_number_id"):
                 return
 
-            body_text = self._t(
-                preferred_language,
-                "Ready to pay? Tap *Pay with M-Pesa* and I'll send a prompt to your phone. 📲",
-                "Uko tayari kulipa? Bonyeza *Pay with M-Pesa* nitatuma ombi kwa simu yako. 📲",
-            )
+            # Adjust the copy when the business only supports manual payment
+            # (no STK): tapping still places the order, then we show M-Pesa
+            # Paybill/Till/Pochi/Send Money instructions instead of a prompt.
+            from .order_tracking_service import order_tracking_service
+
+            pay_mode, _pay_cfg = await order_tracking_service.resolve_payment_mode(user, db)
+            if pay_mode == "manual":
+                body_text = self._t(
+                    preferred_language,
+                    "Ready to order? Tap *Pay with M-Pesa* and I'll place your order and share the payment details. 📲",
+                    "Uko tayari kuagiza? Bonyeza *Pay with M-Pesa* nitaweka oda yako na nikupe maelezo ya malipo. 📲",
+                )
+            else:
+                body_text = self._t(
+                    preferred_language,
+                    "Ready to pay? Tap *Pay with M-Pesa* and I'll send a prompt to your phone. 📲",
+                    "Uko tayari kulipa? Bonyeza *Pay with M-Pesa* nitatuma ombi kwa simu yako. 📲",
+                )
             pay_label = self._t(preferred_language, "Pay with M-Pesa", "Lipa na M-Pesa")
             btn_result = await WhatsAppService().send_quick_reply_buttons(
                 to_number=recipient,
@@ -6039,6 +6137,75 @@ class ConversationalAgentService:
         except Exception as e:
             logger.warning("[CONV_AGENT] payment retry buttons failed: %s", e)
 
+    async def _record_manual_payment_report(
+        self,
+        *,
+        order_id: str,
+        code: str,
+        session_key: Optional[str],
+        business_config: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+        lang: str = "en",
+    ) -> Dict[str, Any]:
+        """Record a customer-reported manual M-Pesa payment.
+
+        Stores the code on the order registry and writes it to the merchant's
+        Sheet/Airtable order row. Does NOT mark the order paid — the merchant
+        reconciles and marks it paid in their own sheet.
+        """
+        from .order_tracking_service import order_tracking_service
+
+        owner_id = order_tracking_service.owner_id_from_session_key(
+            session_key or "", str(user.id)
+        )
+        registry = order_tracking_service.get_registered_order(owner_id, order_id) or {}
+
+        order_tracking_service.record_reported_payment(owner_id, order_id, code)
+
+        if session_key:
+            try:
+                await context_manager.update_session_metadata(
+                    session_key, {"awaiting_mpesa_code": None}
+                )
+            except Exception:
+                pass
+
+        storage_config = (
+            registry.get("storage_config")
+            or self._storage_config_from_business(business_config)
+            or {}
+        )
+        order_snapshot = registry.get("order") or {"order_id": order_id}
+        try:
+            await self.persist_reported_payment_to_storage(
+                order_id=order_id,
+                code=code,
+                order_snapshot=order_snapshot,
+                storage_config=storage_config,
+                user=user,
+                db=db,
+            )
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] Failed to persist reported payment: {e}")
+
+        reply = self._t(
+            lang,
+            (
+                f"✅ Thank you! We've recorded your M-Pesa code *{code}* for order *{order_id}*.\n\n"
+                "The business will confirm your payment and process your order shortly. 🙏"
+            ),
+            (
+                f"✅ Asante! Tumepokea msimbo wako wa M-Pesa *{code}* kwa oda *{order_id}*.\n\n"
+                "Biashara itathibitisha malipo yako na kushughulikia oda yako hivi karibuni. 🙏"
+            ),
+        )
+        return await self._cart_fast_path_result(
+            session_key, reply,
+            actions_taken=[{"tool": "record_manual_payment", "result_summary": f"reported:{code}"}],
+            send_cart_buttons=False,
+        )
+
     async def _sub_initiate_mpesa_payment(
         self,
         *,
@@ -6152,19 +6319,76 @@ class ConversationalAgentService:
             # Load tenant Daraja config (stored per business owner)
             res = await db.execute(select(MpesaAgentConfig).where(MpesaAgentConfig.user_id == user.id))
             cfg = res.scalar_one_or_none()
-            if not cfg or not cfg.webhook_secret:
+
+            # Decrypt credentials (empty when no config exists yet)
+            recon = MpesaReconciliationService()
+            decrypted = recon.decrypt_config_credentials(cfg) if cfg else {}
+
+            from .manual_payment_helpers import (
+                stk_credentials_ready,
+                manual_payment_configured,
+                build_manual_payment_message,
+            )
+
+            # When STK/Daraja credentials aren't fully configured, fall back to
+            # manual payment instructions (Paybill/Till/Pochi/Send Money) if the
+            # business has set them up. No STK push is triggered in that case —
+            # the customer pays from their own M-Pesa menu and reports the code.
+            if not stk_credentials_ready(cfg, decrypted):
+                if manual_payment_configured(cfg):
+                    manual_currency = "KES"
+                    if order_snapshot:
+                        manual_currency = _safe_str(order_snapshot.get("currency")) or "KES"
+                    manual_lang = "en"
+                    if session_key:
+                        try:
+                            _sess = await context_manager.get_session_by_key(session_key)
+                            if _sess:
+                                manual_lang = context_manager.get_preferred_language(_sess) or "en"
+                        except Exception:
+                            manual_lang = "en"
+                    manual_message = build_manual_payment_message(
+                        cfg,
+                        order_id=order_id,
+                        amount=amount_int,
+                        business_name=business_name,
+                        currency=manual_currency,
+                        lang=manual_lang,
+                    )
+                    order_tracking_service.mark_manual_payment(
+                        owner_id,
+                        order_id,
+                        storage_config=storage_config or {},
+                        amount=float(amount_int),
+                        currency=manual_currency,
+                        whatsapp_sender=whatsapp_sender,
+                        session_key=session_key or "",
+                        platform=platform,
+                        business_name=business_name,
+                    )
+                    if session_key:
+                        try:
+                            await context_manager.update_session_metadata(
+                                session_key,
+                                {"active_payment_order_id": order_id},
+                            )
+                        except Exception:
+                            pass
+                    logger.info(
+                        "[CONV_AGENT] Manual payment instructions sent for order=%s (no STK creds)",
+                        order_id,
+                    )
+                    return {
+                        "success": True,
+                        "mode": "manual",
+                        "message": manual_message,
+                        "order_id": order_id,
+                        "amount": amount_int,
+                    }
                 return {
                     "success": False,
                     "error": "M-Pesa is not configured for this business. Ask the business to set Daraja credentials in Settings → Mpesa Webhooks.",
                 }
-
-            # Decrypt credentials
-            recon = MpesaReconciliationService()
-            decrypted = recon.decrypt_config_credentials(cfg)
-            if not decrypted.get("daraja_consumer_key") or not decrypted.get("daraja_consumer_secret"):
-                return {"success": False, "error": "Daraja Consumer Key/Secret missing in business settings"}
-            if not cfg.daraja_passkey or not cfg.daraja_shortcode:
-                return {"success": False, "error": "Daraja passkey/shortcode missing in business settings"}
 
             # Build callback URL (tenant-scoped)
             base_url = (cfg.callback_url_override or settings.API_BASE_URL).rstrip("/")
@@ -7310,6 +7534,74 @@ class ConversationalAgentService:
         else:
             logger.info(f"[CONV_AGENT] Updated order {order_id} status to {status} in Airtable")
 
+    async def _update_order_fields_in_airtable(
+        self,
+        executor,
+        order_id: str,
+        fields: Dict[str, Any],
+        storage_config: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+    ) -> None:
+        """Update arbitrary fields on an Orders record in Airtable, matched by Order ID."""
+        base_id = storage_config.get("airtable_base_id", "")
+        if not base_id or not order_id or not fields:
+            return
+        table_name = storage_config.get("airtable_orders_table", "Orders")
+
+        search_res = await executor.execute_tool(
+            "airtable_record_management",
+            {
+                "operation": "search_records",
+                "base_id": base_id,
+                "table_name": table_name,
+                "formula": f"{{Order ID}} = '{order_id}'",
+                "max_records": 1,
+            },
+            user,
+            db,
+        )
+        target_record = None
+        if search_res.get("success") and search_res.get("records"):
+            target_record = search_res.get("records")[0]
+        else:
+            read_res = await executor.execute_tool(
+                "airtable_record_management",
+                {
+                    "operation": "read_records",
+                    "base_id": base_id,
+                    "table_name": table_name,
+                    "max_records": 100,
+                },
+                user,
+                db,
+            )
+            records = read_res.get("records", []) if read_res.get("success") else []
+            target_record = next(
+                (r for r in records if r.get("fields", {}).get("Order ID") == order_id), None
+            )
+
+        if not target_record:
+            logger.info(f"[CONV_AGENT] Order {order_id} not found in Airtable for field update")
+            return
+
+        record_id = target_record.get("id")
+        update_res = await executor.execute_tool(
+            "airtable_record_management",
+            {
+                "operation": "update_records",
+                "base_id": base_id,
+                "table_name": table_name,
+                "records_data": [{"id": record_id, "fields": fields}],
+            },
+            user,
+            db,
+        )
+        if update_res.get("error"):
+            logger.warning(f"[CONV_AGENT] Airtable field update failed: {update_res.get('error')}")
+        else:
+            logger.info(f"[CONV_AGENT] Updated order {order_id} fields {list(fields)} in Airtable")
+
     async def persist_payment_transaction_to_storage(
         self,
         transaction_data: Dict[str, Any],
@@ -7357,6 +7649,79 @@ class ConversationalAgentService:
                 )
         except Exception as e:
             logger.warning(f"[CONV_AGENT] Transaction persistence failed (non-fatal): {e}")
+
+    async def persist_reported_payment_to_storage(
+        self,
+        *,
+        order_id: str,
+        code: str,
+        order_snapshot: Optional[Dict[str, Any]],
+        storage_config: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+    ) -> None:
+        """Write a customer-reported manual payment (code + 'reported' status) to the
+        order row so the merchant can reconcile it in their Sheet/Airtable.
+
+        This never marks the order paid — the merchant does that manually.
+        """
+        provider = (storage_config or {}).get("provider", "none")
+        if provider in (None, "", "none") or not order_id:
+            return
+        order_snapshot = order_snapshot or {"order_id": order_id}
+        try:
+            from .tool_executor import ToolExecutor
+
+            executor = ToolExecutor()
+            if provider == "google_sheets":
+                spreadsheet_id = storage_config.get("spreadsheet_id", "")
+                if not spreadsheet_id:
+                    return
+                orders_sheet = (storage_config.get("orders_sheet_name") or "Orders").strip() or "Orders"
+                orders_headers = await self._ensure_sheet_headers_with_fallback(
+                    executor=executor,
+                    spreadsheet_id=spreadsheet_id,
+                    preferred_sheet=orders_sheet,
+                    fallback_sheets=[],
+                    required_headers=list(_ORDERS_SHEET_HEADERS),
+                    user=user,
+                    db=db,
+                    candidate_sheets=_orders_sheet_tab_candidates(orders_sheet),
+                )
+                if not orders_headers:
+                    return
+                # Leave Status empty so the merchant's own status is preserved;
+                # only Payment Status + Payment Ref are written.
+                record = self._build_order_sheet_record(
+                    order_data=order_snapshot,
+                    customer=order_snapshot.get("customer") or {},
+                    items_summary="",
+                    created_at="",
+                    status="",
+                    payment_status="reported",
+                    payment_ref=code,
+                )
+                await self._upsert_order_row_in_google_sheets(
+                    executor=executor,
+                    spreadsheet_id=spreadsheet_id,
+                    orders_headers=orders_headers,
+                    order_id=order_id,
+                    order_record=record,
+                    user=user,
+                    db=db,
+                    force_status=None,
+                )
+            elif provider == "airtable":
+                await self._update_order_fields_in_airtable(
+                    executor=executor,
+                    order_id=order_id,
+                    fields={"Payment Status": "reported", "Payment Ref": code},
+                    storage_config=storage_config,
+                    user=user,
+                    db=db,
+                )
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] Reported payment persistence failed (non-fatal): {e}")
 
     async def _persist_to_google_sheets(
         self,
@@ -7436,6 +7801,8 @@ class ConversationalAgentService:
         created_at: str,
         status: str = "pending",
         mpesa_phone: str = "",
+        payment_status: str = "",
+        payment_ref: str = "",
     ) -> Dict[str, str]:
         customer = customer or order_data.get("customer") or {}
         whatsapp_phone = _safe_str(
@@ -7458,6 +7825,8 @@ class ConversationalAgentService:
             "Notes": _safe_str(order_data.get("notes", "")),
             "Order Type": _safe_str(order_data.get("order_type", "")),
             "Created At": _safe_str(created_at or order_data.get("created_at", "")),
+            "Payment Status": _safe_str(payment_status),
+            "Payment Ref": _safe_str(payment_ref),
         }
 
     async def _mark_order_paid_in_google_sheets(

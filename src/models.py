@@ -937,7 +937,18 @@ class MpesaAgentConfig(Base):
     webhook_secret = Column(String, unique=True, index=True, nullable=True)
     callback_url_override = Column(String, nullable=True)
     daraja_environment = Column(String, default="sandbox", server_default="sandbox", nullable=False)  # sandbox or live
-    
+
+    # Manual payment fallback (used when live/test STK credentials are not yet configured).
+    # Customers pay from their own M-Pesa menu; no STK push is triggered.
+    manual_payment_enabled = Column(Boolean, default=False, server_default="false", nullable=False)
+    manual_paybill_number = Column(String, nullable=True)
+    manual_paybill_account = Column(String, nullable=True)  # optional fixed account; defaults to order id
+    manual_till_number = Column(String, nullable=True)
+    manual_pochi_number = Column(String, nullable=True)  # phone number
+    manual_send_money_number = Column(String, nullable=True)  # phone number
+    manual_recipient_name = Column(String, nullable=True)  # name the customer sees in M-Pesa
+    manual_payment_note = Column(String, nullable=True)  # optional extra instructions
+
     # Reconciliation settings
     alert_channel_id = Column(String, nullable=True)
     alert_enabled = Column(Boolean, default=True, nullable=False)

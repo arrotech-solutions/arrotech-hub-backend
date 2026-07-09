@@ -342,6 +342,17 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                         content = CONFIRM_PAY_AGENT_MARKER
                         msg_type = "text"
 
+                    # ── "I've paid" on the manual payment prompt (no STK) ──
+                    # Customer paid via Paybill/Till/Pochi/Send Money and taps to
+                    # report it. The agent asks for the M-Pesa confirmation code.
+                    elif btn_id.startswith("reported_paid:"):
+                        from ..services.whatsapp_ordering_helpers import (
+                            REPORTED_PAID_AGENT_PREFIX,
+                        )
+                        pay_order_id = btn_id.split(":", 1)[1].strip()
+                        content = f"{REPORTED_PAID_AGENT_PREFIX}{pay_order_id}"
+                        msg_type = "text"
+
                     # ── Staff ↔ AI assistant toggle buttons ──
                     elif btn_id in ("agent:human", "agent:staff"):
                         content = "I'd like to speak with a person, please."

@@ -40,6 +40,15 @@ class MpesaAgentConfigUpdate(BaseModel):
     daraja_shortcode: Optional[str] = None
     daraja_environment: Optional[str] = None  # "sandbox" or "live"
     callback_url_override: Optional[str] = None
+    # Manual payment fallback (no STK)
+    manual_payment_enabled: Optional[bool] = None
+    manual_paybill_number: Optional[str] = None
+    manual_paybill_account: Optional[str] = None
+    manual_till_number: Optional[str] = None
+    manual_pochi_number: Optional[str] = None
+    manual_send_money_number: Optional[str] = None
+    manual_recipient_name: Optional[str] = None
+    manual_payment_note: Optional[str] = None
 
 
 class MpesaAgentConfigResponse(BaseModel):
@@ -54,6 +63,15 @@ class MpesaAgentConfigResponse(BaseModel):
     daraja_environment: Optional[str] = None
     webhook_secret: Optional[str] = None
     callback_url_override: Optional[str] = None
+    # Manual payment fallback (no STK)
+    manual_payment_enabled: bool = False
+    manual_paybill_number: Optional[str] = None
+    manual_paybill_account: Optional[str] = None
+    manual_till_number: Optional[str] = None
+    manual_pochi_number: Optional[str] = None
+    manual_send_money_number: Optional[str] = None
+    manual_recipient_name: Optional[str] = None
+    manual_payment_note: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -109,7 +127,8 @@ async def get_mpesa_agent_config(
                 notification_preferences=None,
                 daraja_environment="sandbox",
                 webhook_secret=None,
-                callback_url_override=None
+                callback_url_override=None,
+                manual_payment_enabled=False,
             )
         
         # Mask the consumer key for display (never return raw encrypted value)
@@ -125,7 +144,15 @@ async def get_mpesa_agent_config(
             daraja_shortcode=config.daraja_shortcode,
             daraja_environment=config.daraja_environment or "sandbox",
             webhook_secret=config.webhook_secret,
-            callback_url_override=config.callback_url_override
+            callback_url_override=config.callback_url_override,
+            manual_payment_enabled=bool(getattr(config, "manual_payment_enabled", False)),
+            manual_paybill_number=config.manual_paybill_number,
+            manual_paybill_account=config.manual_paybill_account,
+            manual_till_number=config.manual_till_number,
+            manual_pochi_number=config.manual_pochi_number,
+            manual_send_money_number=config.manual_send_money_number,
+            manual_recipient_name=config.manual_recipient_name,
+            manual_payment_note=config.manual_payment_note,
         )
     except Exception as e:
         logger.error(f"Error getting M-Pesa agent config: {e}", exc_info=True)
@@ -161,7 +188,15 @@ async def update_mpesa_agent_config(
             daraja_shortcode=config.daraja_shortcode,
             daraja_environment=config.daraja_environment or "sandbox",
             webhook_secret=config.webhook_secret,
-            callback_url_override=config.callback_url_override
+            callback_url_override=config.callback_url_override,
+            manual_payment_enabled=bool(getattr(config, "manual_payment_enabled", False)),
+            manual_paybill_number=config.manual_paybill_number,
+            manual_paybill_account=config.manual_paybill_account,
+            manual_till_number=config.manual_till_number,
+            manual_pochi_number=config.manual_pochi_number,
+            manual_send_money_number=config.manual_send_money_number,
+            manual_recipient_name=config.manual_recipient_name,
+            manual_payment_note=config.manual_payment_note,
         )
     except Exception as e:
         logger.error(f"Error updating M-Pesa agent config: {e}", exc_info=True)

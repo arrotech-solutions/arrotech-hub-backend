@@ -23,6 +23,29 @@ PAY_MPESA_OTHER_PREFIX = "__PAY_MPESA_OTHER__:"
 # the STK push — so customers never have to type "YES" to proceed to payment.
 CONFIRM_PAY_AGENT_MARKER = "__CONFIRM_PAY__"
 
+# Manual payment fallback: customer taps "I've paid" after paying via
+# Paybill/Till/Pochi/Send Money (no STK). The agent asks for / records the
+# M-Pesa confirmation code and writes it to the merchant's Sheet/Airtable.
+REPORTED_PAID_AGENT_PREFIX = "__REPORTED_PAID__:"
+
+# Safaricom M-Pesa transaction codes look like 10-char alphanumerics (e.g. QGR7XXXX12).
+MPESA_CODE_RE = re.compile(r"\b([A-Z0-9]{10})\b")
+
+
+def extract_mpesa_code(message: str) -> Optional[str]:
+    """Return an uppercase M-Pesa confirmation code if the text looks like one."""
+    if not message:
+        return None
+    text = str(message).strip().upper()
+    m = MPESA_CODE_RE.search(text)
+    if not m:
+        return None
+    code = m.group(1)
+    # Require at least one letter and one digit to avoid matching plain numbers/words.
+    if not (any(c.isalpha() for c in code) and any(c.isdigit() for c in code)):
+        return None
+    return code
+
 # Reuse harness injection patterns for inbound user messages
 try:
     from .harness.guardrails import INJECTION_PATTERNS
