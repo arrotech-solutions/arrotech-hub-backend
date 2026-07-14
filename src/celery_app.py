@@ -178,6 +178,13 @@ app.conf.beat_schedule = {
         "options": {"queue": "low"},
     },
 
+    # ── Idempotency table cleanup (daily at 04:30 UTC) ──
+    "cleanup-processed-webhook-messages-daily": {
+        "task": "src.tasks.maintenance_tasks.cleanup_processed_webhook_messages_task",
+        "schedule": crontab(hour=4, minute=30),
+        "options": {"queue": "low"},
+    },
+
 }
 
 # ── Observability Signals ────────────────────────────────────────────────────

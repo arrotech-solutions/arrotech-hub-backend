@@ -2069,3 +2069,31 @@ class AuditChainMetaRow(Base):
     record_count = Column(Integer, default=0)
     last_updated = Column(DateTime(timezone=True), nullable=True)
 
+
+class ProcessedWebhookMessage(Base):
+    """Idempotency tracking for WhatsApp webhook messages.
+
+    Prevents duplicate processing when the same message is delivered
+    multiple times (Meta retries, Celery redelivery, concurrent workers).
+
+    The UNIQUE constraint on (user_id, whatsapp_message_id) provides
+    database-level atomicity: INSERT ... ON CONFLICT DO NOTHING ensures
+    only one worker ever processes a given message through the agent
+    pipeline, even under race conditions.
+    """
+    __tablename__ = "processed_webhook_messages"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    whatsapp_message_id = Column(String, nullable=False)
+
+    # What happened: 'completed', 'order_created', 'auto_reply', 'skipped'
+    processing_result = Column(String(32), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "whatsapp_message_id", name="uq_processed_user_wa_msg"),
+        Index("ix_processed_webhook_created_at", "created_at"),
+    )
+

@@ -22,9 +22,12 @@ from .utils import run_async as _run_async
     bind=True,
     max_retries=2,
     default_retry_delay=30,
-    autoretry_for=(Exception,),
     retry_backoff=True,
-    acks_late=True,
+    # NOTE: acks_late and autoretry_for deliberately removed.
+    # acks_late caused duplicate processing when a worker crashed after
+    # order creation but before ack — Celery would redeliver the task.
+    # The DB-level idempotency guard (ProcessedWebhookMessage unique
+    # constraint) now prevents duplicates even if a task is retried.
 )
 def process_whatsapp_message_task(self, payload: Dict[str, Any], user_id: str = None):
     """

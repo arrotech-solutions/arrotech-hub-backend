@@ -207,3 +207,46 @@ def check_tiktok_schedules_task(self):
 
     count = _run_async(_check())
     return {"published": count}
+
+
+@app.task(
+    name="src.tasks.maintenance_tasks.cleanup_processed_webhook_messages_task",
+    bind=True,
+    max_retries=1,
+    acks_late=True,
+    ignore_result=True,
+)
+def cleanup_processed_webhook_messages_task(self, retention_days: int = 7):
+    """
+    Delete processed_webhook_messages records older than the retention period.
+
+    These records only need to survive long enough to deduplicate retries
+    (Meta retries within ~24h, Celery retries within minutes).  7 days
+    gives ample margin while keeping the table small.
+
+    Runs daily at 04:30 UTC via Celery Beat.
+    """
+    async def _cleanup():
+        from src.database import get_session_maker
+        from src.models import ProcessedWebhookMessage
+        from sqlalchemy import delete
+        import datetime
+
+        cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=retention_days)
+        session_maker = get_session_maker()
+
+        async with session_maker() as session:
+            result = await session.execute(
+                delete(ProcessedWebhookMessage).where(
+                    ProcessedWebhookMessage.created_at < cutoff
+                )
+            )
+            await session.commit()
+            return result.rowcount
+
+    deleted_count = _run_async(_cleanup())
+    if deleted_count > 0:
+        logger.info(
+            f"[CeleryMaintenance] Cleaned up {deleted_count} old processed_webhook_messages"
+        )
+    return {"deleted": deleted_count}

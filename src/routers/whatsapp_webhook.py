@@ -18,6 +18,7 @@ from ..models import (
     User, Connection, WhatsAppContact, WhatsAppMessage,
     WhatsAppMessageDirection, WhatsAppMessageStatus,
     WhatsAppBroadcast, WhatsAppBroadcastRecipient,
+    ProcessedWebhookMessage,
 )
 from ..config import settings
 from ..services import WhatsAppService
@@ -177,37 +178,18 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
             # Extract message details
             msg_id = msg.get("id")
             
-            # Duplicate Meta retries: re-run pipeline if DB row exists (prior run may have failed)
+            # ── Idempotency Layer 1: skip if message already saved ──
+            # The unique constraint on WhatsAppMessage.whatsapp_message_id
+            # prevents duplicate rows; if a row already exists it means a
+            # prior webhook delivery already saved and processed this message.
             existing_msg = await db.execute(
                 select(WhatsAppMessage).filter(WhatsAppMessage.whatsapp_message_id == msg_id)
             )
             existing_row = existing_msg.scalar_one_or_none()
             if existing_row:
-                try:
-                    from ..services.cache_service import cache_service
-                    reprocess_key = f"wa_webhook_reprocess:{msg_id}"
-                    if not cache_service.get(reprocess_key):
-                        cache_service.set(reprocess_key, "1", expire_seconds=300)
-                        logger.info(
-                            f"[WHATSAPP WEBHOOK] Message {msg_id} exists — re-running workflow"
-                        )
-                        if background_tasks:
-                            background_tasks.add_task(
-                                background_process_message,
-                                existing_row.user_id,
-                                existing_row.contact_id,
-                                existing_row.id,
-                            )
-                        else:
-                            await background_process_message(
-                                existing_row.user_id,
-                                existing_row.contact_id,
-                                existing_row.id,
-                            )
-                except Exception as reprocess_err:
-                    logger.warning(
-                        f"[WHATSAPP WEBHOOK] Reprocess failed for {msg_id}: {reprocess_err}"
-                    )
+                logger.info(
+                    f"[WHATSAPP WEBHOOK] Duplicate message {msg_id} — already saved, skipping"
+                )
                 continue
 
             from_number = msg.get("from")  # Sender's phone number
@@ -676,6 +658,40 @@ async def background_process_message(user_id: uuid.UUID, contact_id: uuid.UUID, 
             if not contact or not message:
                 logger.error(f"[WHATSAPP WEBHOOK BG] Contact or message not found")
                 return
+
+            # ── Idempotency Layer 2: atomic INSERT prevents duplicate processing ──
+            # Even if two Celery workers or background tasks race on the same
+            # message_id, the UNIQUE constraint on (user_id, whatsapp_message_id)
+            # guarantees only one succeeds.  The other gets 0 rows inserted and
+            # skips the entire agent pipeline — no duplicate orders, receipts,
+            # or replies.
+            if message.whatsapp_message_id:
+                try:
+                    from sqlalchemy.dialects.postgresql import insert as pg_insert
+                    stmt = pg_insert(ProcessedWebhookMessage).values(
+                        id=uuid.uuid4(),
+                        user_id=user_id,
+                        whatsapp_message_id=message.whatsapp_message_id,
+                    ).on_conflict_do_nothing(
+                        constraint="uq_processed_user_wa_msg"
+                    )
+                    result = await db.execute(stmt)
+                    await db.commit()
+
+                    if result.rowcount == 0:
+                        logger.info(
+                            f"[WHATSAPP WEBHOOK BG] Idempotency guard: message "
+                            f"{message.whatsapp_message_id} already processed — skipping"
+                        )
+                        return
+                except Exception as idemp_err:
+                    # If the idempotency check itself fails (e.g. table doesn't
+                    # exist yet during migration rollout), log and continue
+                    # processing rather than dropping the message silently.
+                    logger.warning(
+                        f"[WHATSAPP WEBHOOK BG] Idempotency check failed, "
+                        f"proceeding with processing: {idemp_err}"
+                    )
 
             wa_config = None
 
