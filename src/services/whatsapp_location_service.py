@@ -35,10 +35,11 @@ def normalize_whatsapp_location_payload(loc: Dict[str, Any]) -> Dict[str, Any]:
         parts.append(name)
     if address and address not in parts:
         parts.append(address)
-    parts.append(f"({lat:.6f}, {lng:.6f})")
+    
     maps_url = f"https://maps.google.com/?q={lat},{lng}"
 
-    delivery_address = " — ".join(parts) if parts else maps_url
+    # Only include readable parts in the address string
+    delivery_address = " — ".join(parts) if parts else "WhatsApp Location Pin"
 
     return {
         "latitude": lat,
@@ -95,7 +96,6 @@ def build_location_agent_message(location: Dict[str, Any]) -> str:
     return (
         f"{LOCATION_AGENT_PREFIX}: The customer shared their delivery location on WhatsApp.\n"
         f"Saved delivery address: {addr}\n"
-        f"Coordinates: {location.get('latitude')}, {location.get('longitude')}\n"
         f"Maps: {maps_url}\n"
         "Use this address for delivery on their order. Confirm receipt briefly."
     )

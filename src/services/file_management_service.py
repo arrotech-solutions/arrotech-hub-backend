@@ -284,9 +284,13 @@ class FileManagementService:
                 Paragraph(str(delivery_method).replace("_", " ").title(), value_style),
             ])
         if delivery_address:
+            address_str = str(delivery_address)
+            maps_url = data.get("maps_url")
+            if maps_url:
+                address_str += f' <a href="{maps_url}" color="blue"><u>(View on map)</u></a>'
             meta_rows.append([
                 Paragraph("Address", label_style),
-                Paragraph(str(delivery_address), value_style),
+                Paragraph(address_str, value_style),
             ])
         if business_phone:
             meta_rows.append([

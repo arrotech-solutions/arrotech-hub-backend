@@ -651,6 +651,7 @@ class OrderTrackingService:
             "customer_phone": order.get("customer_phone", ""),
             "delivery_method": order.get("delivery_method", ""),
             "delivery_address": order.get("delivery_address", ""),
+            "maps_url": self._delivery_maps_link(order),
             "items": order.get("items") or [],
             "currency": currency,
             "amount": amount,
