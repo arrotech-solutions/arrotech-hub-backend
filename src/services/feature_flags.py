@@ -131,8 +131,8 @@ PLAN_LIMITS: Dict[str, Dict[str, Any]] = {
             "slack", "microsoft_teams", "teams", "whatsapp", "whatsapp_business",
             "google_calendar", "outlook_calendar",
             "jira", "trello", "asana", "clickup",
-            "mpesa", "context_tools",
-            "google_workspace", "zoho_crm", "kra_portal"
+            "google_workspace", "zoho_crm", "kra_portal",
+            "rag_pipeline", "ai_models", "vector_databases", "document_parsers"
         ],
     },
     
@@ -217,7 +217,8 @@ PLAN_LIMITS: Dict[str, Dict[str, Any]] = {
             "quickbooks", "quick_books", "xero", "zoho_books",
             "kra_portal",
             # Other
-            "context_tools"
+            "context_tools",
+            "rag_pipeline", "ai_models", "vector_databases", "document_parsers"
         ],
     },
     

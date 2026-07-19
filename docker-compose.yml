@@ -7,8 +7,6 @@ services:
       dockerfile: Dockerfile
       args:
         - BUILDKIT_INLINE_CACHE=1
-    ports:
-      - "8000:8000"
     env_file:
       - .env
     environment:
@@ -124,6 +122,7 @@ services:
     command: python -m src.main
     restart: unless-stopped
     deploy:
+      replicas: 3
       resources:
         limits:
           memory: 512M
