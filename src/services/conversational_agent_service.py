@@ -5437,7 +5437,6 @@ class ConversationalAgentService:
                                 business_name,
                                 business_phone,
                                 currency,
-                                existing_db=db,
                             )
 
             return {
@@ -5458,36 +5457,29 @@ class ConversationalAgentService:
         business_name: str,
         business_phone: str,
         currency: str,
-        existing_db: Optional['AsyncSession'] = None,
     ) -> None:
         """Background task: confirmation, receipt, and tracking registry."""
         try:
+            from ..database import get_session_maker
             from ..models import User
             from sqlalchemy import select
             from .order_tracking_service import order_tracking_service
 
-            async def _do_notify(db_session):
-                result = await db_session.execute(select(User).where(User.id == user_id))
-                user_obj = result.scalar_one_or_none()
-                if not user_obj:
+            session_maker = get_session_maker()
+            async with session_maker() as db:
+                result = await db.execute(select(User).where(User.id == user_id))
+                user = result.scalar_one_or_none()
+                if not user:
                     return
                 await order_tracking_service.notify_order_placed(
-                    user=user_obj,
-                    db=db_session,
+                    user=user,
+                    db=db,
                     customer_phone=customer_phone,
                     order_data=order_data,
                     business_name=business_name,
                     business_phone=business_phone,
                     currency=currency,
                 )
-
-            if existing_db:
-                await _do_notify(existing_db)
-            else:
-                from ..database import get_session_maker
-                session_maker = get_session_maker()
-                async with session_maker() as new_db:
-                    await _do_notify(new_db)
         except Exception as e:
             logger.warning(f"[CONV_AGENT] Order tracking notify failed: {e}")
 
