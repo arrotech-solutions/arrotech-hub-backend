@@ -654,15 +654,15 @@ def main():
         # Detect production: Railway sets PORT env var
         is_prod = os.getenv("PORT") or settings.ENVIRONMENT == "production"
 
-        logger.info(f"Starting server on port {port}...")
+        # Force single process by removing WEB_CONCURRENCY if it exists
+        os.environ.pop("WEB_CONCURRENCY", None)
 
         uvicorn.run(
             "src.main:app",
             host="0.0.0.0",
             port=port,
             reload=False if is_prod else settings.RELOAD,
-            log_level="info" if is_prod else settings.LOG_LEVEL.lower(),
-            workers=int(os.getenv("WEB_CONCURRENCY", "1"))
+            log_level="info" if is_prod else settings.LOG_LEVEL.lower()
         )
 
 
