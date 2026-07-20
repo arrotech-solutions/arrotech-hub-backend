@@ -35,9 +35,15 @@ def resolve_relative(module: str, level: int, current: Path, base: Path) -> Opti
     if level == 0:
         return module
     cur = module_name(current, base).split(".")
+    
+    # In Python, an __init__.py file acts as its parent directory for relative imports.
+    # So `from . import foo` inside `pkg/__init__.py` means `pkg.foo`.
+    if current.name == "__init__.py":
+        level -= 1
+
     if level > len(cur):
         return None
-    base_parts = cur[:-level]
+    base_parts = cur[:-level] if level > 0 else cur
     return ".".join(base_parts + ([module] if module else []))
 
 
@@ -82,16 +88,24 @@ def build_graph(base: Path) -> Dict[str, Set[str]]:
                 if isinstance(node, ast.ImportFrom):
                     resolved = resolve_relative(node.module or "", node.level or 0, fp, base)
                     if resolved:
-                        for m in modules:
-                            if resolved == m or resolved.startswith(m + ".") or m.startswith(resolved):
-                                graph[cur].add(m)
-                                break
+                        for alias in node.names:
+                            # Try the specific symbol first (might be a module)
+                            full_name = f"{resolved}.{alias.name}" if resolved else alias.name
+                            if full_name in modules:
+                                graph[cur].add(full_name)
+                            elif resolved in modules:
+                                # It's just a variable/function from the resolved module
+                                graph[cur].add(resolved)
                 elif isinstance(node, ast.Import):
                     for alias in node.names:
-                        for m in modules:
-                            if alias.name == m or alias.name.startswith(m + "."):
-                                graph[cur].add(m)
-                                break
+                        # Check if the exact module exists
+                        if alias.name in modules:
+                            graph[cur].add(alias.name)
+                        else:
+                            # It might be importing a parent package where only submodules exist,
+                            # but usually we only track explicit file-to-file dependencies.
+                            # If they do `import foo` and `foo/__init__.py` exists, `foo` is in modules.
+                            pass
     return graph
 
 
