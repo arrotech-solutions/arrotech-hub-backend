@@ -41,6 +41,22 @@ def resolve_relative(module: str, level: int, current: Path, base: Path) -> Opti
     return ".".join(base_parts + ([module] if module else []))
 
 
+def _top_level_imports(tree: ast.Module):
+    """Yield only top-level import nodes (not those inside functions/methods).
+
+    Lazy imports inside functions are an intentional pattern to break
+    runtime circular dependencies and must not be treated as static edges.
+    """
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            yield node
+        # Also check inside class bodies (class-level imports)
+        elif isinstance(node, ast.ClassDef):
+            for class_node in node.body:
+                if isinstance(class_node, (ast.Import, ast.ImportFrom)):
+                    yield class_node
+
+
 def build_graph(base: Path) -> Dict[str, Set[str]]:
     graph: Dict[str, Set[str]] = defaultdict(set)
     modules: Set[str] = set()
@@ -62,7 +78,7 @@ def build_graph(base: Path) -> Dict[str, Set[str]]:
                 tree = ast.parse(open(fp, encoding="utf-8", errors="ignore").read())
             except (SyntaxError, UnicodeDecodeError):
                 continue
-            for node in ast.walk(tree):
+            for node in _top_level_imports(tree):
                 if isinstance(node, ast.ImportFrom):
                     resolved = resolve_relative(node.module or "", node.level or 0, fp, base)
                     if resolved:
