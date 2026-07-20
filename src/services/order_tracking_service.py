@@ -1,0 +1,1352 @@
+"""
+Automated order tracking notifications for WhatsApp ordering agents.
+
+Sends customer-facing updates: order confirmation, digital receipts,
+and status/shipping alerts when order status changes.
+"""
+
+from __future__ import annotations
+
+import base64
+import logging
+from datetime import datetime
+from typing import Any, Dict, List, Literal, Optional
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..models import Connection, ConnectionStatus, StkOrderMapping, StkPaymentAttempt, User
+from .cache_service import cache_service
+from .order_service import ORDER_STATUSES, OrderService
+
+logger = logging.getLogger(__name__)
+
+TRACKING_TTL_SECONDS = 60 * 60 * 24 * 45  # 45 days
+STK_DEBOUNCE_SECONDS = 30
+PAYMENT_FAILURE_ALERT_THRESHOLD = 3
+UNPAID_ORDER_TTL_HOURS = 24
+
+PaymentStatus = Literal["pending", "paid"]
+
+# Statuses that trigger a proactive customer WhatsApp alert
+NOTIFY_STATUSES = {
+    "confirmed",
+    "preparing",
+    "ready",
+    "shipped",
+    "out_for_delivery",
+    "delivered",
+    "cancelled",
+    "refunded",
+}
+
+STATUS_CUSTOMER_COPY = {
+    "pending": ("🕐", "Order received", "We've received your order and will confirm it shortly."),
+    "confirmed": ("✅", "Order confirmed", "Your order is confirmed! We're getting it ready."),
+    "preparing": ("👨‍🍳", "Being prepared", "Our team is preparing your order now."),
+    "ready": ("📦", "Ready", "Your order is ready! We'll dispatch it soon."),
+    "shipped": ("🚚", "Shipped", "Your order is on the way."),
+    "out_for_delivery": ("🏍️", "Out for delivery", "Your order is out for delivery — almost there!"),
+    "delivered": ("✅", "Delivered", "Your order has been delivered. Enjoy!"),
+    "cancelled": ("❌", "Cancelled", "Your order has been cancelled."),
+    "refunded": ("💰", "Refunded", "A refund has been processed for your order."),
+}
+
+
+class OrderTrackingService:
+    """Customer notifications and order tracking registry."""
+
+    def __init__(self):
+        self.order_service = OrderService()
+
+    def _tracking_key(self, owner_user_id: str, order_id: str) -> str:
+        return f"wa_order_track:{owner_user_id}:{order_id}"
+
+    def register_order(
+        self,
+        owner_user_id: str,
+        order_id: str,
+        customer_phone: str,
+        order_snapshot: Dict[str, Any],
+        business_name: str = "",
+        business_phone: str = "",
+        currency: str = "KES",
+    ) -> None:
+        """Store order → customer mapping for later status push notifications."""
+        if not order_id or not customer_phone:
+            return
+        existing = self.get_registered_order(owner_user_id, order_id) or {}
+        payload = {
+            "order_id": order_id,
+            "customer_phone": customer_phone,
+            "business_name": business_name or existing.get("business_name", ""),
+            "business_phone": business_phone or existing.get("business_phone", ""),
+            "currency": currency or existing.get("currency", "KES"),
+            "status": (order_snapshot.get("status") or existing.get("status") or "pending"),
+            "order": order_snapshot,
+            "registered_at": existing.get("registered_at") or datetime.utcnow().isoformat(),
+            "placement_notified": existing.get("placement_notified", False),
+            "placement_receipt_sent": existing.get("placement_receipt_sent", False),
+            "payment_notified": existing.get("payment_notified", False),
+            "stk_initiated": existing.get("stk_initiated", False),
+            "whatsapp_sender": existing.get("whatsapp_sender") or customer_phone,
+            "payment_attempt_count": existing.get("payment_attempt_count", 0),
+            "last_stk_at": existing.get("last_stk_at", ""),
+            "last_payment_failure": existing.get("last_payment_failure"),
+        }
+        cache_service.set(
+            self._tracking_key(owner_user_id, order_id),
+            payload,
+            expire_seconds=TRACKING_TTL_SECONDS,
+        )
+        if not cache_service.redis_client:
+            logger.warning(
+                "[ORDER_TRACK] Redis unavailable — order %s not cached for payment lookup",
+                order_id,
+            )
+        elif not cache_service.get(self._tracking_key(owner_user_id, order_id)):
+            logger.warning(
+                "[ORDER_TRACK] Failed to cache order %s for owner %s",
+                order_id,
+                owner_user_id,
+            )
+
+    def mark_stk_initiated(self, owner_user_id: str, order_id: str) -> None:
+        """Flag that an M-Pesa STK push was already sent for this order."""
+        registry = self.get_registered_order(owner_user_id, order_id) or {}
+        if not registry:
+            return
+        registry["stk_initiated"] = True
+        cache_service.set(
+            self._tracking_key(owner_user_id, order_id),
+            registry,
+            expire_seconds=TRACKING_TTL_SECONDS,
+        )
+
+    async def resolve_payment_mode(self, user: User, db: AsyncSession) -> tuple:
+        """Return (mode, cfg) where mode is 'stk', 'manual', or 'none'.
+
+        'stk' when full Daraja credentials exist; 'manual' when they don't but a
+        manual payment method is configured; 'none' otherwise.
+        """
+        from ..models import MpesaAgentConfig
+        from .mpesa_reconciliation_service import MpesaReconciliationService
+        from .manual_payment_helpers import (
+            stk_credentials_ready,
+            manual_payment_configured,
+        )
+
+        try:
+            res = await db.execute(
+                select(MpesaAgentConfig).where(MpesaAgentConfig.user_id == user.id)
+            )
+            cfg = res.scalar_one_or_none()
+        except Exception as e:
+            logger.warning("[ORDER_TRACK] resolve_payment_mode failed: %s", e)
+            return ("stk", None)
+
+        decrypted = {}
+        if cfg:
+            try:
+                decrypted = MpesaReconciliationService().decrypt_config_credentials(cfg)
+            except Exception:
+                decrypted = {}
+
+        if stk_credentials_ready(cfg, decrypted):
+            return ("stk", cfg)
+        if manual_payment_configured(cfg):
+            return ("manual", cfg)
+        return ("none", cfg)
+
+    def mark_manual_payment(
+        self,
+        owner_user_id: str,
+        order_id: str,
+        *,
+        storage_config: Optional[Dict[str, Any]] = None,
+        amount: float = 0,
+        currency: str = "KES",
+        whatsapp_sender: str = "",
+        session_key: str = "",
+        platform: str = "whatsapp",
+        business_name: str = "",
+    ) -> None:
+        """Flag an order as using the manual (no-STK) payment fallback."""
+        if not order_id:
+            return
+        registry = self.get_registered_order(owner_user_id, order_id) or {"order_id": order_id}
+        registry["payment_mode"] = "manual"
+        registry["awaiting_manual_payment"] = True
+        if whatsapp_sender:
+            registry["whatsapp_sender"] = registry.get("whatsapp_sender") or whatsapp_sender
+            registry["customer_phone"] = registry.get("customer_phone") or whatsapp_sender
+        if storage_config:
+            registry["storage_config"] = storage_config
+        if amount:
+            registry["amount"] = amount
+        if currency:
+            registry["currency"] = currency
+        if session_key:
+            registry["session_key"] = session_key
+        if platform:
+            registry["platform"] = platform
+        if business_name:
+            registry["business_name"] = registry.get("business_name") or business_name
+        cache_service.set(
+            self._tracking_key(owner_user_id, order_id),
+            registry,
+            expire_seconds=TRACKING_TTL_SECONDS,
+        )
+
+    def record_reported_payment(
+        self,
+        owner_user_id: str,
+        order_id: str,
+        code: str = "",
+    ) -> None:
+        """Store a customer-reported M-Pesa code (does NOT mark the order paid)."""
+        if not order_id:
+            return
+        registry = self.get_registered_order(owner_user_id, order_id) or {"order_id": order_id}
+        registry["payment_reported"] = True
+        registry["awaiting_manual_payment"] = False
+        if code:
+            registry["reported_code"] = code
+        registry["reported_at"] = datetime.utcnow().isoformat()
+        cache_service.set(
+            self._tracking_key(owner_user_id, order_id),
+            registry,
+            expire_seconds=TRACKING_TTL_SECONDS,
+        )
+
+    def record_stk_context(
+        self,
+        owner_user_id: str,
+        order_id: str,
+        *,
+        checkout_request_id: str = "",
+        merchant_request_id: str = "",
+        whatsapp_sender: str = "",
+        mpesa_phone: str = "",
+        storage_config: Optional[Dict[str, Any]] = None,
+        platform: str = "whatsapp",
+        session_key: str = "",
+        amount: float = 0,
+        currency: str = "KES",
+    ) -> None:
+        """Persist STK IDs on the order registry so callbacks survive Redis ctx loss."""
+        if not order_id:
+            return
+        registry = self.get_registered_order(owner_user_id, order_id) or {"order_id": order_id}
+        if whatsapp_sender:
+            registry["whatsapp_sender"] = whatsapp_sender
+            registry["customer_phone"] = whatsapp_sender
+        if mpesa_phone:
+            registry["mpesa_phone"] = mpesa_phone
+        if checkout_request_id:
+            registry["stk_checkout_request_id"] = checkout_request_id
+        if merchant_request_id:
+            registry["stk_merchant_request_id"] = merchant_request_id
+        if storage_config:
+            registry["storage_config"] = storage_config
+        if platform:
+            registry["platform"] = platform
+        if session_key:
+            registry["session_key"] = session_key
+        if amount:
+            registry["amount"] = amount
+        if currency:
+            registry["currency"] = currency
+        registry["stk_initiated"] = True
+        registry["last_stk_at"] = datetime.utcnow().isoformat()
+        if not cache_service.set(
+            self._tracking_key(owner_user_id, order_id),
+            registry,
+            expire_seconds=TRACKING_TTL_SECONDS,
+        ):
+            logger.error(
+                "[ORDER_TRACK] Failed to persist STK context for order %s (owner %s)",
+                order_id,
+                owner_user_id,
+            )
+        self.store_stk_lookup_keys(
+            owner_user_id=owner_user_id,
+            order_id=order_id,
+            checkout_request_id=checkout_request_id,
+            merchant_request_id=merchant_request_id,
+            whatsapp_sender=whatsapp_sender,
+            mpesa_phone=mpesa_phone,
+            platform=platform,
+            storage_config=storage_config or {},
+            amount=amount,
+            currency=currency,
+        )
+
+    def store_stk_lookup_keys(
+        self,
+        *,
+        owner_user_id: str,
+        order_id: str,
+        checkout_request_id: str = "",
+        merchant_request_id: str = "",
+        whatsapp_sender: str = "",
+        mpesa_phone: str = "",
+        platform: str = "whatsapp",
+        storage_config: Optional[Dict[str, Any]] = None,
+        amount: float = 0,
+        currency: str = "KES",
+    ) -> None:
+        """O(1) Redis keys for STK callback (avoids KEYS scan on managed Redis)."""
+        notify_payload = {
+            "order_id": order_id,
+            "user_id": owner_user_id,
+            "sender_id": whatsapp_sender,
+            "whatsapp_sender": whatsapp_sender,
+            "mpesa_phone": mpesa_phone,
+            "customer_phone": mpesa_phone,
+            "platform": platform,
+            "storage_config": storage_config or {},
+            "amount": amount,
+            "currency": currency,
+        }
+        ttl = 86400
+        if checkout_request_id:
+            cache_service.set(
+                f"mpesa:stk:lookup:checkout:{checkout_request_id}",
+                notify_payload,
+                expire_seconds=ttl,
+            )
+            cache_service.set(
+                f"mpesa:stk:order:{owner_user_id}:{checkout_request_id}",
+                {"order_id": order_id, "owner_user_id": owner_user_id},
+                expire_seconds=ttl,
+            )
+        if merchant_request_id:
+            cache_service.set(
+                f"mpesa:stk:lookup:merchant:{merchant_request_id}",
+                notify_payload,
+                expire_seconds=ttl,
+            )
+
+    @staticmethod
+    def _registry_to_notify_ctx(registry: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "order_id": registry.get("order_id"),
+            "sender_id": registry.get("whatsapp_sender") or registry.get("customer_phone"),
+            "whatsapp_sender": registry.get("whatsapp_sender") or registry.get("customer_phone"),
+            "mpesa_phone": registry.get("mpesa_phone", ""),
+            "customer_phone": registry.get("mpesa_phone", ""),
+            "platform": registry.get("platform", "whatsapp"),
+            "storage_config": registry.get("storage_config") or {},
+            "amount": registry.get("amount") or 0,
+            "currency": registry.get("currency", "KES"),
+        }
+
+    def resolve_stk_notify_context(
+        self,
+        owner_user_id: str,
+        checkout_request_id: str = "",
+        merchant_request_id: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve STK → order notify context without Redis KEYS scan."""
+        if checkout_request_id:
+            ctx = cache_service.get(f"mpesa:stk:checkout:{checkout_request_id}")
+            if ctx:
+                return ctx
+            ctx = cache_service.get(f"mpesa:stk:lookup:checkout:{checkout_request_id}")
+            if ctx:
+                return ctx
+            ref = cache_service.get(
+                f"mpesa:stk:order:{owner_user_id}:{checkout_request_id}"
+            )
+            if ref and ref.get("order_id"):
+                reg = self.get_registered_order(owner_user_id, ref["order_id"])
+                if reg:
+                    return self._registry_to_notify_ctx(reg)
+
+        if merchant_request_id:
+            ctx = cache_service.get(f"mpesa:stk:merchant:{merchant_request_id}")
+            if ctx:
+                return ctx
+            ctx = cache_service.get(f"mpesa:stk:lookup:merchant:{merchant_request_id}")
+            if ctx:
+                return ctx
+
+        registry = self.find_order_by_stk_ids(
+            owner_user_id, checkout_request_id, merchant_request_id
+        )
+        if registry:
+            return self._registry_to_notify_ctx(registry)
+        return None
+
+    @staticmethod
+    def _stk_mapping_to_notify_ctx(row: StkOrderMapping) -> Dict[str, Any]:
+        return {
+            "order_id": row.order_id,
+            "user_id": str(row.user_id),
+            "sender_id": row.whatsapp_sender,
+            "whatsapp_sender": row.whatsapp_sender,
+            "mpesa_phone": row.mpesa_phone or "",
+            "customer_phone": row.mpesa_phone or "",
+            "platform": row.platform or "whatsapp",
+            "storage_config": row.storage_config or {},
+            "amount": float(row.amount or 0),
+            "currency": row.currency or "KES",
+        }
+
+    async def persist_stk_order_mapping(
+        self,
+        db: AsyncSession,
+        *,
+        owner_user_id: str,
+        order_id: str,
+        checkout_request_id: str = "",
+        merchant_request_id: str = "",
+        whatsapp_sender: str = "",
+        mpesa_phone: str = "",
+        platform: str = "whatsapp",
+        storage_config: Optional[Dict[str, Any]] = None,
+        amount: float = 0,
+        currency: str = "KES",
+    ) -> None:
+        """Write STK → order mapping to Postgres (survives Redis/Celery worker gaps)."""
+        import uuid as uuid_mod
+
+        if not order_id or (not checkout_request_id and not merchant_request_id):
+            return
+
+        owner_uuid = uuid_mod.UUID(str(owner_user_id))
+        existing: Optional[StkOrderMapping] = None
+        if checkout_request_id:
+            res = await db.execute(
+                select(StkOrderMapping).where(
+                    StkOrderMapping.checkout_request_id == checkout_request_id
+                )
+            )
+            existing = res.scalar_one_or_none()
+
+        if existing:
+            existing.user_id = owner_uuid
+            existing.order_id = order_id
+            if merchant_request_id:
+                existing.merchant_request_id = merchant_request_id
+            if whatsapp_sender:
+                existing.whatsapp_sender = whatsapp_sender
+            if mpesa_phone:
+                existing.mpesa_phone = mpesa_phone
+            if platform:
+                existing.platform = platform
+            if storage_config:
+                existing.storage_config = storage_config
+            if amount:
+                existing.amount = amount
+            if currency:
+                existing.currency = currency
+        else:
+            db.add(
+                StkOrderMapping(
+                    user_id=owner_uuid,
+                    order_id=order_id,
+                    checkout_request_id=checkout_request_id or None,
+                    merchant_request_id=merchant_request_id or None,
+                    whatsapp_sender=whatsapp_sender or None,
+                    mpesa_phone=mpesa_phone or None,
+                    platform=platform or "whatsapp",
+                    storage_config=storage_config or {},
+                    amount=amount or None,
+                    currency=currency or "KES",
+                )
+            )
+        await db.flush()
+        logger.info(
+            "[ORDER_TRACK] Persisted STK DB mapping order=%s checkout=%s",
+            order_id,
+            checkout_request_id,
+        )
+
+    async def resolve_stk_notify_context_from_db(
+        self,
+        db: AsyncSession,
+        owner_user_id: str,
+        checkout_request_id: str = "",
+        merchant_request_id: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """Fallback when Redis keys were never written (e.g. Celery before lazy Redis fix)."""
+        import uuid as uuid_mod
+
+        if not checkout_request_id and not merchant_request_id:
+            return None
+
+        owner_uuid = uuid_mod.UUID(str(owner_user_id))
+        row: Optional[StkOrderMapping] = None
+        if checkout_request_id:
+            res = await db.execute(
+                select(StkOrderMapping).where(
+                    StkOrderMapping.user_id == owner_uuid,
+                    StkOrderMapping.checkout_request_id == checkout_request_id,
+                )
+            )
+            row = res.scalar_one_or_none()
+        if not row and merchant_request_id:
+            res = await db.execute(
+                select(StkOrderMapping).where(
+                    StkOrderMapping.user_id == owner_uuid,
+                    StkOrderMapping.merchant_request_id == merchant_request_id,
+                )
+            )
+            row = res.scalar_one_or_none()
+
+        if not row:
+            return None
+        logger.info(
+            "[ORDER_TRACK] Resolved STK context from DB order=%s checkout=%s",
+            row.order_id,
+            checkout_request_id,
+        )
+        return self._stk_mapping_to_notify_ctx(row)
+
+    def find_order_by_stk_ids(
+        self,
+        owner_user_id: str,
+        checkout_request_id: str = "",
+        merchant_request_id: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve order registry when ephemeral mpesa:stk:* Redis keys are missing."""
+        if not checkout_request_id and not merchant_request_id:
+            return None
+        pattern = f"wa_order_track:{owner_user_id}:*"
+        for key in cache_service.keys(pattern):
+            registry = cache_service.get(key)
+            if not registry:
+                continue
+            if (
+                checkout_request_id
+                and registry.get("stk_checkout_request_id") == checkout_request_id
+            ):
+                return registry
+            if (
+                merchant_request_id
+                and registry.get("stk_merchant_request_id") == merchant_request_id
+            ):
+                return registry
+        return None
+
+    def get_registered_order(
+        self, owner_user_id: str, order_id: str
+    ) -> Optional[Dict[str, Any]]:
+        return cache_service.get(self._tracking_key(owner_user_id, order_id))
+
+    def _order_amount(self, order: Dict[str, Any]) -> float:
+        for key in ("grand_total", "total_amount", "total", "subtotal"):
+            val = order.get(key)
+            if val is not None and val != "":
+                try:
+                    amt = float(val)
+                    if amt > 0:
+                        return amt
+                except (TypeError, ValueError):
+                    continue
+
+        line_total = 0.0
+        for item in order.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("total") is not None:
+                try:
+                    line_total += float(item.get("total") or 0)
+                    continue
+                except (TypeError, ValueError):
+                    pass
+            try:
+                qty = float(item.get("quantity", 1) or 1)
+                unit = float(
+                    item.get("unit_price", item.get("price", 0)) or 0
+                )
+                line_total += qty * unit
+            except (TypeError, ValueError):
+                continue
+        return round(line_total, 2)
+
+    @staticmethod
+    def owner_id_from_session_key(session_key: str, fallback_user_id: str) -> str:
+        if session_key and session_key.startswith("ccm:"):
+            parts = session_key.split(":")
+            if len(parts) >= 3 and parts[2]:
+                return parts[2]
+        return str(fallback_user_id)
+
+    def get_order_snapshot(
+        self, owner_user_id: str, order_id: str
+    ) -> Optional[Dict[str, Any]]:
+        registry = self.get_registered_order(owner_user_id, order_id)
+        if registry and isinstance(registry.get("order"), dict):
+            return dict(registry["order"])
+        return None
+
+    async def _generate_receipt_pdf_bytes(
+        self,
+        *,
+        order: Dict[str, Any],
+        order_id: str,
+        business_name: str,
+        business_phone: str,
+        currency: str,
+        payment_status: PaymentStatus,
+        mpesa_receipt: str = "",
+        amount: float = 0.0,
+        filename: str,
+    ) -> Optional[bytes]:
+        if not amount:
+            amount = self._order_amount(order)
+
+        receipt_data = self._build_receipt_data(
+            order=order,
+            order_id=order_id,
+            business_name=business_name,
+            business_phone=business_phone,
+            mpesa_receipt=mpesa_receipt,
+            amount=amount,
+            currency=currency,
+            payment_status=payment_status,
+        )
+
+        try:
+            from .file_management_service import FileManagementService
+
+            fms = FileManagementService()
+            pdf_res = await fms.generate_order_receipt_pdf(receipt_data, filename=filename)
+            if pdf_res.get("success") and pdf_res.get("content"):
+                return base64.b64decode(pdf_res["content"])
+            logger.warning(
+                "[ORDER_TRACK] PDF generation returned no content for order %s: %s",
+                order_id,
+                pdf_res.get("error"),
+            )
+        except Exception as pdf_err:
+            logger.warning(
+                "[ORDER_TRACK] Receipt PDF generation failed for order %s: %s",
+                order_id,
+                pdf_err,
+            )
+        return None
+
+    def _build_receipt_data(
+        self,
+        *,
+        order: Dict[str, Any],
+        order_id: str,
+        business_name: str,
+        business_phone: str,
+        mpesa_receipt: str,
+        amount: float,
+        currency: str,
+        payment_status: PaymentStatus = "paid",
+    ) -> Dict[str, Any]:
+        """Structured receipt payload for ReportLab PDF generation."""
+        return {
+            "order_id": order_id,
+            "business_name": business_name,
+            "business_phone": business_phone,
+            "customer_name": order.get("customer_name", ""),
+            "customer_phone": order.get("customer_phone", ""),
+            "delivery_method": order.get("delivery_method", ""),
+            "delivery_address": order.get("delivery_address", ""),
+            "maps_url": self._delivery_maps_link(order),
+            "items": order.get("items") or [],
+            "currency": currency,
+            "amount": amount,
+            "payment_status": payment_status,
+            "mpesa_receipt": mpesa_receipt,
+            "issued_at": datetime.utcnow().strftime("%d %b %Y, %H:%M UTC"),
+        }
+
+    async def _send_receipt_pdf(
+        self,
+        wa: Any,
+        *,
+        customer_phone: str,
+        business_phone: str,
+        pdf_bytes: bytes,
+        filename: str,
+        customer_caption: str,
+        business_caption: str,
+        wa_config: Dict[str, Any],
+    ) -> List[str]:
+        sent: List[str] = []
+        if customer_phone:
+            r = await wa.upload_and_send_document(
+                to_number=customer_phone,
+                file_bytes=pdf_bytes,
+                filename=filename,
+                caption=customer_caption,
+                config=wa_config,
+            )
+            sent.append("customer_receipt" if r.get("success") else "customer_receipt_failed")
+            if not r.get("success"):
+                logger.warning(
+                    "[ORDER_TRACK] Customer PDF send failed for %s: %s",
+                    customer_phone,
+                    r.get("error"),
+                )
+        if business_phone:
+            r = await wa.upload_and_send_document(
+                to_number=business_phone,
+                file_bytes=pdf_bytes,
+                filename=filename,
+                caption=business_caption,
+                config=wa_config,
+            )
+            sent.append("business_receipt" if r.get("success") else "business_receipt_failed")
+            if not r.get("success"):
+                logger.warning(
+                    "[ORDER_TRACK] Business PDF send failed for %s: %s",
+                    business_phone,
+                    r.get("error"),
+                )
+        return sent
+
+    async def notify_order_placed(
+        self,
+        *,
+        user: User,
+        db: AsyncSession,
+        customer_phone: str,
+        order_data: Dict[str, Any],
+        business_name: str,
+        business_phone: str = "",
+        currency: str = "KES",
+        skip_payment_prompt: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Send confirmation + PDF receipt when an order is created.
+        """
+        order = order_data.get("order") if isinstance(order_data.get("order"), dict) else order_data
+        order_id = order.get("order_id") or order_data.get("order_id", "")
+        if not order_id or not customer_phone:
+            return {"success": False, "error": "order_id and customer_phone required"}
+
+        existing = self.get_registered_order(str(user.id), order_id) or {}
+        if existing.get("placement_notified"):
+            return {
+                "success": True,
+                "order_id": order_id,
+                "skipped": True,
+                "reason": "placement_already_notified",
+            }
+
+        if not existing.get("order_id"):
+            self.register_order(
+                str(user.id),
+                order_id,
+                customer_phone,
+                order,
+                business_name=business_name,
+                business_phone=business_phone,
+                currency=currency,
+            )
+
+        registry = self.get_registered_order(str(user.id), order_id) or {}
+        skip_payment_prompt = (
+            skip_payment_prompt
+            or registry.get("stk_initiated", False)
+            or registry.get("awaiting_manual_payment", False)
+            or registry.get("payment_reported", False)
+        )
+
+        receipt_result = await self.order_service.format_order_receipt(
+            order_data=order,
+            format_type="whatsapp",
+            business_name=business_name,
+            business_phone=business_phone,
+            currency=currency,
+        )
+        receipt_text = receipt_result.get("message", "") if receipt_result.get("success") else ""
+
+        confirmation = (
+            f"✅ *Order received!*\n\n"
+            f"Thanks for ordering from *{business_name}*. "
+            f"Your order *{order_id}* is in our queue.\n\n"
+            f"We'll message you here when the status changes. 🔔"
+        )
+
+        sent = []
+        wa_config = await self._get_whatsapp_config(user, db)
+        if not wa_config:
+            return {"success": False, "error": "WhatsApp not connected"}
+
+        from .whatsapp_service import WhatsAppService
+
+        wa = WhatsAppService()
+        r1 = await wa.send_message(customer_phone, confirmation, config=wa_config)
+        sent.append("confirmation" if r1.get("success") else "confirmation_failed")
+
+        pdf_bytes = None
+        if not registry.get("placement_receipt_sent"):
+            amount = self._order_amount(order)
+            pdf_bytes = await self._generate_receipt_pdf_bytes(
+                order=order,
+                order_id=order_id,
+                business_name=business_name,
+                business_phone=business_phone,
+                currency=currency,
+                payment_status="pending",
+                amount=amount,
+                filename=f"receipt_{order_id}.pdf",
+            )
+            if pdf_bytes:
+                pdf_sent = await self._send_receipt_pdf(
+                    wa,
+                    customer_phone=customer_phone,
+                    business_phone="",
+                    pdf_bytes=pdf_bytes,
+                    filename=f"Receipt-{order_id}.pdf",
+                    customer_caption=f"🧾 Here is your receipt for order {order_id}.",
+                    business_caption="",
+                    wa_config=wa_config,
+                )
+                sent.extend(pdf_sent)
+                if any(s == "customer_receipt" for s in pdf_sent):
+                    registry["placement_receipt_sent"] = True
+                else:
+                    sent.append("pdf_generation_failed")
+            else:
+                sent.append("pdf_generation_failed")
+
+        if not registry.get("placement_receipt_sent") and receipt_text:
+            r2 = await wa.send_message(customer_phone, receipt_text, config=wa_config)
+            sent.append("receipt" if r2.get("success") else "receipt_failed")
+
+        maps_link = self._delivery_maps_link(order)
+        if maps_link and order.get("delivery_method") == "delivery":
+            r3 = await wa.send_message(
+                customer_phone,
+                f"📍 *Delivery location saved*\n{maps_link}",
+                config=wa_config,
+            )
+            sent.append("location_link" if r3.get("success") else "location_link_failed")
+
+        if not skip_payment_prompt:
+            pay_mode, pay_cfg = await self.resolve_payment_mode(user, db)
+            if pay_mode == "manual" and pay_cfg is not None:
+                from .manual_payment_helpers import build_manual_payment_message
+
+                amount = self._order_amount(order)
+                manual_message = build_manual_payment_message(
+                    pay_cfg,
+                    order_id=order_id,
+                    amount=amount,
+                    business_name=business_name,
+                    currency=currency,
+                    lang="en",
+                )
+                self.mark_manual_payment(
+                    str(user.id),
+                    order_id,
+                    storage_config=registry.get("storage_config") or {},
+                    amount=float(amount or 0),
+                    currency=currency,
+                    whatsapp_sender=customer_phone,
+                    business_name=business_name,
+                )
+                r4 = await wa.send_message(customer_phone, manual_message, config=wa_config)
+                sent.append("manual_payment_prompt" if r4.get("success") else "manual_payment_prompt_failed")
+                r4b = await wa.send_quick_reply_buttons(
+                    to_number=customer_phone,
+                    body_text="Once you've paid, tap below to send your M-Pesa code.",
+                    buttons=[{"id": f"reported_paid:{order_id}", "title": "I've paid"}],
+                    config=wa_config,
+                )
+                sent.append("manual_paid_button" if r4b.get("success") else "manual_paid_button_failed")
+            else:
+                payment_buttons = [
+                    {"id": f"pay_mpesa:{order_id}", "title": "Pay on this number"},
+                    {"id": f"pay_mpesa_other:{order_id}", "title": "Other number"},
+                ]
+                r4 = await wa.send_quick_reply_buttons(
+                    to_number=customer_phone,
+                    body_text="How would you like to pay with M-Pesa?",
+                    buttons=payment_buttons,
+                    config=wa_config,
+                )
+                sent.append("payment_prompt" if r4.get("success") else "payment_prompt_failed")
+        else:
+            sent.append("payment_prompt_skipped")
+
+        registry = self.get_registered_order(str(user.id), order_id) or {}
+        registry["placement_notified"] = True
+        registry["status"] = registry.get("status") or "pending"
+        cache_service.set(
+            self._tracking_key(str(user.id), order_id),
+            registry,
+            expire_seconds=TRACKING_TTL_SECONDS,
+        )
+
+        logger.info("[ORDER_TRACK] notify_order_placed order=%s sent=%s", order_id, sent)
+        return {"success": True, "order_id": order_id, "sent": sent}
+
+    async def notify_status_change(
+        self,
+        *,
+        user: User,
+        db: AsyncSession,
+        order_id: str,
+        new_status: str,
+        customer_phone: str = "",
+        business_name: str = "",
+        currency: str = "KES",
+        notes: str = "",
+        previous_status: str = "",
+    ) -> Dict[str, Any]:
+        """Send a shipping/status alert to the customer."""
+        new_status = (new_status or "").lower().replace(" ", "_")
+        if new_status not in ORDER_STATUSES:
+            return {"success": False, "error": f"Invalid status: {new_status}"}
+
+        registry = self.get_registered_order(str(user.id), order_id) or {}
+        phone = customer_phone or registry.get("customer_phone", "")
+        if not phone:
+            return {"success": False, "error": "Customer phone not found for this order"}
+
+        business_name = business_name or registry.get("business_name", "Our Business")
+        currency = currency or registry.get("currency", "KES")
+        order = dict(registry.get("order") or {})
+        order["status"] = new_status
+        order["order_id"] = order_id
+
+        prev = (previous_status or registry.get("status") or "pending").lower().replace(" ", "_")
+        if prev == new_status:
+            return {"success": True, "skipped": True, "reason": "status_unchanged"}
+
+        if new_status == "confirmed" and registry.get("placement_notified"):
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": "already_notified_on_placement",
+            }
+
+        if new_status not in NOTIFY_STATUSES:
+            return {"success": True, "skipped": True, "reason": "status_not_notifiable"}
+
+        icon, title, body = STATUS_CUSTOMER_COPY.get(
+            new_status, ("📋", new_status.replace("_", " ").title(), "")
+        )
+        items_summary = self._summarize_items(order.get("items") or [])
+        total = order.get("subtotal", 0)
+
+        message = (
+            f"{icon} *{title}*\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"🏪 {business_name}\n"
+            f"📋 Order: *{order_id}*\n"
+            f"📦 {body}\n"
+        )
+        if items_summary:
+            message += f"\n🛒 {items_summary}\n"
+        if total:
+            message += f"💰 Total: *{currency} {float(total):,.0f}*\n"
+        if notes:
+            message += f"\n📝 {notes}\n"
+        if new_status in ("shipped", "out_for_delivery", "delivered"):
+            maps_link = self._delivery_maps_link(order)
+            if maps_link:
+                message += f"\n📍 Track delivery area:\n{maps_link}\n"
+        message += f"\n_Updated {datetime.utcnow().strftime('%d %b, %H:%M')}_"
+
+        wa_config = await self._get_whatsapp_config(user, db)
+        if not wa_config:
+            return {"success": False, "error": "WhatsApp not connected"}
+
+        from .whatsapp_service import WhatsAppService
+
+        wa = WhatsAppService()
+        result = await wa.send_message(phone, message, config=wa_config)
+
+        if result.get("success"):
+            registry["status"] = new_status
+            registry["order"] = order
+            cache_service.set(
+                self._tracking_key(str(user.id), order_id),
+                registry,
+                expire_seconds=TRACKING_TTL_SECONDS,
+            )
+
+        return {
+            "success": result.get("success", False),
+            "order_id": order_id,
+            "new_status": new_status,
+            "customer_phone": phone,
+            "error": result.get("error"),
+        }
+
+    async def notify_payment_received(
+        self,
+        *,
+        user: User,
+        db: AsyncSession,
+        order_id: str,
+        mpesa_receipt: str = "",
+        amount_paid: float = 0.0,
+        currency: str = "KES",
+        customer_phone: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Generate a downloadable PAID PDF receipt on confirmed payment and send it
+        to BOTH the customer and the business as a WhatsApp document.
+        Idempotent per order (guarded by `payment_notified`).
+        """
+        registry = self.get_registered_order(str(user.id), order_id) or {}
+        if registry.get("payment_notified"):
+            return {"success": True, "order_id": order_id, "skipped": True, "reason": "already_notified"}
+
+        order = dict(registry.get("order") or {})
+        order["order_id"] = order_id
+        notify_phone = (
+            registry.get("whatsapp_sender")
+            or customer_phone
+            or registry.get("customer_phone")
+            or order.get("customer_phone", "")
+        )
+        customer_phone = notify_phone
+        business_name = registry.get("business_name", "Our Business")
+        business_phone = registry.get("business_phone", "")
+        currency = currency or registry.get("currency", "KES")
+        if not amount_paid:
+            amount_paid = self._order_amount(order)
+
+        if not customer_phone and not order:
+            logger.warning(
+                "[ORDER_TRACK] notify_payment_received: no registry for order %s",
+                order_id,
+            )
+            return {"success": False, "error": "order not found in tracking registry"}
+
+        if not order and customer_phone:
+            order = {
+                "order_id": order_id,
+                "customer_phone": customer_phone,
+                "subtotal": amount_paid,
+            }
+
+        pdf_bytes = await self._generate_receipt_pdf_bytes(
+            order=order,
+            order_id=order_id,
+            business_name=business_name,
+            business_phone=business_phone,
+            currency=currency,
+            payment_status="paid",
+            mpesa_receipt=mpesa_receipt,
+            amount=amount_paid,
+            filename=f"receipt_{order_id}_paid.pdf",
+        )
+
+        wa_config = await self._get_whatsapp_config(user, db)
+        if not wa_config:
+            return {"success": False, "error": "WhatsApp not connected"}
+
+        from .whatsapp_service import WhatsAppService
+
+        wa = WhatsAppService()
+        filename = f"Receipt-{order_id}-PAID.pdf"
+        sent: List[str] = []
+
+        if pdf_bytes:
+            sent = await self._send_receipt_pdf(
+                wa,
+                customer_phone=customer_phone,
+                business_phone=business_phone,
+                pdf_bytes=pdf_bytes,
+                filename=filename,
+                customer_caption=f"🧾 Thank you! Here's your paid receipt for order {order_id}.",
+                business_caption=f"💰 Payment received for order {order_id} ({currency} {amount_paid:,.0f}).",
+                wa_config=wa_config,
+            )
+        else:
+            text_receipt = await self.order_service.format_order_receipt(
+                order_data=order,
+                format_type="whatsapp",
+                business_name=business_name,
+                business_phone=business_phone,
+                currency=currency,
+            )
+            body = text_receipt.get("message", "") if text_receipt.get("success") else ""
+            paid_line = f"\n✅ *PAID* via M-Pesa{(' · ' + mpesa_receipt) if mpesa_receipt else ''}"
+            if customer_phone and body:
+                await wa.send_message(customer_phone, body + paid_line, config=wa_config)
+                sent.append("customer_text_receipt")
+            if business_phone and body:
+                await wa.send_message(business_phone, body + paid_line, config=wa_config)
+                sent.append("business_text_receipt")
+            if not sent:
+                sent.append("pdf_generation_failed")
+
+        if not registry:
+            registry = {
+                "order_id": order_id,
+                "customer_phone": customer_phone,
+                "business_name": business_name,
+                "business_phone": business_phone,
+                "currency": currency,
+                "order": order,
+            }
+
+        registry["status"] = "paid"
+        registry["payment_notified"] = True
+        registry["mpesa_receipt"] = mpesa_receipt
+        registry["amount_paid"] = amount_paid
+        cache_service.set(
+            self._tracking_key(str(user.id), order_id),
+            registry,
+            expire_seconds=TRACKING_TTL_SECONDS,
+        )
+
+        logger.info("[ORDER_TRACK] notify_payment_received order=%s sent=%s", order_id, sent)
+        return {"success": True, "order_id": order_id, "sent": sent}
+
+    @staticmethod
+    def _summarize_items(items: List[Dict[str, Any]]) -> str:
+        parts = []
+        for item in items[:4]:
+            name = item.get("name", "Item")
+            qty = item.get("quantity", 1)
+            parts.append(f"{name} ×{qty}")
+        if len(items) > 4:
+            parts.append(f"+{len(items) - 4} more")
+        return ", ".join(parts)
+
+    @staticmethod
+    def _delivery_maps_link(order: Dict[str, Any]) -> str:
+        loc = order.get("delivery_location") or {}
+        lat = loc.get("latitude") or order.get("delivery_latitude")
+        lng = loc.get("longitude") or order.get("delivery_longitude")
+        if lat is not None and lng is not None:
+            return f"https://maps.google.com/?q={lat},{lng}"
+        address = order.get("delivery_address") or loc.get("formatted_address")
+        if address:
+            from urllib.parse import quote_plus
+            return f"https://maps.google.com/?q={quote_plus(address)}"
+        return ""
+
+    def _save_registry(self, owner_user_id: str, order_id: str, registry: Dict[str, Any]) -> None:
+        cache_service.set(
+            self._tracking_key(owner_user_id, order_id),
+            registry,
+            expire_seconds=TRACKING_TTL_SECONDS,
+        )
+
+    def is_stk_debounced(self, owner_user_id: str, order_id: str) -> bool:
+        registry = self.get_registered_order(owner_user_id, order_id) or {}
+        last = registry.get("last_stk_at") or ""
+        if not last:
+            return False
+        try:
+            last_dt = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+            if last_dt.tzinfo:
+                last_dt = last_dt.replace(tzinfo=None)
+            elapsed = (datetime.utcnow() - last_dt).total_seconds()
+            return elapsed < STK_DEBOUNCE_SECONDS
+        except (TypeError, ValueError):
+            return False
+
+    def mark_last_stk_at(self, owner_user_id: str, order_id: str) -> None:
+        registry = self.get_registered_order(owner_user_id, order_id) or {}
+        if not registry:
+            return
+        registry["last_stk_at"] = datetime.utcnow().isoformat()
+        registry["stk_initiated"] = True
+        self._save_registry(owner_user_id, order_id, registry)
+
+    def record_payment_failure_metadata(
+        self,
+        owner_user_id: str,
+        order_id: str,
+        *,
+        result_code: str,
+        result_desc: str,
+        checkout_request_id: str = "",
+    ) -> int:
+        registry = self.get_registered_order(owner_user_id, order_id) or {}
+        count = int(registry.get("payment_attempt_count") or 0) + 1
+        registry["payment_attempt_count"] = count
+        registry["last_payment_failure"] = {
+            "code": result_code,
+            "desc": result_desc,
+            "at": datetime.utcnow().isoformat(),
+            "checkout_request_id": checkout_request_id,
+        }
+        self._save_registry(owner_user_id, order_id, registry)
+        return count
+
+    async def record_payment_attempt(
+        self,
+        db: AsyncSession,
+        *,
+        owner_user_id: str,
+        order_id: str,
+        status: str,
+        checkout_request_id: str = "",
+        merchant_request_id: str = "",
+        mpesa_phone: str = "",
+        whatsapp_phone: str = "",
+        amount: float = 0,
+        currency: str = "KES",
+        result_code: str = "",
+        result_desc: str = "",
+        customer_message: str = "",
+        failure_notified: bool = False,
+    ) -> None:
+        import uuid as uuid_mod
+
+        try:
+            owner_uuid = uuid_mod.UUID(str(owner_user_id))
+            row = StkPaymentAttempt(
+                user_id=owner_uuid,
+                order_id=order_id,
+                checkout_request_id=checkout_request_id or None,
+                merchant_request_id=merchant_request_id or None,
+                mpesa_phone=mpesa_phone or None,
+                whatsapp_phone=whatsapp_phone or None,
+                amount=amount or None,
+                currency=currency or "KES",
+                status=status,
+                result_code=result_code or None,
+                result_desc=result_desc or None,
+                customer_message=customer_message or None,
+                failure_notified=failure_notified,
+            )
+            db.add(row)
+            await db.flush()
+        except Exception as e:
+            logger.warning("[ORDER_TRACK] record_payment_attempt failed: %s", e)
+
+    async def send_payment_retry_buttons(
+        self,
+        user: User,
+        db: AsyncSession,
+        *,
+        order_id: str,
+        customer_phone: str,
+        body_text: str,
+    ) -> Dict[str, Any]:
+        """Send Pay on this number / Other number quick-reply buttons."""
+        wa_config = await self._get_whatsapp_config(user, db)
+        if not wa_config or not customer_phone:
+            return {"success": False, "error": "WhatsApp not configured"}
+        from .whatsapp_service import WhatsAppService
+
+        wa = WhatsAppService()
+        buttons = [
+            {"id": f"pay_mpesa:{order_id}", "title": "Pay on this number"},
+            {"id": f"pay_mpesa_other:{order_id}", "title": "Other number"},
+        ]
+        result = await wa.send_quick_reply_buttons(
+            to_number=customer_phone,
+            body_text=body_text,
+            buttons=buttons,
+            config=wa_config,
+        )
+        if result.get("success"):
+            try:
+                from .whatsapp_inbox_service import record_outbound_message
+
+                await record_outbound_message(
+                    db,
+                    user_id=user.id,
+                    phone_number=customer_phone,
+                    content=body_text,
+                    message_type="interactive",
+                    whatsapp_message_id=result.get("message_id"),
+                    is_agent=True,
+                )
+            except Exception as exc:
+                logger.warning("[ORDER_TRACK] inbox persist for retry buttons: %s", exc)
+        return result
+
+    async def maybe_alert_business_payment_failures(
+        self,
+        user: User,
+        db: AsyncSession,
+        *,
+        owner_user_id: str,
+        order_id: str,
+        customer_phone: str,
+        failure_count: int,
+        last_reason: str,
+    ) -> None:
+        if failure_count < PAYMENT_FAILURE_ALERT_THRESHOLD:
+            return
+        alert_key = f"mpesa:stk:business_alert:{order_id}"
+        if cache_service.get(alert_key):
+            return
+        business_phone = (self.get_registered_order(owner_user_id, order_id) or {}).get(
+            "business_phone", ""
+        )
+        if not business_phone:
+            return
+        wa_config = await self._get_whatsapp_config(user, db)
+        if not wa_config:
+            return
+        from .whatsapp_service import WhatsAppService
+
+        msg = (
+            f"⚠️ Customer {customer_phone} had {failure_count} failed M-Pesa payment(s) "
+            f"for order {order_id}. Last reason: {last_reason}"
+        )
+        wa = WhatsAppService()
+        res = await wa.send_message(business_phone, msg, config=wa_config)
+        if res.get("success"):
+            cache_service.set(alert_key, True, expire_seconds=TRACKING_TTL_SECONDS)
+
+    async def notify_stk_payment_inconclusive(
+        self,
+        user: User,
+        db: AsyncSession,
+        *,
+        owner_user_id: str,
+        order_id: str,
+        whatsapp_sender: str,
+        checkout_request_id: str = "",
+        lang: str = "en",
+    ) -> None:
+        from .stk_result_messages import stk_inconclusive_message
+
+        inconclusive_key = f"mpesa:stk:inconclusive:{checkout_request_id or order_id}"
+        if cache_service.get(inconclusive_key):
+            return
+        msg = stk_inconclusive_message(lang=lang)
+        await self.send_payment_retry_buttons(
+            user, db, order_id=order_id, customer_phone=whatsapp_sender, body_text=msg
+        )
+        await self.record_payment_attempt(
+            db,
+            owner_user_id=owner_user_id,
+            order_id=order_id,
+            status="timeout",
+            checkout_request_id=checkout_request_id,
+            whatsapp_phone=whatsapp_sender,
+            customer_message=msg,
+        )
+        cache_service.set(inconclusive_key, True, expire_seconds=86400)
+
+    async def _get_whatsapp_config(
+        self, user: User, db: AsyncSession
+    ) -> Optional[Dict[str, Any]]:
+        result = await db.execute(
+            select(Connection).where(
+                Connection.user_id == user.id,
+                Connection.platform == "whatsapp",
+                Connection.status == ConnectionStatus.ACTIVE,
+            )
+        )
+        connection = result.scalar_one_or_none()
+        if not connection or not connection.config:
+            return None
+        cfg = connection.config
+        if not cfg.get("access_token") or not cfg.get("phone_number_id"):
+            return None
+        return {
+            "access_token": cfg.get("access_token"),
+            "phone_number_id": cfg.get("phone_number_id"),
+        }
+
+
+order_tracking_service = OrderTrackingService()

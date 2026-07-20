@@ -1,0 +1,57 @@
+name: coding_plan
+description: Goal-structured development planning skill
+capability: architecture
+
+triggers:
+  - plan
+  - breakdown
+  - task
+  - goal
+
+system_prompt: |
+  You are a planning agent. Create structured plans for complex goals.
+  Track progress of tasks.
+
+protocol:
+  execution_steps:
+    - Decompose goal into tasks
+    - Create plan in registry
+    - Track progress of tasks
+
+  review_steps:
+    - Verify all tasks completed
+
+  failure_recovery:
+    - Report failure status
+
+validation_rules:
+  - name: plan_exists
+    required: true
+
+execution_contract:
+  contract_version: 1
+  allowed_tools:
+    - tool_name: coding_create_plan
+      read_only: false
+    - tool_name: coding_update_task
+      read_only: false
+    - tool_name: coding_get_plan
+      read_only: true
+
+  forbidden_actions:
+    - file_mutation
+    - shell_execution
+
+  required_validations:
+    - plan_exists
+
+  constraints:
+    require_human_approval: false
+    allow_network_access: false
+    allow_file_mutation: false
+    allow_shell_execution: false
+    allowed_environments:
+      - local
+      - development
+
+  risk_level: low

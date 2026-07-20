@@ -1,0 +1,267 @@
+# =============================================================================
+# CI/CD Pipeline for Mini-Hub (Python Backend)
+# =============================================================================
+# Uses centralized reusable workflows from arrotech-solutions-actions
+# =============================================================================
+
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Grant permissions required by reusable workflows
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+  pull-requests: write
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  # ===========================================================================
+  # Stage 1: Code Quality & Security
+  # ===========================================================================
+
+  code-quality:
+    name: Code Quality
+    uses: arrotech-solutions/arrotech-solutions-actions/.github/workflows/ci-code-quality.yml@main
+    with:
+      language: "python"
+      python-version: "3.11"
+      fail-on-warnings: false
+
+  security-scan:
+    name: Security Scan
+    uses: arrotech-solutions/arrotech-solutions-actions/.github/workflows/ci-security-scan.yml@main
+    with:
+      language: "python"
+      enable-codeql: false        # Requires GitHub Advanced Security (paid)
+      enable-dependency-scan: true
+      enable-secret-scan: false   # Gitleaks requires license for orgs
+      fail-on-high-severity: false
+
+  # ===========================================================================
+  # Stage 1.5: Architecture Verification (Harness Gates)
+  # ===========================================================================
+
+  architecture-check:
+    name: Architecture Verification
+    needs: [code-quality]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Verify Architecture
+        run: python scripts/verify_architecture.py
+      - name: Verify Imports
+        run: python scripts/verify_imports.py
+      - name: Verify Tool Consistency
+        run: python scripts/verify_tools.py
+
+  # ===========================================================================
+  # Stage 2: Testing
+  # ===========================================================================
+
+  test:
+    name: Tests
+    needs: [architecture-check]
+    uses: arrotech-solutions/arrotech-solutions-actions/.github/workflows/ci-test.yml@main
+    with:
+      language: "python"
+      python-version: "3.11"
+      coverage-threshold: 20  # TODO: Increase as tests are added
+      upload-coverage: true
+      parallel-tests: true
+
+  # ===========================================================================
+  # Stage 2.5: Change Impact Analysis (PR only)
+  # ===========================================================================
+
+  impact-analysis:
+    name: Change Impact Analysis
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Analyze Change Impact
+        id: impact
+        run: |
+          python scripts/analyze_impact.py --diff origin/${{ github.base_ref }} --output markdown > impact_report.md
+          cat impact_report.md
+      - name: Post Impact Report
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            try {
+              const report = fs.readFileSync('impact_report.md', 'utf8');
+              if (report.trim()) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: report
+                });
+              }
+            } catch (e) {
+              console.log('No impact report to post');
+            }
+
+
+  # ===========================================================================
+  # Stage 3: Deploy to AWS EC2
+  # ===========================================================================
+  # Requires GitHub Secrets:
+  #   EC2_HOST       — Elastic IP of the EC2 instance
+  #   EC2_SSH_KEY    — Private SSH key for the ubuntu user
+  #   PROD_API_URL   — e.g. https://prod.api.arrotechsolutions.com
+  # ===========================================================================
+
+  deploy-staging:
+    name: Deploy to Staging (EC2)
+    needs: [test, security-scan]
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true
+          script: |
+            cd /home/ubuntu/arrotech-hub-backend
+            git fetch origin develop
+            git checkout develop
+            git reset --hard origin/develop
+
+            echo "Building and deploying staging..."
+            docker compose -f docker-compose.prod.yml build app celery-worker
+            docker compose -f docker-compose.prod.yml up -d
+
+            # Wait for health check
+            echo "Waiting for application health..."
+            sleep 20
+            curl -sf http://localhost:8000/health || (echo "Health check failed!" && exit 1)
+            echo "Staging deployment successful!"
+
+            # Cleanup
+            docker image prune -f --filter "until=72h" 2>/dev/null || true
+
+  deploy-production:
+    name: Deploy to Production (EC2)
+    needs: [test, security-scan]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true
+          command_timeout: 10m
+          script: |
+            cd /home/ubuntu/arrotech-hub-backend
+
+            # Save current commit for rollback
+            PREVIOUS_COMMIT=$(git rev-parse HEAD)
+            echo "Previous commit: $PREVIOUS_COMMIT"
+
+            # Pull latest
+            git fetch origin main
+            git reset --hard origin/main
+            NEW_COMMIT=$(git rev-parse HEAD)
+            echo "Deploying commit: $NEW_COMMIT"
+
+            # Build and restart
+            docker compose -f docker-compose.prod.yml build app celery-worker
+            docker compose -f docker-compose.prod.yml up -d
+
+            # Wait for health check
+            echo "Waiting for application health..."
+            ELAPSED=0
+            while [ $ELAPSED -lt 60 ]; do
+              if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+                echo "Health check passed after ${ELAPSED}s"
+                break
+              fi
+              sleep 5
+              ELAPSED=$((ELAPSED + 5))
+            done
+
+            if [ $ELAPSED -ge 60 ]; then
+              echo "Health check FAILED! Rolling back to $PREVIOUS_COMMIT"
+              git checkout "$PREVIOUS_COMMIT"
+              docker compose -f docker-compose.prod.yml up -d --build app celery-worker
+              exit 1
+            fi
+
+            echo "Production deployment successful!"
+
+            # Cleanup
+            docker image prune -f --filter "until=72h" 2>/dev/null || true
+
+  # ===========================================================================
+  # Post-Deployment Health Check
+  # ===========================================================================
+
+  health-check:
+    name: Health Check
+    needs: [deploy-staging, deploy-production]
+    if: always() && (needs.deploy-staging.result == 'success' || needs.deploy-production.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for deployment to stabilize
+        run: sleep 15
+
+      - name: Check production health
+        if: needs.deploy-production.result == 'success'
+        run: |
+          echo "Checking production health..."
+          for i in 1 2 3; do
+            if curl -sf "${{ secrets.PROD_API_URL }}/health"; then
+              echo ""
+              echo "Production is healthy!"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+          echo "Production health check failed after 3 attempts"
+          exit 1
+
+  # ===========================================================================
+  # PR Checks
+  # ===========================================================================
+
+  pr-checks:
+    name: PR Validation
+    if: github.event_name == 'pull_request'
+    uses: arrotech-solutions/arrotech-solutions-actions/.github/workflows/pr-checks.yml@main
+    with:
+      require-conventional-commits: true
+      require-tests: true

@@ -1,0 +1,664 @@
+"""
+Email notification service for Mini-Hub.
+Supports SMTP email sending for various notification types.
+"""
+
+import asyncio
+import logging
+import os
+import socket
+import smtplib
+import traceback
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class EmailService:
+    """Service for sending email notifications."""
+    
+    def __init__(self):
+        self.smtp_host = os.getenv("SMTP_HOST", "smtppro.zoho.com")
+        self.smtp_port = int(os.getenv("SMTP_PORT", "465"))
+        self.smtp_user = os.getenv("SMTP_USER", "")
+        self.smtp_password = os.getenv("SMTP_PASSWORD", "")
+        self.from_email = os.getenv("FROM_EMAIL", "noreply@arrotechsolutions.com")
+        self.from_name = os.getenv("FROM_NAME", "Arrotech Hub")
+        self.resend_api_key = os.getenv("RESEND_API_KEY", "")
+        self.use_resend = bool(self.resend_api_key)
+        self.enabled = bool(self.resend_api_key or (self.smtp_user and self.smtp_password))
+        
+        # Log config on startup for diagnostics
+        logger.info(f"[EmailService] transport={'resend' if self.use_resend else 'smtp'}, "
+                     f"RESEND_API_KEY={'set' if self.resend_api_key else 'NOT SET'}, "
+                     f"SMTP_HOST={self.smtp_host}, SMTP_PORT={self.smtp_port}, "
+                     f"SMTP_USER={'set (' + self.smtp_user[:3] + '***)' if self.smtp_user else 'NOT SET'}, "
+                     f"FROM_EMAIL={self.from_email}, enabled={self.enabled}")
+    
+    def _get_base_template(self, content: str, title: str = "Mini-Hub Notification") -> str:
+        """Get the base HTML email template."""
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>{title}</title>
+            <style>
+                body {{
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+                    line-height: 1.6;
+                    color: #333;
+                    background-color: #f5f5f5;
+                    margin: 0;
+                    padding: 0;
+                }}
+                .container {{
+                    max-width: 600px;
+                    margin: 0 auto;
+                    padding: 20px;
+                }}
+                .header {{
+                    background: linear-gradient(135deg, #8B5CF6 0%, #EC4899 100%);
+                    padding: 30px;
+                    text-align: center;
+                    border-radius: 12px 12px 0 0;
+                }}
+                .header h1 {{
+                    color: white;
+                    margin: 0;
+                    font-size: 28px;
+                }}
+                .content {{
+                    background: white;
+                    padding: 30px;
+                    border-radius: 0 0 12px 12px;
+                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                }}
+                .button {{
+                    display: inline-block;
+                    background: linear-gradient(135deg, #8B5CF6 0%, #EC4899 100%);
+                    color: white;
+                    padding: 12px 24px;
+                    text-decoration: none;
+                    border-radius: 8px;
+                    font-weight: 600;
+                    margin: 20px 0;
+                }}
+                .button:hover {{
+                    opacity: 0.9;
+                }}
+                .footer {{
+                    text-align: center;
+                    padding: 20px;
+                    color: #666;
+                    font-size: 12px;
+                }}
+                .stats-box {{
+                    background: #f8f9fa;
+                    border-radius: 8px;
+                    padding: 20px;
+                    margin: 20px 0;
+                }}
+                .stat {{
+                    display: inline-block;
+                    text-align: center;
+                    padding: 10px 20px;
+                }}
+                .stat-value {{
+                    font-size: 24px;
+                    font-weight: bold;
+                    color: #8B5CF6;
+                }}
+                .stat-label {{
+                    font-size: 12px;
+                    color: #666;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>🚀 Mini-Hub</h1>
+                </div>
+                <div class="content">
+                    {content}
+                </div>
+                <div class="footer">
+                    <p>© 2024 Mini-Hub. All rights reserved.</p>
+                    <p>
+                        <a href="{{{{unsubscribe_url}}}}">Unsubscribe</a> | 
+                        <a href="{{{{settings_url}}}}">Email Preferences</a>
+                    </p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+    
+    async def send_email(
+        self,
+        to_email: str,
+        subject: str,
+        html_content: str,
+        text_content: Optional[str] = None
+    ) -> bool:
+        """Send an email asynchronously."""
+        if not self.enabled:
+            logger.warning("Email service is not configured. Logging email content instead.")
+            logger.info(f"To: {to_email}")
+            logger.info(f"Subject: {subject}")
+            logger.info(f"Content: {text_content if text_content else 'HTML Content Present'}")
+            # Also log HTML content for now as it contains the link
+            logger.info(f"HTML Content preview: {html_content[:5000]}..." if len(html_content) > 5000 else html_content)
+            return True # Return True to simulate success for the caller
+        
+        try:
+            # Resend HTTP API
+            if self.use_resend:
+                return await self._send_resend(to_email, subject, html_content, text_content)
+            
+            msg = MIMEMultipart('alternative')
+            msg['From'] = f"{self.from_name} <{self.from_email}>"
+            msg['To'] = to_email
+            msg['Subject'] = subject
+            
+            # Add text version
+            if text_content:
+                msg.attach(MIMEText(text_content, 'plain'))
+            
+            # Add HTML version
+            msg.attach(MIMEText(html_content, 'html'))
+            
+            # Send email in a thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            await asyncio.wait_for(
+                loop.run_in_executor(None, self._send_smtp, msg),
+                timeout=15.0,  # 15-second overall timeout
+            )
+            
+            logger.info(f"Email sent successfully to {to_email}")
+            return True
+        
+        except asyncio.TimeoutError:
+            logger.error(f"[EmailService] TIMEOUT: Email send to {to_email} timed out after 15s")
+            return False
+        except Exception as e:
+            logger.error(
+                f"[EmailService] FAILED to send email to {to_email}: {type(e).__name__}: {e}\n"
+                f"{traceback.format_exc()}"
+            )
+            return False
+    
+    async def _send_resend(self, to_email: str, subject: str, html_content: str, text_content: Optional[str] = None) -> bool:
+        """Send email via Resend HTTP API (HTTPS port 443 — works on Railway)."""
+        import aiohttp
+        url = "https://api.resend.com/emails"
+        headers = {"Authorization": f"Bearer {self.resend_api_key}", "Content-Type": "application/json"}
+        payload = {"from": f"{self.from_name} <{self.from_email}>", "to": [to_email], "subject": subject, "html": html_content}
+        if text_content:
+            payload["text"] = text_content
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    body = await resp.json()
+                    if resp.status in (200, 201):
+                        logger.info(f"[Resend] Email sent to {to_email} (id={body.get('id', '?')})")
+                        return True
+                    else:
+                        logger.error(f"[Resend] Failed {to_email}: HTTP {resp.status} — {body}")
+                        return False
+        except Exception as e:
+            logger.error(f"[Resend] Error sending to {to_email}: {type(e).__name__}: {e}")
+            return False
+
+    def send_email_background(
+        self,
+        to_email: str,
+        subject: str,
+        html_content: str,
+        text_content: Optional[str] = None
+    ) -> None:
+        """Fire-and-forget email via Celery task queue.
+
+        Replaces the old asyncio.create_task() pattern with a durable,
+        retryable Celery task. Falls back to asyncio if Celery is unavailable.
+        """
+        try:
+            from src.tasks.email_tasks import send_email_task
+            send_email_task.delay(to_email, subject, html_content, text_content)
+        except Exception:
+            # Fallback: if Celery broker is down, use the old fire-and-forget
+            import asyncio
+            task = asyncio.create_task(
+                self.send_email(to_email, subject, html_content, text_content)
+            )
+            task.add_done_callback(
+                lambda t: t.exception() if not t.cancelled() and t.exception() else None
+            )
+    
+    def _send_smtp(self, msg: MIMEMultipart) -> None:
+        """Send email via SMTP (blocking). Called inside a thread-pool executor."""
+        # Step 1: DNS resolution — log ALL addresses (IPv4 + IPv6)
+        try:
+            all_addrs = socket.getaddrinfo(self.smtp_host, self.smtp_port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            logger.info(f"[SMTP] DNS resolved {self.smtp_host} -> {[a[4] for a in all_addrs]}")
+        except Exception as dns_err:
+            logger.error(f"[SMTP] DNS resolution FAILED for {self.smtp_host}: {dns_err}")
+            raise
+
+        # Step 2: Resolve to IPv4 only — avoids "Network is unreachable" on IPv6-broken hosts
+        try:
+            ipv4_addrs = socket.getaddrinfo(self.smtp_host, self.smtp_port, socket.AF_INET, socket.SOCK_STREAM)
+            ipv4_ip = ipv4_addrs[0][4][0] if ipv4_addrs else None
+            logger.info(f"[SMTP] IPv4 resolved: {ipv4_ip}")
+        except Exception:
+            ipv4_ip = None
+            logger.warning(f"[SMTP] No IPv4 address found for {self.smtp_host}, using hostname directly")
+
+        connect_host = ipv4_ip or self.smtp_host
+
+        # Step 3: Try direct SSL on port 465 (Zoho default)
+        if self.smtp_port == 465:
+            try:
+                logger.info(f"[SMTP] Connecting to {connect_host}:465 (SSL) ...")
+                server = smtplib.SMTP_SSL(connect_host, 465, timeout=10)
+                try:
+                    server.ehlo()
+                    logger.info(f"[SMTP] SSL connected. Logging in as {self.smtp_user[:3]}*** ...")
+                    server.login(self.smtp_user, self.smtp_password)
+                    logger.info(f"[SMTP] Authenticated. Sending message ...")
+                    server.send_message(msg)
+                    logger.info(f"[SMTP] Message sent successfully via port 465 (SSL).")
+                    return
+                finally:
+                    try:
+                        server.quit()
+                    except Exception:
+                        pass
+            except OSError as e:
+                logger.warning(f"[SMTP] Port 465 failed ({type(e).__name__}: {e}), trying port 587 (STARTTLS) ...")
+
+        # Step 4: Fallback — STARTTLS on port 587
+        try:
+            logger.info(f"[SMTP] Connecting to {connect_host}:587 (STARTTLS) ...")
+            server = smtplib.SMTP(connect_host, 587, timeout=10)
+            try:
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+                logger.info(f"[SMTP] TLS established. Logging in as {self.smtp_user[:3]}*** ...")
+                server.login(self.smtp_user, self.smtp_password)
+                logger.info(f"[SMTP] Authenticated. Sending message ...")
+                server.send_message(msg)
+                logger.info(f"[SMTP] Message sent successfully via port 587 (STARTTLS).")
+            finally:
+                try:
+                    server.quit()
+                except Exception:
+                    pass
+        except Exception as tls_err:
+            logger.error(f"[SMTP] Port 587 also failed: {type(tls_err).__name__}: {tls_err}")
+            raise
+    
+    # ================== Notification Templates ==================
+    
+    async def send_welcome_email(self, to_email: str, user_name: str) -> bool:
+        """Send welcome email to new users."""
+        content = f"""
+        <h2>Welcome to Mini-Hub, {user_name}! 🎉</h2>
+        <p>We're thrilled to have you join our community of workflow creators and automation enthusiasts.</p>
+        
+        <h3>Here's what you can do:</h3>
+        <ul>
+            <li>🤖 <strong>Chat with AI</strong> - Use natural language to interact with your tools</li>
+            <li>🔄 <strong>Create Workflows</strong> - Automate repetitive tasks</li>
+            <li>🏪 <strong>Explore Marketplace</strong> - Discover workflows from other creators</li>
+            <li>💰 <strong>Monetize</strong> - Share and sell your workflows</li>
+        </ul>
+        
+        <a href="https://minihub.ai/dashboard" class="button">Get Started</a>
+        
+        <p>If you have any questions, our team is here to help!</p>
+        """
+        
+        html = self._get_base_template(content, "Welcome to Mini-Hub!")
+        return await self.send_email(to_email, "🚀 Welcome to Mini-Hub!", html)
+    
+    async def send_workflow_download_notification(
+        self,
+        to_email: str,
+        creator_name: str,
+        workflow_name: str,
+        buyer_name: str,
+        download_count: int
+    ) -> bool:
+        """Send notification when someone downloads a workflow."""
+        content = f"""
+        <h2>Someone downloaded your workflow! 🎉</h2>
+        <p>Hi {creator_name},</p>
+        <p><strong>{buyer_name}</strong> just downloaded your workflow <strong>"{workflow_name}"</strong>.</p>
+        
+        <div class="stats-box">
+            <div class="stat">
+                <div class="stat-value">{download_count}</div>
+                <div class="stat-label">Total Downloads</div>
+            </div>
+        </div>
+        
+        <a href="https://minihub.ai/creator-profile" class="button">View Your Dashboard</a>
+        """
+        
+        html = self._get_base_template(content, "New Download!")
+        return await self.send_email(to_email, f"🎉 {buyer_name} downloaded your workflow!", html)
+    
+    async def send_workflow_sale_notification(
+        self,
+        to_email: str,
+        creator_name: str,
+        workflow_name: str,
+        buyer_name: str,
+        amount: float,
+        currency: str,
+        total_earnings: float
+    ) -> bool:
+        """Send notification when a workflow is purchased."""
+        content = f"""
+        <h2>You made a sale! 💰</h2>
+        <p>Hi {creator_name},</p>
+        <p><strong>{buyer_name}</strong> just purchased your workflow <strong>"{workflow_name}"</strong> for <strong>{currency} {amount:.2f}</strong>!</p>
+        
+        <div class="stats-box">
+            <div class="stat">
+                <div class="stat-value">{currency} {amount:.2f}</div>
+                <div class="stat-label">This Sale</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">{currency} {total_earnings:.2f}</div>
+                <div class="stat-label">Total Earnings</div>
+            </div>
+        </div>
+        
+        <a href="https://minihub.ai/creator-profile" class="button">View Earnings</a>
+        """
+        
+        html = self._get_base_template(content, "New Sale!")
+        return await self.send_email(to_email, f"💰 You earned {currency} {amount:.2f}!", html)
+    
+    async def send_new_follower_notification(
+        self,
+        to_email: str,
+        creator_name: str,
+        follower_name: str,
+        total_followers: int
+    ) -> bool:
+        """Send notification when someone follows the creator."""
+        content = f"""
+        <h2>New Follower! 👥</h2>
+        <p>Hi {creator_name},</p>
+        <p><strong>{follower_name}</strong> is now following you!</p>
+        
+        <div class="stats-box">
+            <div class="stat">
+                <div class="stat-value">{total_followers}</div>
+                <div class="stat-label">Total Followers</div>
+            </div>
+        </div>
+        
+        <p>Keep creating amazing workflows to grow your audience!</p>
+        
+        <a href="https://minihub.ai/creator-profile" class="button">View Profile</a>
+        """
+        
+        html = self._get_base_template(content, "New Follower!")
+        return await self.send_email(to_email, f"👥 {follower_name} is now following you!", html)
+    
+    async def send_new_review_notification(
+        self,
+        to_email: str,
+        creator_name: str,
+        workflow_name: str,
+        reviewer_name: str,
+        rating: int,
+        review_text: Optional[str] = None
+    ) -> bool:
+        """Send notification when someone reviews a workflow."""
+        stars = "⭐" * rating
+        content = f"""
+        <h2>New Review! {stars}</h2>
+        <p>Hi {creator_name},</p>
+        <p><strong>{reviewer_name}</strong> left a {rating}-star review on your workflow <strong>"{workflow_name}"</strong>.</p>
+        
+        {f'<blockquote style="border-left: 4px solid #8B5CF6; padding-left: 15px; margin: 20px 0; color: #555;">"{review_text}"</blockquote>' if review_text else ''}
+        
+        <a href="https://minihub.ai/marketplace" class="button">View Review</a>
+        """
+        
+        html = self._get_base_template(content, "New Review!")
+        return await self.send_email(to_email, f"{stars} New {rating}-star review on {workflow_name}!", html)
+    
+    async def send_weekly_summary(
+        self,
+        to_email: str,
+        creator_name: str,
+        stats: Dict
+    ) -> bool:
+        """Send weekly performance summary."""
+        content = f"""
+        <h2>Your Weekly Summary 📊</h2>
+        <p>Hi {creator_name},</p>
+        <p>Here's how your workflows performed this week:</p>
+        
+        <div class="stats-box">
+            <div class="stat">
+                <div class="stat-value">{stats.get('downloads', 0)}</div>
+                <div class="stat-label">Downloads</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">{stats.get('views', 0)}</div>
+                <div class="stat-label">Views</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">${stats.get('earnings', 0):.2f}</div>
+                <div class="stat-label">Earnings</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">{stats.get('new_followers', 0)}</div>
+                <div class="stat-label">New Followers</div>
+            </div>
+        </div>
+        
+        <h3>Top Performing Workflows</h3>
+        <ol>
+        {''.join([f'<li><strong>{wf["name"]}</strong> - {wf["downloads"]} downloads</li>' for wf in stats.get('top_workflows', [])])}
+        </ol>
+        
+        <a href="https://minihub.ai/creator-profile" class="button">View Full Analytics</a>
+        """
+        
+        html = self._get_base_template(content, "Your Weekly Summary")
+        return await self.send_email(to_email, "📊 Your Mini-Hub Weekly Summary", html)
+    
+    async def send_payment_received_notification(
+        self,
+        to_email: str,
+        user_name: str,
+        amount: float,
+        currency: str,
+        payment_method: str,
+        item_name: str
+    ) -> bool:
+        """Send payment confirmation email."""
+        content = f"""
+        <h2>Payment Successful! ✅</h2>
+        <p>Hi {user_name},</p>
+        <p>Your payment of <strong>{currency} {amount:.2f}</strong> via {payment_method} was successful.</p>
+        
+        <div class="stats-box">
+            <p><strong>Item:</strong> {item_name}</p>
+            <p><strong>Amount:</strong> {currency} {amount:.2f}</p>
+            <p><strong>Payment Method:</strong> {payment_method}</p>
+        </div>
+        
+        <p>The workflow has been added to your library and is ready to use.</p>
+        
+        <a href="https://minihub.ai/workflows" class="button">View Your Workflows</a>
+        """
+        
+        html = self._get_base_template(content, "Payment Confirmation")
+        return await self.send_email(to_email, f"✅ Payment of {currency} {amount:.2f} confirmed", html)
+    
+    async def send_workflow_published_notification(
+        self,
+        to_email: str,
+        creator_name: str,
+        workflow_name: str,
+        visibility: str
+    ) -> bool:
+        """Send notification when a workflow is published to marketplace."""
+        visibility_text = "publicly available" if visibility == "marketplace" else "shared with your link"
+        content = f"""
+        <h2>Workflow Published! 🎉</h2>
+        <p>Hi {creator_name},</p>
+        <p>Your workflow <strong>"{workflow_name}"</strong> is now {visibility_text}!</p>
+        
+        <h3>Next Steps:</h3>
+        <ul>
+            <li>Share the link with your network</li>
+            <li>Add detailed descriptions and tags</li>
+            <li>Respond to reviews and questions</li>
+        </ul>
+        
+        <a href="https://minihub.ai/marketplace" class="button">View in Marketplace</a>
+        """
+        
+        html = self._get_base_template(content, "Workflow Published!")
+        return await self.send_email(to_email, f"🎉 {workflow_name} is now live!", html)
+    
+    async def send_password_reset_email(
+        self,
+        to_email: str,
+        reset_token: str,
+        reset_url: str
+    ) -> bool:
+        """Send password reset email."""
+        content = f"""
+        <h2>Reset Your Password 🔐</h2>
+        <p>We received a request to reset your password. Click the button below to set a new password:</p>
+        
+        <a href="{reset_url}?token={reset_token}" class="button">Reset Password</a>
+        
+        <p style="margin-top: 30px; color: #666; font-size: 14px;">
+            If you didn't request this, you can safely ignore this email. The link will expire in 1 hour.
+        </p>
+        """
+        
+        html = self._get_base_template(content, "Reset Your Password")
+        return await self.send_email(to_email, "🔐 Reset your Mini-Hub password", html)
+
+    async def send_org_invitation_email(
+        self,
+        to_email: str,
+        org_name: str,
+        inviter_name: str,
+        role: str,
+        invite_url: str,
+    ) -> bool:
+        """Send organization invitation email."""
+        content = f"""
+        <h2>You've been invited to join {org_name} 🏢</h2>
+        <p>Hi there,</p>
+        <p><strong>{inviter_name}</strong> has invited you to join
+        <strong>{org_name}</strong> on Arrotech Hub as a <strong>{role}</strong>.</p>
+
+        <div class="stats-box">
+            <p><strong>Organization:</strong> {org_name}</p>
+            <p><strong>Your Role:</strong> {role.capitalize()}</p>
+            <p><strong>Invited by:</strong> {inviter_name}</p>
+        </div>
+
+        <p>Click the button below to accept the invitation:</p>
+
+        <a href="{invite_url}" class="button">Join {org_name}</a>
+
+        <p style="margin-top: 30px; color: #666; font-size: 14px;">
+            This invitation expires in 7 days. If you don't have an Arrotech Hub
+            account yet, you'll be asked to create one first.
+        </p>
+        """
+
+        html = self._get_base_template(content, f"Join {org_name}")
+        return await self.send_email(
+            to_email,
+            f"🏢 {inviter_name} invited you to join {org_name}",
+            html,
+            text_content=f"{inviter_name} invited you to join {org_name} on Arrotech Hub as a {role}. Accept here: {invite_url}",
+        )
+
+    async def send_2fa_otp_email(
+        self,
+        to_email: str,
+        otp: str
+    ) -> bool:
+        """Send a 2FA OTP code via email."""
+        content = f"""
+        <h2>Your Verification Code 🔐</h2>
+        <p>Use the following 6-digit code to verify your identity:</p>
+        
+        <div style="background-color: #f3f4f6; color: #111827; font-size: 32px; font-weight: bold; letter-spacing: 0.25em; padding: 20px; text-align: center; border-radius: 8px; margin: 30px 0; font-family: monospace;">
+            {otp}
+        </div>
+        
+        <p style="margin-top: 30px; color: #666; font-size: 14px;">
+            This code will expire in 5 minutes. If you didn't request this, please secure your account immediately.
+        </p>
+        """
+        
+        html = self._get_base_template(content, "Login Verification Code")
+        return await self.send_email(to_email, "🔐 Your Arrotech Hub Login Code", html, text_content=f"Your login code is: {otp}")
+
+    async def send_email_verification(
+        self,
+        to_email: str,
+        user_name: str,
+        otp: str
+    ) -> bool:
+        """Send email verification OTP to newly registered users."""
+        content = f"""
+        <h2>Verify Your Email Address ✉️</h2>
+        <p>Hi {user_name},</p>
+        <p>Welcome to Arrotech Hub! To complete your registration and unlock all features, please verify your email address by entering the code below:</p>
+        
+        <div style="background-color: #f3f4f6; color: #111827; font-size: 36px; font-weight: bold; letter-spacing: 0.3em; padding: 24px; text-align: center; border-radius: 12px; margin: 30px 0; font-family: monospace; border: 2px dashed #8B5CF6;">
+            {otp}
+        </div>
+        
+        <p style="text-align: center; color: #555; font-size: 14px; margin-bottom: 24px;">
+            This code expires in <strong>15 minutes</strong>.
+        </p>
+        
+        <div style="background-color: #FEF3C7; border-radius: 8px; padding: 16px; margin: 20px 0; border-left: 4px solid #F59E0B;">
+            <p style="margin: 0; color: #92400E; font-size: 13px;">
+                <strong>💡 Tip:</strong> If you don't see this email in your inbox, check your spam or junk folder.
+            </p>
+        </div>
+        
+        <p style="margin-top: 30px; color: #666; font-size: 14px;">
+            If you didn't create an account on Arrotech Hub, you can safely ignore this email.
+        </p>
+        """
+        
+        html = self._get_base_template(content, "Verify Your Email")
+        return await self.send_email(
+            to_email, 
+            "✉️ Verify your Arrotech Hub email", 
+            html, 
+            text_content=f"Hi {user_name}, your Arrotech Hub verification code is: {otp}. This code expires in 15 minutes."
+        )
+
+
+# Create singleton instance
+email_service = EmailService()
+

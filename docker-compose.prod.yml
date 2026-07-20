@@ -1,0 +1,298 @@
+version: '3.8'
+
+# =============================================================================
+# Arrotech Hub — Production Docker Compose
+# Target: AWS EC2 t3.small (2 vCPU, 2GB RAM)
+# Budget: $30-50/month
+#
+# Differences from docker-compose.yml (dev):
+#   - Single app replica (not 3)
+#   - No ELK stack (Elasticsearch/Logstash/Kibana) — uses CloudWatch
+#   - No Prometheus/Grafana/Node-Exporter — uses CloudWatch
+#   - No Flower (enable below if needed)
+#   - Celery worker concurrency: 2 (not 4)
+#   - Redis requires password
+#   - Nginx serves HTTPS (443) with Let's Encrypt
+#   - No ports exposed to host except 80/443
+#   - Stricter memory limits
+# =============================================================================
+
+services:
+
+  # ── FastAPI Application ───────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - BUILDKIT_INLINE_CACHE=1
+    image: arrotech-hub:latest
+    env_file:
+      - .env.production
+    environment:
+      - ENVIRONMENT=production
+      - DEBUG=false
+      - LOG_LEVEL=WARNING
+      - PYTHONUNBUFFERED=1
+      - WEB_CONCURRENCY=2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    volumes:
+      - app_logs:/app/logs
+      - uploads:/app/uploads
+    command: python -m src.main
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.15'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ── Database Migrator (runs once, then exits) ─────────────────────────────
+  migrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: arrotech-hub:latest
+    env_file:
+      - .env.production
+    environment:
+      - ENVIRONMENT=production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./alembic:/app/alembic
+    command: ["/bin/bash", "/app/scripts/migrate.sh"]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  # ── PostgreSQL 15 ─────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-minihub}
+      POSTGRES_USER: ${POSTGRES_USER:-minihub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    # Not exposed to host — only reachable from other containers
+    expose:
+      - "5432"
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-minihub} -d ${POSTGRES_DB:-minihub}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Redis 7 (Cache + Celery Broker/Backend) ───────────────────────────────
+  redis:
+    image: redis:7-alpine
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 128mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD:-changeme}
+      --tcp-backlog 128
+    volumes:
+      - redis_data:/data
+    expose:
+      - "6379"
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+          cpus: '0.15'
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-changeme}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  # ── Celery Worker ─────────────────────────────────────────────────────────
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: arrotech-hub:latest
+    command: >
+      celery -A src.celery_app worker
+      --loglevel=info
+      --concurrency=2
+      -Q high,default,low
+      --without-heartbeat
+      --without-mingle
+    env_file:
+      - .env.production
+    environment:
+      - ENVIRONMENT=production
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: '0.35'
+        reservations:
+          memory: 192M
+          cpus: '0.1'
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A src.celery_app inspect ping --timeout 10 2>/dev/null || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 45s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ── Celery Beat (Periodic Tasks) ──────────────────────────────────────────
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: arrotech-hub:latest
+    command: celery -A src.celery_app beat --loglevel=info
+    env_file:
+      - .env.production
+    environment:
+      - ENVIRONMENT=production
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.1'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  # ── Nginx (Reverse Proxy + SSL Termination) ───────────────────────────────
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./config/nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - certbot_webroot:/var/www/certbot:ro
+    depends_on:
+      - app
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.1'
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:80/health-nginx || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ── (Optional) Celery Flower — Uncomment to enable monitoring UI ──────────
+  # celery-flower:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   image: arrotech-hub:latest
+  #   command: >
+  #     celery -A src.celery_app flower
+  #     --port=5555
+  #     --basic-auth=${CELERY_FLOWER_BASIC_AUTH:-admin:changeme}
+  #   env_file:
+  #     - .env.production
+  #   environment:
+  #     - FLOWER_UNAUTHENTICATED_API=false
+  #     - PYTHONUNBUFFERED=1
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #   ports:
+  #     - "5555:5555"
+  #   restart: always
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 128M
+  #         cpus: '0.1'
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  app_logs:
+    driver: local
+  uploads:
+    driver: local
+  certbot_webroot:
+    driver: local

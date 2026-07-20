@@ -1,0 +1,33 @@
+---
+description: Rules for modifying files in the services directory
+globs: src/services/**/*.py
+alwaysApply: false
+---
+
+# Service Layer Rules
+
+When modifying files in `src/services/`:
+
+## Required Patterns
+- Every service file MUST have: `logger = logging.getLogger(__name__)`
+- Every service class receives `db: AsyncSession` via constructor, never creates sessions
+- External API calls MUST be wrapped in try/except with error classification
+- Tool methods return `{"success": True, "data": {...}}` or `{"success": False, "error": "..."}`
+
+## Forbidden Patterns
+- NEVER import from `src/routers/` (this breaks the layer architecture)
+- NEVER use `print()` — use `logger.info()`, `logger.warning()`, `logger.error()`
+- NEVER create database engines directly — use dependency injection
+
+## When Adding a New Service
+Run the scaffolding generator instead of creating files manually:
+```bash
+python scripts/new_service.py <platform_name> --with-router --with-tools
+```
+
+## After Changes
+```bash
+python scripts/verify_architecture.py
+python scripts/verify_tools.py
+pytest tests/test_<service_name>.py -v
+```

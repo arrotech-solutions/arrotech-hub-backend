@@ -1,0 +1,54 @@
+name: testing
+description: Testing enforcement skill
+capability: testing
+
+triggers:
+  - test
+  - unit test
+  - integration test
+
+system_prompt: |
+  Always write tests before finalizing implementation.
+
+protocol:
+  execution_steps:
+    - Analyze existing test suite
+    - Generate tests
+    - Execute tests
+
+  review_steps:
+    - Validate coverage
+    - Validate failure cases
+
+  failure_recovery:
+    - Repair broken tests
+
+validation_rules:
+  - name: tests_must_pass
+    required: true
+
+execution_contract:
+  contract_version: 1
+  allowed_tools:
+    - tool_name: test_runner
+      read_only: false
+
+  forbidden_actions:
+    - delete_database
+    - disable_tests
+
+  required_validations:
+    - tests_must_pass
+    - coverage_check
+
+  constraints:
+    require_human_approval: false
+    allow_network_access: false
+    allow_file_mutation: true
+    allow_shell_execution: true
+    allowed_environments:
+      - local
+      - development
+      - staging
+
+  risk_level: medium
