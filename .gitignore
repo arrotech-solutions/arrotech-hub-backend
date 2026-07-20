@@ -28,6 +28,11 @@ wheels/
 .env.local
 .env.*.local
 .env.monitoring
+.env.production
+# NOTE: .env.production.template is safe to commit (contains placeholders only)
+
+# Backups (local DB dumps)
+backups/
 
 # IDE
 .vscode/

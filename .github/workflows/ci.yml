@@ -128,36 +128,102 @@ jobs:
 
 
   # ===========================================================================
-  # Stage 3: Deploy to Fly.io
+  # Stage 3: Deploy to AWS EC2
+  # ===========================================================================
+  # Requires GitHub Secrets:
+  #   EC2_HOST       — Elastic IP of the EC2 instance
+  #   EC2_SSH_KEY    — Private SSH key for the ubuntu user
+  #   PROD_API_URL   — e.g. https://prod.api.arrotechsolutions.com
   # ===========================================================================
 
   deploy-staging:
-    name: Deploy to Staging
+    name: Deploy to Staging (EC2)
     needs: [test, security-scan]
     if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
-    uses: arrotech-solutions/arrotech-solutions-actions/.github/workflows/cd-deploy.yml@main
-    with:
-      environment: "staging"
-      platform: "railway"
-      service: "arrotech-hub-backend"
-      wait-for-rollout: true
-    secrets:
-      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-      DEPLOY_ENV_VARS: ${{ secrets.STAGING_ENV_VARS }}
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true
+          script: |
+            cd /home/ubuntu/arrotech-hub-backend
+            git fetch origin develop
+            git checkout develop
+            git reset --hard origin/develop
+
+            echo "Building and deploying staging..."
+            docker compose -f docker-compose.prod.yml build app celery-worker
+            docker compose -f docker-compose.prod.yml up -d
+
+            # Wait for health check
+            echo "Waiting for application health..."
+            sleep 20
+            curl -sf http://localhost:8000/health || (echo "Health check failed!" && exit 1)
+            echo "Staging deployment successful!"
+
+            # Cleanup
+            docker image prune -f --filter "until=72h" 2>/dev/null || true
 
   deploy-production:
-    name: Deploy to Production
+    name: Deploy to Production (EC2)
     needs: [test, security-scan]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    uses: arrotech-solutions/arrotech-solutions-actions/.github/workflows/cd-deploy.yml@main
-    with:
-      environment: "production"
-      platform: "railway"
-      service: "arrotech-hub-backend"
-      wait-for-rollout: true
-    secrets:
-      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-      DEPLOY_ENV_VARS: ${{ secrets.PRODUCTION_ENV_VARS }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true
+          command_timeout: 10m
+          script: |
+            cd /home/ubuntu/arrotech-hub-backend
+
+            # Save current commit for rollback
+            PREVIOUS_COMMIT=$(git rev-parse HEAD)
+            echo "Previous commit: $PREVIOUS_COMMIT"
+
+            # Pull latest
+            git fetch origin main
+            git reset --hard origin/main
+            NEW_COMMIT=$(git rev-parse HEAD)
+            echo "Deploying commit: $NEW_COMMIT"
+
+            # Build and restart
+            docker compose -f docker-compose.prod.yml build app celery-worker
+            docker compose -f docker-compose.prod.yml up -d
+
+            # Wait for health check
+            echo "Waiting for application health..."
+            ELAPSED=0
+            while [ $ELAPSED -lt 60 ]; do
+              if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+                echo "Health check passed after ${ELAPSED}s"
+                break
+              fi
+              sleep 5
+              ELAPSED=$((ELAPSED + 5))
+            done
+
+            if [ $ELAPSED -ge 60 ]; then
+              echo "Health check FAILED! Rolling back to $PREVIOUS_COMMIT"
+              git checkout "$PREVIOUS_COMMIT"
+              docker compose -f docker-compose.prod.yml up -d --build app celery-worker
+              exit 1
+            fi
+
+            echo "Production deployment successful!"
+
+            # Cleanup
+            docker image prune -f --filter "until=72h" 2>/dev/null || true
 
   # ===========================================================================
   # Post-Deployment Health Check
@@ -170,27 +236,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Wait for deployment to stabilize
-        run: sleep 30
-
-      - name: Check staging health
-        if: needs.deploy-staging.result == 'success'
-        env:
-          STAGING_URL: ${{ needs.deploy-staging.outputs.deployment-url }}
-        run: |
-          if [ -n "$STAGING_URL" ]; then
-            echo "Checking health at $STAGING_URL/health"
-            curl -f "$STAGING_URL/health" || echo "Health check endpoint not found or failed"
-          fi
+        run: sleep 15
 
       - name: Check production health
         if: needs.deploy-production.result == 'success'
-        env:
-          PROD_URL: ${{ needs.deploy-production.outputs.deployment-url }}
         run: |
-          if [ -n "$PROD_URL" ]; then
-            echo "Checking health at $PROD_URL/health"
-            curl -f "$PROD_URL/health" || echo "Health check endpoint not found or failed"
-          fi
+          echo "Checking production health..."
+          for i in 1 2 3; do
+            if curl -sf "${{ secrets.PROD_API_URL }}/health"; then
+              echo ""
+              echo "Production is healthy!"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+          echo "Production health check failed after 3 attempts"
+          exit 1
 
   # ===========================================================================
   # PR Checks
