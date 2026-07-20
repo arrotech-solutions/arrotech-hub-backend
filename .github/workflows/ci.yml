@@ -157,13 +157,13 @@ jobs:
             git reset --hard origin/develop
 
             echo "Building and deploying staging..."
-            docker compose -f docker-compose.prod.yml build app celery-worker
-            docker compose -f docker-compose.prod.yml up -d
+            docker compose --env-file .env.production -f docker-compose.prod.yml build app celery-worker
+            docker compose --env-file .env.production -f docker-compose.prod.yml up -d
 
             # Wait for health check
             echo "Waiting for application health..."
             sleep 20
-            curl -sf http://localhost:8000/health || (echo "Health check failed!" && exit 1)
+            curl -sf -k https://localhost/health || (echo "Health check failed!" && exit 1)
             echo "Staging deployment successful!"
 
             # Cleanup
@@ -198,14 +198,14 @@ jobs:
             echo "Deploying commit: $NEW_COMMIT"
 
             # Build and restart
-            docker compose -f docker-compose.prod.yml build app celery-worker
-            docker compose -f docker-compose.prod.yml up -d
+            docker compose --env-file .env.production -f docker-compose.prod.yml build app celery-worker
+            docker compose --env-file .env.production -f docker-compose.prod.yml up -d
 
             # Wait for health check
             echo "Waiting for application health..."
             ELAPSED=0
             while [ $ELAPSED -lt 60 ]; do
-              if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+              if curl -sf -k https://localhost/health > /dev/null 2>&1; then
                 echo "Health check passed after ${ELAPSED}s"
                 break
               fi
@@ -216,7 +216,7 @@ jobs:
             if [ $ELAPSED -ge 60 ]; then
               echo "Health check FAILED! Rolling back to $PREVIOUS_COMMIT"
               git checkout "$PREVIOUS_COMMIT"
-              docker compose -f docker-compose.prod.yml up -d --build app celery-worker
+              docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build app celery-worker
               exit 1
             fi
 
