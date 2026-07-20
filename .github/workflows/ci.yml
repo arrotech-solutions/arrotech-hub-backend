@@ -163,7 +163,7 @@ jobs:
             # Wait for health check
             echo "Waiting for application health..."
             sleep 20
-            curl -sf http://localhost:8000/health || (echo "Health check failed!" && exit 1)
+            curl -sf -k https://localhost/health || (echo "Health check failed!" && exit 1)
             echo "Staging deployment successful!"
 
             # Cleanup
@@ -205,7 +205,7 @@ jobs:
             echo "Waiting for application health..."
             ELAPSED=0
             while [ $ELAPSED -lt 60 ]; do
-              if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+              if curl -sf -k https://localhost/health > /dev/null 2>&1; then
                 echo "Health check passed after ${ELAPSED}s"
                 break
               fi
