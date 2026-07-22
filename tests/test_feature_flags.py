@@ -112,6 +112,8 @@ class TestFeatureGate:
     def _mock_user(self, tier="free"):
         user = MagicMock()
         user.subscription_tier = tier
+        user.subscription_status = "active"
+        user.subscription_end_date = None
         return user
 
     def test_get_limits_free(self):
@@ -179,8 +181,10 @@ class TestFeatureGate:
 
     def test_has_connection_access_pro_wildcard(self):
         from src.services.feature_flags import FeatureGate
+        from unittest.mock import patch
         user = self._mock_user("pro")
-        assert FeatureGate.has_connection_access(user, "anything") is True
+        with patch.object(FeatureGate, "get_effective_tier", return_value="pro"):
+            assert FeatureGate.has_connection_access(user, "anything") is True
 
     def test_has_feature_free_inbox_read(self):
         from src.services.feature_flags import FeatureGate
@@ -199,8 +203,10 @@ class TestFeatureGate:
 
     def test_get_provider_limit_business(self):
         from src.services.feature_flags import FeatureGate
+        from unittest.mock import patch
         user = self._mock_user("business")
-        assert FeatureGate.get_provider_limit(user, "email") == 5
+        with patch.object(FeatureGate, "get_effective_tier", return_value="business"):
+            assert FeatureGate.get_provider_limit(user, "email") == 5
 
     def test_get_usage_percentage(self):
         from src.services.feature_flags import FeatureGate

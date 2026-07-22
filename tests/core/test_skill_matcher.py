@@ -1,31 +1,23 @@
 import pytest
 from src.core.skills.matcher import match_skills
 from src.core.skills.registry import SkillRegistry
-from src.core.skills.models import SkillDefinition, SkillCapability, SkillProtocol
+from src.core.skills.models import SkillCapability
+from tests.core.skill_fixtures import make_skill_definition
 
 @pytest.fixture
 def registry():
     reg = SkillRegistry()
     reg._clear_for_testing()
     
-    # Register some skills for matching
-    skill1 = SkillDefinition(
+    skill1 = make_skill_definition(
         name="testing",
-        description="Testing skill",
         capability=SkillCapability.TESTING,
         triggers=["test", "unit test"],
-        system_prompt="Prompt",
-        protocol=SkillProtocol(execution_steps=[], review_steps=[], failure_recovery=[]),
-        validation_rules=[]
     )
-    skill2 = SkillDefinition(
+    skill2 = make_skill_definition(
         name="api",
-        description="API skill",
         capability=SkillCapability.BACKEND,
         triggers=["api", "endpoint"],
-        system_prompt="Prompt",
-        protocol=SkillProtocol(execution_steps=[], review_steps=[], failure_recovery=[]),
-        validation_rules=[]
     )
     
     reg.register(skill1)

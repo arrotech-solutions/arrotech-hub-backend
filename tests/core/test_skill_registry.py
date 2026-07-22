@@ -1,7 +1,8 @@
 import pytest
 from src.core.skills.registry import SkillRegistry
-from src.core.skills.models import SkillDefinition, SkillCapability, SkillProtocol
+from src.core.skills.models import SkillCapability
 from src.core.skills.exceptions import SkillValidationError, SkillNotFoundError
+from tests.core.skill_fixtures import make_skill_definition
 
 @pytest.fixture
 def registry():
@@ -11,19 +12,7 @@ def registry():
 
 @pytest.fixture
 def mock_skill():
-    return SkillDefinition(
-        name="test_skill",
-        description="A test skill",
-        capability=SkillCapability.TESTING,
-        triggers=["test"],
-        system_prompt="Prompt",
-        protocol=SkillProtocol(
-            execution_steps=["step1"],
-            review_steps=["step2"],
-            failure_recovery=["step3"]
-        ),
-        validation_rules=[]
-    )
+    return make_skill_definition(name="test_skill", capability=SkillCapability.TESTING)
 
 def test_registry_register_and_get(registry, mock_skill):
     registry.register(mock_skill)

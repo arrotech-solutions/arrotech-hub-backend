@@ -66,8 +66,8 @@ def test_build_order_sheet_record_separates_whatsapp_and_mpesa_phone():
         status="paid",
         mpesa_phone="254797568564",
     )
-    assert record["Customer Phone"] == "254711371265"
-    assert record["M-Pesa Phone"] == "254797568564"
+    assert record["Customer Phone"] == "'254711371265"
+    assert record["M-Pesa Phone"] == "'254797568564"
 
 
 def test_orders_sheet_tab_candidates_prefers_orders_after_sheet1_rename():

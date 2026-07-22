@@ -42,9 +42,9 @@ from src.core.runtime.exceptions import (
 
 class TestToolRegistry:
     def test_all_27_tools_registered(self):
-        """All 27 tools (3 original + 24 coding) must be registered."""
+        """All registered tools (3 original + 24 coding + 3 planning) must be present."""
         tools = RegisteredToolRegistry.all()
-        assert len(tools) == 27
+        assert len(tools) == 30
 
     def test_original_tools_exist(self):
         assert RegisteredToolRegistry.exists("test_runner")

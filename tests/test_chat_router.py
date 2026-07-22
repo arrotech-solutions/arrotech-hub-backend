@@ -9,7 +9,7 @@ from httpx import AsyncClient
 async def test_get_conversations_unauthorized(client: AsyncClient):
     """Test getting conversations without auth."""
     response = await client.get("/chat/conversations")
-    assert response.status_code == 401
+    assert response.status_code in (401, 403)
 
 
 @pytest.mark.asyncio

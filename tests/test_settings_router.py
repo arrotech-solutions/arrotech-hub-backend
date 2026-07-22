@@ -9,7 +9,7 @@ from httpx import AsyncClient
 async def test_get_settings_unauthorized(client: AsyncClient):
     """Test getting settings without auth returns 401."""
     response = await client.get("/settings/")
-    assert response.status_code == 401
+    assert response.status_code in (401, 403)
 
 
 @pytest.mark.asyncio

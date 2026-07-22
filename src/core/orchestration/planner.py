@@ -101,16 +101,13 @@ class ExecutionPlan:
 
     @property
     def next_tasks(self) -> List[PlannedTask]:
-        """Get tasks that are ready to execute (dependencies met)."""
-        completed_ids = {t.id for t in self.tasks if t.status == TaskStatus.COMPLETED}
-        ready = []
-        for task in self.tasks:
-            if task.status != TaskStatus.PLANNED:
-                continue
-            deps_met = all(dep in completed_ids for dep in task.depends_on)
-            if deps_met:
-                ready.append(task)
-        return ready
+        """Get tasks that are ready to execute (dependencies met).
+
+        Tasks are promoted to READY by ``PlannerAgent._resolve_ready_tasks``;
+        this property returns those READY tasks (not PLANNED ones still
+        waiting on dependencies).
+        """
+        return [t for t in self.tasks if t.status == TaskStatus.READY]
 
     def to_dict(self) -> Dict[str, Any]:
         return {

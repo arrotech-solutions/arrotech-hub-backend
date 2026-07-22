@@ -84,9 +84,9 @@ def test_freeze_structure_breaks_aliasing():
 def test_strict_primitive_typing():
     """Issue 4: Reject subclassed primitives."""
     class MyStr(str): pass
-    with pytest.raises(ValueError, match="forbidden type"):
+    with pytest.raises(ValueError, match="Forbidden payload type"):
         validate_json_safe_payload({"v": MyStr("tamper")})
         
     class MyInt(int): pass
-    with pytest.raises(ValueError, match="forbidden type"):
+    with pytest.raises(ValueError, match="Forbidden payload type"):
         validate_json_safe_payload({"v": MyInt(1)})

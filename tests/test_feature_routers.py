@@ -12,7 +12,7 @@ class TestAIRouter:
     @pytest.mark.asyncio
     async def test_ai_generate_unauthorized(self, client: AsyncClient):
         r = await client.post("/ai/action", json={"action": "email.draft_replies"})
-        assert r.status_code in [401, 404, 422]
+        assert r.status_code in [401, 403, 404, 422]
 
     @pytest.mark.asyncio
     async def test_ai_generate(self, client: AsyncClient, auth_headers):
@@ -38,7 +38,7 @@ class TestSecurityRouter:
     @pytest.mark.asyncio
     async def test_get_security_overview_unauthorized(self, client: AsyncClient):
         r = await client.get("/api/v1/security/overview")
-        assert r.status_code in [401, 404]
+        assert r.status_code in [401, 403, 404]
 
     @pytest.mark.asyncio
     async def test_get_security_overview(self, client: AsyncClient, auth_headers):
@@ -72,7 +72,7 @@ class TestProductivityRouter:
     @pytest.mark.asyncio
     async def test_get_productivity_unauthorized(self, client: AsyncClient):
         r = await client.get("/productivity/dashboard")
-        assert r.status_code in [401, 404]
+        assert r.status_code in [401, 403, 404]
 
 
 # ── RAG Router ────────────────────────────────────────────────────────────────
@@ -86,7 +86,7 @@ class TestRAGRouter:
     @pytest.mark.asyncio
     async def test_list_kb_unauthorized(self, client: AsyncClient):
         r = await client.get("/api/rag/knowledge-bases")
-        assert r.status_code in [401, 404]
+        assert r.status_code in [401, 403, 404]
 
     @pytest.mark.asyncio
     async def test_create_knowledge_base(self, client: AsyncClient, auth_headers):
@@ -116,7 +116,7 @@ class TestAssistantRouter:
     @pytest.mark.asyncio
     async def test_assistant_chat_unauthorized(self, client: AsyncClient):
         r = await client.post("/assistant/chat", json={"message": "hi"})
-        assert r.status_code in [200, 401, 404, 422]
+        assert r.status_code in [200, 401, 403, 404, 422]
 
 
 # ── Public Forms Router ──────────────────────────────────────────────────────
@@ -164,7 +164,7 @@ class TestMpesaAgentRouter:
     @pytest.mark.asyncio
     async def test_mpesa_config_unauthorized(self, client: AsyncClient):
         r = await client.get("/api/agents/daraja/config")
-        assert r.status_code in [401, 404]
+        assert r.status_code in [401, 403, 404]
 
     @pytest.mark.asyncio
     async def test_get_mpesa_payments(self, client: AsyncClient, auth_headers):

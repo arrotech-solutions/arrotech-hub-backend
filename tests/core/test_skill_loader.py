@@ -4,22 +4,25 @@ from pathlib import Path
 from src.core.skills.loader import load_skill
 from src.core.skills.exceptions import SkillLoadError
 from src.core.skills.models import SkillDefinition
+from tests.core.skill_fixtures import make_skill_definition
+
+def _skill_yaml_dict(**overrides):
+    skill = make_skill_definition()
+    data = skill.model_dump(mode="json")
+    data.update(overrides)
+    return data
 
 def test_load_skill_valid(tmp_path):
     skill_yaml = tmp_path / "skill.yaml"
-    content = {
-        "name": "test_skill",
-        "description": "A test skill",
-        "capability": "backend",
-        "triggers": ["test"],
-        "system_prompt": "Prompt",
-        "protocol": {
+    content = _skill_yaml_dict(
+        description="A test skill",
+        protocol={
             "execution_steps": ["step1"],
             "review_steps": ["step2"],
-            "failure_recovery": ["step3"]
+            "failure_recovery": ["step3"],
         },
-        "validation_rules": [{"name": "rule1", "required": True}]
-    }
+        validation_rules=[{"name": "rule1", "required": True}],
+    )
     skill_yaml.write_text(yaml.dump(content))
     
     skill = load_skill(skill_yaml)
@@ -36,20 +39,16 @@ def test_load_skill_malformed_yaml(tmp_path):
 
 def test_load_skill_unknown_field(tmp_path):
     skill_yaml = tmp_path / "skill.yaml"
-    content = {
-        "name": "test_skill",
-        "description": "A test skill",
-        "capability": "backend",
-        "triggers": ["test"],
-        "system_prompt": "Prompt",
-        "protocol": {
+    content = _skill_yaml_dict(
+        description="A test skill",
+        protocol={
             "execution_steps": ["step1"],
             "review_steps": ["step2"],
-            "failure_recovery": ["step3"]
+            "failure_recovery": ["step3"],
         },
-        "validation_rules": [{"name": "rule1", "required": True}],
-        "unknown_field": "oops"
-    }
+        validation_rules=[{"name": "rule1", "required": True}],
+        unknown_field="oops",
+    )
     skill_yaml.write_text(yaml.dump(content))
     
     with pytest.raises(SkillLoadError) as exc:
