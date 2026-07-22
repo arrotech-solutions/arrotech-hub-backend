@@ -504,7 +504,16 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
             
             logger.info(f"[WHATSAPP WEBHOOK] Found {len(connections)} active WhatsApp connection(s)")
             for c in connections:
-                logger.info(f"[WHATSAPP WEBHOOK] Connection {c.id}: user_id={c.user_id}, config={c.config}")
+                # Never log the full config — it contains the WhatsApp access token.
+                _cfg = c.config or {}
+                logger.info(
+                    "[WHATSAPP WEBHOOK] Connection %s: user_id=%s, phone_number_id=%s, waba_id=%s, phone_status=%s",
+                    c.id,
+                    c.user_id,
+                    _cfg.get("phone_number_id"),
+                    _cfg.get("waba_id"),
+                    _cfg.get("phone_status"),
+                )
             
             owner_user_id = None
             for conn in connections:

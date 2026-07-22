@@ -162,7 +162,9 @@ services:
     command: >
       celery -A src.celery_app worker
       --loglevel=info
-      --concurrency=2
+      --concurrency=1
+      --max-tasks-per-child=50
+      --max-memory-per-child=250000
       -Q high,default,low
       --without-heartbeat
       --without-mingle
@@ -182,7 +184,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 384M
+          memory: 512M
           cpus: '0.35'
         reservations:
           memory: 192M

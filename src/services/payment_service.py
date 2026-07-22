@@ -37,23 +37,17 @@ class PaymentService:
         self.paystack_public_key = settings.PAYSTACK_PUBLIC_KEY
         self.paystack_base_url = "https://api.paystack.co"
 
-        # Only log M-Pesa config if credentials are provided
+        # Log only whether M-Pesa is configured — never print keys/secrets/passkeys.
         if self.mpesa_consumer_key:
-            key = self.mpesa_consumer_key[:10]
-            print(f"M-Pesa Consumer Key: {key}...")
-        if self.mpesa_consumer_secret:
-            secret = self.mpesa_consumer_secret[:10]
-            print(f"M-Pesa Consumer Secret: {secret}...")
-        if self.mpesa_passkey:
-            passkey = self.mpesa_passkey[:10]
-            print(f"M-Pesa Passkey: {passkey}...")
-        if self.mpesa_shortcode:
-            print(f"M-Pesa Short Code: {self.mpesa_shortcode}")
-        if self.mpesa_callback_url:
-            print(f"M-Pesa Callback URL: {self.mpesa_callback_url}")
-
-        if not self.mpesa_consumer_key:
-            print("M-Pesa not configured - payment features disabled")
+            logger.info(
+                "M-Pesa configured (consumer key: %s, secret: %s, passkey: %s, short code: %s)",
+                "set" if self.mpesa_consumer_key else "missing",
+                "set" if self.mpesa_consumer_secret else "missing",
+                "set" if self.mpesa_passkey else "missing",
+                self.mpesa_shortcode or "missing",
+            )
+        else:
+            logger.info("M-Pesa not configured - payment features disabled")
 
         # Base URLs - use environment setting
         if settings.MPESA_ENVIRONMENT == "live":
