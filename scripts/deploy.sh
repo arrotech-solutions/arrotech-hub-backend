@@ -79,7 +79,7 @@ if [[ "$MODE" == "full" ]]; then
 fi
 
 log "Restarting services..."
-docker compose -f "$COMPOSE_FILE" up -d
+docker compose -f "$COMPOSE_FILE" up -d --force-recreate app celery-worker celery-beat nginx
 
 # ── Wait for health check ─────────────────────────────────────────────────
 log "Waiting for application to become healthy..."
