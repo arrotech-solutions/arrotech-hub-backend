@@ -158,14 +158,14 @@ jobs:
 
             echo "Building and deploying staging..."
             docker compose --env-file .env.production -f docker-compose.prod.yml build app celery-worker
-            docker compose --env-file .env.production -f docker-compose.prod.yml up -d --force-recreate app celery-worker celery-beat
+            docker compose --env-file .env.production -f docker-compose.prod.yml up -d --force-recreate app celery-worker celery-beat nginx
 
             # Wait for app health (check inside container — avoids nginx SSL/host issues)
             echo "Waiting for application health..."
             ELAPSED=0
             while [ $ELAPSED -lt 90 ]; do
               if docker compose --env-file .env.production -f docker-compose.prod.yml exec -T app curl -sf http://localhost:8000/health > /dev/null 2>&1; then
-                echo "Health check passed after ${ELAPSED}s"
+                echo "App health check passed after ${ELAPSED}s"
                 break
               fi
               sleep 5
@@ -173,8 +173,15 @@ jobs:
             done
 
             if [ $ELAPSED -ge 90 ]; then
-              echo "Health check failed! Recent app logs:"
+              echo "App health check failed! Recent app logs:"
               docker compose --env-file .env.production -f docker-compose.prod.yml logs app --tail 80 || true
+              exit 1
+            fi
+
+            # Verify nginx can reach app (nginx caches app IP — must recreate nginx with app)
+            if ! curl -sf -k https://prod.api.arrotechsolutions.com/health > /dev/null 2>&1; then
+              echo "External health check failed! Recent nginx logs:"
+              docker compose --env-file .env.production -f docker-compose.prod.yml logs nginx --tail 40 || true
               exit 1
             fi
             echo "Staging deployment successful!"
@@ -212,14 +219,14 @@ jobs:
 
             # Build and restart (--force-recreate required: image tag stays :latest)
             docker compose --env-file .env.production -f docker-compose.prod.yml build app celery-worker
-            docker compose --env-file .env.production -f docker-compose.prod.yml up -d --force-recreate app celery-worker celery-beat
+            docker compose --env-file .env.production -f docker-compose.prod.yml up -d --force-recreate app celery-worker celery-beat nginx
 
             # Wait for app health (check inside container — avoids nginx SSL/host issues)
             echo "Waiting for application health..."
             ELAPSED=0
             while [ $ELAPSED -lt 90 ]; do
               if docker compose --env-file .env.production -f docker-compose.prod.yml exec -T app curl -sf http://localhost:8000/health > /dev/null 2>&1; then
-                echo "Health check passed after ${ELAPSED}s"
+                echo "App health check passed after ${ELAPSED}s"
                 break
               fi
               sleep 5
@@ -227,11 +234,21 @@ jobs:
             done
 
             if [ $ELAPSED -ge 90 ]; then
-              echo "Health check FAILED! Recent app logs:"
+              echo "App health check FAILED! Recent app logs:"
               docker compose --env-file .env.production -f docker-compose.prod.yml logs app --tail 80 || true
               echo "Rolling back to $PREVIOUS_COMMIT"
               git checkout "$PREVIOUS_COMMIT"
-              docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build --force-recreate app celery-worker celery-beat
+              docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build --force-recreate app celery-worker celery-beat nginx
+              exit 1
+            fi
+
+            # Verify nginx can reach app (nginx caches app IP — must recreate nginx with app)
+            if ! curl -sf -k https://prod.api.arrotechsolutions.com/health > /dev/null 2>&1; then
+              echo "External health check FAILED! Recent nginx logs:"
+              docker compose --env-file .env.production -f docker-compose.prod.yml logs nginx --tail 40 || true
+              echo "Rolling back to $PREVIOUS_COMMIT"
+              git checkout "$PREVIOUS_COMMIT"
+              docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build --force-recreate app celery-worker celery-beat nginx
               exit 1
             fi
 
