@@ -158,12 +158,25 @@ jobs:
 
             echo "Building and deploying staging..."
             docker compose --env-file .env.production -f docker-compose.prod.yml build app celery-worker
-            docker compose --env-file .env.production -f docker-compose.prod.yml up -d
+            docker compose --env-file .env.production -f docker-compose.prod.yml up -d --force-recreate app celery-worker celery-beat
 
-            # Wait for health check
+            # Wait for app health (check inside container — avoids nginx SSL/host issues)
             echo "Waiting for application health..."
-            sleep 20
-            curl -sf -k https://localhost/health || (echo "Health check failed!" && exit 1)
+            ELAPSED=0
+            while [ $ELAPSED -lt 90 ]; do
+              if docker compose --env-file .env.production -f docker-compose.prod.yml exec -T app curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+                echo "Health check passed after ${ELAPSED}s"
+                break
+              fi
+              sleep 5
+              ELAPSED=$((ELAPSED + 5))
+            done
+
+            if [ $ELAPSED -ge 90 ]; then
+              echo "Health check failed! Recent app logs:"
+              docker compose --env-file .env.production -f docker-compose.prod.yml logs app --tail 80 || true
+              exit 1
+            fi
             echo "Staging deployment successful!"
 
             # Cleanup
@@ -197,15 +210,15 @@ jobs:
             NEW_COMMIT=$(git rev-parse HEAD)
             echo "Deploying commit: $NEW_COMMIT"
 
-            # Build and restart
+            # Build and restart (--force-recreate required: image tag stays :latest)
             docker compose --env-file .env.production -f docker-compose.prod.yml build app celery-worker
-            docker compose --env-file .env.production -f docker-compose.prod.yml up -d
+            docker compose --env-file .env.production -f docker-compose.prod.yml up -d --force-recreate app celery-worker celery-beat
 
-            # Wait for health check
+            # Wait for app health (check inside container — avoids nginx SSL/host issues)
             echo "Waiting for application health..."
             ELAPSED=0
-            while [ $ELAPSED -lt 60 ]; do
-              if curl -sf -k https://localhost/health > /dev/null 2>&1; then
+            while [ $ELAPSED -lt 90 ]; do
+              if docker compose --env-file .env.production -f docker-compose.prod.yml exec -T app curl -sf http://localhost:8000/health > /dev/null 2>&1; then
                 echo "Health check passed after ${ELAPSED}s"
                 break
               fi
@@ -213,10 +226,12 @@ jobs:
               ELAPSED=$((ELAPSED + 5))
             done
 
-            if [ $ELAPSED -ge 60 ]; then
-              echo "Health check FAILED! Rolling back to $PREVIOUS_COMMIT"
+            if [ $ELAPSED -ge 90 ]; then
+              echo "Health check FAILED! Recent app logs:"
+              docker compose --env-file .env.production -f docker-compose.prod.yml logs app --tail 80 || true
+              echo "Rolling back to $PREVIOUS_COMMIT"
               git checkout "$PREVIOUS_COMMIT"
-              docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build app celery-worker
+              docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build --force-recreate app celery-worker celery-beat
               exit 1
             fi
 
