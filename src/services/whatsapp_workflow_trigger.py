@@ -134,17 +134,24 @@ class WhatsAppWorkflowTrigger:
     
     @classmethod
     def _detect_real_estate_intent(cls, message_content: str) -> Optional[str]:
-        """Detect real estate intent from message content."""
+        """Detect real estate intent from message content using whole-word
+        matching, so a keyword like 'lease' does NOT match inside 'please'
+        (which previously mis-tagged food/cart messages as 'lease_inquiry')."""
         if not message_content:
             return None
-        
+
         content_lower = message_content.lower()
-        
+
         for intent, keywords in RE_KEYWORDS.items():
             for keyword in keywords:
-                if keyword in content_lower:
+                kw = keyword.lower().strip()
+                if not kw:
+                    continue
+                # (?<!\w) ... (?!\w) = phrase/whole-word boundaries; avoids false
+                # positives such as 'lease' in 'please' or 'notice' in 'notices'.
+                if re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", content_lower):
                     return intent
-        
+
         return None
     
     @classmethod
@@ -313,13 +320,23 @@ class WhatsAppWorkflowTrigger:
                         "config": wf_config,
                     }
 
-                    if re_intent:
+                    # Only attach real-estate intent to real-estate workflows, so
+                    # a food/retail tenant is never tagged with RE intents.
+                    order_type_val = str(wf_config.get("order_type", "")).strip().lower()
+                    is_real_estate_wf = order_type_val in (
+                        "real_estate", "realestate", "property", "properties",
+                        "rental", "rentals", "lease", "housing",
+                    )
+                    attach_re_intent = bool(re_intent) and (
+                        is_real_estate_wf or event_type == re_event_type
+                    )
+                    if attach_re_intent:
                         input_vars["real_estate_intent"] = re_intent
                         input_vars["real_estate_event"] = re_event_type
 
                     logger.info(
                         f"[WA_TRIGGER] Firing workflow '{workflow.name}' for contact {contact.phone_number}"
-                        + (f" (RE intent: {re_intent})" if re_intent else "")
+                        + (f" (RE intent: {re_intent})" if attach_re_intent else "")
                     )
 
                     try:

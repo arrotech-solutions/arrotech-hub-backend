@@ -98,9 +98,9 @@ class WhatsAppService:
             }
 
             async with aiohttp.ClientSession() as session:
-                # Log the request details for debugging
+                # Log the request details for debugging.
+                # Never log `headers` — it contains the Bearer access token.
                 logger.info(f"WhatsApp API Request - URL: {url}")
-                logger.info(f"WhatsApp API Request - Headers: {headers}")
                 logger.info(f"WhatsApp API Request - Payload: {payload}")
 
                 async with session.post(url, json=payload, headers=headers) as response:

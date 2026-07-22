@@ -221,6 +221,30 @@ def _safe_str(v: Any) -> str:
         return ""
     return str(v)
 
+def _is_unrendered_placeholder(v: Any) -> bool:
+    """True if a value is a leftover workflow-template placeholder that failed to
+    render — e.g. Jinja DebugUndefined output like
+    ``"{{ no such element: dict object['storage_airtable_base_id'] }}"`` produced
+    when a workflow variable (such as an Airtable base id) is not set."""
+    if not isinstance(v, str):
+        return False
+    s = v.strip()
+    if "{{" in s and "}}" in s:
+        return True
+    if "no such element" in s:
+        return True
+    return False
+
+def _clean_business_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a shallow copy of ``business_config`` with unrendered template
+    placeholders replaced by empty strings, so downstream code reads "" instead
+    of a literal ``"{{ ... }}"`` string (e.g. for Google-Sheets-only tenants
+    that never set Airtable variables)."""
+    cleaned: Dict[str, Any] = {}
+    for k, v in (config or {}).items():
+        cleaned[k] = "" if _is_unrendered_placeholder(v) else v
+    return cleaned
+
 def _record_to_sheet_row(record: Dict[str, Any], headers: List[str]) -> List[str]:
     """Align a dict record to the sheet's header columns (catalog-builder style)."""
     header_norm_to_value = {
@@ -776,6 +800,9 @@ class ConversationalAgentService:
             }
         """
         try:
+            # Strip any unrendered template placeholders (e.g. a missing
+            # storage_airtable_base_id left as "{{ ... }}") before reading config.
+            business_config = _clean_business_config(business_config)
             # Extract business config
             kb_id = business_config.get("kb_id", "")
             business_name = business_config.get("business_name") or business_config.get(
@@ -5785,34 +5812,49 @@ class ConversationalAgentService:
             return []
             
         actual_sheet_name = orders_headers["sheet_name"]
+        headers = orders_headers["headers"]
+        header_norms = [_normalize_header(h) for h in headers]
 
-        read_res = await executor.execute_tool(
+        target_norm = _normalize_header("Customer Phone")
+        if target_norm not in header_norms:
+            return []
+
+        phone_idx = header_norms.index(target_norm)
+
+        # Memory-safe: read ONLY the Customer Phone column to find matching rows,
+        # then read just those rows — instead of loading the whole sheet (!A:ZZ),
+        # which OOM-killed the worker as the sheet grew.
+        phone_col = _col_idx_to_a1(phone_idx)
+        phone_res = await executor.execute_tool(
             "google_workspace_sheets",
             {
                 "operation": "read_range",
                 "spreadsheet_id": spreadsheet_id,
-                "range_name": f"{actual_sheet_name}!A:ZZ",
+                "range_name": f"{actual_sheet_name}!{phone_col}:{phone_col}",
             },
             user,
             db,
         )
-        if not read_res.get("success"):
+        if not phone_res.get("success"):
+            return []
+        phone_values = phone_res.get("values") or []
+        if len(phone_values) < 2:
             return []
 
-        values = read_res.get("values") or []
-        if len(values) < 2:
+        # Collect matching 1-based row numbers, newest first (rows are appended
+        # at the bottom), capped at 10 to keep context and API calls bounded.
+        matched_row_nums: List[int] = []
+        for i in range(len(phone_values) - 1, 0, -1):  # skip header row (index 0)
+            cell = phone_values[i]
+            cell_val = _safe_str(cell[0]) if (cell and len(cell) > 0) else ""
+            if _phones_match(cell_val, phone):
+                matched_row_nums.append(i + 1)
+                if len(matched_row_nums) >= 10:
+                    break
+
+        if not matched_row_nums:
             return []
 
-        headers = values[0]
-        header_norms = [_normalize_header(h) for h in headers]
-        
-        target_norm = _normalize_header("Customer Phone")
-        if target_norm not in header_norms:
-            return []
-            
-        phone_idx = header_norms.index(target_norm)
-        
-        # We need these indices to extract data
         key_fields = ["Order ID", "Status", "Created At", "Subtotal", "Currency", "Items"]
         key_indices = {}
         for f in key_fields:
@@ -5821,18 +5863,20 @@ class ConversationalAgentService:
                 key_indices[f] = header_norms.index(fn)
 
         found_orders = []
-        # Reverse to get newest first (assuming appended at bottom)
-        for row in reversed(values[1:]):
-            if len(row) > phone_idx and _phones_match(_safe_str(row[phone_idx]), phone):
-                order = {}
-                for f, idx in key_indices.items():
-                    order[f] = _safe_str(row[idx]) if len(row) > idx else ""
-                found_orders.append(order)
-                
-            # Limit to 10 most recent to prevent huge context
-            if len(found_orders) >= 10:
-                break
-                
+        for row_num in matched_row_nums:
+            row = await self._read_single_sheet_row(
+                executor=executor,
+                spreadsheet_id=spreadsheet_id,
+                sheet_name=actual_sheet_name,
+                row_num=row_num,
+                user=user,
+                db=db,
+            )
+            order = {}
+            for f, idx in key_indices.items():
+                order[f] = _safe_str(row[idx]) if len(row) > idx else ""
+            found_orders.append(order)
+
         return found_orders
 
     async def _get_orders_from_airtable(
@@ -6012,27 +6056,50 @@ class ConversationalAgentService:
             if not spreadsheet_id:
                 return None
             sheet_name = (storage_config.get("orders_sheet_name") or "Orders").strip() or "Orders"
-            read_res = await executor.execute_tool(
+            # Memory-safe: read only the header row + the single matching row,
+            # instead of the entire sheet (!A:ZZ) which can OOM the worker.
+            header_res = await executor.execute_tool(
                 "google_workspace_sheets",
                 {
                     "operation": "read_range",
                     "spreadsheet_id": spreadsheet_id,
-                    "range_name": f"{sheet_name}!A:ZZ",
+                    "range_name": f"{sheet_name}!A1:ZZ1",
                 },
                 user,
                 db,
             )
-            if not read_res.get("success"):
+            if not header_res.get("success"):
                 return None
-            values = read_res.get("values") or []
-            if len(values) < 2:
+            header_vals = header_res.get("values") or []
+            headers = header_vals[0] if header_vals and isinstance(header_vals[0], list) else []
+            if not headers:
                 return None
-            headers = values[0]
             header_norms = [_normalize_header(h) for h in headers]
             order_idx_norm = _normalize_header("Order ID")
             if order_idx_norm not in header_norms:
                 return None
-            order_idx = header_norms.index(order_idx_norm)
+            match_rows = await self._find_matching_sheet_rows(
+                executor=executor,
+                spreadsheet_id=spreadsheet_id,
+                sheet_name=sheet_name,
+                headers=headers,
+                header_name="Order ID",
+                value=order_id,
+                user=user,
+                db=db,
+            )
+            if not match_rows:
+                return None
+            row = await self._read_single_sheet_row(
+                executor=executor,
+                spreadsheet_id=spreadsheet_id,
+                sheet_name=sheet_name,
+                row_num=match_rows[0],
+                user=user,
+                db=db,
+            )
+            if not row:
+                return None
             field_map = {
                 "subtotal": _normalize_header("Subtotal"),
                 "customer_name": _normalize_header("Customer Name"),
@@ -6045,34 +6112,23 @@ class ConversationalAgentService:
                 for key, norm in field_map.items()
                 if norm in header_norms
             }
-            for row in values[1:]:
-                if len(row) <= order_idx:
-                    continue
-                if _safe_str(row[order_idx]).strip() != order_id:
-                    continue
-                snapshot: Dict[str, Any] = {"order_id": order_id, "items": []}
-                if "subtotal" in col_indices:
-                    try:
-                        snapshot["subtotal"] = float(
-                            str(row[col_indices["subtotal"]]).replace(",", "") or 0
-                        )
-                    except (TypeError, ValueError):
-                        snapshot["subtotal"] = 0
-                if "customer_name" in col_indices:
-                    snapshot["customer_name"] = _safe_str(
-                        row[col_indices["customer_name"]]
+            snapshot: Dict[str, Any] = {"order_id": order_id, "items": []}
+            if "subtotal" in col_indices and len(row) > col_indices["subtotal"]:
+                try:
+                    snapshot["subtotal"] = float(
+                        str(row[col_indices["subtotal"]]).replace(",", "") or 0
                     )
-                if "customer_phone" in col_indices:
-                    snapshot["customer_phone"] = _safe_str(
-                        row[col_indices["customer_phone"]]
-                    )
-                if "delivery_method" in col_indices:
-                    snapshot["delivery_method"] = _safe_str(
-                        row[col_indices["delivery_method"]]
-                    )
-                if "currency" in col_indices:
-                    snapshot["currency"] = _safe_str(row[col_indices["currency"]]) or "KES"
-                return snapshot
+                except (TypeError, ValueError):
+                    snapshot["subtotal"] = 0
+            if "customer_name" in col_indices and len(row) > col_indices["customer_name"]:
+                snapshot["customer_name"] = _safe_str(row[col_indices["customer_name"]])
+            if "customer_phone" in col_indices and len(row) > col_indices["customer_phone"]:
+                snapshot["customer_phone"] = _safe_str(row[col_indices["customer_phone"]])
+            if "delivery_method" in col_indices and len(row) > col_indices["delivery_method"]:
+                snapshot["delivery_method"] = _safe_str(row[col_indices["delivery_method"]])
+            if "currency" in col_indices and len(row) > col_indices["currency"]:
+                snapshot["currency"] = _safe_str(row[col_indices["currency"]]) or "KES"
+            return snapshot
 
         if provider == "airtable":
             base_id = storage_config.get("airtable_base_id", "")
@@ -7404,45 +7460,48 @@ class ConversationalAgentService:
             
         actual_sheet_name = orders_headers["sheet_name"]
 
-        # Read the sheet to find the Order ID and Status columns
-        read_res = await executor.execute_tool(
+        # Memory-safe: read only the header row to find the Status column, then
+        # locate the row via the Order ID column — never the whole sheet (!A:ZZ).
+        header_res = await executor.execute_tool(
             "google_workspace_sheets",
             {
                 "operation": "read_range",
                 "spreadsheet_id": spreadsheet_id,
-                "range_name": f"{actual_sheet_name}!A:ZZ",
+                "range_name": f"{actual_sheet_name}!A1:ZZ1",
             },
             user,
             db,
         )
-        if not read_res.get("success"):
+        if not header_res.get("success"):
             return
 
-        values = read_res.get("values") or []
-        if not values or len(values) < 2:
+        header_vals = header_res.get("values") or []
+        headers = header_vals[0] if header_vals and isinstance(header_vals[0], list) else []
+        if not headers:
             return
 
-        headers = values[0]
         header_norms = [_normalize_header(h) for h in headers]
-        
+
         target_norm = _normalize_header("Order ID")
         status_norm = _normalize_header("Status")
-        
+
         if target_norm not in header_norms or status_norm not in header_norms:
             return
-            
-        order_idx = header_norms.index(target_norm)
+
         status_idx = header_norms.index(status_norm)
-        
-        # Find the row
-        target_row_num = None
-        for r_idx, row in enumerate(values):
-            if r_idx == 0:
-                continue
-            if len(row) > order_idx and _safe_str(row[order_idx]).strip() == order_id:
-                target_row_num = r_idx + 1 # 1-based index
-                break
-                
+
+        match_rows = await self._find_matching_sheet_rows(
+            executor=executor,
+            spreadsheet_id=spreadsheet_id,
+            sheet_name=actual_sheet_name,
+            headers=headers,
+            header_name="Order ID",
+            value=order_id,
+            user=user,
+            db=db,
+        )
+        target_row_num = match_rows[0] if match_rows else None
+
         if not target_row_num:
             logger.info(f"[CONV_AGENT] Order {order_id} not found in Sheets for update")
             return
@@ -7636,40 +7695,30 @@ class ConversationalAgentService:
 
         sheet_name = orders_headers["sheet_name"]
         headers: List[str] = orders_headers["headers"]
-        read_res = await executor.execute_tool(
-            "google_workspace_sheets",
-            {
-                "operation": "read_range",
-                "spreadsheet_id": spreadsheet_id,
-                "range_name": f"{sheet_name}!A:ZZ",
-            },
-            user,
-            db,
+        # Memory-safe: locate the row via the Order ID column, then read just
+        # that single row for merging — never the whole sheet (!A:ZZ).
+        match_rows = await self._find_matching_sheet_rows(
+            executor=executor,
+            spreadsheet_id=spreadsheet_id,
+            sheet_name=sheet_name,
+            headers=headers,
+            header_name="Order ID",
+            value=order_id,
+            user=user,
+            db=db,
         )
-        if not read_res.get("success"):
-            return
-        values = read_res.get("values") or []
-        if not values:
-            return
-
-        header_norms = [_normalize_header(h) for h in headers]
-        order_norm = _normalize_header("Order ID")
-        if order_norm not in header_norms:
-            return
-        order_idx = header_norms.index(order_norm)
-
-        target_row_num = None
-        existing_row: List[Any] = []
-        for r_idx, row in enumerate(values):
-            if r_idx == 0:
-                continue
-            if len(row) > order_idx and _safe_str(row[order_idx]).strip() == order_id:
-                target_row_num = r_idx + 1
-                existing_row = row
-                break
+        target_row_num = match_rows[0] if match_rows else None
         if not target_row_num:
             logger.info("[CONV_AGENT] Order %s not found in Sheets for field update", order_id)
             return
+        existing_row = await self._read_single_sheet_row(
+            executor=executor,
+            spreadsheet_id=spreadsheet_id,
+            sheet_name=sheet_name,
+            row_num=target_row_num,
+            user=user,
+            db=db,
+        )
 
         merged = _merge_sheet_records(headers, existing_row, dict(fields), force_status=None)
         row_values = _record_to_sheet_row(merged, headers)
@@ -8037,84 +8086,58 @@ class ConversationalAgentService:
         sheet_name = orders_headers["sheet_name"]
         headers: List[str] = orders_headers["headers"]
 
-        read_res = await executor.execute_tool(
-            "google_workspace_sheets",
-            {
-                "operation": "read_range",
-                "spreadsheet_id": spreadsheet_id,
-                "range_name": f"{sheet_name}!A:ZZ",
-            },
-            user,
-            db,
+        # Memory-safe lookup: read ONLY the "Order ID" column to locate the row,
+        # then read just that single row — instead of pulling the entire sheet
+        # (!A:ZZ) into RAM, which OOM-killed the Celery worker on small hosts.
+        match_rows = await self._find_matching_sheet_rows(
+            executor=executor,
+            spreadsheet_id=spreadsheet_id,
+            sheet_name=sheet_name,
+            headers=headers,
+            header_name="Order ID",
+            value=order_id,
+            user=user,
+            db=db,
         )
-        if not read_res.get("success"):
-            await self._append_record_by_headers(
-                executor=executor,
-                spreadsheet_id=spreadsheet_id,
-                sheet_name=sheet_name,
-                headers=headers,
-                record=order_record,
-                user=user,
-                db=db,
-                probe_header="Order ID",
-            )
-            return
 
-        values = read_res.get("values") or []
-        if not values:
-            await self._append_record_by_headers(
-                executor=executor,
-                spreadsheet_id=spreadsheet_id,
-                sheet_name=sheet_name,
-                headers=headers,
-                record=order_record,
-                user=user,
-                db=db,
-                probe_header="Order ID",
-            )
-            return
-
-        header_norms = [_normalize_header(h) for h in headers]
-        order_idx_norm = _normalize_header("Order ID")
-        if order_idx_norm not in header_norms:
-            return
-        order_idx = header_norms.index(order_idx_norm)
-
-        matches: List[tuple] = []
-        for r_idx, row in enumerate(values):
-            if r_idx == 0:
-                continue
-            if len(row) > order_idx and _safe_str(row[order_idx]).strip() == order_id:
-                matches.append((r_idx + 1, row))
-
-        if len(matches) > 1:
+        if len(match_rows) > 1:
             logger.warning(
                 "[CONV_AGENT] Duplicate Order ID %s in Sheets rows %s",
                 order_id,
-                [row_num for row_num, _ in matches],
+                match_rows,
             )
+
+        header_norms = [_normalize_header(h) for h in headers]
+        status_idx = None
+        status_norm = _normalize_header("Status")
+        if status_norm in header_norms:
+            status_idx = header_norms.index(status_norm)
 
         target_row_num = None
         existing_row: List[Any] = []
-        if matches:
-            if force_status == "paid":
-                status_idx = None
-                status_norm = _normalize_header("Status")
-                if status_norm in header_norms:
-                    status_idx = header_norms.index(status_norm)
-                pending_match = None
-                for row_num, row in matches:
-                    if status_idx is not None and len(row) > status_idx:
-                        st = _safe_str(row[status_idx]).strip().lower()
-                        if st in ("pending", ""):
-                            pending_match = (row_num, row)
-                            break
-                if pending_match:
-                    target_row_num, existing_row = pending_match
-                else:
-                    target_row_num, existing_row = matches[0]
+        for idx, row_num in enumerate(match_rows):
+            row = await self._read_single_sheet_row(
+                executor=executor,
+                spreadsheet_id=spreadsheet_id,
+                sheet_name=sheet_name,
+                row_num=row_num,
+                user=user,
+                db=db,
+            )
+            if idx == 0:
+                # Default to the first match; a better one may override below.
+                target_row_num, existing_row = row_num, row
+            if force_status == "paid" and status_idx is not None:
+                st = ""
+                if len(row) > status_idx:
+                    st = _safe_str(row[status_idx]).strip().lower()
+                if st in ("pending", ""):
+                    # Prefer updating an as-yet-unpaid row when marking paid.
+                    target_row_num, existing_row = row_num, row
+                    break
             else:
-                target_row_num, existing_row = matches[0]
+                # No special selection needed — first match wins.
+                break
 
         if not target_row_num:
             await self._append_record_by_headers(
@@ -8424,6 +8447,85 @@ class ConversationalAgentService:
                     last_row = i + 1
 
         return max(last_row + 1, 2)
+
+    async def _find_matching_sheet_rows(
+        self,
+        executor,
+        spreadsheet_id: str,
+        sheet_name: str,
+        headers: List[str],
+        header_name: str,
+        value: str,
+        user: User,
+        db: AsyncSession,
+    ) -> List[int]:
+        """
+        Return the 1-based row number(s) whose cell in ``header_name`` equals
+        ``value``, reading ONLY that single column instead of the whole sheet.
+
+        This keeps memory usage flat regardless of how large the sheet grows,
+        which is what prevents the Celery worker from being OOM-killed on small
+        instances (the old ``!A:ZZ`` reads loaded the entire sheet into RAM).
+        Row 1 (the header row) is always skipped.
+        """
+        if not value:
+            return []
+        header_norms = [_normalize_header(h) for h in headers]
+        target_norm = _normalize_header(header_name)
+        if target_norm not in header_norms:
+            return []
+        col_idx = header_norms.index(target_norm)
+        col = _col_idx_to_a1(col_idx)
+        read_res = await executor.execute_tool(
+            "google_workspace_sheets",
+            {
+                "operation": "read_range",
+                "spreadsheet_id": spreadsheet_id,
+                "range_name": f"{sheet_name}!{col}:{col}",
+            },
+            user,
+            db,
+        )
+        if not read_res.get("success"):
+            return []
+        col_values = read_res.get("values") or []
+        wanted = value.strip()
+        matches: List[int] = []
+        for i, row_val in enumerate(col_values):
+            if i == 0:
+                continue  # header row
+            cell = _safe_str(row_val[0]).strip() if (row_val and len(row_val) > 0) else ""
+            if cell == wanted:
+                matches.append(i + 1)
+        return matches
+
+    async def _read_single_sheet_row(
+        self,
+        executor,
+        spreadsheet_id: str,
+        sheet_name: str,
+        row_num: int,
+        user: User,
+        db: AsyncSession,
+    ) -> List[Any]:
+        """Read a single sheet row (``A{n}:ZZ{n}``) — a tiny payload regardless
+        of how many rows the sheet has. Returns the row as a list of cells."""
+        if row_num < 1:
+            return []
+        read_res = await executor.execute_tool(
+            "google_workspace_sheets",
+            {
+                "operation": "read_range",
+                "spreadsheet_id": spreadsheet_id,
+                "range_name": f"{sheet_name}!A{row_num}:ZZ{row_num}",
+            },
+            user,
+            db,
+        )
+        if not read_res.get("success"):
+            return []
+        values = read_res.get("values") or []
+        return values[0] if values and isinstance(values[0], list) else []
 
     async def _append_record_by_headers(
         self,

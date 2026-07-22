@@ -616,8 +616,15 @@ async def test_update_order_fields_in_google_sheets_updates_matching_row():
     written = {}
 
     async def fake_execute(tool_name, args, u, d):
+        # Emulates the memory-safe read pattern: a single-column Order ID read
+        # to locate the row, then a single-row read to fetch its values.
         if args.get("operation") == "read_range":
-            return {"success": True, "values": [headers, existing_row]}
+            rng = args.get("range_name", "")
+            if "ZZ" in rng:
+                # single-row read (A{n}:ZZ{n})
+                return {"success": True, "values": [existing_row]}
+            # Order ID column read (e.g. Orders!A:A)
+            return {"success": True, "values": [["Order ID"], [existing_row[order_idx]]]}
         if args.get("operation") == "write_range":
             written["range"] = args.get("range_name")
             written["values"] = args.get("values")

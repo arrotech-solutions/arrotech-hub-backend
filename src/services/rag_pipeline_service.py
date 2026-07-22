@@ -273,14 +273,31 @@ class RAGPipelineService:
     # ================================================================
 
     async def _resolve_kb_config(self, kb_id: str, user_id: str, db) -> Optional[Dict[str, Any]]:
-        """Look up a KnowledgeBase's config from the database."""
+        """Look up a KnowledgeBase's config from the database.
+
+        ``kb_id`` may be a UUID (a DB-backed KnowledgeBase) or a plain string
+        namespace/slug such as ``'tians'``. Only UUIDs map to a row; for
+        non-UUID identifiers we quietly fall back to defaults (the string is
+        used directly as the vector namespace) instead of logging a scary
+        "badly formed hexadecimal UUID string" error on every product search.
+        """
+        try:
+            kb_uuid = uuid.UUID(str(kb_id))
+        except (ValueError, TypeError, AttributeError):
+            logger.debug(f"kb_id '{kb_id}' is not a UUID; using default KB config")
+            return None
+        try:
+            user_uuid = uuid.UUID(str(user_id))
+        except (ValueError, TypeError, AttributeError):
+            logger.debug(f"user_id '{user_id}' is not a UUID; using default KB config")
+            return None
         try:
             from ..models import KnowledgeBase
             from sqlalchemy import select
             
             stmt = select(KnowledgeBase).filter(
-                KnowledgeBase.id == uuid.UUID(kb_id),
-                KnowledgeBase.user_id == uuid.UUID(user_id)
+                KnowledgeBase.id == kb_uuid,
+                KnowledgeBase.user_id == user_uuid
             )
             result = await db.execute(stmt)
             kb = result.scalars().first()
