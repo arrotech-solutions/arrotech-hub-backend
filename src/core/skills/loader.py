@@ -2,7 +2,7 @@ import yaml
 from pathlib import Path
 from pydantic import ValidationError
 from .models import SkillDefinition
-from .exceptions import SkillLoadError
+from .exceptions import SkillLoadError, SkillValidationError
 from .validators import validate_execution_contract
 import logging
 
@@ -58,6 +58,10 @@ def load_skill(path: Path) -> SkillDefinition:
         return skill
 
     except ValidationError as e:
+        raise SkillLoadError(
+            f"Skill validation failed for {path}: {e}"
+        ) from e
+    except SkillValidationError as e:
         raise SkillLoadError(
             f"Skill validation failed for {path}: {e}"
         ) from e

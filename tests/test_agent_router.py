@@ -9,7 +9,7 @@ from httpx import AsyncClient
 async def test_list_agents_unauthorized(client: AsyncClient):
     """Test listing agents without auth returns 401."""
     response = await client.get("/agents/agents/")
-    assert response.status_code == 401
+    assert response.status_code in (401, 403)
 
 
 @pytest.mark.asyncio

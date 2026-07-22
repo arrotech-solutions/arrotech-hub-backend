@@ -1,6 +1,7 @@
 import pytest
 import yaml
 from pathlib import Path
+from pydantic import ValidationError
 from src.core.skills.loader import load_skill
 from src.core.skills.exceptions import SkillLoadError
 from src.core.skills.contracts import RegisteredToolRegistry, GovernancePolicy, ToolDefinition

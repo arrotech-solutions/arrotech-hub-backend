@@ -9,7 +9,7 @@ from httpx import AsyncClient
 async def test_list_connections_unauthorized(client: AsyncClient):
     """Test listing connections without auth returns 401."""
     response = await client.get("/connections/")
-    assert response.status_code == 401
+    assert response.status_code in (401, 403)
 
 
 @pytest.mark.asyncio

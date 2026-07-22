@@ -10,6 +10,7 @@ from .sandbox import SandboxGovernance
 from .registry import runtime_registry
 from .exceptions import RuntimeAuthorizationError, RuntimeGovernanceError, RuntimeExecutionError, RuntimeTimeoutError
 from .validators import validate_tool_output
+from .immutability import thaw_structure
 from .factory import ExecutionResultFactory
 
 class GovernedToolExecutor:
@@ -78,8 +79,8 @@ class GovernedToolExecutor:
             # 6. Execute tool (Deterministic execution, no async)
             tool_output = runtime_tool.execute(request)
             
-            # Validate output
-            validate_tool_output(tool_output)
+            # Validate output (runtime tools may return frozen MappingProxyType payloads)
+            validate_tool_output(thaw_structure(tool_output.output))
 
             execution_time_ms = self._elapsed_ms(start_time)
             

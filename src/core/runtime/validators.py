@@ -1,4 +1,5 @@
 import math
+from types import MappingProxyType
 from .exceptions import RuntimeExecutionError
 
 MAX_OUTPUT_DEPTH = 25
@@ -40,7 +41,7 @@ def _validate_json_safe(
             )
         return
 
-    if obj_type is dict:
+    if obj_type in (dict, MappingProxyType):
 
         visited.add(obj_id)
 
@@ -90,8 +91,8 @@ def validate_tool_output(output: any) -> None:
     """
     Validates that tool output is JSON-safe and bounded.
     """
-    # Risk 6: Replace isinstance with exact type match
-    if type(output) is not dict:
+    # Accept plain dicts and frozen MappingProxyType outputs from the runtime.
+    if type(output) not in (dict, MappingProxyType):
         raise RuntimeExecutionError(f"Tool output must be EXACTLY a dictionary, got {type(output)}")
     
     _validate_json_safe(output)

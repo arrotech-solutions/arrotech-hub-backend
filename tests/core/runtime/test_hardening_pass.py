@@ -58,9 +58,9 @@ def test_replay_reset_correctness():
 
 def test_nan_inf_rejection():
     """Issue 5: Reject non-finite floats."""
-    with pytest.raises(RuntimeExecutionError, match="non-finite float"):
+    with pytest.raises(RuntimeExecutionError, match="Non-finite float detected"):
         _validate_json_safe({"val": float("nan")})
-    with pytest.raises(RuntimeExecutionError, match="non-finite float"):
+    with pytest.raises(RuntimeExecutionError, match="Non-finite float detected"):
         _validate_json_safe({"val": float("inf")})
 
 def test_failure_factory_internal_mapping():

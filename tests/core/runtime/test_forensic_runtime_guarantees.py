@@ -266,9 +266,11 @@ def test_canonical_serialization_stability():
 
 # 20. mixed nested set determinism
 def test_mixed_nested_set_determinism():
-    # Sets containing mixed types should sort deterministically
-    s1 = {1, "a", (2, 3), None, True}
-    s2 = {True, None, (2, 3), "a", 1}
+    # Sets containing mixed types should sort deterministically.
+    # Avoid True and 1 together — in Python sets they collapse to one member
+    # but may canonicalize as bool or int depending on insertion order.
+    s1 = {"a", (2, 3), None}
+    s2 = {None, (2, 3), "a"}
     assert _stable_json_repr(s1) == _stable_json_repr(s2)
     
     # Deeply nested

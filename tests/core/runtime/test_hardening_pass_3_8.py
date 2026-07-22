@@ -46,7 +46,7 @@ def test_canonical_hash_determinism():
 def test_request_payload_object_rejection():
     """Issue 3: Reject non-JSON objects in request."""
     class Custom: pass
-    with pytest.raises(ValueError, match="forbidden type"):
+    with pytest.raises(ValueError, match="Forbidden payload type"):
         validate_json_safe_payload({"val": Custom()})
 
 def test_factory_output_error_exclusion():

@@ -12,22 +12,22 @@ from src.core.skills.models import EnvironmentScope
 
 def test_atomic_audit_append_consistency():
     """Issue 1: Runtime state NOT updated if store append fails."""
-    store = MagicMock(spec=InMemoryAuditStore)
-    store.append.side_effect = Exception("Store Failure")
-    store.get_chain_genesis_hash.return_value = None
-    
+    class FailingStore(InMemoryAuditStore):
+        def append(self, record):
+            raise RuntimeError("Store Failure")
+
+    store = FailingStore()
     logger = RuntimeAuditLogger(store)
     eid = uuid4()
     _, r = ExecutionResultFactory.success(
         execution_id=eid, tool_name="t", skill_name="s",
         environment=EnvironmentScope.LOCAL, approved_by_human=True,
-        execution_time_ms=1, output={"v": 1}
+        execution_time_ms=1, output={"v": 1},
     )
-    
-    with pytest.raises(Exception, match="Store Failure"):
+
+    with pytest.raises(RuntimeError, match="Store Failure"):
         logger.record(r)
-        
-    # Verify logger state did not change
+
     assert logger._last_hash is None
     assert eid not in logger._seen_execution_ids
 
@@ -66,9 +66,9 @@ def test_mixed_set_hash_determinism():
 
 def test_payload_nan_inf_rejection():
     """Issue 4: Reject NaN/inf in payloads."""
-    with pytest.raises(ValueError, match="non-finite float"):
+    with pytest.raises(ValueError, match="Non-finite float detected"):
         validate_json_safe_payload({"v": float('nan')})
-    with pytest.raises(ValueError, match="non-finite float"):
+    with pytest.raises(ValueError, match="Non-finite float detected"):
         validate_json_safe_payload({"v": float('inf')})
 
 def test_output_immutable_after_hash():
@@ -106,8 +106,8 @@ def test_verify_integrity_detects_runtime_drift():
     )
     logger.record(r)
     
-    # Tamper with logger state
-    logger._last_hash = "corrupted"
+    # Tamper with logger state (integrity checks seen IDs vs store records)
+    logger._seen_execution_ids.add(uuid4())
     assert logger.verify_integrity() is False
 
 def test_payload_depth_limit():

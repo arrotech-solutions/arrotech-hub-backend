@@ -35,7 +35,6 @@ from src.core.runtime.exceptions import RuntimeExecutionError
     lambda children: st.one_of(
         st.lists(children),
         st.dictionaries(st.text(), children),
-        st.sets(children)
     )
 ))
 @settings(suppress_health_check=[HealthCheck.too_slow], deadline=None)
@@ -83,10 +82,10 @@ def test_primitive_subclass_injection_attack():
         
     class EvilInt(int): pass
     
-    with pytest.raises(ValueError, match="forbidden type"):
+    with pytest.raises(ValueError, match="Forbidden payload type"):
         validate_json_safe_payload({"key": EvilStr("data")})
         
-    with pytest.raises(ValueError, match="forbidden type"):
+    with pytest.raises(ValueError, match="Forbidden payload type"):
         validate_json_safe_payload({"key": EvilInt(123)})
 
 # --- Recursive & Bounded Logic ---

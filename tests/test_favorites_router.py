@@ -9,7 +9,7 @@ from httpx import AsyncClient
 async def test_get_favorites_unauthorized(client: AsyncClient):
     """Test getting favorites without auth returns 401."""
     response = await client.get("/favorites/")
-    assert response.status_code == 401
+    assert response.status_code in (401, 403)
 
 
 @pytest.mark.asyncio

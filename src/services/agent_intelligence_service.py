@@ -38,7 +38,8 @@ HUMAN_REQUEST_PATTERNS = [
     r"\b(need|want)\s+(a\s+)?human\b",
     r"\boperator\b",
     r"\b(nataka|nahitaji)\s+(mtu|mwakilishi|meneja)\b",  # Swahili
-    r"\b(zungumza|ongea)\s+na\s+(mtu|mwakilishi)\b",
+    r"\b(zungumza|ongea|kuongea)\s+na\s+(mtu|mwakilishi)\b",
+    r"\b(nataka|nahitaji)\s+\w+\s+na\s+(mtu|mwakilishi|meneja)\b",
     r"\b(parler\s+à\s+(une?\s+)?(personne|humain))\b",  # French
     r"\bagent\s+humain\b",
     r"\bhablar\s+con\s+(una?\s+)?persona\b",  # Spanish
