@@ -122,6 +122,7 @@ class OrderService:
         order_type: str = "retail",
         delivery_method: str = "delivery",
         delivery_address: str = "",
+        table_number: str = "",
         notes: str = "",
         currency: str = "KES",
         **kwargs
@@ -193,6 +194,7 @@ class OrderService:
             "currency": currency,
             "delivery_method": delivery_method,
             "delivery_address": delivery_address,
+            "table_number": table_number,
             "notes": notes,
             "created_at": now.isoformat(),
             "updated_at": now.isoformat(),
