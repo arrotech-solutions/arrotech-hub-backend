@@ -29,10 +29,29 @@ _STORAGE_CONFIG_KEYS = (
     "storage_orders_sheet_name",
     "storage_customers_sheet_name",
     "storage_transactions_sheet_name",
+    "storage_reservations_sheet_name",
     "storage_airtable_base_id",
     "storage_airtable_orders_table",
     "storage_airtable_customers_table",
     "storage_airtable_transactions_table",
+    "storage_airtable_reservations_table",
+)
+
+# Agent settings stored as flat workflow.variables — merged into runtime config
+# so older workflows pick up new keys without recreating from the Library template.
+_AGENT_CONFIG_KEYS = _STORAGE_CONFIG_KEYS + (
+    "kb_id",
+    "business_name",
+    "business_phone",
+    "business_email",
+    "order_type",
+    "currency",
+    "delivery_methods",
+    "reservations_enabled",
+    "system_prompt",
+    "auto_escalation_enabled",
+    "supported_languages",
+    "human_handoff_ttl_hours",
 )
 
 
@@ -40,16 +59,16 @@ def _merge_workflow_storage_into_config(
     wf_config: Dict[str, Any],
     workflow_variables: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Backfill storage tab names from top-level workflow variables for older workflows."""
+    """Backfill agent + storage settings from top-level workflow variables."""
     merged = dict(wf_config or {})
     variables = workflow_variables or {}
     nested_config = variables.get("config") if isinstance(variables.get("config"), dict) else {}
-    for key in _STORAGE_CONFIG_KEYS:
-        if merged.get(key):
+    for key in _AGENT_CONFIG_KEYS:
+        if merged.get(key) not in (None, "", []):
             continue
-        if key in variables and variables.get(key):
+        if key in variables and variables.get(key) not in (None, "", []):
             merged[key] = variables[key]
-        elif nested_config.get(key):
+        elif nested_config.get(key) not in (None, "", []):
             merged[key] = nested_config[key]
     return merged
 

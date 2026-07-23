@@ -2188,15 +2188,18 @@ WORKFLOW_TEMPLATES = [
                         "order_type": "{{variables.order_type}}",
                         "currency": "{{variables.currency}}",
                         "delivery_methods": "{{variables.delivery_methods}}",
+                        "reservations_enabled": "{{variables.reservations_enabled}}",
                         "storage_provider": "{{variables.storage_provider}}",
                         "storage_spreadsheet_id": "{{variables.storage_spreadsheet_id}}",
                         "storage_orders_sheet_name": "{{variables.storage_orders_sheet_name}}",
                         "storage_customers_sheet_name": "{{variables.storage_customers_sheet_name}}",
                         "storage_transactions_sheet_name": "{{variables.storage_transactions_sheet_name}}",
+                        "storage_reservations_sheet_name": "{{variables.storage_reservations_sheet_name}}",
                         "storage_airtable_base_id": "{{variables.storage_airtable_base_id}}",
                         "storage_airtable_orders_table": "{{variables.storage_airtable_orders_table}}",
                         "storage_airtable_customers_table": "{{variables.storage_airtable_customers_table}}",
                         "storage_airtable_transactions_table": "{{variables.storage_airtable_transactions_table}}",
+                        "storage_airtable_reservations_table": "{{variables.storage_airtable_reservations_table}}",
                         "auto_escalation_enabled": "{{variables.auto_escalation_enabled}}",
                         "supported_languages": "{{variables.supported_languages}}",
                         "human_handoff_ttl_hours": "{{variables.human_handoff_ttl_hours}}"
@@ -2268,7 +2271,15 @@ WORKFLOW_TEMPLATES = [
                 "type": "string", "default": "KES"
             },
             "delivery_methods": {
-                "type": "array", "items": {"type": "string"}, "default": ["delivery", "pickup"]
+                "type": "array",
+                "items": {"type": "string", "enum": ["delivery", "pickup", "dine_in"]},
+                "default": ["delivery", "pickup"],
+                "description": "How customers can receive orders (include dine_in for table service)",
+            },
+            "reservations_enabled": {
+                "type": "boolean",
+                "default": False,
+                "description": "Let customers book a table (date, time, party size). Best for restaurants.",
             },
             "storage_provider": {
                 "type": "string",
@@ -2300,6 +2311,12 @@ WORKFLOW_TEMPLATES = [
                 "default": "Transactions",
                 "show_if": {"field": "storage_provider", "value": "google_sheets"}
             },
+            "storage_reservations_sheet_name": {
+                "type": "string",
+                "description": "Reservations sheet/tab name for table bookings",
+                "default": "Reservations",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
             "storage_airtable_base_id": {
                 "type": "string",
                 "description": "Airtable Base ID",
@@ -2319,6 +2336,12 @@ WORKFLOW_TEMPLATES = [
             "storage_airtable_transactions_table": {
                 "type": "string",
                 "default": "Transactions",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
+            },
+            "storage_airtable_reservations_table": {
+                "type": "string",
+                "default": "Reservations",
+                "description": "Airtable table name for table reservations",
                 "show_if": {"field": "storage_provider", "value": "airtable"}
             },
             "auto_escalation_enabled": {
