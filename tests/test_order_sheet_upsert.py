@@ -33,16 +33,36 @@ def test_build_order_sheet_record_from_order_data():
     assert record["Item Count"] == "2"
     assert record["Subtotal"] == "500"
     assert record["Delivery Method"] == "pickup"
+    assert record["Table Number"] == ""
     assert record["Order Type"] == "food"
     assert record["Created At"] == "2026-06-30T14:00:00"
     assert record["Status"] == "paid"
+
+
+def test_build_order_sheet_record_includes_table_number_for_dine_in():
+    svc = ConversationalAgentService()
+    record = svc._build_order_sheet_record(
+        order_data={
+            "order_id": "ORD-20260722-DINE01",
+            "order_type": "food",
+            "delivery_method": "dine_in",
+            "table_number": "12",
+            "customer": {"name": "Asha", "phone": "254700000000"},
+        },
+        customer={"name": "Asha", "phone": "254700000000"},
+        items_summary="Pilau x1",
+        created_at="2026-07-22T14:00:00",
+        status="pending",
+    )
+    assert record["Delivery Method"] == "dine_in"
+    assert record["Table Number"] == "12"
 
 
 def test_merge_preserves_existing_nonempty_values():
     headers = list(_ORDERS_SHEET_HEADERS)
     existing = [
         "ORD-1", "pending", "Old Name", "254700000000", "", "", "Old items", "1", "10",
-        "KES", "delivery", "", "", "retail", "2026-01-01",
+        "KES", "delivery", "", "", "", "retail", "2026-01-01",
     ]
     patch = {"Order ID": "ORD-1", "Status": "paid", "Customer Name": "New Name"}
     merged = _merge_sheet_records(headers, existing, patch, force_status="paid")
@@ -82,7 +102,7 @@ def test_merge_preserves_whatsapp_customer_phone_on_paid_update():
     headers = list(_ORDERS_SHEET_HEADERS)
     existing = [
         "ORD-1", "pending", "Harun", "254711371265", "", "", "Tea x1", "1", "2",
-        "KES", "pickup", "", "", "food", "2026-06-30T12:00:00",
+        "KES", "pickup", "", "", "", "food", "2026-06-30T12:00:00",
     ]
     patch = {
         "Order ID": "ORD-1",

@@ -272,6 +272,7 @@ _ORDERS_SHEET_HEADERS = [
     "Currency",
     "Delivery Method",
     "Delivery Address",
+    "Table Number",
     "Notes",
     "Order Type",
     "Created At",
@@ -279,6 +280,18 @@ _ORDERS_SHEET_HEADERS = [
     "Payment Ref",
     "Receipt Sent",
     "Receipt Sent At",
+]
+
+_RESERVATIONS_SHEET_HEADERS = [
+    "Reservation ID",
+    "Status",
+    "Customer Name",
+    "Customer Phone",
+    "Date",
+    "Time",
+    "Party Size",
+    "Notes",
+    "Created At",
 ]
 
 def _sheet_record_get(record: Dict[str, Any], header: str) -> str:
@@ -393,9 +406,34 @@ AGENT_SUB_TOOLS = [
                         "description": "How the customer wants to receive the order"
                     },
                     "delivery_address": {"type": "string", "description": "Delivery address if delivery"},
+                    "table_number": {"type": "string", "description": "Table number for dine_in orders (optional)"},
                     "notes": {"type": "string", "description": "Special instructions or notes"}
                 },
                 "required": ["customer_name", "customer_phone", "items", "delivery_method"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_reservation",
+            "description": (
+                "Create a table reservation (booking) after collecting all details. "
+                "Only call this when the customer has confirmed and you have: customer name, "
+                "phone, reservation date, time, and party size. Reservations are cart-less "
+                "(no food ordering) and are sent to the business to confirm."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "customer_name": {"type": "string", "description": "Customer's full name"},
+                    "customer_phone": {"type": "string", "description": "Customer's phone number"},
+                    "reservation_date": {"type": "string", "description": "Requested date, e.g. 2026-07-25 or 'this Friday'"},
+                    "reservation_time": {"type": "string", "description": "Requested time, e.g. 19:30 or '7:30pm'"},
+                    "party_size": {"type": "number", "description": "Number of guests"},
+                    "notes": {"type": "string", "description": "Special requests (e.g. window seat, birthday)"}
+                },
+                "required": ["customer_name", "customer_phone", "reservation_date", "reservation_time", "party_size"]
             }
         }
     },
@@ -813,6 +851,9 @@ class ConversationalAgentService:
             order_type = business_config.get("order_type", "general")
             currency = business_config.get("currency", "KES")
             delivery_methods = business_config.get("delivery_methods", ["delivery", "pickup"])
+            reservations_enabled = self._config_bool(
+                business_config.get("reservations_enabled"), False
+            )
             custom_system_prompt = business_config.get("system_prompt", "")
 
             if order_type == "food":
@@ -1435,12 +1476,13 @@ class ConversationalAgentService:
                     
                     user_text = user_message.strip()
                     is_providing_address = draft.get("stage") == "need_delivery_address" and bool(user_text)
+                    is_providing_table = draft.get("stage") == "need_table_number" and bool(user_text)
 
                     should_capture = customer_sent_details and (
                         has_name_and_phone
                         or (bot_expecting_reply and parsed.get("phone"))
                         or (bot_expecting_reply and parsed.get("name") and eff_phone)
-                    ) or is_providing_address
+                    ) or is_providing_address or is_providing_table
 
                     if should_capture:
                         eff_delivery, saved_addr = await self._resolve_checkout_delivery(
@@ -1448,6 +1490,12 @@ class ConversationalAgentService:
                         )
                         if is_providing_address and not saved_addr:
                             saved_addr = user_text
+
+                        # Dine-in: capture (or skip) the table number the customer just sent
+                        eff_table = None
+                        if is_providing_table:
+                            from .whatsapp_ordering_helpers import parse_table_number
+                            eff_table = parse_table_number(user_text)
 
                         if not eff_phone:
                             await context_manager.update_session_metadata(
@@ -1506,6 +1554,7 @@ class ConversationalAgentService:
                             delivery_methods=delivery_methods,
                             preferred_language=preferred_language,
                             delivery_address=saved_addr,
+                            table_number=eff_table,
                             user=user,
                             db=db,
                         )
@@ -1758,6 +1807,7 @@ class ConversationalAgentService:
                     "items": cart_items,
                     "delivery_method": checkout_customer.get("delivery_method", "") or "pickup",
                     "delivery_address": checkout_customer.get("delivery_address", ""),
+                    "table_number": checkout_customer.get("table_number", ""),
                 }
                 try:
                     await context_manager.mark_order_confirmed(session_key)
@@ -1937,6 +1987,7 @@ class ConversationalAgentService:
                             "items": items,
                             "delivery_method": checkout_customer.get("delivery_method", "") or "pickup",
                             "delivery_address": checkout_customer.get("delivery_address", ""),
+                            "table_number": checkout_customer.get("table_number", ""),
                         }
                         logger.info(
                             "[CONV_AGENT] Deterministic checkout: creating order for %s (%d items)",
@@ -2088,6 +2139,7 @@ class ConversationalAgentService:
                 preferred_language=preferred_language,
                 auto_escalation_enabled=auto_escalation_enabled,
                 business_config=business_config,
+                reservations_enabled=reservations_enabled,
             )
 
             cart_context = await self._build_cart_context_block(session_key, currency)
@@ -2172,7 +2224,11 @@ class ConversationalAgentService:
                 if mpesa_stk_available:
                     dynamic_tools.append(INITIATE_RENT_STK_TOOL)
             else:
-                dynamic_tools = list(AGENT_SUB_TOOLS)
+                dynamic_tools = [
+                    t for t in AGENT_SUB_TOOLS
+                    if t.get("function", {}).get("name") != "create_reservation"
+                    or reservations_enabled
+                ]
             for t_name in enabled_mcp_tool_names:
                 schema = dynamic_tool_registry.get_tool(t_name)
                 if schema:
@@ -2518,6 +2574,23 @@ class ConversationalAgentService:
                         order_notification = self._format_business_notification(
                             order_data, business_name, currency
                         )
+
+                    # Reservations reuse the business-notification workflow step
+                    if tool_name == "create_reservation" and tool_result.get("success"):
+                        order_created = True
+                        order_notification = tool_result.get("reservation_notification", "")
+                        if session_key:
+                            try:
+                                await context_manager.update_session_metadata(
+                                    session_key,
+                                    {
+                                        "pending_reservation": None,
+                                        "awaiting_reservation_confirmation": False,
+                                        "reservation_confirmed": False,
+                                    },
+                                )
+                            except Exception as e:
+                                logger.warning(f"[CONV_AGENT] post-reservation cleanup failed: {e}")
 
                     # Check if an order was cancelled
                     if tool_name == "cancel_order" and tool_result.get("success"):
@@ -3128,6 +3201,7 @@ class ConversationalAgentService:
         preferred_language: str = DEFAULT_LANGUAGE,
         auto_escalation_enabled: bool = True,
         business_config: Dict[str, Any] = None,
+        reservations_enabled: bool = False,
     ) -> str:
         """Build the business-specific system prompt for the AI agent."""
 
@@ -3266,6 +3340,19 @@ class ConversationalAgentService:
 7. Do NOT mention "carts", "checkout", "orders", or "delivery" as this is a property management service.
 """
         else:
+            reservation_block = ""
+            if reservations_enabled:
+                reservation_block = f"""
+
+## Table Reservations (Bookings)
+This business accepts table reservations. A reservation is SEPARATE from ordering food — it does NOT use the cart.
+- If the customer wants to *book a table*, *make a reservation*, or *reserve a table* (Swahili: "kuweka meza", "nataka meza", "buku meza"), start the reservation flow instead of the ordering/checkout flow.
+- Collect ALL of these: reservation *date*, *time*, and *party size* (number of guests), plus their *name*. Their phone number is taken automatically from WhatsApp — NEVER ask for it.
+- Once you have every detail, call `create_reservation`. It returns a summary for you to show the customer; then ask them to reply *YES* to confirm.
+- Only AFTER they reply YES, call `create_reservation` again to finalize, then relay the confirmation message exactly as returned.
+- Reservations are sent to the restaurant to confirm — tell the customer you'll message them here once the table is confirmed. NEVER promise a guaranteed table or a specific table number.
+- Do NOT take food orders as part of a reservation.
+"""
             prompt = f"""{base_context}
 
 ## Your Capabilities
@@ -3281,8 +3368,8 @@ class ConversationalAgentService:
 1. Greet the customer warmly and ask how you can help
 2. When they browse: search the catalog, then ALWAYS use `display_product_cards` to show results
 3. When they want to order: check the "Known customer" section below — if name and phone are already there, DO NOT ask for them again. Only ask for info that is genuinely missing.
-4. Ask about delivery method ({delivery_str}) — if only one method is available, use it automatically without asking
-5. If delivery, collect the delivery address — customers can *share their location pin* on WhatsApp (📍) instead of typing
+4. Ask how the customer wants their order ({delivery_str}) — if only one method is available, use it automatically without asking
+5. Based on the method: if *delivery*, collect the delivery address — customers can *share their location pin* on WhatsApp (📍) instead of typing; if *dine-in*, you may ask for their *table number* (optional — they can skip it); if *pickup*, no address is needed
 6. If a delivery location is already saved in context below, use it — do not ask them to type the address again
 7. IMPORTANT ON CHECKOUT: If the customer provides their name, phone, or delivery details (like answering a checkout prompt), YOU MUST IMMEDIATELY proceed with checkout. DO NOT start a new conversation or ask them to browse the {catalog_word}. If you need their delivery address, ask for it now.
 8. Call `calculate_total` with the cart items to get the order total — this step is REQUIRED before creating the order
@@ -3294,7 +3381,7 @@ class ConversationalAgentService:
 14. If a customer wants to see their order history, check, or track an order status, call `get_user_orders` (with no arguments — NEVER ask for or accept a typed phone number) then ALWAYS call `display_order_cards` with the results
 15. If the customer has items in their cart (see Cart section below), reference the cart when summarizing their order
 16. After placing an order, the customer automatically receives a PDF receipt on WhatsApp, then an updated PAID PDF after M-Pesa payment — plus status updates. Do not send receipts manually unless asked
-
+{reservation_block}
 ## Cart Management (IMPORTANT)
 - Customers can tap *View my cart*, *Clear cart*, or *Checkout* buttons, or type things like "my cart", "clear cart", "remove chicken", "change pilau to 2"
 - Customers can also ASK to add items by typing things like "4 mutton biryani and 4 red bulls", "add chapati to my cart", etc.
@@ -3661,6 +3748,32 @@ class ConversationalAgentService:
         """Tiny localization helper: Swahili when lang=='sw', else English."""
         return sw if (lang or "en").lower().startswith("sw") else en
 
+    @staticmethod
+    def _humanize_delivery_method(method: str, lang: str = DEFAULT_LANGUAGE) -> str:
+        """Human-friendly label for a fulfillment method (delivery/pickup/dine_in)."""
+        m = (method or "").strip().lower()
+        is_sw = (lang or "en").lower().startswith("sw")
+        labels = {
+            "delivery": "delivery",
+            "pickup": "pickup",
+            "dine_in": "kula hapa (dine-in)" if is_sw else "dine-in",
+            "shipping": "shipping",
+            "digital": "digital",
+        }
+        return labels.get(m, m.replace("_", " "))
+
+    @classmethod
+    def _format_delivery_choices(cls, delivery_methods: list, lang: str = DEFAULT_LANGUAGE) -> str:
+        """Bolded, human-readable list of fulfillment options, e.g. '*delivery*, *pickup*, or *dine-in*'."""
+        methods = [m for m in (delivery_methods or []) if m]
+        labels = [f"*{cls._humanize_delivery_method(m, lang)}*" for m in methods]
+        if not labels:
+            return "*delivery*" if not lang.startswith("sw") else "*delivery*"
+        if len(labels) == 1:
+            return labels[0]
+        conjunction = " au " if (lang or "en").lower().startswith("sw") else " or "
+        return ", ".join(labels[:-1]) + conjunction + labels[-1]
+
     async def _resolve_checkout_delivery(
         self,
         session_key: str,
@@ -3670,19 +3783,27 @@ class ConversationalAgentService:
         """
         Pick delivery method + address for checkout.
         Uses saved WhatsApp location when available; falls back to single-option config.
+        A method is only honored if the tenant actually offers it (delivery_methods allowlist).
         """
         delivery_address = ""
-        if explicit_method:
-            if explicit_method == "delivery" and session_key:
-                try:
-                    session = await context_manager.get_session_by_key(session_key)
-                    if session:
-                        delivery_address = context_manager.get_delivery_address(session)
-                except Exception:
-                    pass
-            return explicit_method, delivery_address
+        methods = delivery_methods if isinstance(delivery_methods, list) else []
 
-        if session_key:
+        # Honor an explicit choice only when the tenant offers it
+        if explicit_method:
+            if methods and explicit_method not in methods:
+                explicit_method = None  # not offered — fall through and re-resolve
+            else:
+                if explicit_method == "delivery" and session_key:
+                    try:
+                        session = await context_manager.get_session_by_key(session_key)
+                        if session:
+                            delivery_address = context_manager.get_delivery_address(session)
+                    except Exception:
+                        pass
+                return explicit_method, delivery_address
+
+        # A saved WhatsApp location implies delivery — but only if delivery is offered
+        if session_key and (not methods or "delivery" in methods):
             try:
                 session = await context_manager.get_session_by_key(session_key)
                 if session:
@@ -3692,8 +3813,8 @@ class ConversationalAgentService:
             except Exception:
                 pass
 
-        if isinstance(delivery_methods, list) and len(delivery_methods) == 1:
-            method = delivery_methods[0]
+        if len(methods) == 1:
+            method = methods[0]
             if method == "delivery" and session_key:
                 try:
                     session = await context_manager.get_session_by_key(session_key)
@@ -3764,9 +3885,10 @@ class ConversationalAgentService:
         if not customer_phone:
             missing.append("2️⃣ Your phone number")
         if len(delivery_methods) > 1 and not resolved_delivery:
+            choices = self._format_delivery_choices(delivery_methods, preferred_language)
             missing.append(
                 f"{'3' if len(missing) == 2 else '2' if len(missing) == 1 else '1'}️⃣ "
-                f"Delivery or pickup?"
+                f"How would you like it? ({choices})"
             )
         missing_str = "\n".join(missing)
         reply = (
@@ -3792,6 +3914,7 @@ class ConversationalAgentService:
         delivery_methods: list,
         preferred_language: str = DEFAULT_LANGUAGE,
         delivery_address: str = "",
+        table_number: Optional[str] = None,
         user: Optional[User] = None,
         db: Optional[AsyncSession] = None,
     ) -> Dict[str, Any]:
@@ -3799,6 +3922,9 @@ class ConversationalAgentService:
         Deterministic checkout step: if the delivery method is still ambiguous,
         ask for it; otherwise compute the total, persist the pending order, and
         ask the customer to reply YES to confirm.
+
+        `table_number` is used for dine-in orders. ``None`` means we have not yet
+        asked the customer for it; ``""`` means it was asked and skipped.
         """
         from .whatsapp_ordering_helpers import format_checkout_confirmation, clean_checkout_customer_name
 
@@ -3812,8 +3938,9 @@ class ConversationalAgentService:
             if auto_addr and not delivery_address:
                 delivery_address = auto_addr
 
-        # Still need the customer to choose delivery vs pickup
+        # Still need the customer to choose how they want their order
         if not delivery_method:
+            choices = self._format_delivery_choices(delivery_methods, preferred_language)
             await context_manager.update_session_metadata(
                 session_key,
                 {
@@ -3830,8 +3957,8 @@ class ConversationalAgentService:
                 session_key,
                 self._t(
                     preferred_language,
-                    "Got it! One last thing — would you like *delivery* or *pickup*? 🚚🏬",
-                    "Sawa! Jambo la mwisho — ungependa *delivery* au *pickup*? 🚚🏬",
+                    f"Got it! One last thing — how would you like your order? Choose {choices}. 🚚🏬🍽️",
+                    f"Sawa! Jambo la mwisho — ungependa oda yako vipi? Chagua {choices}. 🚚🏬🍽️",
                 ),
                 actions_taken=[{"tool": "checkout", "result_summary": "need_delivery_method"}],
                 send_cart_buttons=False,
@@ -3872,6 +3999,33 @@ class ConversationalAgentService:
                 send_cart_buttons=False,
             )
 
+        # Dine-in: optionally capture a table number (never blocks — customer may skip)
+        if delivery_method == "dine_in" and table_number is None:
+            await context_manager.update_session_metadata(
+                session_key,
+                {
+                    "awaiting_checkout_details": True,
+                    "checkout_draft": {
+                        "name": customer_name or "",
+                        "phone": customer_phone or "",
+                        "delivery_method": "dine_in",
+                        "stage": "need_table_number",
+                    },
+                },
+            )
+            return await self._cart_fast_path_result(
+                session_key,
+                self._t(
+                    preferred_language,
+                    "Great — dining in! 🍽️ What's your *table number*? (Reply *skip* if you don't have one yet.)",
+                    "Poa — utakula hapa! 🍽️ Nipe *namba ya meza*. (Jibu *skip* kama huna bado.)",
+                ),
+                actions_taken=[{"tool": "checkout", "result_summary": "need_table_number"}],
+                send_cart_buttons=False,
+            )
+
+        table_number = (table_number or "").strip()
+
         # Compute total and persist the pending order
         total_result = await self.order_service.handle_operation(
             operation="calculate_order_total",
@@ -3888,6 +4042,7 @@ class ConversationalAgentService:
                         "phone": customer_phone,
                         "delivery_method": delivery_method,
                         "delivery_address": delivery_address,
+                        "table_number": table_number,
                     },
                     "awaiting_order_confirmation": True,
                     "awaiting_checkout_details": False,
@@ -3905,6 +4060,7 @@ class ConversationalAgentService:
             delivery_method=delivery_method,
             delivery_address=delivery_address,
             lang=preferred_language,
+            table_number=table_number,
         )
 
         return await self._cart_fast_path_result(
@@ -4603,10 +4759,12 @@ class ConversationalAgentService:
             "orders_sheet_name": business_config.get("storage_orders_sheet_name", "Orders"),
             "customers_sheet_name": business_config.get("storage_customers_sheet_name", "Customers"),
             "transactions_sheet_name": business_config.get("storage_transactions_sheet_name", "Transactions"),
+            "reservations_sheet_name": business_config.get("storage_reservations_sheet_name", "Reservations"),
             "airtable_base_id": business_config.get("storage_airtable_base_id", ""),
             "airtable_orders_table": business_config.get("storage_airtable_orders_table", "Orders"),
             "airtable_customers_table": business_config.get("storage_airtable_customers_table", "Customers"),
             "airtable_transactions_table": business_config.get("storage_airtable_transactions_table", "Transactions"),
+            "airtable_reservations_table": business_config.get("storage_airtable_reservations_table", "Reservations"),
         }
 
     async def _get_allowed_mpesa_phones(
@@ -4677,7 +4835,7 @@ class ConversationalAgentService:
             # another person's orders (and trigger their payment) simply by
             # entering a different number (IDOR / data leak). ──
             if default_customer_phone:
-                if tool_name in ("create_order", "validate_order", "cancel_order", "get_user_orders"):
+                if tool_name in ("create_order", "validate_order", "cancel_order", "get_user_orders", "create_reservation"):
                     if arguments.get("customer_phone") and arguments.get("customer_phone") != default_customer_phone:
                         logger.warning(
                             "[CONV_AGENT] 🔒 Overriding %s customer_phone %r → sender %r",
@@ -4747,6 +4905,23 @@ class ConversationalAgentService:
                     session_key=session_key,
                     user_message=user_message,
                     business_phone=business_phone,
+                )
+
+            elif tool_name == "create_reservation":
+                if not arguments.get("customer_phone") and default_customer_phone:
+                    arguments["customer_phone"] = default_customer_phone
+                if not arguments.get("customer_name") and default_customer_name:
+                    arguments["customer_name"] = default_customer_name
+                return await self._sub_create_reservation(
+                    arguments=arguments,
+                    business_name=business_name,
+                    storage_config=storage_config,
+                    user=user,
+                    db=db,
+                    session_key=session_key,
+                    user_message=user_message,
+                    business_phone=business_phone,
+                    preferred_language=preferred_language,
                 )
 
             elif tool_name == "validate_order":
@@ -5295,6 +5470,160 @@ class ConversationalAgentService:
             logger.error(f"[CONV_AGENT] manage_cart error: {e}")
             return {"success": False, "result": f"Cart error: {str(e)}"}
 
+    async def _sub_create_reservation(
+        self,
+        arguments: Dict[str, Any],
+        business_name: str = "",
+        storage_config: Dict[str, Any] = None,
+        user: User = None,
+        db: AsyncSession = None,
+        session_key: str = "",
+        user_message: str = "",
+        business_phone: str = "",
+        preferred_language: str = DEFAULT_LANGUAGE,
+    ) -> Dict[str, Any]:
+        """Create a table reservation, gated by an explicit customer confirmation."""
+        try:
+            from .whatsapp_ordering_helpers import is_order_confirmation_message
+            from .reservation_service import reservation_service
+
+            session = None
+            if session_key:
+                session = await context_manager.get_session_by_key(session_key)
+            pending = session.metadata.get("pending_reservation") if session else None
+
+            # Merge saved details so a bare "yes" still carries full context
+            merged: Dict[str, Any] = dict(pending or {})
+            for key, value in (arguments or {}).items():
+                if value not in (None, "", []):
+                    merged[key] = value
+
+            required = [
+                "customer_name",
+                "customer_phone",
+                "reservation_date",
+                "reservation_time",
+                "party_size",
+            ]
+            missing = [f for f in required if not merged.get(f)]
+            if missing:
+                if session_key:
+                    await context_manager.update_session_metadata(
+                        session_key, {"pending_reservation": merged}
+                    )
+                return {
+                    "success": False,
+                    "result": (
+                        "RESERVATION_INCOMPLETE: Still missing "
+                        f"{', '.join(missing)}. Politely ask the customer for these before "
+                        "calling create_reservation again."
+                    ),
+                    "error": "RESERVATION_INCOMPLETE",
+                }
+
+            confirmed = (
+                is_order_confirmation_message(user_message)
+                or bool(session and session.metadata.get("reservation_confirmed"))
+            )
+
+            if not confirmed:
+                if session_key:
+                    await context_manager.update_session_metadata(
+                        session_key,
+                        {
+                            "pending_reservation": merged,
+                            "awaiting_reservation_confirmation": True,
+                        },
+                    )
+                summary = reservation_service.format_reservation_confirmation(
+                    customer_name=merged.get("customer_name", ""),
+                    customer_phone=merged.get("customer_phone", ""),
+                    reservation_date=merged.get("reservation_date", ""),
+                    reservation_time=merged.get("reservation_time", ""),
+                    party_size=merged.get("party_size"),
+                    business_name=business_name,
+                    notes=merged.get("notes", ""),
+                    lang=preferred_language,
+                )
+                return {
+                    "success": False,
+                    "result": (
+                        "RESERVATION_NOT_CONFIRMED: Show the customer this summary VERBATIM "
+                        "and ask them to reply YES to confirm. Do NOT call create_reservation "
+                        "again until they confirm:\n\n" + summary
+                    ),
+                    "error": "RESERVATION_NOT_CONFIRMED",
+                }
+
+            result = await reservation_service.create_reservation(
+                customer_name=merged.get("customer_name", ""),
+                customer_phone=merged.get("customer_phone", ""),
+                reservation_date=merged.get("reservation_date", ""),
+                reservation_time=merged.get("reservation_time", ""),
+                party_size=merged.get("party_size"),
+                notes=merged.get("notes", ""),
+            )
+            if not result.get("success"):
+                return {
+                    "success": False,
+                    "result": result.get("error", "Could not create the reservation."),
+                    "error": "RESERVATION_FAILED",
+                }
+
+            reservation = result["reservation"]
+
+            # Persist to the tenant's connected storage (best-effort)
+            if storage_config and storage_config.get("provider") not in (None, "", "none"):
+                try:
+                    await self._persist_reservation_to_storage(
+                        reservation=reservation,
+                        storage_config=storage_config,
+                        user=user,
+                        db=db,
+                    )
+                except Exception as persist_err:
+                    logger.warning(
+                        "[CONV_AGENT] reservation persist failed: %s", persist_err
+                    )
+
+            business_notification = reservation_service.format_reservation_business_notification(
+                reservation, business_name
+            )
+
+            customer_msg = self._t(
+                preferred_language,
+                (
+                    f"✅ *Reservation requested!*\n\n"
+                    f"Ref *{reservation['reservation_id']}* — {reservation['party_size']} guest(s) on "
+                    f"{reservation['reservation_date']} at {reservation['reservation_time']}.\n\n"
+                    f"We'll message you here once *{business_name}* confirms your table. 🍽️"
+                ),
+                (
+                    f"✅ *Ombi la nafasi ya meza limepokelewa!*\n\n"
+                    f"Kumbukumbu *{reservation['reservation_id']}* — watu {reservation['party_size']} tarehe "
+                    f"{reservation['reservation_date']} saa {reservation['reservation_time']}.\n\n"
+                    f"Tutakujulisha hapa mara *{business_name}* itakapothibitisha meza yako. 🍽️"
+                ),
+            )
+
+            return {
+                "success": True,
+                "result": (
+                    "RESERVATION_CREATED: Relay this confirmation to the customer verbatim:\n\n"
+                    + customer_msg
+                ),
+                "reservation_id": reservation["reservation_id"],
+                "reservation_notification": business_notification,
+            }
+
+        except Exception as e:
+            logger.error(f"[CONV_AGENT] _sub_create_reservation error: {e}", exc_info=True)
+            return {
+                "success": False,
+                "result": f"Reservation error: {str(e)}",
+                "error": "RESERVATION_ERROR",
+            }
+
     async def _sub_create_order(
         self,
         arguments: Dict[str, Any],
@@ -5369,6 +5698,7 @@ class ConversationalAgentService:
                 order_type=order_type,
                 delivery_method=arguments.get("delivery_method", "pickup"),
                 delivery_address=arguments.get("delivery_address", ""),
+                table_number=arguments.get("table_number", ""),
                 notes=arguments.get("notes", ""),
                 currency=currency,
                 business_name=business_name
@@ -7903,6 +8233,120 @@ class ConversationalAgentService:
         except Exception as e:
             logger.warning(f"[CONV_AGENT] Reported payment persistence failed (non-fatal): {e}")
 
+    @staticmethod
+    def _build_reservation_sheet_record(reservation: Dict[str, Any]) -> Dict[str, str]:
+        res = reservation.get("reservation", reservation)
+        customer = res.get("customer", {}) or {}
+        phone = _safe_str(customer.get("phone", "")).strip()
+        return {
+            "Reservation ID": _safe_str(res.get("reservation_id", "")),
+            "Status": _safe_str(res.get("status", "requested")),
+            "Customer Name": _safe_str(customer.get("name", "")),
+            "Customer Phone": f"'{phone}" if phone else "",
+            "Date": _safe_str(res.get("reservation_date", "")),
+            "Time": _safe_str(res.get("reservation_time", "")),
+            "Party Size": _safe_str(res.get("party_size", "")),
+            "Notes": _safe_str(res.get("notes", "")),
+            "Created At": _safe_str(res.get("created_at", "")),
+        }
+
+    async def _persist_reservation_to_storage(
+        self,
+        *,
+        reservation: Dict[str, Any],
+        storage_config: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+    ):
+        """Append a reservation row to the tenant's Reservations sheet/table (best-effort)."""
+        provider = (storage_config or {}).get("provider", "none")
+        if provider in (None, "", "none"):
+            return
+
+        record = self._build_reservation_sheet_record(reservation)
+        from .tool_executor import ToolExecutor
+
+        executor = ToolExecutor()
+
+        if provider == "google_sheets":
+            spreadsheet_id = storage_config.get("spreadsheet_id", "")
+            if not spreadsheet_id:
+                logger.warning("[CONV_AGENT] Reservation storage: no spreadsheet_id configured")
+                return
+            reservations_sheet = (
+                storage_config.get("reservations_sheet_name") or "Reservations"
+            ).strip() or "Reservations"
+            headers_info = await self._ensure_sheet_headers_with_fallback(
+                executor=executor,
+                spreadsheet_id=spreadsheet_id,
+                preferred_sheet=reservations_sheet,
+                fallback_sheets=[],
+                required_headers=list(_RESERVATIONS_SHEET_HEADERS),
+                user=user,
+                db=db,
+                candidate_sheets=[reservations_sheet],
+            )
+            if not headers_info:
+                logger.warning("[CONV_AGENT] Reservations sheet schema validation failed; skipping append.")
+                return
+            sheet_name = headers_info["sheet_name"]
+            headers = headers_info["headers"]
+            row_values = _record_to_sheet_row(record, headers)
+            append_res = await self._append_row_with_fallback_ranges(
+                executor=executor,
+                spreadsheet_id=spreadsheet_id,
+                candidate_ranges=[f"{sheet_name}!A:A", f"{sheet_name}!A1"],
+                row=row_values,
+                user=user,
+                db=db,
+            )
+            if append_res.get("success"):
+                logger.info(
+                    "[CONV_AGENT] Persisted reservation %s to Sheets tab '%s'",
+                    record.get("Reservation ID"),
+                    sheet_name,
+                )
+            else:
+                logger.warning(
+                    "[CONV_AGENT] Reservation append failed: %s", append_res.get("error")
+                )
+
+        elif provider == "airtable":
+            base_id = storage_config.get("airtable_base_id", "")
+            if not base_id:
+                logger.warning("[CONV_AGENT] Reservation Airtable storage: no base_id configured")
+                return
+            table = storage_config.get("airtable_reservations_table", "Reservations")
+            # Airtable stores plain text — strip the leading apostrophe guard used for Sheets.
+            airtable_record = dict(record)
+            airtable_record["Customer Phone"] = record.get("Customer Phone", "").lstrip("'")
+            try:
+                result = await executor.execute_tool(
+                    "airtable_record_management",
+                    {
+                        "operation": "create_records",
+                        "base_id": base_id,
+                        "table_name": table,
+                        "records_data": [airtable_record],
+                    },
+                    user,
+                    db,
+                )
+                if not result.get("error"):
+                    logger.info(
+                        "[CONV_AGENT] Persisted reservation %s to Airtable table '%s'",
+                        record.get("Reservation ID"),
+                        table,
+                    )
+                else:
+                    logger.warning(
+                        "[CONV_AGENT] Reservation Airtable create error: %s", result.get("error")
+                    )
+            except Exception as e:
+                logger.warning(f"[CONV_AGENT] Reservation Airtable create failed: {e}")
+        else:
+            logger.warning(f"[CONV_AGENT] Unknown storage provider for reservation: {provider}")
+
     async def _persist_to_google_sheets(
         self,
         executor,
@@ -8002,6 +8446,7 @@ class ConversationalAgentService:
             "Currency": _safe_str(order_data.get("currency", "KES")),
             "Delivery Method": _safe_str(order_data.get("delivery_method", "")),
             "Delivery Address": _safe_str(order_data.get("delivery_address", "")),
+            "Table Number": _safe_str(order_data.get("table_number", "")),
             "Notes": _safe_str(order_data.get("notes", "")),
             "Order Type": _safe_str(order_data.get("order_type", "")),
             "Created At": _safe_str(created_at or order_data.get("created_at", "")),
@@ -8677,6 +9122,7 @@ class ConversationalAgentService:
             "Currency": order_data.get("currency", "KES"),
             "Delivery Method": order_data.get("delivery_method", ""),
             "Delivery Address": order_data.get("delivery_address", ""),
+            "Table Number": order_data.get("table_number", ""),
             "Notes": order_data.get("notes", ""),
             "Order Type": order_data.get("order_type", ""),
             "Created At": created_at,
@@ -8832,6 +9278,7 @@ class ConversationalAgentService:
         phone = actual_order.get("customer", {}).get("phone", "N/A")
         delivery = actual_order.get("delivery_method", "N/A")
         address = actual_order.get("delivery_address", "")
+        table_number = actual_order.get("table_number", "")
         total = actual_order.get("subtotal", actual_order.get("total", 0))
         items = actual_order.get("items", [])
 
@@ -8846,17 +9293,20 @@ class ConversationalAgentService:
                 items_text += f" @ {currency} {price:,.0f}"
             items_text += "\n"
 
+        method_icon = "🍽️" if delivery == "dine_in" else "🚚"
         notification = (
             f"🔔 *NEW ORDER — {business_name}*\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"📋 Order: {order_id}\n"
             f"👤 Customer: {customer}\n"
             f"📱 Phone: {phone}\n"
-            f"🚚 Delivery: {delivery.replace('_', ' ').title()}\n"
+            f"{method_icon} Method: {delivery.replace('_', ' ').title()}\n"
         )
 
         if address:
             notification += f"📍 Address: {address}\n"
+        if delivery == "dine_in" and table_number:
+            notification += f"🪑 Table: {table_number}\n"
 
         notification += (
             f"\n📦 *Items:*\n{items_text}"
