@@ -561,6 +561,122 @@ def parse_table_number(message: str) -> str:
     return ""
 
 
+# ── Reservation flow parsing (dine-in table bookings) ────────────────────
+
+# Intent phrases that unambiguously mean "I want to book a table".
+_RESERVATION_INTENT_SUBSTRINGS = (
+    "reservation", "reserve", "reserv",
+    "book a table", "book table", "booking a table", "table booking",
+    "book a reservation", "make a booking", "make a reservation",
+    "table reservation", "reserve a table", "book us a table",
+    "weka meza", "nafasi ya meza", "kuweka meza", "hifadhi meza",
+)
+
+_WORD_NUMBERS = {
+    "one": 1, "two": 2, "couple": 2, "pair": 2,
+    "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+    "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    # Swahili numerals
+    "moja": 1, "mbili": 2, "tatu": 3, "nne": 4, "tano": 5, "sita": 6,
+    "saba": 7, "nane": 8, "tisa": 9, "kumi": 10, "wawili": 2, "watu wawili": 2,
+}
+
+_PARTY_DIGIT_PATTERNS = (
+    re.compile(r"(?:party|table|reservation|booking|group)\s+(?:of|for)\s+(\d{1,3})", re.IGNORECASE),
+    re.compile(r"\bfor\s+(\d{1,3})\b", re.IGNORECASE),
+    re.compile(r"(\d{1,3})\s*(?:people|persons?|guests?|pax|adults?|diners?|of\s+us)", re.IGNORECASE),
+)
+
+_RESERVATION_CANCEL_RE = re.compile(
+    r"^(cancel|stop|nevermind|never\s*mind|forget\s*it|no\s*thanks?|acha|"
+    r"cancel\s+(?:reservation|booking))\b",
+    re.IGNORECASE,
+)
+
+
+def detect_reservation_intent(message: str) -> bool:
+    """True when the customer clearly wants to book a table (not order food)."""
+    if not message:
+        return False
+    text = message.lower()
+    return any(sub in text for sub in _RESERVATION_INTENT_SUBSTRINGS)
+
+
+def is_reservation_cancel(message: str) -> bool:
+    """True when the customer wants to abandon an in-progress reservation."""
+    if not message:
+        return False
+    return bool(_RESERVATION_CANCEL_RE.match(message.strip()))
+
+
+def parse_party_size(message: str, bare: bool = False) -> Optional[int]:
+    """
+    Extract a reservation party size (number of guests).
+
+    When ``bare`` is True the caller has explicitly asked for the party size, so
+    a lone number or number word ("2", "two") is accepted. Otherwise only
+    explicit phrasings ("for two", "party of 4", "3 people") are matched so we
+    never confuse a date/time number for a head count.
+    """
+    if not message:
+        return None
+    text = message.strip().lower()
+
+    for pat in _PARTY_DIGIT_PATTERNS:
+        m = pat.search(text)
+        if m:
+            n = int(m.group(1))
+            if 1 <= n <= 100:
+                return n
+
+    for word, val in _WORD_NUMBERS.items():
+        w = re.escape(word)
+        if (
+            re.search(r"(?:party|table|group|reservation|booking)\s+(?:of|for)\s+" + w + r"\b", text)
+            or re.search(r"\bfor\s+" + w + r"\b", text)
+            or re.search(r"\b" + w + r"\s+(?:people|persons?|guests?|pax|of\s+us)\b", text)
+        ):
+            return val
+
+    if bare:
+        m = re.search(r"\b(\d{1,3})\b", text)
+        if m:
+            n = int(m.group(1))
+            if 1 <= n <= 100:
+                return n
+        for word, val in _WORD_NUMBERS.items():
+            if re.search(r"\b" + re.escape(word) + r"\b", text):
+                return val
+    return None
+
+
+def format_reservation_summary_line(
+    *,
+    customer_name: str,
+    customer_phone: str,
+    reservation_date: str,
+    reservation_time: str,
+    party_size: Any,
+    business_name: str = "",
+) -> str:
+    """Human-readable reservation summary shown before the YES confirmation."""
+    lines = ["🍽️ *Reservation summary:*"]
+    if business_name:
+        lines.append(f"🏬 {business_name}")
+    lines.append(f"👤 Name: {customer_name}")
+    if customer_phone:
+        lines.append(f"📞 Phone: {customer_phone}")
+    lines.append(f"📅 Date: {reservation_date}")
+    lines.append(f"🕖 Time: {reservation_time}")
+    lines.append(f"👥 Party size: {party_size}")
+    lines.append("")
+    lines.append(
+        "Reply *YES* to send this booking request. "
+        "We'll confirm once the restaurant approves it. 🙏"
+    )
+    return "\n".join(lines)
+
+
 def format_checkout_confirmation(
     cart: List[Dict[str, Any]],
     currency: str,

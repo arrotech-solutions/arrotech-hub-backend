@@ -1072,15 +1072,21 @@ class ConversationalAgentService:
             if session_key and is_order_confirmation_message(user_message):
                 try:
                     # If cart has items but pending_confirmation is missing,
-                    # auto-create it so create_order isn't blocked
+                    # auto-create it so create_order isn't blocked. Skip entirely
+                    # when the customer is confirming a reservation (YES belongs
+                    # to the booking flow, not the cart).
                     session = await context_manager.get_session_by_key(session_key)
-                    if session and not session.metadata.get("pending_confirmation"):
-                        cart = context_manager.get_cart(session)
-                        if cart:
-                            await context_manager.set_pending_confirmation(
-                                session_key, cart, {"source": "auto_from_cart"}
-                            )
-                    await context_manager.mark_order_confirmed(session_key)
+                    confirming_reservation = bool(
+                        session and session.metadata.get("awaiting_reservation_confirmation")
+                    )
+                    if not confirming_reservation:
+                        if session and not session.metadata.get("pending_confirmation"):
+                            cart = context_manager.get_cart(session)
+                            if cart:
+                                await context_manager.set_pending_confirmation(
+                                    session_key, cart, {"source": "auto_from_cart"}
+                                )
+                        await context_manager.mark_order_confirmed(session_key)
                 except Exception as e:
                     logger.warning(f"[CONV_AGENT] mark_order_confirmed failed: {e}")
 
@@ -1451,6 +1457,26 @@ class ConversationalAgentService:
                     actions_taken=[{"tool": "initiate_mpesa_payment", "result_summary": summary}],
                     send_cart_buttons=False,
                 )
+
+            # ── Deterministic reservation flow (food businesses only) ──
+            # Runs before checkout so a booking intent (or in-progress booking)
+            # never collides with the cart/order flow.
+            if session_key and reservations_enabled:
+                reservation_result = await self._handle_reservation_flow(
+                    session_key=session_key,
+                    user_message=user_message,
+                    order_type=order_type,
+                    reservations_enabled=reservations_enabled,
+                    business_name=business_name,
+                    customer_name=customer_name,
+                    customer_phone=customer_phone,
+                    storage_config=self._storage_config_from_business(business_config),
+                    preferred_language=preferred_language,
+                    user=user,
+                    db=db,
+                )
+                if reservation_result is not None:
+                    return reservation_result
 
             # ── Deterministic checkout (Phase 1): capture name/phone/delivery ──
             if session_key:
@@ -3371,11 +3397,11 @@ class ConversationalAgentService:
                 reservation_block = f"""
 
 ## Table Reservations (Bookings)
-This business accepts table reservations. A reservation is SEPARATE from ordering food — it does NOT use the cart.
-- If the customer wants to *book a table*, *make a reservation*, or *reserve a table* (Swahili: "kuweka meza", "nataka meza", "buku meza"), start the reservation flow instead of the ordering/checkout flow.
-- Collect ALL of these: reservation *date*, *time*, and *party size* (number of guests), plus their *name*. Their phone number is taken automatically from WhatsApp — NEVER ask for it.
-- Once you have every detail, call `create_reservation`. It returns a summary for you to show the customer; then ask them to reply *YES* to confirm.
-- Only AFTER they reply YES, call `create_reservation` again to finalize, then relay the confirmation message exactly as returned.
+This business accepts table reservations. A reservation is SEPARATE from ordering food — it does NOT use the cart. The system runs a guided step-by-step booking wizard, so keep your role minimal:
+- If the customer wants to *book a table*, *make a reservation*, or *reserve a table* (Swahili: "kuweka meza", "nataka meza", "buku meza"), the booking wizard takes over automatically — just confirm you're helping with a reservation and let it ask for the details. Do NOT run the ordering/checkout flow.
+- The wizard collects the *date*, *time*, *party size* and *name* one at a time. Their phone number comes from WhatsApp — NEVER ask for it.
+- CRITICAL: NEVER invent, guess, assume, or auto-fill any reservation detail. Only ever use the EXACT date, time, party size and name the customer typed themselves, character for character. If a detail is missing, ask for it — do not make one up.
+- If you do call `create_reservation`, pass ONLY values the customer explicitly gave. When it returns a summary, show it VERBATIM and ask them to reply *YES*. Do NOT change any value.
 - Reservations are sent to the restaurant to confirm — tell the customer you'll message them here once the table is confirmed. NEVER promise a guaranteed table or a specific table number.
 - Do NOT take food orders as part of a reservation.
 """
@@ -5499,6 +5525,364 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         except Exception as e:
             logger.error(f"[CONV_AGENT] manage_cart error: {e}")
             return {"success": False, "result": f"Cart error: {str(e)}"}
+
+    async def _handle_reservation_flow(
+        self,
+        *,
+        session_key: str,
+        user_message: str,
+        order_type: str,
+        reservations_enabled: bool,
+        business_name: str,
+        customer_name: str,
+        customer_phone: str,
+        storage_config: Dict[str, Any],
+        preferred_language: str,
+        user: User,
+        db: AsyncSession,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Deterministic, LLM-free table-reservation flow.
+
+        Runs *before* the deterministic checkout so a reservation intent (or an
+        in-progress reservation) always takes precedence over the cart flow —
+        this is what stops orders and reservations from stepping on each other.
+        Every field is captured from the customer verbatim, so the summary can
+        never contain hallucinated dates/times/party sizes.
+
+        Returns a response payload when it handles the turn, or ``None`` to let
+        the normal pipeline continue.
+        """
+        from .whatsapp_ordering_helpers import (
+            clean_checkout_customer_name,
+            detect_reservation_intent,
+            format_reservation_summary_line,
+            is_food_business,
+            is_order_confirmation_message,
+            is_reservation_cancel,
+            parse_party_size,
+        )
+
+        if not session_key:
+            return None
+        if not (reservations_enabled and is_food_business(order_type)):
+            return None
+
+        try:
+            session = await context_manager.get_session_by_key(session_key)
+        except Exception:
+            session = None
+        if not session:
+            return None
+        if context_manager.is_human_handoff(session):
+            return None
+
+        meta = session.metadata or {}
+        draft = meta.get("reservation_draft") or None
+        awaiting_confirm = bool(meta.get("awaiting_reservation_confirmation"))
+        pending = meta.get("pending_reservation") or {}
+
+        intent = detect_reservation_intent(user_message)
+        active = bool(draft) or awaiting_confirm
+
+        # Nothing in flight and no fresh intent → not our turn.
+        if not active and not intent:
+            return None
+
+        text = (user_message or "").strip()
+
+        # Allow the customer to bail out at any point.
+        if active and is_reservation_cancel(user_message):
+            await context_manager.update_session_metadata(
+                session_key,
+                {
+                    "reservation_draft": None,
+                    "pending_reservation": None,
+                    "awaiting_reservation_confirmation": False,
+                    "reservation_confirmed": False,
+                },
+            )
+            return await self._cart_fast_path_result(
+                session_key,
+                self._t(
+                    preferred_language,
+                    "No problem — I've cancelled that reservation request. "
+                    "Let me know if you'd like to book again or see the menu. 😊",
+                    "Hakuna shida — nimeghairi ombi hilo la nafasi ya meza. "
+                    "Niambie ukitaka kuweka tena au kuona menyu. 😊",
+                ),
+                actions_taken=[{"tool": "create_reservation", "result_summary": "cancelled"}],
+                send_cart_buttons=False,
+            )
+
+        # ── Confirmation stage: only a clear YES creates the booking ──
+        if awaiting_confirm:
+            if is_order_confirmation_message(user_message):
+                return await self._finalize_reservation(
+                    session_key=session_key,
+                    pending=pending,
+                    business_name=business_name,
+                    storage_config=storage_config,
+                    preferred_language=preferred_language,
+                    user=user,
+                    db=db,
+                )
+            # Not a YES and not a cancel → re-show the summary and wait.
+            summary = format_reservation_summary_line(
+                customer_name=pending.get("customer_name", ""),
+                customer_phone=pending.get("customer_phone", ""),
+                reservation_date=pending.get("reservation_date", ""),
+                reservation_time=pending.get("reservation_time", ""),
+                party_size=pending.get("party_size", ""),
+                business_name=business_name,
+            )
+            return await self._cart_fast_path_result(
+                session_key,
+                self._t(
+                    preferred_language,
+                    "Just checking before I send this to the restaurant 👇\n\n"
+                    + summary
+                    + "\n\n(Reply *cancel* if you'd rather not book.)",
+                    "Nithibitishe kabla sijatuma kwa mkahawa 👇\n\n"
+                    + summary
+                    + "\n\n(Jibu *cancel* usipotaka kuweka.)",
+                ),
+                actions_taken=[{"tool": "create_reservation", "result_summary": "awaiting_yes"}],
+                send_cart_buttons=False,
+            )
+
+        # ── Collection stage: gather date → time → party size → name ──
+        if draft is None:
+            draft = {"name": "", "date": "", "time": "", "party_size": None}
+
+        stage = draft.get("stage")
+        if stage == "need_date":
+            if text:
+                draft["date"] = text
+        elif stage == "need_time":
+            if text:
+                draft["time"] = text
+        elif stage == "need_party_size":
+            ps = parse_party_size(text, bare=True)
+            if ps:
+                draft["party_size"] = ps
+        elif stage == "need_name":
+            if text:
+                draft["name"] = clean_checkout_customer_name(text) or text[:80]
+        else:
+            # First reservation message — pull only an explicit party size
+            # ("for two", "party of 4") so we never mistake a date for a count.
+            ps = parse_party_size(text, bare=False)
+            if ps:
+                draft["party_size"] = ps
+
+        # Fall back to the WhatsApp profile name if we already know it.
+        if not draft.get("name") and customer_name:
+            draft["name"] = clean_checkout_customer_name(customer_name) or customer_name
+
+        # Ask for the next missing field, one at a time.
+        if not draft.get("date"):
+            draft["stage"] = "need_date"
+            await context_manager.update_session_metadata(
+                session_key, {"reservation_draft": draft}
+            )
+            return await self._cart_fast_path_result(
+                session_key,
+                self._t(
+                    preferred_language,
+                    "Happy to book you a table! 🍽️ What *date* would you like to come in?",
+                    "Nitakuwekea meza kwa furaha! 🍽️ Ungependa kuja *tarehe* gani?",
+                ),
+                actions_taken=[{"tool": "create_reservation", "result_summary": "need_date"}],
+                send_cart_buttons=False,
+            )
+        if not draft.get("time"):
+            draft["stage"] = "need_time"
+            await context_manager.update_session_metadata(
+                session_key, {"reservation_draft": draft}
+            )
+            return await self._cart_fast_path_result(
+                session_key,
+                self._t(
+                    preferred_language,
+                    "Great — and what *time* should we expect you? ⏰",
+                    "Vizuri — na tukutarajie *saa* ngapi? ⏰",
+                ),
+                actions_taken=[{"tool": "create_reservation", "result_summary": "need_time"}],
+                send_cart_buttons=False,
+            )
+        if not draft.get("party_size"):
+            draft["stage"] = "need_party_size"
+            await context_manager.update_session_metadata(
+                session_key, {"reservation_draft": draft}
+            )
+            return await self._cart_fast_path_result(
+                session_key,
+                self._t(
+                    preferred_language,
+                    "How many *guests* will be joining? 👥",
+                    "Mtakuwa *wageni* wangapi? 👥",
+                ),
+                actions_taken=[{"tool": "create_reservation", "result_summary": "need_party_size"}],
+                send_cart_buttons=False,
+            )
+        if not draft.get("name"):
+            draft["stage"] = "need_name"
+            await context_manager.update_session_metadata(
+                session_key, {"reservation_draft": draft}
+            )
+            return await self._cart_fast_path_result(
+                session_key,
+                self._t(
+                    preferred_language,
+                    "And lastly, what *name* should I put the reservation under? 👤",
+                    "Mwisho, niweke nafasi hii kwa *jina* gani? 👤",
+                ),
+                actions_taken=[{"tool": "create_reservation", "result_summary": "need_name"}],
+                send_cart_buttons=False,
+            )
+
+        # All fields captured → build the pending record and ask for YES.
+        pending = {
+            "customer_name": draft.get("name", ""),
+            "customer_phone": customer_phone,
+            "reservation_date": draft.get("date", ""),
+            "reservation_time": draft.get("time", ""),
+            "party_size": draft.get("party_size"),
+            "notes": "",
+        }
+        await context_manager.update_session_metadata(
+            session_key,
+            {
+                "reservation_draft": None,
+                "pending_reservation": pending,
+                "awaiting_reservation_confirmation": True,
+                "reservation_confirmed": False,
+            },
+        )
+        summary = format_reservation_summary_line(
+            customer_name=pending["customer_name"],
+            customer_phone=pending["customer_phone"],
+            reservation_date=pending["reservation_date"],
+            reservation_time=pending["reservation_time"],
+            party_size=pending["party_size"],
+            business_name=business_name,
+        )
+        return await self._cart_fast_path_result(
+            session_key,
+            summary,
+            actions_taken=[{"tool": "create_reservation", "result_summary": "awaiting_yes"}],
+            send_cart_buttons=False,
+        )
+
+    async def _finalize_reservation(
+        self,
+        *,
+        session_key: str,
+        pending: Dict[str, Any],
+        business_name: str,
+        storage_config: Dict[str, Any],
+        preferred_language: str,
+        user: User,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Create the confirmed reservation, persist it, and notify the business."""
+        from .reservation_service import reservation_service
+
+        result = await reservation_service.create_reservation(
+            customer_name=pending.get("customer_name", ""),
+            customer_phone=pending.get("customer_phone", ""),
+            reservation_date=pending.get("reservation_date", ""),
+            reservation_time=pending.get("reservation_time", ""),
+            party_size=pending.get("party_size"),
+            notes=pending.get("notes", ""),
+        )
+        if not result.get("success"):
+            await context_manager.update_session_metadata(
+                session_key,
+                {
+                    "reservation_draft": None,
+                    "pending_reservation": None,
+                    "awaiting_reservation_confirmation": False,
+                    "reservation_confirmed": False,
+                },
+            )
+            return await self._cart_fast_path_result(
+                session_key,
+                self._t(
+                    preferred_language,
+                    "Sorry, I couldn't complete that reservation just now. "
+                    "Please try again in a moment. 🙏",
+                    "Samahani, sikuweza kukamilisha nafasi hiyo sasa hivi. "
+                    "Tafadhali jaribu tena baada ya muda. 🙏",
+                ),
+                actions_taken=[{"tool": "create_reservation", "result_summary": "failed"}],
+                send_cart_buttons=False,
+            )
+
+        reservation = result["reservation"]
+
+        if storage_config and storage_config.get("provider") not in (None, "", "none"):
+            try:
+                await self._persist_reservation_to_storage(
+                    reservation=reservation,
+                    storage_config=storage_config,
+                    user=user,
+                    db=db,
+                )
+            except Exception as persist_err:
+                logger.warning(
+                    "[CONV_AGENT] reservation persist failed: %s", persist_err
+                )
+
+        business_notification = reservation_service.format_reservation_business_notification(
+            reservation, business_name
+        )
+
+        customer_msg = self._t(
+            preferred_language,
+            (
+                f"✅ *Reservation requested!*\n\n"
+                f"Ref *{reservation['reservation_id']}* — {reservation['party_size']} guest(s) on "
+                f"{reservation['reservation_date']} at {reservation['reservation_time']}.\n\n"
+                f"We'll message you here once *{business_name}* confirms your table. 🍽️"
+            ),
+            (
+                f"✅ *Ombi la nafasi ya meza limepokelewa!*\n\n"
+                f"Kumbukumbu *{reservation['reservation_id']}* — watu {reservation['party_size']} tarehe "
+                f"{reservation['reservation_date']} saa {reservation['reservation_time']}.\n\n"
+                f"Tutakujulisha hapa mara *{business_name}* itakapothibitisha meza yako. 🍽️"
+            ),
+        )
+
+        await context_manager.update_session_metadata(
+            session_key,
+            {
+                "reservation_draft": None,
+                "pending_reservation": None,
+                "awaiting_reservation_confirmation": False,
+                "reservation_confirmed": False,
+            },
+        )
+        await self._save_to_ccm(session_key, "assistant", customer_msg)
+
+        return {
+            "response_text": customer_msg,
+            "image_urls": [],
+            "cards": [],
+            "order_created": True,
+            "order_cancelled": False,
+            "order_data": None,
+            "order_notification": business_notification,
+            "escalation_triggered": False,
+            "escalation_notification": "",
+            "human_handoff": False,
+            "actions_taken": [
+                {"tool": "create_reservation", "result_summary": "created"}
+            ],
+            "send_cart_buttons": False,
+            "send_agent_mode_buttons": None,
+        }
 
     async def _sub_create_reservation(
         self,
