@@ -3,11 +3,15 @@
 import pytest
 
 from src.services.whatsapp_ordering_helpers import (
+    detect_reservation_intent,
     format_checkout_confirmation,
+    format_reservation_summary_line,
     is_order_confirmation_message,
+    is_reservation_cancel,
     match_cart_command,
     normalize_search_query,
     parse_checkout_details,
+    parse_party_size,
     parse_table_number,
     clean_checkout_customer_name,
     parse_product_button_id,
@@ -210,3 +214,100 @@ def test_merge_sheet_records_fills_empty_cells():
 def test_clean_checkout_customer_name_strips_multiline_delivery():
     assert clean_checkout_customer_name("Harun Gitundu\nPickup") == "Harun Gitundu"
     assert clean_checkout_customer_name("Name: Harun Gitundu\nPickup") == "Harun Gitundu"
+
+
+# ── Reservation flow helpers ──────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "I wanna book a reservation for two",
+        "I would like to make a reservation",
+        "can you reserve a table",
+        "book a table for us tonight",
+        "nataka kuweka meza",
+    ],
+)
+def test_detect_reservation_intent_true(message):
+    assert detect_reservation_intent(message)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "I want to order pizza",
+        "show me the menu",
+        "add chicken to cart",
+        "how much is a soda",
+        "",
+    ],
+)
+def test_detect_reservation_intent_false(message):
+    assert not detect_reservation_intent(message)
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ("book a reservation for two", 2),
+        ("party of 4", 4),
+        ("table for 3", 3),
+        ("we are 5 people", 5),
+        ("reservation for six", 6),
+    ],
+)
+def test_parse_party_size_explicit(message, expected):
+    assert parse_party_size(message) == expected
+
+
+def test_parse_party_size_ignores_dates_and_times_without_bare():
+    # A date or time number must never be read as a head count.
+    assert parse_party_size("24th July 2026") is None
+    assert parse_party_size("10 p.m") is None
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ("2", 2),
+        ("two", 2),
+        ("the number of guests is two", 2),
+        ("just 3 of us", 3),
+    ],
+)
+def test_parse_party_size_bare(message, expected):
+    assert parse_party_size(message, bare=True) == expected
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["cancel", "stop", "never mind", "cancel booking", "acha"],
+)
+def test_is_reservation_cancel_true(message):
+    assert is_reservation_cancel(message)
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["10 p.m", "Harun Gitundu", "24th July 2026", "yes"],
+)
+def test_is_reservation_cancel_false(message):
+    assert not is_reservation_cancel(message)
+
+
+def test_format_reservation_summary_uses_exact_values():
+    summary = format_reservation_summary_line(
+        customer_name="Harun Gitundu",
+        customer_phone="254711371265",
+        reservation_date="24th July 2026",
+        reservation_time="10 p.m",
+        party_size=2,
+        business_name="Tians Grill",
+    )
+    # Exactly what the customer supplied — never a hallucinated/normalised value.
+    assert "Harun Gitundu" in summary
+    assert "24th July 2026" in summary
+    assert "10 p.m" in summary
+    assert "Party size: 2" in summary
+    assert "YES" in summary
