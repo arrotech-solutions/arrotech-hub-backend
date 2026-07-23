@@ -195,6 +195,13 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 ],
                 "default": ["delivery", "pickup"]
             },
+            "reservations_enabled": {
+                "label": "Table Reservations",
+                "type": "boolean",
+                "description": "Let customers book a table (date, time, party size). Best for restaurants.",
+                "required": False,
+                "default": False
+            },
             "system_prompt": {
                 "label": "Custom Instructions (Optional)",
                 "type": "textarea",
@@ -284,6 +291,24 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "default": "Transactions",
                 "show_if": {"field": "storage_provider", "value": "airtable"}
             },
+            "storage_reservations_sheet_name": {
+                "label": "Reservations Sheet Name",
+                "type": "text",
+                "description": "Tab name for saving table reservations in Google Sheets",
+                "required": False,
+                "placeholder": "Reservations",
+                "default": "Reservations",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
+            "storage_airtable_reservations_table": {
+                "label": "Airtable Reservations Table Name",
+                "type": "text",
+                "description": "Table name for storing table reservations",
+                "required": False,
+                "placeholder": "Reservations",
+                "default": "Reservations",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
+            },
             "enabled_mcp_tools": {
                 "label": "Enabled MCP Tools",
                 "type": "multi_select",
@@ -329,16 +354,19 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                         "order_type": "{{config.order_type}}",
                         "currency": "{{config.currency}}",
                         "delivery_methods": "{{config.delivery_methods}}",
+                        "reservations_enabled": "{{config.reservations_enabled}}",
                         "system_prompt": "{{config.system_prompt}}",
                         "storage_provider": "{{config.storage_provider}}",
                         "storage_spreadsheet_id": "{{config.storage_spreadsheet_id}}",
                         "storage_orders_sheet_name": "{{config.storage_orders_sheet_name}}",
                         "storage_customers_sheet_name": "{{config.storage_customers_sheet_name}}",
                         "storage_transactions_sheet_name": "{{config.storage_transactions_sheet_name}}",
+                        "storage_reservations_sheet_name": "{{config.storage_reservations_sheet_name}}",
                         "storage_airtable_base_id": "{{config.storage_airtable_base_id}}",
                         "storage_airtable_orders_table": "{{config.storage_airtable_orders_table}}",
                         "storage_airtable_customers_table": "{{config.storage_airtable_customers_table}}",
                         "storage_airtable_transactions_table": "{{config.storage_airtable_transactions_table}}",
+                        "storage_airtable_reservations_table": "{{config.storage_airtable_reservations_table}}",
                         "enabled_mcp_tools": "{{config.enabled_mcp_tools}}",
                         "auto_escalation_enabled": "{{config.auto_escalation_enabled}}",
                         "supported_languages": "{{config.supported_languages}}",
