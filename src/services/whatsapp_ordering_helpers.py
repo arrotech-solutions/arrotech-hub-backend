@@ -563,13 +563,24 @@ def parse_table_number(message: str) -> str:
 
 # ── Reservation flow parsing (dine-in table bookings) ────────────────────
 
-# Intent phrases that unambiguously mean "I want to book a table".
-_RESERVATION_INTENT_SUBSTRINGS = (
-    "reservation", "reserve", "reserv",
-    "book a table", "book table", "booking a table", "table booking",
-    "book a reservation", "make a booking", "make a reservation",
-    "table reservation", "reserve a table", "book us a table",
-    "weka meza", "nafasi ya meza", "kuweka meza", "hifadhi meza",
+# Intent phrases that mean "I want to book a table". On a food business with
+# reservations enabled, "book"/"booking" almost always means a table booking,
+# so we match those verbs (incl. common typos) as well as explicit phrases.
+_RESERVATION_INTENT_RE = re.compile(
+    r"\b("
+    r"reserv\w*"            # reserve, reserved, reservation(s), reserving
+    r"|book\w*"             # book, booked, booking, bookings
+    r"|bok|buk|buku\w*"     # common typos / Swahili "buku"
+    r"|weka\s+meza|nafasi\s+ya\s+meza|kuweka\s+meza|hifadhi\s+meza"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Explicit "cancel my booking/reservation/table" — reservation-domain even when
+# no booking is currently in progress (so it never routes to order cancellation).
+_RESERVATION_CANCEL_EXPLICIT_RE = re.compile(
+    r"\bcancel\b.*\b(reserv\w*|book(?:ing)?|bookings?|table|meza)\b",
+    re.IGNORECASE,
 )
 
 _WORD_NUMBERS = {
@@ -595,18 +606,33 @@ _RESERVATION_CANCEL_RE = re.compile(
 
 
 def detect_reservation_intent(message: str) -> bool:
-    """True when the customer clearly wants to book a table (not order food)."""
+    """True when the customer wants to book a table (not order food)."""
     if not message:
         return False
-    text = message.lower()
-    return any(sub in text for sub in _RESERVATION_INTENT_SUBSTRINGS)
+    # An explicit "cancel booking" is a reservation action, not a booking intent.
+    if _RESERVATION_CANCEL_EXPLICIT_RE.search(message):
+        return False
+    return bool(_RESERVATION_INTENT_RE.search(message))
 
 
 def is_reservation_cancel(message: str) -> bool:
-    """True when the customer wants to abandon an in-progress reservation."""
+    """True when the customer wants to abandon an in-progress reservation.
+
+    Matches bare cancels ("cancel", "stop", "acha") used while the booking wizard
+    is active, as well as explicit "cancel my booking/reservation/table" phrases.
+    """
     if not message:
         return False
+    if _RESERVATION_CANCEL_EXPLICIT_RE.search(message):
+        return True
     return bool(_RESERVATION_CANCEL_RE.match(message.strip()))
+
+
+def is_reservation_cancel_explicit(message: str) -> bool:
+    """True only for explicit 'cancel booking/reservation/table' phrasing."""
+    if not message:
+        return False
+    return bool(_RESERVATION_CANCEL_EXPLICIT_RE.search(message))
 
 
 def parse_party_size(message: str, bare: bool = False) -> Optional[int]:
