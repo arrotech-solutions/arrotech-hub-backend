@@ -52,6 +52,21 @@ STATUS_CUSTOMER_COPY = {
     "refunded": ("💰", "Refunded", "A refund has been processed for your order."),
 }
 
+# Dine-in-specific overrides — served at the table rather than dispatched/delivered.
+STATUS_CUSTOMER_COPY_DINE_IN = {
+    "ready": ("🍽️", "Ready to serve", "Your food is ready and will be brought to your table shortly."),
+    "delivered": ("✅", "Served", "Your order has been served. Enjoy your meal!"),
+}
+
+
+def _status_copy_for(status: str, delivery_method: str = "") -> tuple:
+    """Status copy, using dine-in wording when the order is dine-in."""
+    if (delivery_method or "").lower() == "dine_in" and status in STATUS_CUSTOMER_COPY_DINE_IN:
+        return STATUS_CUSTOMER_COPY_DINE_IN[status]
+    return STATUS_CUSTOMER_COPY.get(
+        status, ("📋", status.replace("_", " ").title(), "")
+    )
+
 
 class OrderTrackingService:
     """Customer notifications and order tracking registry."""
@@ -927,8 +942,8 @@ class OrderTrackingService:
         if new_status not in NOTIFY_STATUSES:
             return {"success": True, "skipped": True, "reason": "status_not_notifiable"}
 
-        icon, title, body = STATUS_CUSTOMER_COPY.get(
-            new_status, ("📋", new_status.replace("_", " ").title(), "")
+        icon, title, body = _status_copy_for(
+            new_status, order.get("delivery_method", "")
         )
         items_summary = self._summarize_items(order.get("items") or [])
         total = order.get("subtotal", 0)
@@ -946,7 +961,10 @@ class OrderTrackingService:
             message += f"💰 Total: *{currency} {float(total):,.0f}*\n"
         if notes:
             message += f"\n📝 {notes}\n"
-        if new_status in ("shipped", "out_for_delivery", "delivered"):
+        if (
+            order.get("delivery_method") == "delivery"
+            and new_status in ("shipped", "out_for_delivery", "delivered")
+        ):
             maps_link = self._delivery_maps_link(order)
             if maps_link:
                 message += f"\n📍 Track delivery area:\n{maps_link}\n"

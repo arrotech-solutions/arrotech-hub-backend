@@ -146,6 +146,18 @@ _PICKUP_WORDS = (
 )
 _DINE_WORDS = ("dine in", "dine-in", "dinein", "eat in", "eat-in", "kula hapa")
 
+# Words that mean "I don't have / skip the table number" for dine-in
+_TABLE_SKIP_WORDS = (
+    "skip", "no", "none", "n/a", "na", "dont know", "don't know", "not sure",
+    "no table", "later", "sina", "sijui", "hakuna", "bado",
+)
+# "table 12", "table no 12", "meza 5", or a bare number like "12"
+_TABLE_NUMBER_RE = re.compile(
+    r"(?:table|tbl|meza)\s*(?:no\.?|number|namba|#)?\s*[:\-]?\s*([A-Za-z]?\d{1,4}[A-Za-z]?)",
+    re.IGNORECASE,
+)
+_BARE_TABLE_RE = re.compile(r"^\s*#?\s*([A-Za-z]?\d{1,4}[A-Za-z]?)\s*$")
+
 # Phone: optional +, then 9+ digits possibly separated by spaces/dashes
 _PHONE_RE = re.compile(r"(\+?\d[\d\s\-]{7,}\d)")
 _LABELLED_PHONE_RE = re.compile(
@@ -460,6 +472,31 @@ def parse_checkout_details(message: str) -> Dict[str, Optional[str]]:
     return result
 
 
+def parse_table_number(message: str) -> str:
+    """
+    Extract a dine-in table number from a free-text reply.
+
+    Returns the table number string (e.g. "12", "A3"), or "" when the customer
+    skipped / doesn't have one. An empty string is a valid "no table" answer.
+    """
+    if not message:
+        return ""
+    text = message.strip()
+    compact = re.sub(r"[^a-z\s]", "", text.lower()).strip()
+    if compact in _TABLE_SKIP_WORDS:
+        return ""
+
+    m = _TABLE_NUMBER_RE.search(text)
+    if m:
+        return m.group(1).strip().upper()
+
+    m2 = _BARE_TABLE_RE.match(text)
+    if m2:
+        return m2.group(1).strip().upper()
+
+    return ""
+
+
 def format_checkout_confirmation(
     cart: List[Dict[str, Any]],
     currency: str,
@@ -468,6 +505,7 @@ def format_checkout_confirmation(
     delivery_method: str,
     delivery_address: str = "",
     lang: str = "en",
+    table_number: str = "",
 ) -> str:
     """Deterministic order summary asking the customer to reply YES to confirm."""
     total = 0.0
@@ -482,7 +520,12 @@ def format_checkout_confirmation(
     items_block = "\n".join(lines)
 
     method_label = (delivery_method or "pickup").replace("_", " ").title()
-    method_icon = "🚚" if delivery_method == "delivery" else "🏬"
+    if delivery_method == "delivery":
+        method_icon = "🚚"
+    elif delivery_method == "dine_in":
+        method_icon = "🍽️"
+    else:
+        method_icon = "🏬"
 
     if lang == "sw":
         body = (
@@ -494,6 +537,8 @@ def format_checkout_confirmation(
         )
         if delivery_method == "delivery" and delivery_address:
             body += f"📍 Anwani: {delivery_address}\n"
+        if delivery_method == "dine_in" and table_number:
+            body += f"🪑 Meza: {table_number}\n"
         body += "\nJibu *NDIO* kuthibitisha na kuweka oda, au *Cancel* kubadilisha."
         return body
 
@@ -506,6 +551,8 @@ def format_checkout_confirmation(
     )
     if delivery_method == "delivery" and delivery_address:
         body += f"📍 Address: {delivery_address}\n"
+    if delivery_method == "dine_in" and table_number:
+        body += f"🪑 Table: {table_number}\n"
     body += "\nReply *YES* to confirm and place your order, or *Cancel* to make changes."
     return body
 

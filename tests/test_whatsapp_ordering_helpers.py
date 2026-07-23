@@ -3,10 +3,12 @@
 import pytest
 
 from src.services.whatsapp_ordering_helpers import (
+    format_checkout_confirmation,
     is_order_confirmation_message,
     match_cart_command,
     normalize_search_query,
     parse_checkout_details,
+    parse_table_number,
     clean_checkout_customer_name,
     parse_product_button_id,
     parse_remove_item_name,
@@ -61,6 +63,56 @@ def test_parse_remove_and_quantity():
     name, qty = parse_set_quantity_message("2 chicken stew")
     assert "chicken" in name
     assert qty == 2.0
+
+
+def test_parse_checkout_detects_dine_in():
+    assert parse_checkout_details("dine in").get("delivery_method") == "dine_in"
+    assert parse_checkout_details("I'll eat in").get("delivery_method") == "dine_in"
+    assert parse_checkout_details("kula hapa").get("delivery_method") == "dine_in"
+
+
+def test_parse_table_number_variants():
+    assert parse_table_number("table 12") == "12"
+    assert parse_table_number("Table No. 7") == "7"
+    assert parse_table_number("meza 5") == "5"
+    assert parse_table_number("A3") == "A3"
+    assert parse_table_number("15") == "15"
+    assert parse_table_number("#9") == "9"
+
+
+def test_parse_table_number_skip_returns_empty():
+    assert parse_table_number("skip") == ""
+    assert parse_table_number("I don't know") == ""
+    assert parse_table_number("sina") == ""
+    assert parse_table_number("") == ""
+
+
+def test_format_checkout_confirmation_dine_in_shows_table():
+    cart = [{"name": "Pilau", "quantity": 1, "unit_price": 400}]
+    msg = format_checkout_confirmation(
+        cart=cart,
+        currency="KES",
+        customer_name="Asha",
+        customer_phone="254700000000",
+        delivery_method="dine_in",
+        table_number="12",
+    )
+    assert "🍽️" in msg
+    assert "Table: 12" in msg
+
+
+def test_format_checkout_confirmation_dine_in_without_table():
+    cart = [{"name": "Pilau", "quantity": 1, "unit_price": 400}]
+    msg = format_checkout_confirmation(
+        cart=cart,
+        currency="KES",
+        customer_name="Asha",
+        customer_phone="254700000000",
+        delivery_method="dine_in",
+        table_number="",
+    )
+    assert "🍽️" in msg
+    assert "Table:" not in msg
 
 
 def test_webhook_signature():
