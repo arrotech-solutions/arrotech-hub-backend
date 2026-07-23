@@ -615,6 +615,29 @@ class WorkflowBuilderService:
             # Substitute variables in parameters (now including any overrides)
             substituted_params = self._substitute_variables(effective_params, context or {})
 
+            # Conversational agent: merge full workflow.variables into business_config so
+            # existing workflows gain new settings (e.g. reservations_enabled) without
+            # recreating the workflow step template from the Library.
+            if step.tool_name == "conversational_agent":
+                bc = substituted_params.get("business_config")
+                if not isinstance(bc, dict):
+                    bc = {}
+                wf_vars = (context or {}).get("variables") or {}
+                if isinstance(wf_vars, dict):
+                    for key, value in wf_vars.items():
+                        if key == "config":
+                            continue
+                        if value is None or value == "":
+                            continue
+                        bc.setdefault(key, value)
+                inp_cfg = (context or {}).get("config")
+                if isinstance(inp_cfg, dict):
+                    for key, value in inp_cfg.items():
+                        if value is None or value == "":
+                            continue
+                        bc.setdefault(key, value)
+                substituted_params["business_config"] = bc
+
             # WhatsApp cart buttons: inherit from prior conversational_agent step
             # (workflows created before send_cart_buttons/session_key were added to step 2)
             if step.tool_name in ("whatsapp_send_message", "whatsapp_messaging"):

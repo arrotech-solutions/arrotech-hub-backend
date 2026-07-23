@@ -13,6 +13,10 @@ def test_whatsapp_template_exposes_transactions_sheet_variable():
     assert "storage_transactions_sheet_name" in variables
     assert variables["storage_transactions_sheet_name"]["default"] == "Transactions"
     assert "storage_airtable_transactions_table" in variables
+    assert "reservations_enabled" in variables
+    assert variables["reservations_enabled"]["default"] is False
+    assert "storage_reservations_sheet_name" in variables
+    assert "storage_airtable_reservations_table" in variables
 
 
 def test_whatsapp_template_wires_storage_into_business_config():
@@ -23,6 +27,13 @@ def test_whatsapp_template_wires_storage_into_business_config():
     assert business_config["storage_transactions_sheet_name"] == "{{variables.storage_transactions_sheet_name}}"
     assert business_config["storage_airtable_transactions_table"] == (
         "{{variables.storage_airtable_transactions_table}}"
+    )
+    assert business_config["reservations_enabled"] == "{{variables.reservations_enabled}}"
+    assert business_config["storage_reservations_sheet_name"] == (
+        "{{variables.storage_reservations_sheet_name}}"
+    )
+    assert business_config["storage_airtable_reservations_table"] == (
+        "{{variables.storage_airtable_reservations_table}}"
     )
 
 
