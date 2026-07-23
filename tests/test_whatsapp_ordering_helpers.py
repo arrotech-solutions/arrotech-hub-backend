@@ -8,6 +8,7 @@ from src.services.whatsapp_ordering_helpers import (
     format_reservation_summary_line,
     is_order_confirmation_message,
     is_reservation_cancel,
+    is_reservation_cancel_explicit,
     match_cart_command,
     normalize_search_query,
     parse_checkout_details,
@@ -227,6 +228,9 @@ def test_clean_checkout_customer_name_strips_multiline_delivery():
         "can you reserve a table",
         "book a table for us tonight",
         "nataka kuweka meza",
+        "I would like to book agin",  # typo — still detected
+        "I would like to make a booking for two",
+        "I booked a table",
     ],
 )
 def test_detect_reservation_intent_true(message):
@@ -240,11 +244,27 @@ def test_detect_reservation_intent_true(message):
         "show me the menu",
         "add chicken to cart",
         "how much is a soda",
+        "facebook page",
+        "Cancel the booking",  # explicit cancel is NOT a booking intent
         "",
     ],
 )
 def test_detect_reservation_intent_false(message):
     assert not detect_reservation_intent(message)
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ("Cancel the booking", True),
+        ("cancel my reservation", True),
+        ("cancel table", True),
+        ("cancel", False),      # bare cancel is not reservation-specific
+        ("cancel my order", False),  # order cancellation must not be hijacked
+    ],
+)
+def test_is_reservation_cancel_explicit(message, expected):
+    assert is_reservation_cancel_explicit(message) is expected
 
 
 @pytest.mark.parametrize(

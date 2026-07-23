@@ -273,6 +273,63 @@ async def test_deterministic_flow_cancel_clears_state():
     assert session.metadata.get("pending_reservation") is None
 
 
+@pytest.mark.asyncio
+async def test_explicit_cancel_booking_with_nothing_active_does_not_touch_orders():
+    """'Cancel the booking' with no active reservation must be handled here,
+    not fall through to the LLM order-cancellation path."""
+    agent = ConversationalAgentService()
+    session_key = "ccm:whatsapp:user-uuid-1:254700000000"
+    session = _make_session(session_key)
+
+    async def fake_get_session_by_key(key):
+        return session
+
+    with patch.object(context_manager, "get_session_by_key", fake_get_session_by_key), \
+         patch.object(context_manager, "is_human_handoff", MagicMock(return_value=False)), \
+         patch.object(agent, "_save_to_ccm", new_callable=AsyncMock):
+        result = await agent._handle_reservation_flow(
+            session_key=session_key,
+            user_message="Cancel the booking",
+            order_type="food",
+            reservations_enabled=True,
+            business_name="Tians Grill",
+            customer_name="",
+            customer_phone="254700000000",
+            storage_config={"provider": "none"},
+            preferred_language="en",
+            user=MagicMock(),
+            db=AsyncMock(),
+        )
+    assert result is not None
+    assert "reservation" in result["response_text"].lower()
+    assert result["order_created"] is False
+
+
+@pytest.mark.asyncio
+async def test_clear_session_wipes_reservation_state():
+    from src.services.conversation_context_manager import context_manager as cm
+
+    session = _make_session(
+        "ccm:whatsapp:user-uuid-1:254700000000",
+        metadata={
+            "cart": [{"x": 1}],
+            "pending_reservation": {"customer_name": "Asha"},
+            "awaiting_reservation_confirmation": True,
+            "reservation_draft": {"stage": "need_time"},
+            "reservation_confirmed": True,
+        },
+    )
+    with patch.object(cm, "_save_to_redis", MagicMock()), \
+         patch.object(cm, "_save_to_db", new_callable=AsyncMock):
+        await cm.clear_session(session)
+
+    assert "pending_reservation" not in session.metadata
+    assert "awaiting_reservation_confirmation" not in session.metadata
+    assert "reservation_draft" not in session.metadata
+    assert "reservation_confirmed" not in session.metadata
+    assert "cart" not in session.metadata
+
+
 def test_format_delivery_choices_lists_tenant_methods():
     choices = ConversationalAgentService._format_delivery_choices(
         ["delivery", "pickup", "dine_in"], "en"

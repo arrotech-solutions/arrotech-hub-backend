@@ -344,6 +344,14 @@ class ConversationContextManager:
         session.metadata.pop("pending_confirmation", None)
         session.metadata.pop("order_confirmed", None)
         session.metadata.pop("welcome_sent", None)
+        session.metadata.pop("awaiting_checkout_details", None)
+        session.metadata.pop("checkout_draft", None)
+        # Reservation flow state — must be wiped on reset so a stale/hallucinated
+        # pending booking never resurfaces after "reset".
+        session.metadata.pop("reservation_draft", None)
+        session.metadata.pop("pending_reservation", None)
+        session.metadata.pop("awaiting_reservation_confirmation", None)
+        session.metadata.pop("reservation_confirmed", None)
 
         self._save_to_redis(session)
         await self._save_to_db(session)

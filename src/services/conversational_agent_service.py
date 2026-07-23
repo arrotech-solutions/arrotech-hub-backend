@@ -2260,10 +2260,13 @@ class ConversationalAgentService:
                 if mpesa_stk_available:
                     dynamic_tools.append(INITIATE_RENT_STK_TOOL)
             else:
+                # `create_reservation` is intentionally NEVER exposed to the LLM.
+                # Reservations are handled end-to-end by the deterministic booking
+                # wizard (`_handle_reservation_flow`) so the model can never invent
+                # dates/times/party sizes or lose the confirmation thread.
                 dynamic_tools = [
                     t for t in AGENT_SUB_TOOLS
                     if t.get("function", {}).get("name") != "create_reservation"
-                    or (reservations_enabled and is_food_business(order_type))
                 ]
             for t_name in enabled_mcp_tool_names:
                 schema = dynamic_tool_registry.get_tool(t_name)
@@ -3394,15 +3397,14 @@ class ConversationalAgentService:
 
             reservation_block = ""
             if reservations_enabled and is_food_business(order_type):
-                reservation_block = f"""
+                reservation_block = """
 
 ## Table Reservations (Bookings)
-This business accepts table reservations. A reservation is SEPARATE from ordering food — it does NOT use the cart. The system runs a guided step-by-step booking wizard, so keep your role minimal:
-- If the customer wants to *book a table*, *make a reservation*, or *reserve a table* (Swahili: "kuweka meza", "nataka meza", "buku meza"), the booking wizard takes over automatically — just confirm you're helping with a reservation and let it ask for the details. Do NOT run the ordering/checkout flow.
-- The wizard collects the *date*, *time*, *party size* and *name* one at a time. Their phone number comes from WhatsApp — NEVER ask for it.
-- CRITICAL: NEVER invent, guess, assume, or auto-fill any reservation detail. Only ever use the EXACT date, time, party size and name the customer typed themselves, character for character. If a detail is missing, ask for it — do not make one up.
-- If you do call `create_reservation`, pass ONLY values the customer explicitly gave. When it returns a summary, show it VERBATIM and ask them to reply *YES*. Do NOT change any value.
-- Reservations are sent to the restaurant to confirm — tell the customer you'll message them here once the table is confirmed. NEVER promise a guaranteed table or a specific table number.
+This business accepts table reservations. A reservation is SEPARATE from ordering food — it does NOT use the cart. A dedicated, automated booking wizard handles reservations end-to-end, so you must NOT run the booking yourself:
+- You have NO reservation tool. NEVER collect, confirm, summarise, or "create" a reservation yourself, and NEVER invent or repeat a date, time, party size, or booking reference.
+- If the customer wants to *book a table*, *make a reservation*, *reserve*, or says anything about a *booking* (Swahili: "kuweka meza", "nataka meza", "buku meza"), do NOT ask them for details. Reply with ONE short line telling them to type *"book a table"* to start — the wizard then takes over automatically.
+- If they ask to *cancel a booking*, tell them to reply *cancel* while booking, or to say *book a table* to start a new one. Do NOT treat "cancel booking" as cancelling a food order.
+- Never promise a guaranteed table or a specific table number.
 - Do NOT take food orders as part of a reservation.
 """
             prompt = f"""{base_context}
@@ -5560,6 +5562,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             is_food_business,
             is_order_confirmation_message,
             is_reservation_cancel,
+            is_reservation_cancel_explicit,
             parse_party_size,
         )
 
@@ -5583,7 +5586,25 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         pending = meta.get("pending_reservation") or {}
 
         intent = detect_reservation_intent(user_message)
+        explicit_cancel = is_reservation_cancel_explicit(user_message)
         active = bool(draft) or awaiting_confirm
+
+        # An explicit "cancel my booking" with nothing in progress must NOT fall
+        # through to the LLM (which would try to cancel an *order*). Tell the
+        # customer there's nothing to cancel and stop here.
+        if explicit_cancel and not active:
+            return await self._cart_fast_path_result(
+                session_key,
+                self._t(
+                    preferred_language,
+                    "You don't have a table reservation in progress right now. "
+                    "If you'd like to book one, just say *book a table*. 🍽️",
+                    "Kwa sasa huna nafasi ya meza inayoendelea. "
+                    "Ukitaka kuweka, sema tu *book a table*. 🍽️",
+                ),
+                actions_taken=[{"tool": "create_reservation", "result_summary": "nothing_to_cancel"}],
+                send_cart_buttons=False,
+            )
 
         # Nothing in flight and no fresh intent → not our turn.
         if not active and not intent:
@@ -5822,8 +5843,16 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
 
         reservation = result["reservation"]
 
-        if storage_config and storage_config.get("provider") not in (None, "", "none"):
+        provider = (storage_config or {}).get("provider")
+        if storage_config and provider not in (None, "", "none"):
             try:
+                logger.info(
+                    "[CONV_AGENT] Persisting reservation %s via provider=%s sheet=%s",
+                    reservation.get("reservation_id"),
+                    provider,
+                    (storage_config.get("reservations_sheet_name")
+                     or storage_config.get("airtable_reservations_table")),
+                )
                 await self._persist_reservation_to_storage(
                     reservation=reservation,
                     storage_config=storage_config,
@@ -5834,6 +5863,14 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 logger.warning(
                     "[CONV_AGENT] reservation persist failed: %s", persist_err
                 )
+        else:
+            logger.warning(
+                "[CONV_AGENT] Reservation %s NOT persisted — storage provider is "
+                "'%s' (expected google_sheets/airtable). Check the workflow's "
+                "storage_provider / storage_spreadsheet_id config.",
+                reservation.get("reservation_id"),
+                provider,
+            )
 
         business_notification = reservation_service.format_reservation_business_notification(
             reservation, business_name
