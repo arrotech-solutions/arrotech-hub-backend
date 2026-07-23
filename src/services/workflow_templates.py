@@ -200,7 +200,8 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "type": "boolean",
                 "description": "Let customers book a table (date, time, party size). Best for restaurants.",
                 "required": False,
-                "default": False
+                "default": False,
+                "show_if": {"field": "order_type", "value": "food"},
             },
             "system_prompt": {
                 "label": "Custom Instructions (Optional)",

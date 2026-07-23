@@ -2274,12 +2274,13 @@ WORKFLOW_TEMPLATES = [
                 "type": "array",
                 "items": {"type": "string", "enum": ["delivery", "pickup", "dine_in"]},
                 "default": ["delivery", "pickup"],
-                "description": "How customers can receive orders (include dine_in for table service)",
+                "description": "How customers receive orders. Dine-in is for food/restaurant only.",
             },
             "reservations_enabled": {
                 "type": "boolean",
                 "default": False,
-                "description": "Let customers book a table (date, time, party size). Best for restaurants.",
+                "description": "Let customers book a table (date, time, party size). Restaurants only.",
+                "show_if": {"field": "order_type", "value": "food"},
             },
             "storage_provider": {
                 "type": "string",

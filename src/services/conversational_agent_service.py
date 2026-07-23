@@ -850,9 +850,19 @@ class ConversationalAgentService:
             business_email = business_config.get("business_email", "")
             order_type = business_config.get("order_type", "general")
             currency = business_config.get("currency", "KES")
-            delivery_methods = business_config.get("delivery_methods", ["delivery", "pickup"])
+            from .whatsapp_ordering_helpers import (
+                apply_food_only_fulfillment,
+                coerce_delivery_methods,
+                is_food_business,
+            )
+            delivery_methods = coerce_delivery_methods(
+                business_config.get("delivery_methods", ["delivery", "pickup"])
+            )
             reservations_enabled = self._config_bool(
                 business_config.get("reservations_enabled"), False
+            )
+            delivery_methods, reservations_enabled = apply_food_only_fulfillment(
+                order_type, delivery_methods, reservations_enabled
             )
             custom_system_prompt = business_config.get("system_prompt", "")
 
@@ -2227,7 +2237,7 @@ class ConversationalAgentService:
                 dynamic_tools = [
                     t for t in AGENT_SUB_TOOLS
                     if t.get("function", {}).get("name") != "create_reservation"
-                    or reservations_enabled
+                    or (reservations_enabled and is_food_business(order_type))
                 ]
             for t_name in enabled_mcp_tool_names:
                 schema = dynamic_tool_registry.get_tool(t_name)
@@ -3204,8 +3214,22 @@ class ConversationalAgentService:
         reservations_enabled: bool = False,
     ) -> str:
         """Build the business-specific system prompt for the AI agent."""
+        from .whatsapp_ordering_helpers import coerce_delivery_methods, is_food_business
 
-        delivery_str = ", ".join(delivery_methods) if delivery_methods else "delivery, pickup"
+        methods = coerce_delivery_methods(delivery_methods)
+        delivery_str = ", ".join(methods) if methods else "delivery, pickup"
+        food_business = is_food_business(order_type)
+        if food_business and "dine_in" in methods:
+            fulfillment_detail = (
+                "if *delivery*, collect the delivery address — customers can *share their location pin* "
+                "on WhatsApp (📍) instead of typing; if *dine-in*, you may ask for their *table number* "
+                "(optional — they can skip it); if *pickup*, no address is needed"
+            )
+        else:
+            fulfillment_detail = (
+                "if *delivery*, collect the delivery address — customers can *share their location pin* "
+                "on WhatsApp (📍) instead of typing; if *pickup*, no address is needed"
+            )
         customer_context = ""
         if customer_phone or customer_name:
             customer_context = "\n## Known customer (from WhatsApp) — ALREADY IDENTIFIED\n"
@@ -3340,8 +3364,10 @@ class ConversationalAgentService:
 7. Do NOT mention "carts", "checkout", "orders", or "delivery" as this is a property management service.
 """
         else:
+            from .whatsapp_ordering_helpers import is_food_business
+
             reservation_block = ""
-            if reservations_enabled:
+            if reservations_enabled and is_food_business(order_type):
                 reservation_block = f"""
 
 ## Table Reservations (Bookings)
@@ -3369,7 +3395,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
 2. When they browse: search the catalog, then ALWAYS use `display_product_cards` to show results
 3. When they want to order: check the "Known customer" section below — if name and phone are already there, DO NOT ask for them again. Only ask for info that is genuinely missing.
 4. Ask how the customer wants their order ({delivery_str}) — if only one method is available, use it automatically without asking
-5. Based on the method: if *delivery*, collect the delivery address — customers can *share their location pin* on WhatsApp (📍) instead of typing; if *dine-in*, you may ask for their *table number* (optional — they can skip it); if *pickup*, no address is needed
+5. Based on the method: {fulfillment_detail}
 6. If a delivery location is already saved in context below, use it — do not ask them to type the address again
 7. IMPORTANT ON CHECKOUT: If the customer provides their name, phone, or delivery details (like answering a checkout prompt), YOU MUST IMMEDIATELY proceed with checkout. DO NOT start a new conversation or ask them to browse the {catalog_word}. If you need their delivery address, ask for it now.
 8. Call `calculate_total` with the cart items to get the order total — this step is REQUIRED before creating the order
@@ -3765,7 +3791,9 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
     @classmethod
     def _format_delivery_choices(cls, delivery_methods: list, lang: str = DEFAULT_LANGUAGE) -> str:
         """Bolded, human-readable list of fulfillment options, e.g. '*delivery*, *pickup*, or *dine-in*'."""
-        methods = [m for m in (delivery_methods or []) if m]
+        from .whatsapp_ordering_helpers import coerce_delivery_methods
+
+        methods = coerce_delivery_methods(delivery_methods)
         labels = [f"*{cls._humanize_delivery_method(m, lang)}*" for m in methods]
         if not labels:
             return "*delivery*" if not lang.startswith("sw") else "*delivery*"
@@ -3785,8 +3813,10 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         Uses saved WhatsApp location when available; falls back to single-option config.
         A method is only honored if the tenant actually offers it (delivery_methods allowlist).
         """
+        from .whatsapp_ordering_helpers import coerce_delivery_methods
+
         delivery_address = ""
-        methods = delivery_methods if isinstance(delivery_methods, list) else []
+        methods = coerce_delivery_methods(delivery_methods)
 
         # Honor an explicit choice only when the tenant offers it
         if explicit_method:
