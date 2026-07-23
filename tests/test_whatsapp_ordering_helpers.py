@@ -87,6 +87,38 @@ def test_parse_table_number_skip_returns_empty():
     assert parse_table_number("") == ""
 
 
+def test_coerce_delivery_methods_from_jinja_string():
+    from src.services.whatsapp_ordering_helpers import (
+        apply_food_only_fulfillment,
+        coerce_delivery_methods,
+        is_food_business,
+    )
+
+    assert coerce_delivery_methods(["delivery", "pickup", "dine_in"]) == [
+        "delivery", "pickup", "dine_in"
+    ]
+    assert coerce_delivery_methods("['delivery', 'pickup', 'dine_in']") == [
+        "delivery", "pickup", "dine_in"
+    ]
+    assert coerce_delivery_methods("delivery, pickup") == ["delivery", "pickup"]
+
+
+def test_apply_food_only_fulfillment_strips_dine_in_and_reservations():
+    from src.services.whatsapp_ordering_helpers import apply_food_only_fulfillment
+
+    methods, res = apply_food_only_fulfillment(
+        "retail", ["delivery", "pickup", "dine_in"], True
+    )
+    assert methods == ["delivery", "pickup"]
+    assert res is False
+
+    methods, res = apply_food_only_fulfillment(
+        "food", ["delivery", "dine_in"], True
+    )
+    assert "dine_in" in methods
+    assert res is True
+
+
 def test_format_checkout_confirmation_dine_in_shows_table():
     cart = [{"name": "Pilau", "quantity": 1, "unit_price": 400}]
     msg = format_checkout_confirmation(

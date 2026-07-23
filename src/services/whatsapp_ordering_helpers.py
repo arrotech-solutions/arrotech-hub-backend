@@ -2,6 +2,7 @@
 Shared helpers for WhatsApp ordering agent UX, security, and catalog search.
 """
 
+import ast
 import hashlib
 import hmac
 import logging
@@ -9,6 +10,69 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+VALID_DELIVERY_METHODS = frozenset(
+    {"pickup", "delivery", "dine_in", "shipping", "digital"}
+)
+
+FOOD_ORDER_TYPES = frozenset({"food", "restaurant", "restaurants"})
+
+
+def is_food_business(order_type: str) -> bool:
+    """True for restaurant / food verticals (dine-in + reservations apply)."""
+    return (order_type or "").strip().lower() in FOOD_ORDER_TYPES
+
+
+def coerce_delivery_methods(raw: Any, default: Optional[List[str]] = None) -> List[str]:
+    """
+    Normalize delivery_methods from workflow config.
+
+    Jinja substitution often turns lists into strings like "['delivery', 'pickup']".
+    Iterating that string character-by-character breaks checkout prompts.
+    """
+    fallback = list(default or ["delivery", "pickup"])
+    if raw is None or raw == "":
+        return fallback
+
+    candidates: List[str] = []
+    if isinstance(raw, list):
+        candidates = [str(m).strip().lower() for m in raw if str(m).strip()]
+    elif isinstance(raw, str):
+        text = raw.strip()
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = ast.literal_eval(text)
+                if isinstance(parsed, list):
+                    candidates = [str(m).strip().lower() for m in parsed if str(m).strip()]
+            except (ValueError, SyntaxError):
+                candidates = [
+                    p.strip().lower().strip("'\"")
+                    for p in text[1:-1].split(",")
+                    if p.strip()
+                ]
+        elif "," in text:
+            candidates = [p.strip().lower() for p in text.split(",") if p.strip()]
+        else:
+            candidates = [text.lower()]
+    else:
+        return fallback
+
+    filtered = [m for m in candidates if m in VALID_DELIVERY_METHODS]
+    return filtered or fallback
+
+
+def apply_food_only_fulfillment(
+    order_type: str,
+    delivery_methods: List[str],
+    reservations_enabled: bool,
+) -> tuple[List[str], bool]:
+    """Strip dine-in / reservations for non-food businesses (retail, health, general, etc.)."""
+    if is_food_business(order_type):
+        return delivery_methods, reservations_enabled
+    methods = [m for m in delivery_methods if m != "dine_in"]
+    if not methods:
+        methods = ["delivery", "pickup"]
+    return methods, False
 
 # Internal marker the webhook uses when a customer taps the "Pay with Mpesa"
 # interactive button. The agent detects this prefix and deterministically

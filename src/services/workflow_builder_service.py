@@ -624,18 +624,29 @@ class WorkflowBuilderService:
                     bc = {}
                 wf_vars = (context or {}).get("variables") or {}
                 if isinstance(wf_vars, dict):
+                    from .whatsapp_ordering_helpers import coerce_delivery_methods
+
                     for key, value in wf_vars.items():
                         if key == "config":
                             continue
                         if value is None or value == "":
                             continue
-                        bc.setdefault(key, value)
+                        # Prefer workflow variables over Jinja-rendered strings in the step template.
+                        if key == "delivery_methods":
+                            bc[key] = coerce_delivery_methods(value)
+                        else:
+                            bc[key] = value
                 inp_cfg = (context or {}).get("config")
                 if isinstance(inp_cfg, dict):
+                    from .whatsapp_ordering_helpers import coerce_delivery_methods
+
                     for key, value in inp_cfg.items():
                         if value is None or value == "":
                             continue
-                        bc.setdefault(key, value)
+                        if key == "delivery_methods":
+                            bc[key] = coerce_delivery_methods(value)
+                        else:
+                            bc.setdefault(key, value)
                 substituted_params["business_config"] = bc
 
             # WhatsApp cart buttons: inherit from prior conversational_agent step
