@@ -190,6 +190,83 @@ async def test_deterministic_flow_walks_and_creates_without_hallucination():
 
 
 @pytest.mark.asyncio
+async def test_order_intent_midway_switches_out_of_reservation():
+    """Customer starts a booking then decides to order food — the half-built
+    reservation is dropped and control returns to the ordering flow (None)."""
+    agent = ConversationalAgentService()
+    session_key = "ccm:whatsapp:user-uuid-1:254700000000"
+    session = _make_session(
+        session_key,
+        metadata={"reservation_draft": {"stage": "need_time", "date": "25th July"}},
+    )
+
+    async def fake_get_session_by_key(key):
+        return session
+
+    async def fake_update_metadata(key, updates):
+        session.metadata.update(updates)
+
+    with patch.object(context_manager, "get_session_by_key", fake_get_session_by_key), \
+         patch.object(context_manager, "update_session_metadata", fake_update_metadata), \
+         patch.object(context_manager, "is_human_handoff", MagicMock(return_value=False)), \
+         patch.object(agent, "_save_to_ccm", new_callable=AsyncMock):
+        result = await agent._handle_reservation_flow(
+            session_key=session_key,
+            user_message="actually I want to order soda instead",
+            order_type="food",
+            reservations_enabled=True,
+            business_name="Tians Grill",
+            customer_name="",
+            customer_phone="254700000000",
+            storage_config={"provider": "none"},
+            preferred_language="en",
+            user=MagicMock(),
+            db=AsyncMock(),
+        )
+    # Handler yields control to the ordering pipeline and clears booking state.
+    assert result is None
+    assert session.metadata.get("reservation_draft") is None
+    assert session.metadata.get("pending_reservation") is None
+
+
+@pytest.mark.asyncio
+async def test_reservation_field_reply_is_not_mistaken_for_order_switch():
+    """A normal field reply ('25th July 2026') must NOT switch out of booking."""
+    agent = ConversationalAgentService()
+    session_key = "ccm:whatsapp:user-uuid-1:254700000000"
+    session = _make_session(
+        session_key,
+        metadata={"reservation_draft": {"stage": "need_date", "party_size": 2}},
+    )
+
+    async def fake_get_session_by_key(key):
+        return session
+
+    async def fake_update_metadata(key, updates):
+        session.metadata.update(updates)
+
+    with patch.object(context_manager, "get_session_by_key", fake_get_session_by_key), \
+         patch.object(context_manager, "update_session_metadata", fake_update_metadata), \
+         patch.object(context_manager, "is_human_handoff", MagicMock(return_value=False)), \
+         patch.object(agent, "_save_to_ccm", new_callable=AsyncMock):
+        result = await agent._handle_reservation_flow(
+            session_key=session_key,
+            user_message="25th July 2026",
+            order_type="food",
+            reservations_enabled=True,
+            business_name="Tians Grill",
+            customer_name="",
+            customer_phone="254700000000",
+            storage_config={"provider": "none"},
+            preferred_language="en",
+            user=MagicMock(),
+            db=AsyncMock(),
+        )
+    assert result is not None  # stays in the booking wizard
+    assert "time" in result["response_text"].lower()  # advanced to next field
+
+
+@pytest.mark.asyncio
 async def test_deterministic_flow_ignored_for_non_food_business():
     agent = ConversationalAgentService()
     result = await agent._handle_reservation_flow(

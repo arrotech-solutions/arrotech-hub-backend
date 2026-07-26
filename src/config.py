@@ -412,16 +412,21 @@ class ProductionConfig(BaseConfig):
     # Production-specific overrides
     ALLOWED_ORIGINS: list = [
         "https://hub.arrotechsolutions.com",
+        "https://admin.arrotechsolutions.com",
         "https://arrotechsolutions.com",
         "https://www.arrotechsolutions.com",
+        "https://blog.arrotechsolutions.com",
         "https://mini-hub.fly.dev",
+        # Local admin / frontend during debugging against prod API
         "http://localhost:3000",
         "http://localhost:5173",
         "http://localhost:5174",
         "http://localhost:5175",
         "http://localhost:5176",
-        "https://blog.arrotechsolutions.com"
+        "http://localhost:5177",
     ]
+
+    ADMIN_FRONTEND_URL: str = "https://admin.arrotechsolutions.com"
 
     class Config:
         env_file = ".env.production"

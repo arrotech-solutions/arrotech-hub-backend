@@ -3,8 +3,12 @@
 import pytest
 
 from src.services.whatsapp_ordering_helpers import (
+    detect_order_switch_intent,
     detect_reservation_intent,
+    extract_mpesa_code,
     format_checkout_confirmation,
+    is_acknowledgement,
+    is_skip_message,
     format_reservation_summary_line,
     is_order_confirmation_message,
     is_reservation_cancel,
@@ -314,6 +318,71 @@ def test_is_reservation_cancel_true(message):
 )
 def test_is_reservation_cancel_false(message):
     assert not is_reservation_cancel(message)
+
+
+# ── Resilience helpers: acknowledgements, skips, cross-flow, codes ─────────
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "okay", "Okay", "ok", "k", "kk", "alright", "cool", "great", "perfect",
+        "thanks", "thank you", "thank you so much", "asante", "asante sana",
+        "noted", "got it", "👍", "🙏", "👌",
+    ],
+)
+def test_is_acknowledgement_true(message):
+    assert is_acknowledgement(message)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "yes", "yeah", "confirm", "ndio",            # confirmations, not acks
+        "I want to order", "show me the menu",        # real requests
+        "cancel", "how much is soda", "",
+    ],
+)
+def test_is_acknowledgement_false(message):
+    assert not is_acknowledgement(message)
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ("skip", True), ("later", True), ("not now", True), ("baadaye", True),
+        ("sina", True), ("QGR7XXXX12", False), ("my code is X", False),
+    ],
+)
+def test_is_skip_message(message, expected):
+    assert is_skip_message(message) is expected
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ("I want to order soda", True),
+        ("show me the menu", True),
+        ("add Fanta to cart", True),
+        ("let me checkout", True),
+        ("nataka kula", True),
+        ("25th July 2026", False),   # a reservation date, not an order switch
+        ("Harun Gitundu", False),    # a name
+        ("10pm", False),             # a time
+        ("2", False),                # a party size
+    ],
+)
+def test_detect_order_switch_intent(message, expected):
+    assert detect_order_switch_intent(message) is expected
+
+
+def test_extract_mpesa_code_rejects_phone_number():
+    # A plain phone number must NOT be accepted as an M-Pesa code.
+    assert extract_mpesa_code("0726133870") is None
+    assert extract_mpesa_code("254726133870") is None
+    # A real code (letters + digits) is accepted.
+    assert extract_mpesa_code("UGN9HOBHBB") == "UGN9HOBHBB"
+    assert extract_mpesa_code("my code QGR7XXXX12 thanks") == "QGR7XXXX12"
 
 
 def test_format_reservation_summary_uses_exact_values():

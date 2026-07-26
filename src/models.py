@@ -418,6 +418,11 @@ class UserSettings(Base):
     slack_notifications = Column(Boolean, default=False)
     webhook_notifications = Column(Boolean, default=False)
     notification_webhook_url = Column(String, nullable=True)
+    # Category × channel rules, e.g. {"billing": {"in_app": true, "email": true, ...}}
+    notification_rules = Column(JSON, nullable=True)
+    # Quiet hours: {"start": "22:00", "end": "07:00", "timezone": "Africa/Nairobi"}
+    quiet_hours = Column(JSON, nullable=True)
+    digest_email_daily = Column(Boolean, default=False)
 
     # API Settings
     api_rate_limit = Column(Integer, default=1000)  # requests per hour
@@ -703,7 +708,7 @@ class WorkflowAnalytics(Base):
 
 
 class NotificationType(str, Enum):
-    """Types of notifications."""
+    """Legacy marketplace notification types (prefer event registry keys)."""
     WORKFLOW_IMPORTED = "workflow_imported"
     WORKFLOW_REVIEWED = "workflow_reviewed"
     WORKFLOW_RATED = "workflow_rated"
@@ -711,16 +716,23 @@ class NotificationType(str, Enum):
     MILESTONE_REACHED = "milestone_reached"
     SYSTEM_ANNOUNCEMENT = "system_announcement"
     EARNINGS_RECEIVED = "earnings_received"
+    WITHDRAWAL_COMPLETED = "withdrawal_completed"
+    WITHDRAWAL_FAILED = "withdrawal_failed"
+    PAYMENT_RECEIVED = "payment_succeeded"
+    SYSTEM_ALERT = "system_announcement"
 
 
 class Notification(Base):
     """In-app notifications for users."""
     __tablename__ = "notifications"
+    __table_args__ = (
+        Index("ix_notifications_user_read_created", "user_id", "is_read", "created_at"),
+    )
 
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     
-    # Notification content
+    # Notification content (event_key string from notification_events registry)
     notification_type = Column(String, nullable=False)
     title = Column(String, nullable=False)
     message = Column(Text, nullable=False)

@@ -446,6 +446,20 @@ async def change_password(
     user.password_hash = get_password_hash(data.new_password)
     await db.commit()
 
+    try:
+        from ..services.notification_service import NotificationService
+        await NotificationService.notify(
+            db,
+            user.id,
+            "password_changed",
+            "Password changed",
+            "Your account password was changed. If this wasn't you, reset your password immediately.",
+            action_url="/settings",
+            entity_id=f"pwd-{user.id}",
+        )
+    except Exception:
+        pass
+
     return {"success": True, "message": "Password changed successfully."}
 
 
@@ -494,6 +508,20 @@ async def change_email(
     # Update email
     user.email = new_email
     await db.commit()
+
+    try:
+        from ..services.notification_service import NotificationService
+        await NotificationService.notify(
+            db,
+            user.id,
+            "email_changed",
+            "Email address changed",
+            f"Your account email was changed to {new_email}.",
+            action_url="/settings",
+            entity_id=f"email-{user.id}",
+        )
+    except Exception:
+        pass
 
     # Issue new tokens since JWT subject is the email
     access_token = create_access_token(

@@ -89,6 +89,19 @@ async def _process_subscription_expiry():
 
             await subscription_service.expire_user(user, db)
             try:
+                from src.services.notification_service import NotificationService
+                await NotificationService.notify(
+                    db,
+                    user.id,
+                    "subscription_cancelled",
+                    "Subscription expired",
+                    "Your subscription has ended and your account is on the Free plan.",
+                    action_url="/pricing",
+                    entity_id=f"sub-exp-{user.id}-{now.date()}",
+                )
+            except Exception as e:
+                logger.error("Failed to create expiry notification for %s: %s", user.email, e)
+            try:
                 from src.services.email_service import email_service
                 await email_service.send_email(
                     to_email=user.email,
@@ -151,8 +164,18 @@ async def _send_subscription_reminders():
             )
             for user in result.scalars().all():
                 try:
-                    from src.services.email_service import email_service
+                    from src.services.notification_service import NotificationService
                     snap = subscription_service.build_status_snapshot(user, now)
+                    await NotificationService.notify(
+                        db,
+                        user.id,
+                        "subscription_renewing",
+                        f"Plan renews in {label}",
+                        f"Your {snap['tier']} plan expires on {snap['end_date']}. Manage billing in Payments.",
+                        action_url="/payments",
+                        entity_id=f"sub-rem-{user.id}-{days}",
+                    )
+                    from src.services.email_service import email_service
                     await email_service.send_email(
                         to_email=user.email,
                         subject=f"Your Arrotech Hub plan renews in {label}",
@@ -238,6 +261,19 @@ async def _attempt_subscription_renewal():
                 if not body.get("status") or body.get("data", {}).get("status") != "success":
                     from src.services.subscription_service import subscription_service
                     await subscription_service.set_past_due(user, db)
+                    try:
+                        from src.services.notification_service import NotificationService
+                        await NotificationService.notify(
+                            db,
+                            user.id,
+                            "subscription_past_due",
+                            "Subscription payment failed",
+                            "We couldn't renew your plan. Update your payment method to avoid interruption.",
+                            action_url="/payments",
+                            entity_id=f"sub-past-{user.id}",
+                        )
+                    except Exception:
+                        pass
                     logger.warning("Auto-renew failed for user %s: %s", user.id, body)
                     continue
 

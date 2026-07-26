@@ -138,6 +138,19 @@ def refresh_whatsapp_tokens_task(self):
                             logger.info(f"[CeleryMaintenance] Refreshed token for connection {conn.id}")
                     else:
                         logger.error(f"[CeleryMaintenance] Token refresh failed for {conn.id}: {resp.text}")
+                        try:
+                            from src.services.notification_service import NotificationService
+                            await NotificationService.notify(
+                                db,
+                                conn.user_id,
+                                "connection_token_expired",
+                                "WhatsApp connection needs attention",
+                                "We couldn't refresh your WhatsApp token. Reconnect in Settings to keep messaging working.",
+                                action_url="/connections",
+                                entity_id=f"wa-token-{conn.id}",
+                            )
+                        except Exception:
+                            pass
 
             if refreshed_count > 0:
                 await db.commit()

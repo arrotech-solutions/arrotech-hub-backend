@@ -434,16 +434,18 @@ async def follow_creator(
     db.add(follow)
     
     # Create notification for the creator
-    from ..models import Notification
-    notification = Notification(
-        user_id=profile.user_id,
-        notification_type="new_follower",
-        title="New Follower!",
-        message=f"{user.name} is now following you",
+    from ..services.notification_service import NotificationService
+    await NotificationService.notify(
+        db,
+        profile.user_id,
+        "new_follower",
+        "New Follower!",
+        f"{user.name} is now following you",
         actor_id=user.id,
         action_url="/creator-profile",
+        entity_id=str(user.id),
+        commit=False,
     )
-    db.add(notification)
     
     await db.commit()
     

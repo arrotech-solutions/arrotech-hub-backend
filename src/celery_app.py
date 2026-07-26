@@ -69,6 +69,7 @@ app.config_from_object({
 
         # Default — email, workflow execution
         "src.tasks.email_tasks.*": {"queue": "default"},
+        "src.tasks.notification_delivery_tasks.*": {"queue": "default"},
         "src.tasks.workflow_tasks.*": {"queue": "default"},
         "src.tasks.broadcast_tasks.*": {"queue": "default"},
 
@@ -89,6 +90,7 @@ app.config_from_object({
 
 app.autodiscover_tasks([
     "src.tasks.email_tasks",
+    "src.tasks.notification_delivery_tasks",
     "src.tasks.webhook_tasks",
     "src.tasks.workflow_tasks",
     "src.tasks.maintenance_tasks",

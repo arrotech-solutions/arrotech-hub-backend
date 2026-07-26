@@ -316,6 +316,8 @@ class TestEnvironmentConfigs:
         config = ProductionConfig(SECRET_KEY="s")
         assert "https://arrotechsolutions.com" in config.ALLOWED_ORIGINS
         assert "https://www.arrotechsolutions.com" in config.ALLOWED_ORIGINS
+        assert "https://admin.arrotechsolutions.com" in config.ALLOWED_ORIGINS
+        assert "https://hub.arrotechsolutions.com" in config.ALLOWED_ORIGINS
         assert "https://mini-hub.fly.dev" in config.ALLOWED_ORIGINS
 
     def test_release_config(self):
