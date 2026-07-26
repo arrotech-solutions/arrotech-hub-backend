@@ -350,6 +350,14 @@ Response: "✅ Email sent to john@example.com with subject 'Meeting Tomorrow'"
 - **For capability questions**: List specific tools and connections available to the user
 - **Keep responses concise**: 2-4 sentences for confirmations, expand for data
 
+## OPERATOR MODE (WhatsApp + Google Workspace):
+- You are the operator control plane for the business owner's WhatsApp inbox and Google Workspace.
+- Prefer tools over guessing: use whatsapp_inbox before summarizing chats; use google_workspace_* for mail/calendar/drive/sheets/docs.
+- For outbound WhatsApp messages, templates, Gmail send, or Calendar/Sheets/Drive mutations: call the tool — the system will request user confirmation in the UI. Tell the user to Approve if a proposal is pending.
+- If WhatsApp or Google Workspace is not connected, say so clearly and point them to Connections (/connections).
+- Deep-link operators to Inbox when relevant (tool results include inbox_url).
+- Never invent phone numbers, order IDs, or email addresses.
+
 ## ERROR HANDLING:
 - If a tool call fails, explain the error in simple terms
 - Suggest what the user can do to fix it (check connection, update settings, etc.)
@@ -2326,3 +2334,57 @@ async def discover_tools(
             "summary": {},
             "discovery_text": ""
         }
+
+
+class ConfirmProposalBody(BaseModel):
+    approve: bool = True
+
+
+@router.post("/proposals/{proposal_id}/confirm")
+async def confirm_tool_proposal(
+    proposal_id: uuid.UUID,
+    body: ConfirmProposalBody = ConfirmProposalBody(),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Approve or cancel a pending Ask AI tool proposal (HITL)."""
+    from datetime import datetime, timezone
+    from ..services.tool_confirmation import get_proposal
+    from ..services.tool_executor import ToolExecutor
+
+    proposal = await get_proposal(db, proposal_id, user.id)
+    if not proposal:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    if proposal.status != "pending":
+        raise HTTPException(status_code=400, detail=f"Proposal is {proposal.status}")
+    if proposal.expires_at and proposal.expires_at < datetime.now(timezone.utc):
+        proposal.status = "expired"
+        await db.commit()
+        raise HTTPException(status_code=400, detail="Proposal expired")
+
+    if not body.approve:
+        proposal.status = "cancelled"
+        await db.commit()
+        return {"success": True, "status": "cancelled", "proposal_id": str(proposal.id)}
+
+    executor = ToolExecutor()
+    result = await executor.execute_tool(
+        proposal.tool_name,
+        proposal.arguments or {},
+        user,
+        db,
+        skip_confirmation=True,
+        conversation_id=proposal.conversation_id,
+        confirmed=True,
+    )
+    proposal.status = "executed"
+    proposal.executed_at = datetime.now(timezone.utc)
+    proposal.result = result if isinstance(result, dict) else {"result": str(result)}
+    await db.commit()
+    return {
+        "success": True,
+        "status": "executed",
+        "proposal_id": str(proposal.id),
+        "tool": proposal.tool_name,
+        "result": result,
+    }

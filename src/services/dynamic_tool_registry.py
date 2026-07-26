@@ -1289,9 +1289,10 @@ class DynamicToolRegistry:
         # Filter for Free Tier limitations (except in discovery mode where we want to show everything)
         user = await db.get(User, user_id)
         if user and user.subscription_tier == SubscriptionTier.FREE:
+            # Free: read/summarize + drafts. Outbound send/mutate gated by FeatureGate at execute time.
             allowed_tools = {
-                "mpesa_payment_reconciliation", 
-                "slack_send_message", 
+                "mpesa_payment_reconciliation",
+                "slack_send_message",
                 "instagram_send_dm",
                 "telegram_send_message",
                 "context_intelligence",
@@ -1308,7 +1309,20 @@ class DynamicToolRegistry:
                 "rag_ingest_content",
                 "rag_search",
                 "conversational_agent",
-                "whatsapp_send_message"
+                # WhatsApp operator (read free; send blocked by FeatureGate)
+                "whatsapp_send_message",
+                "whatsapp_messaging",
+                "whatsapp_templates",
+                "whatsapp_inbox",
+                "whatsapp_agent_control",
+                "whatsapp_account_info",
+                # Google Workspace (read free; writes blocked by FeatureGate)
+                "google_workspace_gmail",
+                "google_workspace_calendar",
+                "google_workspace_drive",
+                "google_workspace_sheets",
+                "google_workspace_docs",
+                "google_workspace_analytics",
             }
             
             if include_all:
@@ -1344,30 +1358,174 @@ class DynamicToolRegistry:
         ]
 
     def _get_whatsapp_tools(self, connection: Connection) -> List[Dict[str, Any]]:
-        """Get WhatsApp tools for a connection."""
+        """Get WhatsApp operator tools for Ask AI (inbox, messaging, templates, agent control)."""
+        cid = connection.id
         return [
             {
+                "name": "whatsapp_inbox",
+                "description": (
+                    "Operator inbox intelligence: list conversations, get a contact thread, "
+                    "search contacts/messages, or summarize unread chats. "
+                    "Operations: list_conversations, get_thread, search, unread_summary."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["list_conversations", "get_thread", "search", "unread_summary"],
+                            "description": "Inbox operation to perform",
+                        },
+                        "phone_number": {
+                            "type": "string",
+                            "description": "Contact phone for get_thread (digits, with or without +)",
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "Search query for name, phone, or message text",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max results (default 10, max 50)",
+                        },
+                        "unread_only": {
+                            "type": "boolean",
+                            "description": "If true, only return conversations with unread messages",
+                        },
+                    },
+                    "required": ["operation"],
+                },
+                "connection_id": cid,
+                "platform": "whatsapp",
+                "status": "available",
+                "id": "whatsapp_inbox",
+            },
+            {
                 "name": "whatsapp_send_message",
-                "description": "Send a text message or auto-reply to a WhatsApp contact.",
+                "description": "Send a text WhatsApp message to a contact (requires confirmation + Starter for Free-tier write gate).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "to_number": {
                             "type": "string",
-                            "description": "The recipient's phone number (e.g. {{whatsapp_contact_phone}} from trigger variables)"
+                            "description": "Recipient phone number",
                         },
                         "message": {
                             "type": "string",
-                            "description": "The text message content to send"
-                        }
+                            "description": "Text message content",
+                        },
+                        "action": {
+                            "type": "string",
+                            "enum": ["send_message"],
+                            "description": "Defaults to send_message",
+                        },
                     },
-                    "required": ["to_number", "message"]
+                    "required": ["to_number", "message"],
                 },
-                "connection_id": connection.id,
+                "connection_id": cid,
                 "platform": "whatsapp",
                 "status": "available",
-                "id": "whatsapp_send_message"
-            }
+                "id": "whatsapp_send_message",
+            },
+            {
+                "name": "whatsapp_messaging",
+                "description": "Send WhatsApp text, media, or location. Operations: send_message, send_media, send_location.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["send_message", "send_media", "send_location"],
+                        },
+                        "to_number": {"type": "string"},
+                        "message": {"type": "string"},
+                        "media_url": {"type": "string"},
+                        "media_type": {"type": "string", "enum": ["image", "document", "audio", "video"]},
+                        "latitude": {"type": "number"},
+                        "longitude": {"type": "number"},
+                        "location_name": {"type": "string"},
+                    },
+                    "required": ["to_number"],
+                },
+                "connection_id": cid,
+                "platform": "whatsapp",
+                "status": "available",
+                "id": "whatsapp_messaging",
+            },
+            {
+                "name": "whatsapp_templates",
+                "description": "List approved WhatsApp templates or send a template message. Operations: list_templates, send_template.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["list_templates", "send_template", "create_template"],
+                        },
+                        "action": {
+                            "type": "string",
+                            "description": "Alias for operation",
+                        },
+                        "to_number": {"type": "string"},
+                        "template_name": {"type": "string"},
+                        "language_code": {"type": "string", "default": "en_US"},
+                        "components": {"type": "array"},
+                        "category": {"type": "string"},
+                    },
+                    "required": [],
+                },
+                "connection_id": cid,
+                "platform": "whatsapp",
+                "status": "available",
+                "id": "whatsapp_templates",
+            },
+            {
+                "name": "whatsapp_agent_control",
+                "description": (
+                    "Pause or resume the customer-facing AI agent for a WhatsApp contact, "
+                    "or check handoff status. Operations: pause_ai, resume_ai, handoff_status."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["pause_ai", "resume_ai", "handoff_status"],
+                        },
+                        "phone_number": {
+                            "type": "string",
+                            "description": "Customer WhatsApp phone number",
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "Reason when pausing AI for human handoff",
+                        },
+                    },
+                    "required": ["operation", "phone_number"],
+                },
+                "connection_id": cid,
+                "platform": "whatsapp",
+                "status": "available",
+                "id": "whatsapp_agent_control",
+            },
+            {
+                "name": "whatsapp_account_info",
+                "description": "Check WhatsApp connection health (token, phone_number_id). Operations: check_connection, get_phone_info.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["check_connection", "get_phone_info"],
+                        },
+                    },
+                    "required": [],
+                },
+                "connection_id": cid,
+                "platform": "whatsapp",
+                "status": "available",
+                "id": "whatsapp_account_info",
+            },
         ]
 
     def _get_telegram_tools(self, connection: Connection = None) -> List[Dict[str, Any]]:
@@ -3000,4 +3158,4 @@ class DynamicToolRegistry:
 
 
 # Global dynamic tool registry instance
-dynamic_tool_registry = DynamicToolRegistry() 
+dynamic_tool_registry = DynamicToolRegistry() 
