@@ -1575,19 +1575,42 @@ When the user asks you to perform actions, write Python code using the available
                         del assistant_message['tool_calls']
                     messages.append(assistant_message)
 
-                    # If no tool calls, stream the final response
+                    # If no tool calls, this turn IS the final answer — do not re-call the LLM
+                    # (re-streaming often loses tool grounding and invents "I can't access…").
                     if not tool_calls:
-                        yield {"type": "thinking", "content": "Composing final response..."}
-                        # Stream the final LLM response token by token without tools to prevent streaming tool calls
-                        async for event in self._stream_final_response(provider, messages, tools=None, model_override=model_override):
-                            if event.get("type") == "content_delta":
-                                yield event
-                            elif event.get("type") == "content":
-                                yield event
-                            elif event.get("type") == "usage":
-                                total_tokens += event.get("tokens", 0)
+                        from .tool_result_grounding import (
+                            looks_ungrounded,
+                            synthesize_answer_from_tools,
+                            chunk_text_for_stream,
+                        )
 
-                        # Track usage
+                        yield {"type": "thinking", "content": "Composing final response..."}
+
+                        final_text = (llm_content or "").strip()
+                        if looks_ungrounded(final_text, tools_called):
+                            grounded = synthesize_answer_from_tools(content, tools_called)
+                            if grounded:
+                                final_text = grounded
+
+                        if final_text:
+                            for chunk in chunk_text_for_stream(final_text):
+                                yield {"type": "content_delta", "delta": chunk}
+                        else:
+                            # Empty model content — try grounded synthesis, else stream a fresh reply
+                            grounded = synthesize_answer_from_tools(content, tools_called)
+                            if grounded:
+                                for chunk in chunk_text_for_stream(grounded):
+                                    yield {"type": "content_delta", "delta": chunk}
+                            else:
+                                async for event in self._stream_final_response(
+                                    provider, messages, tools=None, model_override=model_override
+                                ):
+                                    if event.get("type") in ("content_delta", "content", "usage"):
+                                        if event.get("type") == "usage":
+                                            total_tokens += event.get("tokens", 0)
+                                        else:
+                                            yield event
+
                         try:
                             from ..routers.subscription_router import get_or_create_usage_record
                             usage_record = await get_or_create_usage_record(self.db, self.user)
@@ -1600,6 +1623,8 @@ When the user asks you to perform actions, write Python code using the available
                         return
 
                     # Execute tool calls
+                    from .tool_result_grounding import format_tool_result_for_llm
+                    tools_ran_this_round = False
                     for tc in tool_calls:
                         tool_call_id = tc.get('id', '')
                         function_name = tc.get('function', {}).get('name', '')
@@ -1744,14 +1769,26 @@ When the user asks you to perform actions, write Python code using the available
 
                             messages.append({
                                 "role": "tool",
-                                "content": json.dumps(tool_result) if isinstance(tool_result, dict) else str(tool_result),
+                                "content": format_tool_result_for_llm(function_name, tool_result),
                                 "tool_call_id": tool_call_id
                             })
+                            tools_ran_this_round = True
 
                         except Exception as e:
                             yield {"type": "tool_result", "tool": function_name, "success": False, "summary": f"Execution error: {str(e)}"}
                             messages.append({"role": "tool", "content": f"Error: {str(e)}", "tool_call_id": tool_call_id})
                             tools_called.append({"name": function_name, "arguments": arguments, "result": {"error": str(e)}, "context": tool_context})
+
+                    if tools_ran_this_round:
+                        messages.append({
+                            "role": "system",
+                            "content": (
+                                "The tool results above are authoritative. Answer the user's latest request "
+                                "using that data now. Present names, phones, unread counts, and message content "
+                                "from the results. Do not claim you lack access. Do not reply with only a "
+                                "follow-up question — answer first."
+                            ),
+                        })
 
                 except Exception as e:
                     logger.error(f"Error in stream iteration {iteration + 1}: {e}")

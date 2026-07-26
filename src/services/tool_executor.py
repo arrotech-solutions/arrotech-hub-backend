@@ -4061,21 +4061,49 @@ class ToolExecutor:
                 q = q.where(WhatsAppContact.unread_count > 0)
             q = q.order_by(desc(WhatsAppContact.last_message_at)).limit(limit)
             rows = (await db.execute(q)).scalars().all()
-            conversations = [
-                {
-                    "contact_id": str(c.id),
-                    "phone_number": c.phone_number,
-                    "name": c.name or c.profile_name,
-                    "unread_count": c.unread_count or 0,
-                    "status": c.status,
-                    "last_message_at": c.last_message_at.isoformat() if c.last_message_at else None,
-                    "inbox_url": f"/inbox?contact={c.id}",
-                }
-                for c in rows
+            conversations = []
+            for c in rows:
+                preview = None
+                try:
+                    last_msg = (
+                        await db.execute(
+                            select(WhatsAppMessage)
+                            .where(
+                                WhatsAppMessage.user_id == user.id,
+                                WhatsAppMessage.contact_id == c.id,
+                            )
+                            .order_by(desc(WhatsAppMessage.created_at))
+                            .limit(1)
+                        )
+                    ).scalar_one_or_none()
+                    if last_msg and last_msg.content:
+                        preview = (last_msg.content or "")[:200]
+                except Exception:
+                    preview = None
+                conversations.append(
+                    {
+                        "contact_id": str(c.id),
+                        "phone_number": c.phone_number,
+                        "name": c.name or c.profile_name,
+                        "unread_count": c.unread_count or 0,
+                        "status": c.status,
+                        "last_message_at": c.last_message_at.isoformat() if c.last_message_at else None,
+                        "last_message_preview": preview,
+                        "inbox_url": f"/inbox?contact={c.id}",
+                    }
+                )
+            lines = [
+                f"- {c['name'] or c['phone_number']}: {c['unread_count']} unread"
+                + (f' — "{c["last_message_preview"]}"' if c.get("last_message_preview") else "")
+                for c in conversations
             ]
             return {
                 "success": True,
-                "result": f"Found {len(conversations)} conversation(s)",
+                "result": (
+                    f"Found {len(conversations)} conversation(s).\n" + "\n".join(lines)
+                    if conversations
+                    else "No conversations found."
+                ),
                 "data": {"conversations": conversations, "widget": "whatsapp_inbox"},
             }
 
@@ -4205,18 +4233,38 @@ class ToolExecutor:
                     )
                 )
             ).scalar() or 0
-            top = [
-                {
-                    "phone_number": c.phone_number,
-                    "name": c.name or c.profile_name,
-                    "unread_count": c.unread_count or 0,
-                    "inbox_url": f"/inbox?contact={c.id}",
-                }
-                for c in rows
-            ]
+            top = []
+            for c in rows:
+                preview = None
+                try:
+                    last_msg = (
+                        await db.execute(
+                            select(WhatsAppMessage)
+                            .where(
+                                WhatsAppMessage.user_id == user.id,
+                                WhatsAppMessage.contact_id == c.id,
+                            )
+                            .order_by(desc(WhatsAppMessage.created_at))
+                            .limit(1)
+                        )
+                    ).scalar_one_or_none()
+                    if last_msg and last_msg.content:
+                        preview = (last_msg.content or "")[:200]
+                except Exception:
+                    preview = None
+                top.append(
+                    {
+                        "phone_number": c.phone_number,
+                        "name": c.name or c.profile_name,
+                        "unread_count": c.unread_count or 0,
+                        "last_message_preview": preview,
+                        "inbox_url": f"/inbox?contact={c.id}",
+                    }
+                )
             summary_lines = [
                 f"- {t['name'] or t['phone_number']}: {t['unread_count']} unread"
-                for t in top[:5]
+                + (f' — "{t["last_message_preview"]}"' if t.get("last_message_preview") else "")
+                for t in top[:10]
             ]
             return {
                 "success": True,

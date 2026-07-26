@@ -22,6 +22,39 @@ def test_needs_confirmation_whatsapp_inbox_read():
     assert needs_confirmation("whatsapp_agent_control", {"operation": "handoff_status", "phone_number": "2547"}) is False
 
 
+def test_format_and_synthesize_unread_inbox():
+    from src.services.tool_result_grounding import (
+        format_tool_result_for_llm,
+        looks_ungrounded,
+        synthesize_answer_from_tools,
+    )
+
+    result = {
+        "success": True,
+        "result": "8 unread message(s) across 2 chat(s).",
+        "data": {
+            "total_unread": 8,
+            "conversations": [
+                {"name": "peter", "phone_number": "254720930988", "unread_count": 7, "inbox_url": "/inbox?contact=1"},
+                {"name": "ATC Arrotech", "phone_number": "254711371265", "unread_count": 1, "inbox_url": "/inbox?contact=2"},
+            ],
+            "widget": "whatsapp_inbox",
+        },
+    }
+    formatted = format_tool_result_for_llm("whatsapp_inbox", result)
+    assert "TOOL SUCCEEDED" in formatted
+    assert "peter" in formatted
+    assert "254720930988" in formatted
+
+    tools_called = [{"name": "whatsapp_inbox", "result": result}]
+    bad = "⚠️ I currently can't access your WhatsApp conversations directly."
+    assert looks_ungrounded(bad, tools_called) is True
+    good = synthesize_answer_from_tools("Show my unread WhatsApp conversations.", tools_called)
+    assert good is not None
+    assert "peter" in good
+    assert "7" in good
+
+
 def test_ensure_operator_tools_prefers_inbox_for_unread():
     from src.services.tool_selector import PrecisionToolRouter
 
