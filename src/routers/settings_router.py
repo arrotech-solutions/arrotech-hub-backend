@@ -28,12 +28,31 @@ class ApiResponse(BaseModel):
     error: Optional[str] = None
 
 
+class QuietHours(BaseModel):
+    """Quiet hours window (local time)."""
+    start: Optional[str] = Field(None, description="HH:MM start")
+    end: Optional[str] = Field(None, description="HH:MM end")
+    timezone: Optional[str] = Field("UTC", description="IANA timezone")
+
+
+class ChannelRule(BaseModel):
+    in_app: bool = True
+    email: bool = False
+    slack: bool = False
+    webhook: bool = False
+
+
 class NotificationSettings(BaseModel):
     """Notification settings model."""
     email_notifications: bool = Field(default=True, description="Enable email notifications")
     slack_notifications: bool = Field(default=False, description="Enable Slack notifications")
     webhook_notifications: bool = Field(default=False, description="Enable webhook notifications")
     notification_webhook_url: Optional[str] = Field(None, description="Webhook URL for notifications")
+    notification_rules: Optional[Dict[str, Dict[str, bool]]] = Field(
+        None, description="Category × channel matrix"
+    )
+    quiet_hours: Optional[QuietHours] = Field(None, description="Suppress push channels in window")
+    digest_email_daily: bool = Field(default=False, description="Batch info emails into daily digest")
 
 
 class APISettings(BaseModel):
@@ -107,12 +126,36 @@ async def get_or_create_user_settings(db: AsyncSession, user_id: uuid.UUID) -> U
     settings = result.scalar_one_or_none()
 
     if not settings:
-        settings = UserSettings(user_id=user_id)
+        from ..services.notification_events import DEFAULT_CATEGORY_RULES
+        settings = UserSettings(
+            user_id=user_id,
+            notification_rules={k: dict(v) for k, v in DEFAULT_CATEGORY_RULES.items()},
+        )
         db.add(settings)
+        await db.commit()
+        await db.refresh(settings)
+    elif not getattr(settings, "notification_rules", None):
+        from ..services.notification_events import DEFAULT_CATEGORY_RULES
+        settings.notification_rules = {k: dict(v) for k, v in DEFAULT_CATEGORY_RULES.items()}
         await db.commit()
         await db.refresh(settings)
 
     return settings
+
+
+def _notification_settings_dict(settings: UserSettings) -> dict:
+    from ..services.notification_events import merge_rules, list_categories_for_ui
+
+    return {
+        "email_notifications": settings.email_notifications,
+        "slack_notifications": settings.slack_notifications,
+        "webhook_notifications": settings.webhook_notifications,
+        "notification_webhook_url": settings.notification_webhook_url,
+        "notification_rules": merge_rules(getattr(settings, "notification_rules", None)),
+        "quiet_hours": getattr(settings, "quiet_hours", None),
+        "digest_email_daily": bool(getattr(settings, "digest_email_daily", False)),
+        "categories": list_categories_for_ui(),
+    }
 
 
 def format_settings_response(settings: UserSettings) -> dict:
@@ -120,12 +163,8 @@ def format_settings_response(settings: UserSettings) -> dict:
     return {
         "id": settings.id,
         "user_id": settings.user_id,
-        "notification_settings": {
-            "email_notifications": settings.email_notifications,
-            "slack_notifications": settings.slack_notifications,
-            "webhook_notifications": settings.webhook_notifications,
-            "notification_webhook_url": settings.notification_webhook_url
-        },
+        "notification_settings": _notification_settings_dict(settings),
+
         "api_settings": {
             "api_rate_limit": settings.api_rate_limit,
             "api_timeout": settings.api_timeout,
@@ -198,6 +237,12 @@ async def update_user_settings(
             settings.slack_notifications = ns.slack_notifications
             settings.webhook_notifications = ns.webhook_notifications
             settings.notification_webhook_url = ns.notification_webhook_url
+            if ns.notification_rules is not None:
+                from ..services.notification_events import merge_rules
+                settings.notification_rules = merge_rules(ns.notification_rules)
+            if ns.quiet_hours is not None:
+                settings.quiet_hours = ns.quiet_hours.model_dump() if hasattr(ns.quiet_hours, "model_dump") else ns.quiet_hours
+            settings.digest_email_daily = ns.digest_email_daily
 
         # Update API settings
         if settings_update.api_settings:
@@ -296,12 +341,7 @@ async def get_notification_settings(
     settings = await get_or_create_user_settings(db, current_user.id)
     return ApiResponse(
         success=True,
-        data={
-            "email_notifications": settings.email_notifications,
-            "slack_notifications": settings.slack_notifications,
-            "webhook_notifications": settings.webhook_notifications,
-            "notification_webhook_url": settings.notification_webhook_url
-        }
+        data=_notification_settings_dict(settings)
     )
 
 
@@ -319,18 +359,20 @@ async def update_notification_settings(
         settings.slack_notifications = notification_settings.slack_notifications
         settings.webhook_notifications = notification_settings.webhook_notifications
         settings.notification_webhook_url = notification_settings.notification_webhook_url
+        if notification_settings.notification_rules is not None:
+            from ..services.notification_events import merge_rules
+            settings.notification_rules = merge_rules(notification_settings.notification_rules)
+        if notification_settings.quiet_hours is not None:
+            qh = notification_settings.quiet_hours
+            settings.quiet_hours = qh.model_dump() if hasattr(qh, "model_dump") else qh
+        settings.digest_email_daily = notification_settings.digest_email_daily
 
         await db.commit()
         await db.refresh(settings)
 
         return ApiResponse(
             success=True,
-            data={
-                "email_notifications": settings.email_notifications,
-                "slack_notifications": settings.slack_notifications,
-                "webhook_notifications": settings.webhook_notifications,
-                "notification_webhook_url": settings.notification_webhook_url
-            },
+            data=_notification_settings_dict(settings),
             message="Notification settings updated"
         )
     except Exception as e:

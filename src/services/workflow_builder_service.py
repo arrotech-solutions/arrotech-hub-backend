@@ -492,6 +492,35 @@ class WorkflowBuilderService:
                     "completed_at": execution.completed_at.isoformat()
                 }
             )
+            try:
+                from .notification_service import NotificationService
+                status_val = execution.status.value if hasattr(execution.status, "value") else str(execution.status)
+                if status_val == "failed":
+                    await NotificationService.notify(
+                        db,
+                        user_id,
+                        "workflow_run_failed",
+                        "Workflow run failed",
+                        execution.error_message or f"Workflow '{getattr(workflow, 'name', 'Untitled')}' failed.",
+                        action_url=f"/workflows/{workflow.id}",
+                        workflow_id=workflow.id,
+                        data={"execution_id": str(execution.id)},
+                        entity_id=str(execution.id),
+                    )
+                else:
+                    await NotificationService.notify(
+                        db,
+                        user_id,
+                        "workflow_run_completed",
+                        "Workflow run completed",
+                        f"Workflow '{getattr(workflow, 'name', 'Untitled')}' finished successfully.",
+                        action_url=f"/workflows/{workflow.id}",
+                        workflow_id=workflow.id,
+                        data={"execution_id": str(execution.id)},
+                        entity_id=str(execution.id),
+                    )
+            except Exception as notif_err:
+                logger.debug("Workflow notification failed: %s", notif_err)
         
         return execution
     

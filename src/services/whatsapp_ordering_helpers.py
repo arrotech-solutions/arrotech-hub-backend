@@ -676,6 +676,68 @@ def parse_party_size(message: str, bare: bool = False) -> Optional[int]:
     return None
 
 
+# ── Resilience: acknowledgements, skips, and cross-flow intent ────────────
+
+# Pure acknowledgements — customer is closing the loop, NOT asking for help and
+# NOT confirming anything. Deliberately excludes yes/confirm words.
+_ACK_WORDS = frozenset({
+    "ok", "okay", "okey", "oky", "k", "kk", "kay", "alright", "alrite", "aight",
+    "cool", "great", "nice", "perfect", "awesome", "amazing", "wonderful",
+    "excellent", "brilliant", "fantastic", "lovely", "good", "fine",
+    "thanks", "thank you", "thankyou", "thanx", "thnx", "thx", "tnx",
+    "thank you so much", "thanks a lot", "many thanks", "much appreciated",
+    "appreciated", "appreciate it", "noted", "got it", "gotcha", "understood",
+    "roger", "sure thing", "no problem", "np", "asante", "asante sana",
+    "ahsante", "shukran", "poa", "safi", "sawa asante", "nashukuru",
+})
+
+# Emoji-only acknowledgements.
+_ACK_EMOJIS = frozenset({"👍", "🙏", "👌", "🙂", "😊", "❤️", "💯", "🔥", "👏", "🙌"})
+
+# Wants to browse/order food (used to detect a switch OUT of the reservation flow).
+_ORDER_SWITCH_RE = re.compile(
+    r"\b(menu|order|ordering|cart|checkout|buy|purchase|browse|"
+    r"add\s+to\s+cart|show\s+me\s+(?:the\s+)?(?:menu|food)|"
+    r"chakula|nataka\s+kula|kula|nunua)\b",
+    re.IGNORECASE,
+)
+
+
+def is_acknowledgement(message: str) -> bool:
+    """True for 'okay/thanks/cool' style closers that need no help menu."""
+    if not message:
+        return False
+    stripped = message.strip()
+    # Emoji-only message (strip variation selectors before comparing).
+    emoji_only = "".join(ch for ch in stripped if ch not in ("\ufe0f", " "))
+    if emoji_only and all(ch in _ACK_EMOJIS for ch in emoji_only):
+        return True
+    norm = re.sub(r"[^\w\s]", "", stripped.lower()).strip()
+    norm = re.sub(r"\s+", " ", norm)
+    if not norm:
+        return False
+    return norm in _ACK_WORDS
+
+
+def is_skip_message(message: str) -> bool:
+    """True when the customer wants to skip/postpone the thing we asked for."""
+    if not message:
+        return False
+    norm = re.sub(r"[^\w\s]", "", message.strip().lower()).strip()
+    return norm in {
+        "skip", "later", "do it later", "not now", "no", "nope", "dont have",
+        "dont have it", "i dont have it", "cancel", "stop", "baadaye", "acha",
+        "sina", "hapana",
+    }
+
+
+def detect_order_switch_intent(message: str) -> bool:
+    """True when a message clearly asks to order/browse food (not a booking field)."""
+    if not message:
+        return False
+    return bool(_ORDER_SWITCH_RE.search(message))
+
+
 def format_reservation_summary_line(
     *,
     customer_name: str,

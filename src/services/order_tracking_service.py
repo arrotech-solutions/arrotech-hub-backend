@@ -740,6 +740,29 @@ class OrderTrackingService:
         if not order_id or not customer_phone:
             return {"success": False, "error": "order_id and customer_phone required"}
 
+        try:
+            from .notification_service import NotificationService
+            total = order.get("total") or order.get("amount") or order_data.get("total")
+            await NotificationService.notify(
+                db,
+                user.id,
+                "order_received",
+                "New order received",
+                f"Order {order_id} from {customer_phone}"
+                + (f" · {currency} {total}" if total is not None else ""),
+                action_url="/inbox",
+                data={
+                    "order_id": order_id,
+                    "customer_phone": customer_phone,
+                    "business_name": business_name,
+                    "total": total,
+                    "currency": currency,
+                },
+                entity_id=str(order_id),
+            )
+        except Exception as e:
+            logger.debug("Order in-app notification failed: %s", e)
+
         existing = self.get_registered_order(str(user.id), order_id) or {}
         if existing.get("placement_notified"):
             return {
@@ -1015,6 +1038,28 @@ class OrderTrackingService:
         registry = self.get_registered_order(str(user.id), order_id) or {}
         if registry.get("payment_notified"):
             return {"success": True, "order_id": order_id, "skipped": True, "reason": "already_notified"}
+
+        try:
+            from .notification_service import NotificationService
+            await NotificationService.notify(
+                db,
+                user.id,
+                "stk_result",
+                "Payment received",
+                f"Order {order_id} paid"
+                + (f" · {currency} {amount_paid}" if amount_paid else "")
+                + (f" · receipt {mpesa_receipt}" if mpesa_receipt else ""),
+                action_url="/inbox",
+                data={
+                    "order_id": order_id,
+                    "mpesa_receipt": mpesa_receipt,
+                    "amount_paid": amount_paid,
+                    "currency": currency,
+                },
+                entity_id=f"pay-{order_id}",
+            )
+        except Exception as e:
+            logger.debug("Payment in-app notification failed: %s", e)
 
         order = dict(registry.get("order") or {})
         order["order_id"] = order_id

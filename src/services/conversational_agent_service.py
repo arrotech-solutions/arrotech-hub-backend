@@ -905,6 +905,7 @@ class ConversationalAgentService:
             from .whatsapp_ordering_helpers import (
                 check_user_message_injection,
                 injection_safe_reply,
+                is_acknowledgement,
                 is_order_confirmation_message,
                 match_cart_command,
                 format_cart_summary,
@@ -1318,6 +1319,53 @@ class ConversationalAgentService:
                         business_config=business_config, user=user, db=db, lang=lang_report,
                     )
 
+            # We explicitly asked for the M-Pesa code but the reply wasn't a valid
+            # code (e.g. the customer sent their phone number, a word, or a typo).
+            # Re-prompt for the code instead of falling through to a generic greeting.
+            if awaiting_code_order and not reported_code and session_key:
+                from .whatsapp_ordering_helpers import is_skip_message
+
+                if is_skip_message(user_message):
+                    await context_manager.update_session_metadata(
+                        session_key, {"awaiting_mpesa_code": None}
+                    )
+                    reply = self._t(
+                        lang_report,
+                        (
+                            "No problem — you can send your M-Pesa code here anytime and "
+                            "we'll match it to your order. Is there anything else I can help with? 🙂"
+                        ),
+                        (
+                            "Hakuna shida — unaweza kutuma msimbo wako wa M-Pesa hapa wakati wowote "
+                            "nasi tutaulinganisha na oda yako. Kuna lolote lingine nikusaidie? 🙂"
+                        ),
+                    )
+                    return await self._cart_fast_path_result(
+                        session_key, reply,
+                        actions_taken=[{"tool": "record_manual_payment", "result_summary": "code_skipped"}],
+                        send_cart_buttons=False,
+                    )
+                reply = self._t(
+                    lang_report,
+                    (
+                        "Hmm, that doesn't look like an M-Pesa confirmation code. 🤔\n"
+                        "It's the code in your M-Pesa SMS — a mix of letters and numbers "
+                        "like *QGR7XXXX12*.\n\n"
+                        "Please paste that code here, or reply *skip* to send it later."
+                    ),
+                    (
+                        "Hmm, hiyo haionekani kama msimbo wa uthibitisho wa M-Pesa. 🤔\n"
+                        "Ni ule msimbo kwenye SMS yako ya M-Pesa — mchanganyiko wa herufi na "
+                        "namba kama *QGR7XXXX12*.\n\n"
+                        "Tafadhali bandika msimbo huo hapa, au jibu *skip* kuutuma baadaye."
+                    ),
+                )
+                return await self._cart_fast_path_result(
+                    session_key, reply,
+                    actions_taken=[{"tool": "record_manual_payment", "result_summary": "invalid_code_reprompt"}],
+                    send_cart_buttons=False,
+                )
+
             # ── Awaiting alternate M-Pesa number (before checkout — phone reply is payment-only) ──
             if session_key:
                 try:
@@ -1618,6 +1666,34 @@ class ConversationalAgentService:
                                 "Harun Gachanja\n254711371265",
                             ),
                             actions_taken=[{"tool": "checkout", "result_summary": "reprompt_details"}],
+                            send_cart_buttons=False,
+                        )
+
+                    # We asked for a specific checkout detail but the reply didn't
+                    # parse (wrong thing / typo). Re-ask that exact question rather
+                    # than dropping into a generic LLM greeting.
+                    stage = draft.get("stage")
+                    if awaiting and stage in ("need_phone", "need_name") and not should_capture:
+                        if stage == "need_phone":
+                            reprompt = self._t(
+                                preferred_language,
+                                "I didn't catch a valid phone number there. 📞\n"
+                                "Please send it like *0712 345 678* so we can reach you about your order.",
+                                "Sikupata namba sahihi ya simu. 📞\n"
+                                "Tafadhali ituma kama *0712 345 678* ili tuweze kukufikia kuhusu oda yako.",
+                            )
+                        else:
+                            reprompt = self._t(
+                                preferred_language,
+                                "Sorry, I didn't get your name. 🙂 What name should I put on the order?",
+                                "Samahani, sikupata jina lako. 🙂 Niweke jina gani kwenye oda?",
+                            )
+                        await context_manager.update_session_metadata(
+                            session_key, {"awaiting_checkout_details": True}
+                        )
+                        return await self._cart_fast_path_result(
+                            session_key, reprompt,
+                            actions_taken=[{"tool": "checkout", "result_summary": f"reprompt_{stage}"}],
                             send_cart_buttons=False,
                         )
 
@@ -2126,6 +2202,23 @@ class ConversationalAgentService:
                     await self._tag_contact_for_handoff(
                         user, customer_phone, db, reason=esc_reason
                     )
+                    try:
+                        from .notification_service import NotificationService
+                        await NotificationService.notify(
+                            db,
+                            user.id,
+                            "agent_escalation",
+                            "Human handoff requested",
+                            f"{customer_name or customer_phone} needs a live agent ({esc_reason}).",
+                            action_url="/inbox",
+                            data={
+                                "customer_phone": customer_phone,
+                                "reason": esc_reason,
+                            },
+                            entity_id=f"esc-auto-{session_key}",
+                        )
+                    except Exception as e:
+                        logger.debug("Auto-escalation notification failed: %s", e)
                     return self._with_rent_landlord_fields(
                         {
                             "response_text": handoff_msg,
@@ -2162,6 +2255,54 @@ class ConversationalAgentService:
                             {"tool": "escalate_to_human", "result_summary": f"auto:{esc_reason}"}
                         ],
                     }
+
+            # ── Acknowledgement guard ──
+            # "okay", "thanks", "cool", "👍" etc. are the customer closing the
+            # loop — not a request for help. Reply warmly WITHOUT dumping the
+            # generic "How can I assist you today?" menu. Only fires when nothing
+            # is awaiting the customer's input.
+            if order_type != "rent_collection" and session_key and is_acknowledgement(user_message):
+                try:
+                    ack_session = await context_manager.get_session_by_key(session_key)
+                except Exception:
+                    ack_session = None
+                ack_meta = ack_session.metadata if ack_session else {}
+                ack_blocked = bool(
+                    ack_meta.get("awaiting_checkout_details")
+                    or ack_meta.get("awaiting_mpesa_code")
+                    or (ack_meta.get("awaiting_mpesa_payment") or {}).get("order_id")
+                    or ack_meta.get("awaiting_reservation_confirmation")
+                    or ack_meta.get("reservation_draft")
+                    or ack_meta.get("pending_confirmation")
+                    or (ack_session and context_manager.is_human_handoff(ack_session))
+                )
+                if not ack_blocked:
+                    has_recent_order = bool(
+                        ack_meta.get("active_payment_order_id")
+                        or ack_meta.get("orders_by_id")
+                        or ack_meta.get("last_order_id")
+                    )
+                    if has_recent_order:
+                        ack_reply = self._t(
+                            preferred_language,
+                            "You're all set! 🙌 We'll keep you posted on your order right here. "
+                            "Anything else I can get you?",
+                            "Uko tayari! 🙌 Tutakujulisha kuhusu oda yako hapa hapa. "
+                            "Kuna kingine nikusaidie?",
+                        )
+                    else:
+                        ack_reply = self._t(
+                            preferred_language,
+                            f"Anytime! 😊 Whenever you're ready, just browse the {catalog_word} "
+                            "or tell me what you'd like.",
+                            f"Karibu wakati wowote! 😊 Ukiwa tayari, angalia {catalog_word} "
+                            "au niambie unachotaka.",
+                        )
+                    return await self._cart_fast_path_result(
+                        session_key, ack_reply,
+                        actions_taken=[{"tool": "chat", "result_summary": "acknowledgement"}],
+                        send_cart_buttons=False,
+                    )
 
             # Build the system prompt
             system_prompt = self._build_system_prompt(
@@ -5141,6 +5282,25 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
 
         await self._tag_contact_for_handoff(user, customer_phone, db, reason=reason)
 
+        try:
+            from .notification_service import NotificationService
+            await NotificationService.notify(
+                db,
+                user.id,
+                "agent_escalation",
+                "Human handoff requested",
+                f"{customer_name or customer_phone} needs a live agent ({reason}).",
+                action_url="/inbox",
+                data={
+                    "customer_phone": customer_phone,
+                    "reason": reason,
+                    "summary": summary,
+                },
+                entity_id=f"esc-{session_key or customer_phone}",
+            )
+        except Exception as e:
+            logger.debug("Escalation in-app notification failed: %s", e)
+
         return {
             "success": True,
             "result": "Conversation escalated to human agent. AI paused for this customer.",
@@ -5557,6 +5717,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         """
         from .whatsapp_ordering_helpers import (
             clean_checkout_customer_name,
+            detect_order_switch_intent,
             detect_reservation_intent,
             format_reservation_summary_line,
             is_food_business,
@@ -5635,6 +5796,26 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 actions_taken=[{"tool": "create_reservation", "result_summary": "cancelled"}],
                 send_cart_buttons=False,
             )
+
+        # Mid-booking the customer clearly switches to ordering food ("show menu",
+        # "I want to order soda", "add X to cart"). Don't capture that as a
+        # reservation field — drop the half-built booking and let the ordering
+        # flow take over so the two flows never trap each other.
+        if (
+            active
+            and detect_order_switch_intent(user_message)
+            and not is_order_confirmation_message(user_message)
+        ):
+            await context_manager.update_session_metadata(
+                session_key,
+                {
+                    "reservation_draft": None,
+                    "pending_reservation": None,
+                    "awaiting_reservation_confirmation": False,
+                    "reservation_confirmed": False,
+                },
+            )
+            return None
 
         # ── Confirmation stage: only a clear YES creates the booking ──
         if awaiting_confirm:

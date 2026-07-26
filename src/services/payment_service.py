@@ -1156,7 +1156,7 @@ class PaymentService:
     async def handle_transfer_success(self, data: Dict[str, Any], db: AsyncSession) -> Dict[str, Any]:
         """Handle successful transfer event."""
         from sqlalchemy import select
-        from ..models import CreatorTransaction, Notification
+        from ..models import CreatorTransaction
         
         reference = data.get("reference")
         
@@ -1185,16 +1185,19 @@ class PaymentService:
         profile = await db.get(TikTokProfile, transaction.profile_id)
         
         if profile:
-            notification = Notification(
-                user_id=profile.user_id,
-                notification_type="withdrawal_completed",
-                title="Withdrawal Successful ✅",
-                message=f"Your withdrawal of KES {abs(transaction.creator_amount)} has been sent to M-Pesa.",
-                actor_id=profile.user_id, # System
+            from ..services.notification_service import NotificationService
+            await NotificationService.notify(
+                db,
+                profile.user_id,
+                "withdrawal_completed",
+                "Withdrawal Successful",
+                f"Your withdrawal of KES {abs(transaction.creator_amount)} has been sent to M-Pesa.",
+                actor_id=profile.user_id,
                 action_url="/wallet",
-                metadata={"amount": abs(transaction.creator_amount), "reference": reference}
+                data={"amount": abs(transaction.creator_amount), "reference": reference},
+                entity_id=reference,
+                commit=False,
             )
-            db.add(notification)
             
         await db.commit()
         logger.info(f"[PAYSTACK] Transfer {reference} marked as completed")
@@ -1204,7 +1207,7 @@ class PaymentService:
     async def handle_transfer_failed(self, data: Dict[str, Any], db: AsyncSession) -> Dict[str, Any]:
         """Handle failed transfer event (Refund logic)."""
         from sqlalchemy import select
-        from ..models import CreatorTransaction, TikTokProfile, Notification
+        from ..models import CreatorTransaction, TikTokProfile
         from decimal import Decimal
         
         reference = data.get("reference")
@@ -1239,16 +1242,19 @@ class PaymentService:
             error_reason = data.get("reason", "Transfer failed")
             
             # Notify user
-            notification = Notification(
-                user_id=profile.user_id,
-                notification_type="withdrawal_failed",
-                title="Withdrawal Failed ❌",
-                message=f"Withdrawal of KES {refund_amount} failed. Funds have been returned to your wallet.",
+            from ..services.notification_service import NotificationService
+            await NotificationService.notify(
+                db,
+                profile.user_id,
+                "withdrawal_failed",
+                "Withdrawal Failed",
+                f"Withdrawal of KES {refund_amount} failed. Funds have been returned to your wallet.",
                 actor_id=profile.user_id,
                 action_url="/wallet",
-                metadata={"reason": error_reason, "amount": refund_amount}
+                data={"reason": error_reason, "amount": float(refund_amount)},
+                entity_id=reference,
+                commit=False,
             )
-            db.add(notification)
             
         await db.commit()
         logger.info(f"[PAYSTACK] Transfer {reference} marked as failed and refunded")

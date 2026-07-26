@@ -558,7 +558,7 @@ async def purchase_workflow(
 ):
     """Purchase a paid workflow from the marketplace."""
     from sqlalchemy import select
-    from ..models import Workflow, WorkflowDownload, Payment, Notification
+    from ..models import Workflow, WorkflowDownload, Payment
     
     try:
         # Get the workflow
@@ -606,16 +606,19 @@ async def purchase_workflow(
             workflow.downloads_count = (workflow.downloads_count or 0) + 1
             
             # Notify the creator
-            notification = Notification(
-                user_id=workflow.user_id,
-                notification_type="workflow_imported",
-                title="New Download!",
-                message=f"{current_user.name} downloaded your workflow '{workflow.name}'",
+            from ..services.notification_service import NotificationService
+            await NotificationService.notify(
+                db,
+                workflow.user_id,
+                "workflow_imported",
+                "New Download!",
+                f"{current_user.name} downloaded your workflow '{workflow.name}'",
                 workflow_id=workflow.id,
                 actor_id=current_user.id,
                 action_url="/creator-profile",
+                entity_id=str(workflow.id),
+                commit=False,
             )
-            db.add(notification)
             
             await db.commit()
             
@@ -756,7 +759,7 @@ async def purchase_workflow(
 async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     """Handle Stripe webhook events."""
     from sqlalchemy import select
-    from ..models import Payment, Workflow, WorkflowDownload, Notification, CreatorProfile
+    from ..models import Payment, Workflow, WorkflowDownload, CreatorProfile
     
     payload = await request.body()
     sig_header = request.headers.get('stripe-signature')
@@ -811,17 +814,23 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 buyer = result.scalar_one_or_none()
                 
                 # Notify the creator
-                notification = Notification(
-                    user_id=workflow.user_id,
-                    notification_type="earnings_received",
-                    title="New Sale! 💰",
-                    message=f"{buyer.name if buyer else 'Someone'} purchased your workflow '{workflow.name}'",
+                from ..services.notification_service import NotificationService
+                await NotificationService.notify(
+                    db,
+                    workflow.user_id,
+                    "earnings_received",
+                    "New Sale!",
+                    f"{buyer.name if buyer else 'Someone'} purchased your workflow '{workflow.name}'",
                     workflow_id=workflow.id,
                     actor_id=user_id,
                     action_url="/creator-profile",
-                    metadata={'amount': session.get('amount_total'), 'currency': session.get('currency')}
+                    data={
+                        "amount": session.get("amount_total"),
+                        "currency": session.get("currency"),
+                    },
+                    entity_id=str(workflow.id),
+                    commit=False,
                 )
-                db.add(notification)
                 
                 # Update creator earnings
                 result = await db.execute(
