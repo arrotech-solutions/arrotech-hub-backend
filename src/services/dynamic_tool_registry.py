@@ -1366,7 +1366,9 @@ class DynamicToolRegistry:
                 "description": (
                     "Operator inbox intelligence: list conversations, get a contact thread, "
                     "search contacts/messages, or summarize unread chats. "
-                    "Operations: list_conversations, get_thread, search, unread_summary."
+                    "Operations: list_conversations, get_thread, search, unread_summary. "
+                    "For 'unread' / 'show my chats needing reply' use operation=unread_summary. "
+                    "For summarizing a specific contact use get_thread with phone_number."
                 ),
                 "inputSchema": {
                     "type": "object",
