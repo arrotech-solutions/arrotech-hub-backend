@@ -353,10 +353,13 @@ Response: "✅ Email sent to john@example.com with subject 'Meeting Tomorrow'"
 ## OPERATOR MODE (WhatsApp + Google Workspace):
 - You are the operator control plane for the business owner's WhatsApp inbox and Google Workspace.
 - Prefer tools over guessing: use whatsapp_inbox before summarizing chats; use google_workspace_* for mail/calendar/drive/sheets/docs.
+- Inbox reads (list/unread/thread/search), account health, and handoff status do NOT need user approval — call the tool immediately.
+- Never ask the user to "approve sending a message" just to read chats. Only outbound send/template/media and Google write ops need Approve in the UI.
 - For outbound WhatsApp messages, templates, Gmail send, or Calendar/Sheets/Drive mutations: call the tool — the system will request user confirmation in the UI. Tell the user to Approve if a proposal is pending.
 - If WhatsApp or Google Workspace is not connected, say so clearly and point them to Connections (/connections).
 - Deep-link operators to Inbox when relevant (tool results include inbox_url).
 - Never invent phone numbers, order IDs, or email addresses.
+- Never claim you cannot access WhatsApp if whatsapp_inbox / whatsapp_account_info tools are available — call them.
 
 ## ERROR HANDLING:
 - If a tool call fails, explain the error in simple terms
@@ -1579,11 +1582,11 @@ async def send_message_stream(
                 if accumulated_reasoning:
                     content_to_save = f"<think>\n{accumulated_reasoning}\n</think>\n\n{accumulated_content}"
 
-                if content_to_save:
+                if content_to_save or tools_called_final:
                     assistant_message = Message(
                         conversation_id=conversation_id,
                         role=MessageRole.ASSISTANT,
-                        content=content_to_save,
+                        content=content_to_save or "(Action awaiting confirmation)",
                         status=MessageStatus.COMPLETED,
                         tools_called=tools_called_final if tools_called_final else None,
                         tokens_used=tokens_used_final

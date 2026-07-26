@@ -72,9 +72,64 @@ class PrecisionToolRouter:
         # Return tools with confidence > 80%
         final_results = [tool for tool, confidence in results if confidence > 0.8]
         print(f"✅ Final selection: {len(final_results)} tools with confidence > 0.8")
-        
+
+        # Force-include WhatsApp / Workspace operator tools for clear intents
+        # (prevents send-message being the only WA tool for inbox/read queries).
+        final_results = self._ensure_operator_tools(user_input, all_tools, final_results)
+
         return final_results
-    
+
+    def _ensure_operator_tools(
+        self,
+        user_input: str,
+        all_tools: List[Dict[str, Any]],
+        selected: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        text = (user_input or "").lower()
+        by_name = {t.get("name"): t for t in all_tools if t.get("name")}
+        selected_names = {t.get("name") for t in selected}
+        must_have: List[str] = []
+
+        wa_read = any(
+            k in text
+            for k in (
+                "unread", "inbox", "conversation", "conversations", "chat", "chats",
+                "thread", "summarize", "latest",
+            )
+        ) and "whatsapp" in text
+        if wa_read or re.search(r"(show|list|open|get).*(whatsapp|chat)", text):
+            must_have.append("whatsapp_inbox")
+        if "whatsapp" in text and any(
+            k in text for k in ("connection", "healthy", "reconnect", "phone number id")
+        ):
+            must_have.append("whatsapp_account_info")
+        if any(k in text for k in ("pause", "resume", "handoff")) and (
+            "whatsapp" in text or "ai" in text or "agent" in text
+        ):
+            must_have.append("whatsapp_agent_control")
+        if "whatsapp" in text and "template" in text:
+            must_have.append("whatsapp_templates")
+        if "whatsapp" in text and re.search(r"\bsend\b", text):
+            must_have.extend(["whatsapp_send_message", "whatsapp_messaging"])
+
+        if any(k in text for k in ("gmail", "email")) and "whatsapp" not in text:
+            must_have.append("google_workspace_gmail")
+        if any(k in text for k in ("calendar", "meeting", "availability", "schedule")):
+            must_have.append("google_workspace_calendar")
+        if "drive" in text or ("google" in text and "file" in text):
+            must_have.append("google_workspace_drive")
+        if re.search(r"\b(docs?|document)\b", text) and "google" in text:
+            must_have.append("google_workspace_docs")
+        if "sheet" in text or "spreadsheet" in text:
+            must_have.append("google_workspace_sheets")
+
+        for name in must_have:
+            if name in by_name and name not in selected_names:
+                selected.append(by_name[name])
+                selected_names.add(name)
+                print(f"   ➕ Ensured operator tool: {name}")
+        return selected
+
     async def _match_tools(self, user_input: str, tools: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], float]]:
         """Execute multi-stage matching pipeline"""
         results = []
@@ -237,10 +292,18 @@ class PrecisionToolRouter:
             r'update.*sheet': 'google_workspace_sheets',
             r'format.*cell': 'google_workspace_sheets',
             
-            # WhatsApp Tools
-            r'whatsapp.*message': 'whatsapp_send_message',
+            # WhatsApp operator tools — inbox/read BEFORE send (order matters for overlapping phrases)
+            r'(unread|inbox).*whatsapp': 'whatsapp_inbox',
+            r'whatsapp.*(unread|inbox|conversation|chat|thread)': 'whatsapp_inbox',
+            r'(show|list|get|open|summarize).*(whatsapp|chat|conversation|thread)': 'whatsapp_inbox',
+            r'whatsapp.*(connection|healthy|phone.?number.?id|reconnect)': 'whatsapp_account_info',
+            r'(pause|resume).*(whatsapp|ai|agent|handoff)': 'whatsapp_agent_control',
+            r'handoff.*(status|whatsapp)': 'whatsapp_agent_control',
+            r'(list|show).*whatsapp.*template': 'whatsapp_templates',
+            r'send.*whatsapp.*template': 'whatsapp_templates',
             r'send.*whatsapp': 'whatsapp_send_message',
-            r'whatsapp.*media': 'whatsapp_send_media_message',
+            r'whatsapp.*send': 'whatsapp_send_message',
+            r'whatsapp.*media': 'whatsapp_messaging',
             
             # HubSpot Tools
             r'(hubspot|crm).*contact': 'hubspot_crm_management',
@@ -856,13 +919,57 @@ class PrecisionToolRouter:
                 ],
                 "keywords": ["slack", "channel", "members", "list", "get", "show"]
             },
+            "whatsapp_inbox": {
+                "patterns": [
+                    ["unread", "whatsapp"],
+                    ["whatsapp", "conversation"],
+                    ["whatsapp", "inbox"],
+                    ["whatsapp", "chat"],
+                    ["whatsapp", "thread"],
+                    ["list", "whatsapp"],
+                    ["show", "whatsapp", "unread"],
+                    ["summarize", "whatsapp"],
+                ],
+                "keywords": [
+                    "whatsapp", "inbox", "unread", "conversation", "chat",
+                    "thread", "message", "contact", "summarize", "list", "show",
+                ],
+            },
+            "whatsapp_agent_control": {
+                "patterns": [
+                    ["pause", "whatsapp", "ai"],
+                    ["resume", "whatsapp", "ai"],
+                    ["handoff", "status"],
+                    ["pause", "ai"],
+                    ["resume", "ai"],
+                ],
+                "keywords": ["whatsapp", "pause", "resume", "handoff", "agent", "ai"],
+            },
+            "whatsapp_account_info": {
+                "patterns": [
+                    ["whatsapp", "connection"],
+                    ["whatsapp", "healthy"],
+                    ["phone", "number", "id"],
+                    ["whatsapp", "reconnect"],
+                ],
+                "keywords": ["whatsapp", "connection", "health", "reconnect", "phone", "status"],
+            },
+            "whatsapp_templates": {
+                "patterns": [
+                    ["whatsapp", "template"],
+                    ["list", "template"],
+                    ["send", "template"],
+                ],
+                "keywords": ["whatsapp", "template", "approved"],
+            },
             "whatsapp_messaging": {
                 "patterns": [
                     ["send", "whatsapp", "message"],
                     ["whatsapp", "notification"],
-                    ["message", "phone", "number"]
+                    ["send", "whatsapp", "media"],
+                    ["send", "whatsapp", "location"],
                 ],
-                "keywords": ["whatsapp", "phone", "sms", "text", "message"]
+                "keywords": ["whatsapp", "send", "media", "location", "notification"],
             },
             "hubspot_contact_operations": {
                 "patterns": [
@@ -1226,14 +1333,15 @@ class PrecisionToolRouter:
                 ],
                 "keywords": ["ga4", "google", "analytics", "conversion", "show", "get"]
             },
-            # WhatsApp Tools
+            # WhatsApp Tools — send only when user clearly wants outbound
             "whatsapp_send_message": {
                 "patterns": [
-                    ["whatsapp", "message"],
                     ["send", "whatsapp"],
-                    ["whatsapp", "notification"]
+                    ["whatsapp", "send"],
+                    ["send", "whatsapp", "message"],
+                    ["whatsapp", "notification"],
                 ],
-                "keywords": ["whatsapp", "message", "send", "notification"]
+                "keywords": ["whatsapp", "send", "notification", "outbound"],
             },
             "whatsapp_send_media_message": {
                 "patterns": [
