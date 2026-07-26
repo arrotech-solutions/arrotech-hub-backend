@@ -1674,6 +1674,7 @@ When the user asks you to perform actions, write Python code using the available
                                     "arguments": arguments,
                                     "result": tool_result,
                                     "context": tool_context,
+                                    "success": True,
                                 })
                                 messages.append({
                                     "role": "tool",
@@ -1681,11 +1682,29 @@ When the user asks you to perform actions, write Python code using the available
                                         "pending_confirmation": True,
                                         "proposal_id": tool_result.get("proposal_id"),
                                         "summary": tool_result.get("summary"),
-                                        "message": "Action proposed. Tell the user to approve in the UI before it runs.",
+                                        "message": (
+                                            "Action proposed and waiting for Approve/Cancel in the Hub UI. "
+                                            "Do not claim the action was sent."
+                                        ),
                                     }),
                                     "tool_call_id": tool_call_id,
                                 })
-                                continue
+                                # Stop after HITL so Approve isn't buried by another streamed reply.
+                                pending_summary = (
+                                    tool_result.get("summary")
+                                    or tool_result.get("message")
+                                    or "this action"
+                                )
+                                yield {
+                                    "type": "content",
+                                    "content": (
+                                        f"Confirmation required: {pending_summary}\n\n"
+                                        "Use **Approve** or **Cancel** on the confirmation card above. "
+                                        "Nothing will run until you approve."
+                                    ),
+                                }
+                                yield {"type": "done", "tokens_used": total_tokens, "tools_called": tools_called}
+                                return
 
                             # Emit search sources for web_search tool
                             if function_name == "web_search" and isinstance(tool_result, dict) and tool_result.get("sources"):
@@ -1695,7 +1714,13 @@ When the user asks you to perform actions, write Python code using the available
                             summary = ""
                             if isinstance(tool_result, dict):
                                 if tool_result.get("success"):
-                                    summary = tool_result.get("message", str(tool_result)[:200])
+                                    summary = (
+                                        tool_result.get("message")
+                                        or tool_result.get("result")
+                                        or str(tool_result)[:200]
+                                    )
+                                    if isinstance(summary, (dict, list)):
+                                        summary = str(summary)[:200]
                                 else:
                                     summary = tool_result.get("error", tool_result.get("message", str(tool_result)[:200]))
                             else:

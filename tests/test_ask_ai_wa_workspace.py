@@ -17,6 +17,27 @@ def test_needs_confirmation_whatsapp_list_templates():
 
 def test_needs_confirmation_whatsapp_inbox_read():
     assert needs_confirmation("whatsapp_inbox", {"operation": "unread_summary"}) is False
+    assert needs_confirmation("whatsapp_inbox", {"operation": "list_conversations"}) is False
+    assert needs_confirmation("whatsapp_account_info", {}) is False
+    assert needs_confirmation("whatsapp_agent_control", {"operation": "handoff_status", "phone_number": "2547"}) is False
+
+
+def test_ensure_operator_tools_prefers_inbox_for_unread():
+    from src.services.tool_selector import PrecisionToolRouter
+
+    router = PrecisionToolRouter.__new__(PrecisionToolRouter)
+    tools = [
+        {"name": "whatsapp_send_message"},
+        {"name": "whatsapp_inbox"},
+        {"name": "whatsapp_account_info"},
+    ]
+    selected = router._ensure_operator_tools(
+        "Show my unread WhatsApp conversations",
+        tools,
+        [],
+    )
+    names = [t["name"] for t in selected]
+    assert "whatsapp_inbox" in names
 
 
 def test_needs_confirmation_gmail_send():
