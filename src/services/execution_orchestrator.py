@@ -1642,13 +1642,50 @@ When the user asks you to perform actions, write Python code using the available
                                 tools_called.append({"name": function_name, "arguments": arguments, "result": {"error": error_msg}})
                                 continue
 
-                            # Execute tool
+                            # Execute tool (may return pending_confirmation)
                             tool_result = await tool_executor.execute_tool(
-                                function_name, arguments, self.user, self.db, tools_called
+                                function_name, arguments, self.user, self.db, tools_called,
+                                conversation_id=getattr(self, "conversation_id", None),
                             )
 
-                            # Add to tools_called after execute_tool but before returning loop
-                            # (handled after emitting tool_result to ensure context injection)
+                            if isinstance(tool_result, dict) and tool_result.get("pending_confirmation"):
+                                yield {
+                                    "type": "tool.propose",
+                                    "proposal_id": tool_result.get("proposal_id"),
+                                    "tool": function_name,
+                                    "summary": tool_result.get("summary") or tool_result.get("message"),
+                                    "arguments": arguments,
+                                }
+                                yield {
+                                    "type": "tool_result",
+                                    "tool": function_name,
+                                    "success": True,
+                                    "summary": tool_result.get("message") or "Awaiting your confirmation",
+                                    "pending_confirmation": True,
+                                    "proposal_id": tool_result.get("proposal_id"),
+                                    "args": arguments,
+                                    "platform": tool_context.get("platform", "Built-in"),
+                                    "platform_icon": tool_context.get("platform_icon", "⚡"),
+                                    "platform_color": tool_context.get("platform_color", "gray"),
+                                    "category": tool_context.get("category", "general"),
+                                }
+                                tools_called.append({
+                                    "name": function_name,
+                                    "arguments": arguments,
+                                    "result": tool_result,
+                                    "context": tool_context,
+                                })
+                                messages.append({
+                                    "role": "tool",
+                                    "content": json.dumps({
+                                        "pending_confirmation": True,
+                                        "proposal_id": tool_result.get("proposal_id"),
+                                        "summary": tool_result.get("summary"),
+                                        "message": "Action proposed. Tell the user to approve in the UI before it runs.",
+                                    }),
+                                    "tool_call_id": tool_call_id,
+                                })
+                                continue
 
                             # Emit search sources for web_search tool
                             if function_name == "web_search" and isinstance(tool_result, dict) and tool_result.get("sources"):

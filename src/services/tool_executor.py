@@ -5,6 +5,7 @@ Tool Executor Service for executing MCP tools based on LLM decisions.
 import json
 import logging
 import re
+import uuid
 from typing import Any, Dict, List, Optional
 
 from slack_sdk import WebClient
@@ -151,29 +152,90 @@ class ToolExecutor:
         user: User,
         db: AsyncSession,
         tools_called: List[Dict[str, Any]] = None,
-        background_tasks: Optional['BackgroundTasks'] = None
+        background_tasks: Optional['BackgroundTasks'] = None,
+        *,
+        skip_confirmation: bool = False,
+        conversation_id: Optional[uuid.UUID] = None,
+        confirmed: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Execute a specific tool with full observability, tracing, and retries."""
-        
-        # Set customer context for tracing
-        set_customer_id(str(user.id))
+        import time as _time
+        from .tool_confirmation import needs_confirmation, create_proposal, record_tool_audit
 
-        async def _run_core(**args):
-            return await self._execute_tool_logic(
+        set_customer_id(str(user.id))
+        args = dict(arguments or {})
+
+        # HITL: propose outbound/mutating actions instead of executing immediately
+        if not skip_confirmation and needs_confirmation(tool_name, args):
+            proposal = await create_proposal(
+                db,
+                user_id=user.id,
                 tool_name=tool_name,
                 arguments=args,
+                conversation_id=conversation_id,
+            )
+            return {
+                "success": True,
+                "pending_confirmation": True,
+                "proposal_id": str(proposal.id),
+                "summary": proposal.summary,
+                "tool": tool_name,
+                "arguments": args,
+                "message": f"Awaiting confirmation: {proposal.summary}",
+                "result": None,
+            }
+
+        started = _time.monotonic()
+
+        async def _run_core(**inner_args):
+            return await self._execute_tool_logic(
+                tool_name=tool_name,
+                arguments=inner_args,
                 user=user,
                 db=db,
                 tools_called=tools_called,
                 background_tasks=background_tasks
             )
 
-        return await observability_execute_tool(
+        try:
+            result = await observability_execute_tool(
+                tool_name=tool_name,
+                fn=_run_core,
+                arguments=args,
+                customer_id=str(user.id)
+            )
+        except Exception as e:
+            latency = int((_time.monotonic() - started) * 1000)
+            await record_tool_audit(
+                db,
+                user_id=user.id,
+                tool_name=tool_name,
+                arguments=args,
+                success=False,
+                error=str(e),
+                latency_ms=latency,
+                conversation_id=conversation_id,
+                confirmed=confirmed,
+            )
+            raise
+
+        latency = int((_time.monotonic() - started) * 1000)
+        success = bool(isinstance(result, dict) and result.get("success", True))
+        err = None
+        if isinstance(result, dict) and not success:
+            err = result.get("error")
+        await record_tool_audit(
+            db,
+            user_id=user.id,
             tool_name=tool_name,
-            fn=_run_core,
-            arguments=arguments,
-            customer_id=str(user.id)
+            arguments=args,
+            success=success,
+            error=err,
+            latency_ms=latency,
+            conversation_id=conversation_id,
+            confirmed=confirmed if confirmed is not None else skip_confirmation,
         )
+        return result
 
     async def _execute_tool_logic(
         self,
@@ -483,78 +545,89 @@ class ToolExecutor:
         # Get operation from arguments (different tools use different keys)
         operation = arguments.get("operation", "").lower() if arguments else ""
         action = arguments.get("action", "").lower() if arguments else ""
-        
-        # DEBUG LOGGING
-        print(f"🔍 [FEATURE GATE DEBUG] Tool: {tool_name}, Operation: {operation}, Action: {action}")
-        print(f"🔍 [FEATURE GATE DEBUG] User ID: {user.id}, Tier: {user.subscription_tier}")
-        
-        # Define write operations and their required feature flags
-        # Format: (tool_prefix, [operations_or_actions_that_are_write])
+
+        # whatsapp_send_message defaults to send when no action provided
+        if tool_name == "whatsapp_send_message" and not operation and not action:
+            action = "send_message"
+        elif tool_name == "whatsapp_templates" and not operation and not action:
+            if (arguments or {}).get("template_name"):
+                action = "send_template"
+            else:
+                action = "list_templates"
+
+        # Prefer longer / exact tool name matches before short prefixes
         WRITE_CHECKS = {
             "inbox_send": {
-                # Google Workspace Gmail
                 "google_workspace_gmail": ["send_email", "send", "reply", "forward", "compose"],
-                # Outlook
                 "outlook_email": ["send_email", "send", "reply", "forward"],
                 "outlook": ["send_email", "reply_email"],
-                # Slack
                 "slack": ["send_message", "post_message"],
-                # Teams
                 "teams": ["send_message", "post_message"],
-                # WhatsApp
-                "whatsapp": ["send_message", "send_template"],
+                "whatsapp_send_message": ["send_message"],
+                "whatsapp_messaging": ["send_message", "send_media", "send_location"],
+                "whatsapp_templates": ["send_template"],
             },
             "calendar_create_edit": {
-                # Google Workspace Calendar
-                "google_workspace_calendar": ["create", "create_event", "update", "update_event", "delete", "delete_event"],
-                # Outlook Calendar
+                "google_workspace_calendar": [
+                    "create", "create_event", "update", "update_event",
+                    "delete", "delete_event", "create_meeting",
+                ],
                 "outlook_calendar": ["create_event", "update_event", "delete_event"],
                 "outlook": ["create_event", "update_event"],
             },
             "tasks_create_update": {
-                # Jira
                 "jira": ["create_issue", "update_issue", "add_comment", "transition_issue", "create", "update"],
-                # Trello
                 "trello": ["create_card", "update_card", "move_card", "create", "update"],
-                # Asana
                 "asana": ["create_task", "update_task", "create_project", "add_comment", "create", "update"],
-                # ClickUp
                 "clickup": ["create_task", "update_task", "create", "update"],
+                "google_workspace_drive": [
+                    "upload_file", "delete_file", "share_file", "move_file", "create_folder",
+                ],
+                "google_workspace_sheets": [
+                    "write_range", "append_rows", "clear_range", "batch_update", "create_spreadsheet",
+                ],
+                "google_workspace_docs": [
+                    "create_document", "insert_text", "append_text", "replace_text",
+                    "format_text", "insert_table", "batch_update",
+                ],
             },
         }
-        
-        # Check each feature category
+
         for feature_flag, tool_operations in WRITE_CHECKS.items():
-            for tool_prefix, blocked_operations in tool_operations.items():
-                # Check if tool matches this prefix
-                if tool_name.startswith(tool_prefix) or tool_name == tool_prefix:
-                    print(f"🔍 [FEATURE GATE DEBUG] Tool prefix match: {tool_prefix}")
-                    print(f"🔍 [FEATURE GATE DEBUG] Blocked operations: {blocked_operations}")
-                    print(f"🔍 [FEATURE GATE DEBUG] Checking: '{operation}' in {blocked_operations} = {operation in blocked_operations}")
-                    print(f"🔍 [FEATURE GATE DEBUG] Checking: '{action}' in {blocked_operations} = {action in blocked_operations}")
-                    
-                    # Check if operation or action is a write operation
-                    if operation in blocked_operations or action in blocked_operations:
-                        # Check if user has this feature
-                        has_access = FeatureGate.has_feature(user, feature_flag)
-                        print(f"🔍 [FEATURE GATE DEBUG] Checking has_feature({user.subscription_tier}, {feature_flag}) = {has_access}")
-                        
-                        if not has_access:
-                            upgrade_msg = FeatureGate.get_upgrade_message(user.subscription_tier, feature_flag)
-                            logger.info(f"Feature gate blocked {tool_name}/{operation or action} for user {user.id} (tier: {user.subscription_tier}, required: {feature_flag})")
-                            print(f"🚫 [FEATURE GATE] BLOCKED: {tool_name}/{operation or action} for {user.subscription_tier} tier")
-                            return {
-                                "success": False,
-                                "error": upgrade_msg,
-                                "upgrade_required": True,
-                                "required_feature": feature_flag,
-                                "current_tier": user.subscription_tier,
-                                "result": None
-                            }
-                        else:
-                            print(f"✅ [FEATURE GATE] ALLOWED: {tool_name}/{operation or action} - user has {feature_flag}")
-        
-        print(f"✅ [FEATURE GATE] No write operation detected, allowing: {tool_name}")
+            # Exact match first, then prefix
+            matched = None
+            blocked_operations = None
+            if tool_name in tool_operations:
+                matched = tool_name
+                blocked_operations = tool_operations[tool_name]
+            else:
+                for tool_prefix, ops in tool_operations.items():
+                    if tool_name.startswith(tool_prefix + "_") or tool_name.startswith(tool_prefix):
+                        # Avoid matching whatsapp_inbox via accidental loose rules — only if we had a whatsapp: key
+                        matched = tool_prefix
+                        blocked_operations = ops
+                        break
+            if not matched or not blocked_operations:
+                continue
+            op_check = operation or action
+            if tool_name == "whatsapp_send_message" and not op_check:
+                op_check = "send_message"
+            if op_check in blocked_operations:
+                if not FeatureGate.has_feature(user, feature_flag):
+                    upgrade_msg = FeatureGate.get_upgrade_message(user.subscription_tier, feature_flag)
+                    logger.info(
+                        "Feature gate blocked %s/%s for user %s (tier: %s, required: %s)",
+                        tool_name, op_check, user.id, user.subscription_tier, feature_flag,
+                    )
+                    return {
+                        "success": False,
+                        "error": upgrade_msg,
+                        "upgrade_required": True,
+                        "required_feature": feature_flag,
+                        "current_tier": user.subscription_tier,
+                        "result": None,
+                    }
+
         return None  # Access granted
 
     def _get_platform_from_tool(self, tool_name: str) -> Optional[str]:
@@ -3889,7 +3962,13 @@ class ToolExecutor:
                 }
 
         elif tool_name == "whatsapp_templates":
-            action = arguments.get("action", "send_template")
+            action = arguments.get("action") or arguments.get("operation")
+            if not action:
+                action = (
+                    "send_template"
+                    if arguments.get("template_name") and arguments.get("to_number")
+                    else "list_templates"
+                )
 
             if action == "send_template":
                 to_number = arguments.get("to_number", "")
@@ -3946,11 +4025,299 @@ class ToolExecutor:
                     "result": None
                 }
 
+        elif tool_name == "whatsapp_inbox":
+            return await self._execute_whatsapp_inbox(arguments, user, db)
+
+        elif tool_name == "whatsapp_agent_control":
+            return await self._execute_whatsapp_agent_control(arguments, user, db)
+
+        elif tool_name == "whatsapp_account_info":
+            return await self._execute_whatsapp_account_info(connection, arguments)
+
         return {
             "success": False,
             "error": f"Unknown WhatsApp tool: {tool_name}",
             "result": None
         }
+
+    async def _execute_whatsapp_inbox(
+        self,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Operator inbox intelligence over WhatsAppContact / WhatsAppMessage."""
+        from sqlalchemy import or_, desc, func
+        from ..models import WhatsAppContact, WhatsAppMessage, WhatsAppMessageDirection
+        from .whatsapp_inbox_service import normalize_whatsapp_phone
+
+        operation = (arguments.get("operation") or arguments.get("action") or "list_conversations").lower()
+        limit = min(int(arguments.get("limit") or 10), 50)
+        unread_only = bool(arguments.get("unread_only"))
+
+        if operation == "list_conversations":
+            q = select(WhatsAppContact).where(WhatsAppContact.user_id == user.id)
+            if unread_only:
+                q = q.where(WhatsAppContact.unread_count > 0)
+            q = q.order_by(desc(WhatsAppContact.last_message_at)).limit(limit)
+            rows = (await db.execute(q)).scalars().all()
+            conversations = [
+                {
+                    "contact_id": str(c.id),
+                    "phone_number": c.phone_number,
+                    "name": c.name or c.profile_name,
+                    "unread_count": c.unread_count or 0,
+                    "status": c.status,
+                    "last_message_at": c.last_message_at.isoformat() if c.last_message_at else None,
+                    "inbox_url": f"/inbox?contact={c.id}",
+                }
+                for c in rows
+            ]
+            return {
+                "success": True,
+                "result": f"Found {len(conversations)} conversation(s)",
+                "data": {"conversations": conversations, "widget": "whatsapp_inbox"},
+            }
+
+        if operation == "get_thread":
+            phone = normalize_whatsapp_phone(arguments.get("phone_number") or "")
+            if not phone:
+                return {"success": False, "error": "phone_number is required", "result": None}
+            contact = (
+                await db.execute(
+                    select(WhatsAppContact).where(
+                        WhatsAppContact.user_id == user.id,
+                        WhatsAppContact.phone_number == phone,
+                    )
+                )
+            ).scalar_one_or_none()
+            if not contact:
+                return {"success": False, "error": f"No contact found for {phone}", "result": None}
+            msgs = (
+                await db.execute(
+                    select(WhatsAppMessage)
+                    .where(
+                        WhatsAppMessage.user_id == user.id,
+                        WhatsAppMessage.contact_id == contact.id,
+                    )
+                    .order_by(desc(WhatsAppMessage.created_at))
+                    .limit(limit)
+                )
+            ).scalars().all()
+            thread = [
+                {
+                    "id": str(m.id),
+                    "direction": m.direction.value if hasattr(m.direction, "value") else str(m.direction),
+                    "content": (m.content or "")[:2000],
+                    "created_at": m.created_at.isoformat() if m.created_at else None,
+                    "is_agent": bool(getattr(m, "is_agent", False)),
+                }
+                for m in reversed(list(msgs))
+            ]
+            return {
+                "success": True,
+                "result": f"Thread with {contact.name or phone}: {len(thread)} messages",
+                "data": {
+                    "contact": {
+                        "id": str(contact.id),
+                        "phone_number": contact.phone_number,
+                        "name": contact.name or contact.profile_name,
+                        "unread_count": contact.unread_count or 0,
+                    },
+                    "messages": thread,
+                    "inbox_url": f"/inbox?contact={contact.id}",
+                    "widget": "whatsapp_thread",
+                },
+            }
+
+        if operation == "search":
+            query = (arguments.get("query") or "").strip()
+            if not query:
+                return {"success": False, "error": "query is required", "result": None}
+            pattern = f"%{query}%"
+            contacts = (
+                await db.execute(
+                    select(WhatsAppContact)
+                    .where(
+                        WhatsAppContact.user_id == user.id,
+                        or_(
+                            WhatsAppContact.name.ilike(pattern),
+                            WhatsAppContact.profile_name.ilike(pattern),
+                            WhatsAppContact.phone_number.ilike(pattern),
+                        ),
+                    )
+                    .order_by(desc(WhatsAppContact.last_message_at))
+                    .limit(limit)
+                )
+            ).scalars().all()
+            msg_hits = (
+                await db.execute(
+                    select(WhatsAppMessage)
+                    .where(
+                        WhatsAppMessage.user_id == user.id,
+                        WhatsAppMessage.content.ilike(pattern),
+                    )
+                    .order_by(desc(WhatsAppMessage.created_at))
+                    .limit(limit)
+                )
+            ).scalars().all()
+            return {
+                "success": True,
+                "result": f"Search '{query}': {len(contacts)} contacts, {len(msg_hits)} messages",
+                "data": {
+                    "contacts": [
+                        {
+                            "id": str(c.id),
+                            "phone_number": c.phone_number,
+                            "name": c.name or c.profile_name,
+                            "inbox_url": f"/inbox?contact={c.id}",
+                        }
+                        for c in contacts
+                    ],
+                    "messages": [
+                        {
+                            "id": str(m.id),
+                            "contact_id": str(m.contact_id) if m.contact_id else None,
+                            "content": (m.content or "")[:500],
+                            "created_at": m.created_at.isoformat() if m.created_at else None,
+                        }
+                        for m in msg_hits
+                    ],
+                    "widget": "whatsapp_search",
+                },
+            }
+
+        if operation == "unread_summary":
+            q = (
+                select(WhatsAppContact)
+                .where(
+                    WhatsAppContact.user_id == user.id,
+                    WhatsAppContact.unread_count > 0,
+                )
+                .order_by(desc(WhatsAppContact.unread_count))
+                .limit(limit)
+            )
+            rows = (await db.execute(q)).scalars().all()
+            total_unread = (
+                await db.execute(
+                    select(func.coalesce(func.sum(WhatsAppContact.unread_count), 0)).where(
+                        WhatsAppContact.user_id == user.id
+                    )
+                )
+            ).scalar() or 0
+            top = [
+                {
+                    "phone_number": c.phone_number,
+                    "name": c.name or c.profile_name,
+                    "unread_count": c.unread_count or 0,
+                    "inbox_url": f"/inbox?contact={c.id}",
+                }
+                for c in rows
+            ]
+            summary_lines = [
+                f"- {t['name'] or t['phone_number']}: {t['unread_count']} unread"
+                for t in top[:5]
+            ]
+            return {
+                "success": True,
+                "result": (
+                    f"{int(total_unread)} unread message(s) across {len(rows)} chat(s).\n"
+                    + "\n".join(summary_lines)
+                ),
+                "data": {
+                    "total_unread": int(total_unread),
+                    "conversations": top,
+                    "widget": "whatsapp_inbox",
+                },
+            }
+
+        return {"success": False, "error": f"Unknown inbox operation: {operation}", "result": None}
+
+    async def _execute_whatsapp_agent_control(
+        self,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        from .conversation_context_manager import context_manager
+        from .whatsapp_inbox_service import build_ccm_session_key, normalize_whatsapp_phone
+
+        operation = (arguments.get("operation") or arguments.get("action") or "").lower()
+        phone = normalize_whatsapp_phone(arguments.get("phone_number") or "")
+        if not phone:
+            return {"success": False, "error": "phone_number is required", "result": None}
+        session_key = build_ccm_session_key(user.id, phone)
+        # Ensure CCM session exists so handoff flags persist
+        await context_manager.get_or_create_session(
+            platform="whatsapp",
+            owner_user_id=str(user.id),
+            sender_id=phone,
+        )
+
+        if operation == "pause_ai":
+            reason = arguments.get("reason") or "operator_ask_ai"
+            await context_manager.set_human_handoff(session_key, reason, escalated_by="ask_ai")
+            return {
+                "success": True,
+                "result": f"AI paused for {phone}. You can reply from Inbox or Ask AI.",
+                "data": {"phone_number": phone, "human_handoff": True, "session_key": session_key},
+            }
+        if operation == "resume_ai":
+            await context_manager.clear_human_handoff(session_key)
+            return {
+                "success": True,
+                "result": f"AI resumed for {phone}.",
+                "data": {"phone_number": phone, "human_handoff": False, "session_key": session_key},
+            }
+        if operation == "handoff_status":
+            active = await context_manager.is_human_handoff_active(session_key)
+            session = await context_manager.get_session_by_key(session_key)
+            meta = (session.metadata if session else {}) or {}
+            return {
+                "success": True,
+                "result": f"Handoff {'ACTIVE' if active else 'inactive'} for {phone}",
+                "data": {
+                    "phone_number": phone,
+                    "human_handoff": active,
+                    "reason": meta.get("escalation_reason"),
+                    "escalated_by": meta.get("escalated_by"),
+                },
+            }
+        return {"success": False, "error": f"Unknown agent_control operation: {operation}", "result": None}
+
+    async def _execute_whatsapp_account_info(
+        self,
+        connection: Connection,
+        arguments: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        cfg = connection.config if isinstance(connection.config, dict) else {}
+        operation = (arguments.get("operation") or "check_connection").lower()
+        token = bool(cfg.get("access_token"))
+        phone_id = cfg.get("phone_number_id")
+        expires = cfg.get("token_expires_at")
+        healthy = token and bool(phone_id)
+        data = {
+            "connected": True,
+            "status": connection.status,
+            "has_access_token": token,
+            "phone_number_id": phone_id,
+            "token_expires_at": expires,
+            "healthy": healthy,
+            "reconnect_url": "/connections",
+            "widget": "whatsapp_connection",
+        }
+        if not healthy:
+            return {
+                "success": False,
+                "error": "WhatsApp connection incomplete — reconnect in Connections.",
+                "result": None,
+                "data": data,
+                "reconnect_required": True,
+            }
+        msg = f"WhatsApp connected (phone_number_id={phone_id})"
+        if expires:
+            msg += f"; token_expires_at={expires}"
+        return {"success": True, "result": msg, "data": data}
 
     async def _execute_social_media_tool(
         self,
@@ -4212,7 +4579,9 @@ class ToolExecutor:
             if not connection:
                 return {
                     "success": False,
-                    "error": "No active Google Workspace connection found. Please connect your Google Workspace account first."
+                    "error": "No active Google Workspace connection found. Connect Google Workspace at /connections, then retry. If already connected, re-authorize to refresh missing scopes (Gmail, Calendar, Drive, Sheets, Docs).",
+                    "reconnect_required": True,
+                    "reconnect_url": "/connections",
                 }
             
             # Get OAuth credentials from connection

@@ -2109,3 +2109,45 @@ class ProcessedWebhookMessage(Base):
         Index("ix_processed_webhook_created_at", "created_at"),
     )
 
+
+class ToolAuditLog(Base):
+    """Ask AI / MCP tool execution audit trail."""
+    __tablename__ = "tool_audit_log"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    conversation_id = Column(PG_UUID(as_uuid=True), nullable=True)
+    tool_name = Column(String(128), nullable=False, index=True)
+    args_hash = Column(String(64), nullable=True)
+    arguments_preview = Column(JSON, nullable=True)
+    success = Column(Boolean, default=False, nullable=False)
+    error = Column(Text, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    confirmed = Column(Boolean, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_tool_audit_user_created", "user_id", "created_at"),
+    )
+
+
+class ToolProposal(Base):
+    """HITL confirmation proposals for outbound / mutating Ask AI tools."""
+    __tablename__ = "tool_proposals"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    conversation_id = Column(PG_UUID(as_uuid=True), nullable=True)
+    tool_name = Column(String(128), nullable=False)
+    arguments = Column(JSON, nullable=False)
+    summary = Column(Text, nullable=True)
+    status = Column(String(32), default="pending", nullable=False)  # pending|confirmed|cancelled|expired|executed
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    executed_at = Column(DateTime(timezone=True), nullable=True)
+    result = Column(JSON, nullable=True)
+
+    __table_args__ = (
+        Index("ix_tool_proposals_user_status", "user_id", "status"),
+    )
+

@@ -605,6 +605,17 @@ class ToolContextEngine:
                 "Get real-time M-Pesa payment notifications in Slack"
             )
         
+        if "whatsapp" in active_platforms and "google_workspace" in active_platforms:
+            suggestions.append(
+                "Summarize unread WhatsApp chats and email yourself a Gmail digest"
+            )
+            suggestions.append(
+                "Find unpaid order rows in Sheets and draft WhatsApp payment reminders"
+            )
+            suggestions.append(
+                "Book a Calendar call with a WhatsApp lead and send a Gmail confirmation"
+            )
+
         if "whatsapp" in active_platforms and "hubspot" in active_platforms:
             suggestions.append(
                 "Auto-create HubSpot contacts from WhatsApp conversations"
@@ -627,7 +638,7 @@ class ToolContextEngine:
         
         if not suggestions:
             suggestions.append(
-                "Connect more apps to unlock powerful cross-platform automations"
+                "Connect WhatsApp and Google Workspace to unlock operator automations"
             )
         
         return suggestions
@@ -788,17 +799,29 @@ class ToolContextEngine:
             
             if "google_workspace" in platform:
                 suggestions.append({
-                    "title": "Schedule Meeting",
-                    "prompt": "Schedule a 30-minute team standup for tomorrow at 9 AM",
+                    "title": "Unread Digest",
+                    "prompt": "Summarize my unread WhatsApp chats and email me a digest via Gmail",
                     "icon": "📧",
+                    "platform": "google_workspace"
+                })
+                suggestions.append({
+                    "title": "Schedule Call",
+                    "prompt": "Find a free 30-minute slot tomorrow and create a Google Calendar meeting with Meet link",
+                    "icon": "📅",
                     "platform": "google_workspace"
                 })
             
             if "whatsapp" in platform:
                 suggestions.append({
-                    "title": "Customer Outreach",
-                    "prompt": "Send a WhatsApp message to my VIP customers about our new promotion",
+                    "title": "Unread Inbox",
+                    "prompt": "Show my unread WhatsApp conversations and summarize the top 3",
                     "icon": "📱",
+                    "platform": "whatsapp"
+                })
+                suggestions.append({
+                    "title": "Connection Health",
+                    "prompt": "Check my WhatsApp connection health and tell me if I need to reconnect",
+                    "icon": "🔌",
                     "platform": "whatsapp"
                 })
             
