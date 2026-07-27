@@ -246,26 +246,21 @@ class CalendarService:
         self,
         time_min: str,
         time_max: str,
-        attendees: List[str],
+        attendees: Optional[List[str]] = None,
         timezone: str = 'Africa/Nairobi'
     ) -> Dict[str, Any]:
         """
-        Check availability of attendees during a time period
-        
-        Args:
-            time_min: Start time (ISO format)
-            time_max: End time (ISO format)
-            attendees: List of attendee emails
-            timezone: Timezone
+        Check availability of attendees (or primary calendar) during a time period.
         """
         try:
             service = self.base_client.get_service(self.service_name, self.version)
+            calendar_ids = attendees or ['primary']
             
             body = {
                 'timeMin': time_min,
                 'timeMax': time_max,
                 'timeZone': timezone,
-                'items': [{'id': email} for email in attendees]
+                'items': [{'id': email} for email in calendar_ids]
             }
             
             result = service.freebusy().query(body=body).execute()
@@ -282,7 +277,10 @@ class CalendarService:
             
             return {
                 'success': True,
-                'availability': availability
+                'availability': availability,
+                'time_min': time_min,
+                'time_max': time_max,
+                'timezone': timezone,
             }
             
         except Exception as e:

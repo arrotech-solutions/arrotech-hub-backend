@@ -4670,7 +4670,7 @@ class ToolExecutor:
                 if 'logger' in locals() or 'logger' in globals():
                     logger.warning(f"Error persisting Google Workspace token: {e}")
             
-            operation = arguments.get("operation")
+            operation = arguments.get("operation") or arguments.get("action")
             
             # Route to appropriate service based on tool name
             if tool_name == "google_workspace_gmail":
@@ -4686,10 +4686,19 @@ class ToolExecutor:
                         attachments=arguments.get("attachments"),
                         html=arguments.get("html", False)
                     )
-                elif operation == "read_emails":
+                elif operation in ("read_emails", "list_emails", None) and operation != "search_emails":
+                    # Default inbox read when operation omitted or read_emails
+                    if operation is None and arguments.get("query"):
+                        return await service.search_emails(
+                            query=arguments.get("query"),
+                            max_results=arguments.get("max_results", 50),
+                        )
+                    label_ids = arguments.get("label_ids")
+                    if not label_ids and not arguments.get("query"):
+                        label_ids = ["INBOX"]
                     return await service.read_emails(
                         max_results=arguments.get("max_results", 10),
-                        label_ids=arguments.get("label_ids"),
+                        label_ids=label_ids,
                         query=arguments.get("query")
                     )
                 elif operation == "search_emails":
@@ -4750,10 +4759,15 @@ class ToolExecutor:
                         timezone=arguments.get("timezone", "Africa/Nairobi")
                     )
                 elif operation == "list_events":
+                    from datetime import datetime, timezone as dt_timezone
+                    time_min = arguments.get("time_min")
+                    if not time_min:
+                        # Default to "upcoming" — without this, Calendar returns oldest events first
+                        time_min = datetime.now(dt_timezone.utc).isoformat().replace("+00:00", "Z")
                     return await service.list_events(
-                        time_min=arguments.get("time_min"),
+                        time_min=time_min,
                         time_max=arguments.get("time_max"),
-                        max_results=arguments.get("max_results", 10)
+                        max_results=arguments.get("max_results", 10),
                     )
                 elif operation == "update_event":
                     return await service.update_event(
@@ -4769,10 +4783,15 @@ class ToolExecutor:
                         event_id=arguments.get("event_id")
                     )
                 elif operation == "check_availability":
+                    attendees = arguments.get("attendees")
+                    if not attendees:
+                        # "Am I free?" → check the user's primary calendar
+                        attendees = ["primary"]
                     return await service.check_availability(
                         time_min=arguments.get("time_min"),
                         time_max=arguments.get("time_max"),
-                        attendees=arguments.get("attendees")
+                        attendees=attendees,
+                        timezone=arguments.get("timezone", "Africa/Nairobi"),
                     )
                 elif operation == "create_meeting":
                     return await service.create_meeting(
@@ -4784,6 +4803,7 @@ class ToolExecutor:
                     )
             
             elif tool_name == "google_workspace_drive":
+                from .tool_result_grounding import normalize_drive_search_query
                 service = DriveService(base_client)
                 
                 if operation == "upload_file":
@@ -4802,9 +4822,10 @@ class ToolExecutor:
                         file_id=arguments.get("file_id")
                     )
                 elif operation == "list_files":
+                    raw_q = arguments.get("query")
                     return await service.list_files(
                         folder_id=arguments.get("folder_id"),
-                        query=arguments.get("query"),
+                        query=normalize_drive_search_query(raw_q) if raw_q else None,
                         max_results=arguments.get("max_results", 100),
                         order_by=arguments.get("order_by", "modifiedTime desc"),
                     )
@@ -4825,7 +4846,7 @@ class ToolExecutor:
                     )
                 elif operation == "search_files":
                     return await service.search_files(
-                        query=arguments.get("query"),
+                        query=normalize_drive_search_query(arguments.get("query")),
                         max_results=arguments.get("max_results", 50)
                     )
                 elif operation == "get_metadata":

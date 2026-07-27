@@ -1580,13 +1580,34 @@ When the user asks you to perform actions, write Python code using the available
                     if not tool_calls:
                         from .tool_result_grounding import (
                             looks_ungrounded,
+                            looks_like_tool_deferral,
                             synthesize_answer_from_tools,
                             chunk_text_for_stream,
                         )
 
+                        final_text = (llm_content or "").strip()
+
+                        # Model said "let me check…" without calling tools — force another iteration
+                        if (
+                            looks_like_tool_deferral(final_text, tools_called)
+                            and openai_tools
+                            and iteration < max_iterations - 1
+                        ):
+                            messages.append({
+                                "role": "system",
+                                "content": (
+                                    "Do not narrate that you will check or ask the user to wait. "
+                                    "Call the appropriate tool NOW (e.g. google_workspace_calendar, "
+                                    "google_workspace_gmail, whatsapp_inbox), then answer from the tool result."
+                                ),
+                            })
+                            # Drop the deferral assistant turn so the next call is clean
+                            if messages and messages[-1].get("role") == "assistant":
+                                messages.pop()
+                            continue
+
                         yield {"type": "thinking", "content": "Composing final response..."}
 
-                        final_text = (llm_content or "").strip()
                         if looks_ungrounded(final_text, tools_called):
                             grounded = synthesize_answer_from_tools(content, tools_called)
                             if grounded:
@@ -1596,7 +1617,6 @@ When the user asks you to perform actions, write Python code using the available
                             for chunk in chunk_text_for_stream(final_text):
                                 yield {"type": "content_delta", "delta": chunk}
                         else:
-                            # Empty model content — try grounded synthesis, else stream a fresh reply
                             grounded = synthesize_answer_from_tools(content, tools_called)
                             if grounded:
                                 for chunk in chunk_text_for_stream(grounded):
