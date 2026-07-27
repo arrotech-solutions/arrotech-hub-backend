@@ -112,7 +112,10 @@ class PrecisionToolRouter:
         if "whatsapp" in text and re.search(r"\bsend\b", text):
             must_have.extend(["whatsapp_send_message", "whatsapp_messaging"])
 
-        if any(k in text for k in ("gmail", "email", "inbox")) and "whatsapp" not in text:
+        # Email/Gmail — include even when WhatsApp is also mentioned (multi-step: WA → email)
+        if any(k in text for k in ("gmail", "email")):
+            must_have.append("google_workspace_gmail")
+        elif "inbox" in text and "whatsapp" not in text:
             must_have.append("google_workspace_gmail")
         if any(k in text for k in ("calendar", "meeting", "availability", "schedule")) or re.search(
             r"\bfree\b.*(tomorrow|today|between)|am i free", text

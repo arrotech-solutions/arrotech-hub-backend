@@ -612,10 +612,42 @@ class ExecutionOrchestrator:
                 # Add assistant message to conversation
                 messages.append(assistant_message)
                 
-                # If no tool calls, we're done
+                # If no tool calls, check for deferral narration before finishing
                 if not tool_calls:
+                    from .tool_result_grounding import (
+                        looks_like_tool_deferral,
+                        looks_ungrounded,
+                        synthesize_answer_from_tools,
+                    )
+                    if (
+                        looks_like_tool_deferral(content or "", tools_called)
+                        and tools
+                        and iteration < max_iterations - 1
+                    ):
+                        if messages and messages[-1].get("role") == "assistant":
+                            messages.pop()
+                        messages.append({
+                            "role": "system",
+                            "content": (
+                                "Do not narrate that you will check, retrieve, gather, or ask the user to wait. "
+                                "Call the appropriate tool NOW, then answer from the tool result."
+                            ),
+                        })
+                        continue
+
+                    final = content or ""
+                    if looks_like_tool_deferral(final, tools_called) or looks_ungrounded(final, tools_called):
+                        user_q = next(
+                            (m.get("content") or "" for m in reversed(messages) if m.get("role") == "user"),
+                            "",
+                        )
+                        grounded = synthesize_answer_from_tools(user_q, tools_called)
+                        if grounded:
+                            final = grounded
+                        elif looks_like_tool_deferral(final, tools_called) and not tools_called:
+                            final = "I was unable to complete that lookup. Please try again."
                     print(f"✅ No tool calls - final response generated")
-                    return content, tools_called, total_output_tokens
+                    return final, tools_called, total_output_tokens
                 
                 # Execute tool calls
                 for tool_call in tool_calls:
@@ -1587,24 +1619,41 @@ When the user asks you to perform actions, write Python code using the available
 
                         final_text = (llm_content or "").strip()
 
-                        # Model said "let me check…" without calling tools — force another iteration
+                        # Model said "I'll retrieve…" / "Let's check…" without tools this turn
                         if (
                             looks_like_tool_deferral(final_text, tools_called)
                             and openai_tools
                             and iteration < max_iterations - 1
                         ):
-                            messages.append({
-                                "role": "system",
-                                "content": (
-                                    "Do not narrate that you will check or ask the user to wait. "
-                                    "Call the appropriate tool NOW (e.g. google_workspace_calendar, "
-                                    "google_workspace_gmail, whatsapp_inbox), then answer from the tool result."
-                                ),
-                            })
                             # Drop the deferral assistant turn so the next call is clean
                             if messages and messages[-1].get("role") == "assistant":
                                 messages.pop()
+                            messages.append({
+                                "role": "system",
+                                "content": (
+                                    "Do not narrate that you will check, retrieve, gather, or ask the user to wait. "
+                                    "Call the appropriate tool NOW (e.g. google_workspace_calendar, "
+                                    "google_workspace_gmail, whatsapp_inbox). If this is a multi-step request "
+                                    "(e.g. WhatsApp then email), call the NEXT required tool immediately. "
+                                    "Then answer from the tool result(s)."
+                                ),
+                            })
                             continue
+
+                        # Last iteration still deferring — never stream the promise as final
+                        if looks_like_tool_deferral(final_text, tools_called):
+                            grounded = synthesize_answer_from_tools(content, tools_called)
+                            if grounded:
+                                final_text = grounded
+                            elif tools_called:
+                                final_text = (
+                                    "I started the request but could not finish the remaining step. "
+                                    "Please try again, or rephrase with one action at a time."
+                                )
+                            else:
+                                final_text = (
+                                    "I was unable to complete that lookup. Please try again."
+                                )
 
                         yield {"type": "thinking", "content": "Composing final response..."}
 
