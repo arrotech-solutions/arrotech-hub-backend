@@ -22,6 +22,39 @@ def test_needs_confirmation_whatsapp_inbox_read():
     assert needs_confirmation("whatsapp_agent_control", {"operation": "handoff_status", "phone_number": "2547"}) is False
 
 
+def test_format_and_synthesize_gmail_and_calendar():
+    from src.services.tool_result_grounding import (
+        format_tool_result_for_llm,
+        looks_ungrounded,
+        looks_like_tool_deferral,
+        synthesize_answer_from_tools,
+        normalize_drive_search_query,
+    )
+
+    gmail = {
+        "success": True,
+        "emails": [
+            {"from": "a@b.com", "subject": "Invoice #12", "date": "Mon", "snippet": "Please pay"},
+        ],
+        "total": 1,
+    }
+    formatted = format_tool_result_for_llm("google_workspace_gmail", gmail)
+    assert "Invoice #12" in formatted
+    assert "TOOL SUCCEEDED" in formatted
+
+    tools = [{"name": "google_workspace_gmail", "result": gmail}]
+    bad = "It seems there was an issue retrieving your latest Gmail messages."
+    assert looks_ungrounded(bad, tools) is True
+    good = synthesize_answer_from_tools("Show my latest 10 Gmail messages", tools)
+    assert good and "Invoice #12" in good
+
+    assert looks_like_tool_deferral("Let me check your calendar. One moment please.", []) is True
+    assert looks_like_tool_deferral("You are free tomorrow.", []) is False
+
+    assert "name contains" in normalize_drive_search_query("Hub")
+    assert "trashed" in normalize_drive_search_query("Hub")
+
+
 def test_format_and_synthesize_unread_inbox():
     from src.services.tool_result_grounding import (
         format_tool_result_for_llm,

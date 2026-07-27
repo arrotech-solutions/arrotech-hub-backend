@@ -112,16 +112,20 @@ class PrecisionToolRouter:
         if "whatsapp" in text and re.search(r"\bsend\b", text):
             must_have.extend(["whatsapp_send_message", "whatsapp_messaging"])
 
-        if any(k in text for k in ("gmail", "email")) and "whatsapp" not in text:
+        if any(k in text for k in ("gmail", "email", "inbox")) and "whatsapp" not in text:
             must_have.append("google_workspace_gmail")
-        if any(k in text for k in ("calendar", "meeting", "availability", "schedule")):
+        if any(k in text for k in ("calendar", "meeting", "availability", "schedule")) or re.search(
+            r"\bfree\b.*(tomorrow|today|between)|am i free", text
+        ):
             must_have.append("google_workspace_calendar")
-        if "drive" in text or ("google" in text and "file" in text):
+        if "drive" in text or ("google" in text and "file" in text) or re.search(r"\bhub\b", text) and "drive" in text:
             must_have.append("google_workspace_drive")
-        if re.search(r"\b(docs?|document)\b", text) and "google" in text:
+        if re.search(r"\b(docs?|document)\b", text) and ("google" in text or "meeting" in text):
             must_have.append("google_workspace_docs")
         if "sheet" in text or "spreadsheet" in text:
             must_have.append("google_workspace_sheets")
+        if "analytics" in text or "traffic" in text and "google" in text:
+            must_have.append("google_workspace_analytics")
 
         for name in must_have:
             if name in by_name and name not in selected_names:
@@ -267,6 +271,13 @@ class PrecisionToolRouter:
             r'add.*calendar': 'google_workspace_calendar',
             r'list.*event': 'google_workspace_calendar',
             r'check.*availability': 'google_workspace_calendar',
+            r'(am i|are you).*free': 'google_workspace_calendar',
+            r'free.*(tomorrow|today|between)': 'google_workspace_calendar',
+            r'next.*calendar.*event': 'google_workspace_calendar',
+            r'(show|list).*gmail': 'google_workspace_gmail',
+            r'(latest|recent).*email': 'google_workspace_gmail',
+            r'search.*gmail': 'google_workspace_gmail',
+            r'search.*email': 'google_workspace_gmail',
             r'meeting.*schedule': 'google_workspace_calendar',
 
             # Google Workspace - Drive
