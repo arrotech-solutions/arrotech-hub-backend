@@ -3,6 +3,8 @@ Unit tests for Ask AI WhatsApp/Google Workspace confirmation + free-tier gates.
 """
 from types import SimpleNamespace
 
+import pytest
+
 from src.services.tool_confirmation import needs_confirmation, summarize_proposal
 from src.services.tool_executor import ToolExecutor
 
@@ -260,25 +262,22 @@ def test_tool_name_aliases_outlook_notion_trello_jira():
     assert args.get("operation") == "get_company_info"
 
 
-def test_intent_soft_force_tools():
-    import asyncio
+@pytest.mark.asyncio
+async def test_intent_soft_force_tools():
     from src.services.intent_processor import IntentProcessor
 
     proc = IntentProcessor.__new__(IntentProcessor)
     proc.user = None
     proc.db = None
 
-    async def _run():
-        for q in (
-            "Email arrotechdesign@gmail.com the unread whatsapp summary",
-            "Am I free tomorrow between 10 and 12?",
-            "Show my unread WhatsApp conversations",
-            "List my Outlook inbox",
-        ):
-            ic = await proc.classify_intent(q)
-            assert ic.requires_tools is True, q
-
-    asyncio.run(_run())
+    for q in (
+        "Email arrotechdesign@gmail.com the unread whatsapp summary",
+        "Am I free tomorrow between 10 and 12?",
+        "Show my unread WhatsApp conversations",
+        "List my Outlook inbox",
+    ):
+        ic = await proc.classify_intent(q)
+        assert ic.requires_tools is True, q
 
 
 def test_needs_confirmation_create_template_and_slack():
