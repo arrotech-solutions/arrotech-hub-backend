@@ -28,17 +28,30 @@ REFUSAL_PATTERNS = [
     r"try again later",
 ]
 
-# Model said it will look something up but never called a tool
+# Model narrates future work instead of calling a tool this turn
 DEFER_PATTERNS = [
     r"one moment",
     r"let me check",
+    r"let'?s check",
     r"i('?ll| will) check",
     r"checking (your|the)",
     r"please wait",
     r"hang on",
     r"give me a (moment|second)",
     r"looking (that|it) up",
+    r"let'?s start by",
+    r"i('?ll| will) first\b",
+    r"i('?ll| will) (now )?(gather|retrieve|fetch|look(?:\s+up)?|pull|find)\b",
+    r"i('?ll| will) (now )?(send|email)\b",
+    r"(gathering|retrieving|fetching)\b",
+    r"i('?ll| will) retrieve .+ now",
 ]
+
+# Trailing soft offers after a real answer should not force another tool loop
+_SOFT_OFFER = re.compile(
+    r"(if you (want|need|like)|let me know|would you like|want me to|shall i)\b",
+    re.I,
+)
 
 
 def _payload_collections(tool_result: Dict[str, Any]) -> Dict[str, Any]:
@@ -216,14 +229,28 @@ def format_tool_result_for_llm(tool_name: str, tool_result: Any) -> str:
     return "\n".join(parts)
 
 
-def looks_like_tool_deferral(answer: str, tools_called: List[Dict[str, Any]]) -> bool:
-    """True when the model narrates checking something but called no tools."""
-    if tools_called:
-        return False
+def looks_like_tool_deferral(answer: str, tools_called: Optional[List[Dict[str, Any]]] = None) -> bool:
+    """
+    True when this turn's answer promises future work instead of finishing the ask.
+
+    Caller must only invoke this when the current assistant turn had no tool_calls.
+    Prior tools in `tools_called` do not suppress detection — multi-step flows often
+    stall after a successful first tool with "I'll email that now…".
+    """
+    _ = tools_called  # kept for call-site compatibility
     text = (answer or "").strip().lower()
     if not text:
         return False
-    return any(re.search(p, text) for p in DEFER_PATTERNS)
+    if not any(re.search(p, text) for p in DEFER_PATTERNS):
+        return False
+
+    # "You're free 10–12. I'll send an invite if you want." — answered; soft offer OK
+    sentences = [s.strip() for s in re.split(r"[.!?]+", text) if s.strip()]
+    if len(sentences) >= 2 and _SOFT_OFFER.search(text):
+        first = sentences[0]
+        if not any(re.search(p, first) for p in DEFER_PATTERNS):
+            return False
+    return True
 
 
 def looks_ungrounded(answer: str, tools_called: List[Dict[str, Any]]) -> bool:

@@ -50,6 +50,25 @@ def test_format_and_synthesize_gmail_and_calendar():
 
     assert looks_like_tool_deferral("Let me check your calendar. One moment please.", []) is True
     assert looks_like_tool_deferral("You are free tomorrow.", []) is False
+    assert looks_like_tool_deferral(
+        "I'll first gather the unread WhatsApp conversations summary and then send it. "
+        "Let's start by retrieving the unread WhatsApp messages.",
+        [],
+    ) is True
+    assert looks_like_tool_deferral(
+        "Let's check your Google Calendar for events scheduled tomorrow between 10:00 and 12:00. "
+        "I'll retrieve that information now.",
+        [],
+    ) is True
+    assert looks_like_tool_deferral("I'll retrieve that information now.", []) is True
+    assert looks_like_tool_deferral(
+        "I'll email that summary now.",
+        [{"name": "whatsapp_inbox", "result": {"success": True}}],
+    ) is True
+    assert looks_like_tool_deferral(
+        "You're free tomorrow between 10 and 12. I'll send an invite if you want.",
+        [{"name": "google_workspace_calendar", "result": {"success": True}}],
+    ) is False
 
     assert "name contains" in normalize_drive_search_query("Hub")
     assert "trashed" in normalize_drive_search_query("Hub")
@@ -96,6 +115,8 @@ def test_ensure_operator_tools_prefers_inbox_for_unread():
         {"name": "whatsapp_send_message"},
         {"name": "whatsapp_inbox"},
         {"name": "whatsapp_account_info"},
+        {"name": "google_workspace_gmail"},
+        {"name": "google_workspace_calendar"},
     ]
     selected = router._ensure_operator_tools(
         "Show my unread WhatsApp conversations",
@@ -104,6 +125,42 @@ def test_ensure_operator_tools_prefers_inbox_for_unread():
     )
     names = [t["name"] for t in selected]
     assert "whatsapp_inbox" in names
+
+
+def test_ensure_operator_tools_email_plus_whatsapp():
+    from src.services.tool_selector import PrecisionToolRouter
+
+    router = PrecisionToolRouter.__new__(PrecisionToolRouter)
+    tools = [
+        {"name": "whatsapp_inbox"},
+        {"name": "google_workspace_gmail"},
+        {"name": "whatsapp_send_message"},
+    ]
+    selected = router._ensure_operator_tools(
+        "Email arrotechdesign@gmail.com the unread whatsapp conversations summary",
+        tools,
+        [],
+    )
+    names = [t["name"] for t in selected]
+    assert "whatsapp_inbox" in names
+    assert "google_workspace_gmail" in names
+
+
+def test_ensure_operator_tools_am_i_free():
+    from src.services.tool_selector import PrecisionToolRouter
+
+    router = PrecisionToolRouter.__new__(PrecisionToolRouter)
+    tools = [
+        {"name": "google_workspace_calendar"},
+        {"name": "google_workspace_gmail"},
+    ]
+    selected = router._ensure_operator_tools(
+        "Am I free tomorrow between 10:00 and 12:00 Africa/Nairobi?",
+        tools,
+        [],
+    )
+    names = [t["name"] for t in selected]
+    assert "google_workspace_calendar" in names
 
 
 def test_needs_confirmation_gmail_send():
