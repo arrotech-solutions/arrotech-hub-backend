@@ -320,21 +320,21 @@ class PrecisionToolRouter:
             r'whatsapp.*media': 'whatsapp_messaging',
             
             # HubSpot Tools
-            r'(hubspot|crm).*contact': 'hubspot_crm_management',
-            r'create.*hubspot.*contact': 'hubspot_crm_management',
-            r'get.*hubspot.*contact': 'hubspot_crm_management',
-            r'update.*hubspot.*contact': 'hubspot_crm_management',
+            r'(hubspot|crm).*contact': 'hubspot_contact_operations',
+            r'create.*hubspot.*contact': 'hubspot_contact_operations',
+            r'get.*hubspot.*contact': 'hubspot_contact_operations',
+            r'update.*hubspot.*contact': 'hubspot_contact_operations',
             
             # Salesforce Tools
-            r'(salesforce|crm).*contact': 'salesforce_crm_management',
-            r'create.*salesforce.*contact': 'salesforce_crm_management',
-            r'get.*salesforce.*contact': 'salesforce_crm_management',
-            r'(salesforce|crm).*lead': 'salesforce_crm_management',
-            r'create.*salesforce.*lead': 'salesforce_crm_management',
-            r'get.*salesforce.*lead': 'salesforce_crm_management',
-            r'(salesforce|crm).*opportunity': 'salesforce_crm_management',
-            r'create.*salesforce.*opportunity': 'salesforce_crm_management',
-            r'get.*salesforce.*opportunity': 'salesforce_crm_management',
+            r'(salesforce|crm).*contact': 'salesforce_create_contact',
+            r'create.*salesforce.*contact': 'salesforce_create_contact',
+            r'get.*salesforce.*contact': 'salesforce_search_contacts',
+            r'(salesforce|crm).*lead': 'salesforce_create_lead',
+            r'create.*salesforce.*lead': 'salesforce_create_lead',
+            r'get.*salesforce.*lead': 'salesforce_get_leads',
+            r'(salesforce|crm).*opportunity': 'salesforce_create_opportunity',
+            r'create.*salesforce.*opportunity': 'salesforce_create_opportunity',
+            r'get.*salesforce.*opportunity': 'salesforce_get_opportunities',
             
             # GA4 Tools
             r'ga4.*traffic': 'ga4_get_traffic',
@@ -679,9 +679,23 @@ class PrecisionToolRouter:
             r'(create|list|get|show).*jira': 'jira_project_management',
 
             # Airtable Tools  
-            r'airtable.*record': 'airtable_operations',
-            r'airtable.*base': 'airtable_operations',
-            r'(create|list|get|show).*airtable': 'airtable_operations',
+            r'airtable.*record': 'airtable_record_management',
+            r'airtable.*base': 'airtable_base_management',
+            r'(create|list|get|show).*airtable': 'airtable_record_management',
+            r'send.*telegram': 'telegram_send_message',
+            r'telegram.*(send|message)': 'telegram_send_message',
+            r'outlook.*(email|mail|inbox)': 'outlook_read_emails',
+            r'send.*outlook': 'outlook_send_email',
+            r'notion.*(search|page)': 'notion_search_pages',
+            r'create.*notion': 'notion_create_page',
+            r'trello.*(board|card)': 'trello_get_boards',
+            r'create.*trello.*card': 'trello_create_card',
+            r'jira.*(project|issue)': 'jira_get_projects',
+            r'create.*jira': 'jira_create_issue',
+            r'xero.*(invoice|report|company)': 'xero_accounting',
+            r'quickbooks.*(invoice|customer|report)': 'quickbooks_accounting',
+            r'power.?bi.*(workspace|dataset|report)': 'powerbi_list_workspaces',
+            r'list.*power.?bi': 'powerbi_list_workspaces',
 
             # Workflow Management
             r'manage.*workflow': 'workflow_management',
@@ -932,6 +946,14 @@ class PrecisionToolRouter:
                     ["show", "members"]
                 ],
                 "keywords": ["slack", "channel", "members", "list", "get", "show"]
+            },
+            "telegram_send_message": {
+                "patterns": [
+                    ["send", "telegram"],
+                    ["telegram", "message"],
+                    ["telegram", "send"],
+                ],
+                "keywords": ["telegram", "send", "message", "bot"],
             },
             "whatsapp_inbox": {
                 "patterns": [

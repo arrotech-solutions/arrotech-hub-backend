@@ -2384,13 +2384,18 @@ async def confirm_tool_proposal(
         conversation_id=proposal.conversation_id,
         confirmed=True,
     )
-    proposal.status = "executed"
+    ok = bool(isinstance(result, dict) and result.get("success", True)) and not (
+        isinstance(result, dict) and result.get("error")
+    )
+    if isinstance(result, dict) and result.get("success") is False:
+        ok = False
+    proposal.status = "executed" if ok else "failed"
     proposal.executed_at = datetime.now(timezone.utc)
     proposal.result = result if isinstance(result, dict) else {"result": str(result)}
     await db.commit()
     return {
-        "success": True,
-        "status": "executed",
+        "success": ok,
+        "status": proposal.status,
         "proposal_id": str(proposal.id),
         "tool": proposal.tool_name,
         "result": result,

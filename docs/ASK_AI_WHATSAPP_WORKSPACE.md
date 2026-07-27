@@ -1,50 +1,55 @@
-# Ask AI — WhatsApp + Google Workspace (operator copilot)
+"""
+Ask AI product-ready operator checklist
 
-Feature flag: `ASK_AI_WA_GW_V1` (default true). HITL: `ASK_AI_REQUIRE_CONFIRM` (default true).
+Feature flags: `ASK_AI_WA_GW_V1` (default true), `ASK_AI_REQUIRE_CONFIRM` (default true).
 
-## Who it’s for
+## Product guarantees
 
-Hub operators in `/chat` (Ask AI). Customer-facing WhatsApp ordering agent is separate.
+Every Ask AI turn ends with one of:
+1. A grounded answer (from tool data or synthesis)
+2. An Approve/Cancel proposal (HITL)
+3. A visible typed error
 
-## Capabilities
+Never: empty `done`, “I’ll retrieve…” as final, or `success: true` when the upstream API failed.
 
-### WhatsApp tools (when connected)
+## Core loop
 
-| Tool | Ops | Free | Notes |
-|------|-----|------|-------|
-| `whatsapp_inbox` | list_conversations, get_thread, search, unread_summary | Read OK | Deep links to `/inbox?contact=` |
-| `whatsapp_agent_control` | pause_ai, resume_ai, handoff_status | OK | CCM handoff |
-| `whatsapp_account_info` | check_connection, get_phone_info | OK | Reconnect CTA |
-| `whatsapp_send_message` / `whatsapp_messaging` | send_* | Starter+ + confirm | |
-| `whatsapp_templates` | list_templates (free), send_template (Starter+ + confirm) | | |
+- Soft intent (email/calendar/WhatsApp/check/list/…) always takes the tool path
+- Stream and non-stream share system prompt, tool-result formatting, deferral retry, HITL early exit
+- Write-tier gate runs **before** creating a proposal
+- Failed confirms mark proposal `failed` (not `executed`)
 
-### Google Workspace
+## WhatsApp + Google Workspace
 
-`google_workspace_gmail|calendar|drive|sheets|docs|analytics` — Free can **read**; sends/mutates need Starter+ and confirmation.
+| Surface | Notes |
+|---------|--------|
+| Inbox / account / agent | No HITL; free can read |
+| WA send / media / template / create_template | Starter+ + HITL; Meta success propagated |
+| Gmail / Calendar / Drive / Sheets / Docs | Reads free; mutates Starter+ + HITL |
+| Calendar availability | Accepts `start_time`/`end_time` as `time_min`/`time_max` |
+| Gmail drafts | `list_drafts` / `get_draft` / `update_draft` wired |
 
-## Confirmation flow
+## Other integrations (name-aligned)
 
-1. Model calls outbound tool → server creates `tool_proposals` row  
-2. SSE `tool.propose` + pending `tool_result`  
-3. UI Approve/Cancel → `POST /chat/proposals/{id}/confirm`  
-4. Execution audited in `tool_audit_log`
+Registry tool names resolve via `tool_name_aliases.resolve_tool_name` to executor handlers:
 
-## Test matrix (smoke)
+Outlook, Notion, Trello, Jira, Power BI, Xero (`xero_accounting`), QuickBooks (`quickbooks_accounting`), HubSpot contact ops, Salesforce CRUD names, Airtable, Telegram.
 
-1. Connect WhatsApp → “Show unread WhatsApp chats”  
-2. “Pause AI for +2547…” → handoff_status ACTIVE  
-3. Free user: send WA → upgrade message  
-4. Starter: send WA → Approve chip → message sent  
-5. Connect Google → “List my next 5 calendar events”  
-6. “Email me a digest…” → Gmail send proposal → Approve  
-7. Disconnect Google → clear reconnect error with `/connections`
+**Not exposed in Ask AI until wired:** Facebook, Twitter/X, TikTok, GitHub platform tools (coding agent GitHub tools remain separate).
 
-## Meta sandbox checklist
+**Zoho Mail:** clear “not available” error (CRM/Finance/Desk remain).
 
-- Test number + Cloud API app  
-- Template approved for outbound outside 24h window  
-- Webhook signature (`WHATSAPP_WEBHOOK_REQUIRE_SIGNATURE=true` in prod)
+## Smoke matrix
 
-## Alembic
+1. Unread WhatsApp → grounded list  
+2. “Am I free tomorrow 10–12 Africa/Nairobi?” → calendar availability  
+3. Email unread WA summary → inbox then Gmail propose  
+4. Free user send WA → upgrade (no Approve card)  
+5. Starter send WA → Approve → Meta success/failure reflected  
+6. Outlook / Notion / Trello / Jira list tools when connected  
+7. Xero / QuickBooks company info when connected  
+8. Disconnect → reconnect CTA  
 
-`k5f6g7h8i9d1_tool_audit_proposals` — `tool_audit_log`, `tool_proposals`.
+## Tests
+
+`tests/test_ask_ai_wa_workspace.py` — confirmation, gates, deferral, aliases, operator ensure.

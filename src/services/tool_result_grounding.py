@@ -439,10 +439,60 @@ def synthesize_answer_from_tools(user_query: str, tools_called: List[Dict[str, A
 
         elif result.get("result") and not lines:
             lines.append(str(result["result"]))
+        else:
+            # Generic fallback for Slack / CRM / tasks / any list-or-message payload
+            generic = _synthesize_generic_payload(name, result, data)
+            if generic:
+                lines.extend(generic)
 
     if not lines:
         return None
     return "\n".join(lines)
+
+
+def _synthesize_generic_payload(
+    tool_name: str,
+    result: Dict[str, Any],
+    data: Dict[str, Any],
+) -> List[str]:
+    """Deterministic summary for non-WA/GW tools."""
+    out: List[str] = []
+    label = tool_name.replace("_", " ")
+
+    for key in (
+        "channels", "messages", "contacts", "companies", "deals", "leads",
+        "opportunities", "tasks", "projects", "issues", "cards", "boards",
+        "pages", "records", "invoices", "files", "events", "emails",
+        "conversations", "items", "results", "workspaces", "datasets", "reports",
+    ):
+        items = data.get(key)
+        if items is None and isinstance(result.get(key), list):
+            items = result.get(key)
+        if isinstance(items, list) and items:
+            out.append(f"**{len(items)} {key}** from {label}:")
+            for item in items[:12]:
+                if isinstance(item, dict):
+                    title = (
+                        item.get("name") or item.get("title") or item.get("subject")
+                        or item.get("summary") or item.get("text") or item.get("id")
+                        or str(item)[:80]
+                    )
+                    out.append(f"- {title}")
+                else:
+                    out.append(f"- {item}")
+            return out
+
+    msg = result.get("message") or result.get("result")
+    if msg and not isinstance(msg, (dict, list)):
+        out.append(f"**{label}:** {msg}")
+        return out
+
+    # Compact leftover JSON when nothing else matched
+    leftover = {k: v for k, v in data.items() if v is not None and k != "widget"}
+    if leftover:
+        out.append(f"**{label}** returned data:")
+        out.append("```json\n" + json.dumps(leftover, default=str)[:1500] + "\n```")
+    return out
 
 
 def chunk_text_for_stream(text: str, chunk_size: int = 24) -> List[str]:

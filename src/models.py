@@ -2141,7 +2141,7 @@ class ToolProposal(Base):
     tool_name = Column(String(128), nullable=False)
     arguments = Column(JSON, nullable=False)
     summary = Column(Text, nullable=True)
-    status = Column(String(32), default="pending", nullable=False)  # pending|confirmed|cancelled|expired|executed
+    status = Column(String(32), default="pending", nullable=False)  # pending|confirmed|cancelled|expired|executed|failed
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     expires_at = Column(DateTime(timezone=True), nullable=True)
     executed_at = Column(DateTime(timezone=True), nullable=True)

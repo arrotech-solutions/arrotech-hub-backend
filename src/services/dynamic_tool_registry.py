@@ -1263,6 +1263,12 @@ class DynamicToolRegistry:
             elif connection.platform == "quickbooks":
                 tools.extend(self._get_quickbooks_tools(connection))
             elif connection.platform in platform_registry.platforms:
+                # Product rule: never expose Ask AI tools that always return Unknown
+                ASK_AI_UNREADY_PLATFORMS = {
+                    "facebook", "twitter", "tiktok", "github",
+                }
+                if connection.platform in ASK_AI_UNREADY_PLATFORMS:
+                    continue
                 # Dynamically fetch tools for regional platforms (hr_hub, logistics_hub, etc.)
                 p_tools = platform_registry.get_platform_tools(connection.platform)
                 for tool in p_tools:

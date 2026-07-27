@@ -42,14 +42,20 @@ class IntentProcessor:
             ],
             'action': [
                 'send', 'create', 'generate', 'download', 'upload', 'execute', 'run',
-                'call', 'manage', 'update', 'delete', 'scrape', 'extract', 'build'
+                'call', 'manage', 'update', 'delete', 'scrape', 'extract', 'build',
+                'email', 'post', 'schedule', 'book', 'invite', 'reply', 'forward',
+                'compose', 'pause', 'resume', 'share', 'assign', 'comment',
             ],
             'query': [
                 'get', 'find', 'search', 'list', 'show', 'display', 'retrieve',
-                'what is', 'how many', 'when', 'where', 'who', 'which'
+                'what is', 'how many', 'when', 'where', 'who', 'which',
+                'check', 'unread', 'inbox', 'free', 'availability', 'am i free',
+                'summarize', 'summary', 'latest', 'recent', 'open', 'look up',
+                'fetch', 'pull', 'status', 'calendar', 'gmail', 'whatsapp',
+                'slack', 'drive', 'meetings', 'events', 'messages', 'conversations',
             ],
             'analysis': [
-                'analyze', 'analyze', 'report', 'dashboard', 'metrics', 'statistics',
+                'analyze', 'analyse', 'report', 'dashboard', 'metrics', 'statistics',
                 'trends', 'performance', 'insights', 'data', 'chart', 'graph'
             ],
             'automation': [
@@ -77,13 +83,28 @@ class IntentProcessor:
         if (intent_scores.get('action', 0) > 0 or intent_scores.get('automation', 0) > 0) and intent_scores.get('chat', 0) > 0:
             intent_scores['chat'] = 0
         
+        # Soft force: platform / operator verbs → never treat as pure chat
+        soft_tool_markers = (
+            "email", "gmail", "calendar", "whatsapp", "slack", "drive", "sheets",
+            "docs", "hubspot", "salesforce", "outlook", "telegram", "linkedin",
+            "jira", "trello", "asana", "notion", "inbox", "unread", "am i free",
+            "availability", "meeting", "send ", "create ", "list ", "show ",
+            "check ", "summarize", "fetch ", "retrieve",
+        )
+        soft_force = any(m in user_input_lower for m in soft_tool_markers)
+
         # Determine primary intent
         primary_intent = max(intent_scores.items(), key=lambda x: x[1])
         intent_type = primary_intent[0]
         confidence = primary_intent[1]
+
+        if soft_force and intent_type == 'chat':
+            intent_type = 'query'
+            confidence = max(confidence, 0.35)
+            intent_scores['chat'] = 0
         
         # Determine if tools are required
-        requires_tools = intent_type in ['action', 'query', 'analysis', 'automation']
+        requires_tools = intent_type in ['action', 'query', 'analysis', 'automation'] or soft_force
         
         # Generate explanation
         explanation = self._generate_explanation(intent_type, user_input, confidence)

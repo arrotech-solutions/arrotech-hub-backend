@@ -231,3 +231,71 @@ def test_free_tier_blocks_sheets_write():
     )
     assert denied is not None
     assert denied.get("upgrade_required") is True
+
+
+def test_tool_name_aliases_outlook_notion_trello_jira():
+    from src.services.tool_name_aliases import resolve_tool_name
+
+    name, args = resolve_tool_name("outlook_read_emails", {})
+    assert name == "outlook_email_management"
+    assert args.get("operation") == "read_emails"
+
+    name, args = resolve_tool_name("notion_search_pages", {})
+    assert name == "notion_workspace_management"
+    assert args.get("operation") == "search_pages"
+
+    name, args = resolve_tool_name("trello_create_card", {"name": "x"})
+    assert name == "trello_project_management"
+    assert args.get("operation") == "create_card"
+
+    name, args = resolve_tool_name("jira_create_issue", {})
+    assert name == "jira_issue_tracking"
+    assert args.get("operation") == "create_issue"
+
+    name, args = resolve_tool_name("powerbi_list_workspaces", {})
+    assert name == "powerbi_workspace_management"
+
+    name, args = resolve_tool_name("xero_get_company_info", {})
+    assert name == "xero_accounting"
+    assert args.get("operation") == "get_company_info"
+
+
+def test_intent_soft_force_tools():
+    import asyncio
+    from src.services.intent_processor import IntentProcessor
+
+    proc = IntentProcessor.__new__(IntentProcessor)
+    proc.user = None
+    proc.db = None
+
+    async def _run():
+        for q in (
+            "Email arrotechdesign@gmail.com the unread whatsapp summary",
+            "Am I free tomorrow between 10 and 12?",
+            "Show my unread WhatsApp conversations",
+            "List my Outlook inbox",
+        ):
+            ic = await proc.classify_intent(q)
+            assert ic.requires_tools is True, q
+
+    asyncio.run(_run())
+
+
+def test_needs_confirmation_create_template_and_slack():
+    assert needs_confirmation("whatsapp_templates", {"operation": "create_template"}) is True
+    assert needs_confirmation("slack_send_message", {"channel": "C1", "message": "hi"}) is True
+    assert needs_confirmation("telegram_send_message", {"chat_id": "1", "message": "hi"}) is True
+
+
+def test_synthesize_generic_slack_like_payload():
+    from src.services.tool_result_grounding import synthesize_answer_from_tools
+
+    tools = [{
+        "name": "slack_list_channels",
+        "result": {
+            "success": True,
+            "channels": [{"name": "general"}, {"name": "ops"}],
+        },
+    }]
+    text = synthesize_answer_from_tools("list channels", tools)
+    assert text and "general" in text and "ops" in text

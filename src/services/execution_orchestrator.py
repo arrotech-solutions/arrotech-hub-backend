@@ -184,11 +184,25 @@ class ExecutionOrchestrator:
                 print(f"  - {tool['function']['name']}: {tool['function']['description']}")
 
             # Get conversation context for the function calling loop
-            from ..routers.chat_router import get_optimized_context
+            from ..routers.chat_router import get_optimized_context, build_system_prompt
+            from .tool_context_engine import tool_context_engine
+
             context_messages = await get_optimized_context(self.conversation_id, self.db, user_message=content)
-            
+
+            user_connections = await tool_context_engine.get_user_connections(self.user.id, self.db)
+            all_available_tools_list = list(dynamic_tool_registry.base_tools.values())
+            tool_awareness_context = await tool_context_engine.build_tool_awareness_context(
+                self.user.id, self.db, all_available_tools_list
+            )
+            system_prompt = await build_system_prompt(
+                relevant_tools,
+                user_context={"tier": self.user.subscription_tier, "connections": []},
+                user_query=content,
+                tool_awareness_context=tool_awareness_context,
+            )
+
             # Prepare messages for LLM
-            messages = []
+            messages = [{"role": "system", "content": system_prompt}]
             for msg in context_messages:
                 if msg.role == MessageRole.USER:
                     messages.append({"role": "user", "content": msg.content})
@@ -701,7 +715,12 @@ class ExecutionOrchestrator:
 
                         # Execute tool
                         tool_result = await tool_executor.execute_tool(
-                            function_name, arguments, self.user, self.db, tools_called
+                            function_name,
+                            arguments,
+                            self.user,
+                            self.db,
+                            tools_called,
+                            conversation_id=self.conversation_id,
                         )
                         
                         # Add to tools_called list
@@ -710,11 +729,21 @@ class ExecutionOrchestrator:
                             "arguments": arguments,
                             "result": tool_result
                         })
+
+                        # HITL: stop loop early when confirmation is required
+                        if isinstance(tool_result, dict) and tool_result.get("pending_confirmation"):
+                            summary = tool_result.get("summary") or tool_result.get("message") or "Action awaiting approval"
+                            return (
+                                f"Please approve this action to continue:\n\n{summary}",
+                                tools_called,
+                                total_output_tokens,
+                            )
                         
-                        # Add tool result to messages
+                        # Add tool result to messages (model-facing format)
+                        from .tool_result_grounding import format_tool_result_for_llm
                         messages.append({
                             "role": "tool",
-                            "content": json.dumps(tool_result) if isinstance(tool_result, dict) else str(tool_result),
+                            "content": format_tool_result_for_llm(function_name, tool_result),
                             "tool_call_id": tool_call_id
                         })
                         
@@ -1671,6 +1700,11 @@ When the user asks you to perform actions, write Python code using the available
                                 for chunk in chunk_text_for_stream(grounded):
                                     yield {"type": "content_delta", "delta": chunk}
                             else:
+                                fallback = (
+                                    "I completed the request but had nothing to show. "
+                                    "Please try again or rephrase."
+                                )
+                                streamed_any = False
                                 async for event in self._stream_final_response(
                                     provider, messages, tools=None, model_override=model_override
                                 ):
@@ -1678,7 +1712,11 @@ When the user asks you to perform actions, write Python code using the available
                                         if event.get("type") == "usage":
                                             total_tokens += event.get("tokens", 0)
                                         else:
+                                            streamed_any = True
                                             yield event
+                                if not streamed_any:
+                                    for chunk in chunk_text_for_stream(fallback):
+                                        yield {"type": "content_delta", "delta": chunk}
 
                         try:
                             from ..routers.subscription_router import get_or_create_usage_record
