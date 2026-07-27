@@ -5230,7 +5230,14 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                     arguments["business_config"] = business_config
                 from .tool_executor import ToolExecutor
                 executor = ToolExecutor()
-                return await executor.execute_tool(tool_name, arguments, user, db, background_tasks=background_tasks)
+                return await executor.execute_tool(
+                    tool_name,
+                    arguments,
+                    user,
+                    db,
+                    background_tasks=background_tasks,
+                    skip_confirmation=True,
+                )
 
         except Exception as e:
             logger.error(f"[CONV_AGENT] Sub-tool {tool_name} error: {e}")

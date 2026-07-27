@@ -24,10 +24,12 @@ Never: empty `done`, “I’ll retrieve…” as final, or `success: true` when 
 | Surface | Notes |
 |---------|--------|
 | Inbox / account / agent | No HITL; free can read |
-| WA send / media / template / create_template | Starter+ + HITL; Meta success propagated |
+| WA send / media / template / create_template | Starter+ + HITL in Ask AI only; Meta success propagated |
 | Gmail / Calendar / Drive / Sheets / Docs | Reads free; mutates Starter+ + HITL |
 | Calendar availability | Accepts `start_time`/`end_time` as `time_min`/`time_max` |
 | Gmail drafts | `list_drafts` / `get_draft` / `update_draft` wired |
+
+**Ordering agent / workflows:** use `skip_confirmation=True` so customer WhatsApp replies are not blocked by Ask AI Approve.
 
 ## Other integrations (name-aligned)
 
