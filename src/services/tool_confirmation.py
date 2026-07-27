@@ -20,14 +20,34 @@ logger = logging.getLogger(__name__)
 CONFIRM_RULES: Dict[str, Set[str]] = {
     "whatsapp_send_message": {"*", "send_message"},
     "whatsapp_messaging": {"send_message", "send_media", "send_location", "*"},
-    "whatsapp_templates": {"send_template", "*"},
-    "google_workspace_gmail": {"send_email", "send", "reply", "forward", "compose", "delete_email"},
+    "whatsapp_templates": {"send_template", "create_template", "*"},
+    "google_workspace_gmail": {
+        "send_email", "send", "reply", "forward", "compose", "delete_email",
+        "create_draft", "create_label", "apply_label", "mark_as_read",
+        "list_drafts", "get_draft", "update_draft",
+    },
     "google_workspace_calendar": {
         "create", "create_event", "update", "update_event", "delete", "delete_event", "create_meeting",
     },
-    "google_workspace_drive": {"upload_file", "delete_file", "share_file", "move_file"},
-    "google_workspace_sheets": {"write_range", "append_rows", "clear_range", "batch_update", "create_spreadsheet"},
-    "google_workspace_docs": {"create_document", "insert_text", "append_text", "replace_text", "batch_update"},
+    "google_workspace_drive": {"upload_file", "delete_file", "share_file", "move_file", "create_folder"},
+    "google_workspace_sheets": {
+        "write_range", "append_rows", "clear_range", "batch_update", "create_spreadsheet",
+        "update_spreadsheet_properties",
+    },
+    "google_workspace_docs": {
+        "create_document", "insert_text", "append_text", "replace_text", "batch_update",
+        "format_text", "insert_table",
+    },
+    # Broader messaging / CRM / tasks (Phase 3 expansion)
+    "slack_send_message": {"*", "send_message"},
+    "outlook_send_email": {"*", "send_email", "send"},
+    "outlook_email_management": {"send_email", "send", "reply", "forward"},
+    "telegram_send_message": {"*"},
+    "hubspot_contact_operations": {"create", "update"},
+    "jira_create_issue": {"*", "create", "create_issue"},
+    "trello_create_card": {"*", "create", "create_card"},
+    "asana_create_task": {"*", "create", "create_task"},
+    "notion_create_page": {"*", "create", "create_page"},
 }
 
 PROPOSAL_TTL_MINUTES = 15
@@ -76,15 +96,19 @@ def needs_confirmation(tool_name: str, arguments: Optional[Dict[str, Any]] = Non
     op = str((arguments or {}).get("operation") or (arguments or {}).get("action") or "").lower()
     if tool_name == "whatsapp_send_message":
         return True
+    if tool_name in ("slack_send_message", "telegram_send_message", "outlook_send_email", "jira_create_issue", "trello_create_card", "asana_create_task", "notion_create_page"):
+        return True
     if tool_name == "whatsapp_templates":
         # Default without template_name is list — do not confirm
         if not op:
             return bool((arguments or {}).get("template_name") or (arguments or {}).get("to_number"))
-        return op == "send_template"
+        return op in {"send_template", "create_template"}
     if tool_name == "whatsapp_messaging":
         if not op:
             return True  # defaults to send_message
         return op in {"send_message", "send_media", "send_location"}
+    if "*" in rules:
+        return True
     if not op:
         return False
     return op in rules

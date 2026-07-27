@@ -163,7 +163,13 @@ class ToolExecutor:
         from .tool_confirmation import needs_confirmation, create_proposal, record_tool_audit
 
         set_customer_id(str(user.id))
-        args = dict(arguments or {})
+        from .tool_name_aliases import resolve_tool_name
+        tool_name, args = resolve_tool_name(tool_name, dict(arguments or {}))
+
+        # Write-tier gate BEFORE HITL so Free users never Approve then get upgrade denial
+        write_denied = self._check_write_operation_access(tool_name, args, user)
+        if write_denied:
+            return write_denied
 
         # HITL: propose outbound/mutating actions instead of executing immediately
         if not skip_confirmation and needs_confirmation(tool_name, args):
@@ -344,6 +350,8 @@ class ToolExecutor:
                 return await self._execute_kra_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("xero_"):
                 return await self._execute_xero_tool(tool_name, arguments, user, db)
+            elif tool_name.startswith("quickbooks_"):
+                return await self._execute_quickbooks_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("llamaparse_"):
                 return await self._execute_llamaparse_tool(tool_name, arguments, user, db)
             elif tool_name.startswith("firecrawl_"):
@@ -558,14 +566,20 @@ class ToolExecutor:
         # Prefer longer / exact tool name matches before short prefixes
         WRITE_CHECKS = {
             "inbox_send": {
-                "google_workspace_gmail": ["send_email", "send", "reply", "forward", "compose"],
+                "google_workspace_gmail": [
+                    "send_email", "send", "reply", "forward", "compose",
+                    "create_draft", "create_label", "apply_label", "mark_as_read",
+                ],
                 "outlook_email": ["send_email", "send", "reply", "forward"],
+                "outlook_send_email": ["*", "send_email", "send"],
                 "outlook": ["send_email", "reply_email"],
                 "slack": ["send_message", "post_message"],
+                "slack_send_message": ["*", "send_message"],
                 "teams": ["send_message", "post_message"],
+                "telegram_send_message": ["*"],
                 "whatsapp_send_message": ["send_message"],
                 "whatsapp_messaging": ["send_message", "send_media", "send_location"],
-                "whatsapp_templates": ["send_template"],
+                "whatsapp_templates": ["send_template", "create_template"],
             },
             "calendar_create_edit": {
                 "google_workspace_calendar": [
@@ -577,14 +591,20 @@ class ToolExecutor:
             },
             "tasks_create_update": {
                 "jira": ["create_issue", "update_issue", "add_comment", "transition_issue", "create", "update"],
+                "jira_create_issue": ["*", "create", "create_issue"],
                 "trello": ["create_card", "update_card", "move_card", "create", "update"],
+                "trello_create_card": ["*", "create", "create_card"],
                 "asana": ["create_task", "update_task", "create_project", "add_comment", "create", "update"],
+                "asana_create_task": ["*", "create", "create_task"],
+                "notion_create_page": ["*", "create", "create_page"],
                 "clickup": ["create_task", "update_task", "create", "update"],
+                "hubspot_contact_operations": ["create", "update"],
                 "google_workspace_drive": [
                     "upload_file", "delete_file", "share_file", "move_file", "create_folder",
                 ],
                 "google_workspace_sheets": [
                     "write_range", "append_rows", "clear_range", "batch_update", "create_spreadsheet",
+                    "update_spreadsheet_properties",
                 ],
                 "google_workspace_docs": [
                     "create_document", "insert_text", "append_text", "replace_text",
@@ -612,7 +632,7 @@ class ToolExecutor:
             op_check = operation or action
             if tool_name == "whatsapp_send_message" and not op_check:
                 op_check = "send_message"
-            if op_check in blocked_operations:
+            if "*" in blocked_operations or op_check in blocked_operations:
                 if not FeatureGate.has_feature(user, feature_flag):
                     upgrade_msg = FeatureGate.get_upgrade_message(user.subscription_tier, feature_flag)
                     logger.info(
@@ -652,6 +672,14 @@ class ToolExecutor:
         if tool_name.startswith("clickup_"): return "clickup"
         if tool_name.startswith("kra_"): return "kra_portal"
         if tool_name.startswith("xero_"): return "xero"
+        if tool_name.startswith("quickbooks_"): return "quickbooks"
+        if tool_name.startswith("whatsapp_"): return "whatsapp"
+        if tool_name.startswith("telegram_"): return "telegram"
+        if tool_name.startswith("instagram_"): return "instagram"
+        if tool_name.startswith("outlook_"): return "outlook"
+        if tool_name.startswith("notion_"): return "notion"
+        if tool_name.startswith("trello_"): return "trello"
+        if tool_name.startswith("jira_"): return "jira"
         if tool_name.startswith("rag_"): return "rag_pipeline"
         if tool_name.startswith("pinecone_"): return "vector_databases"
         if tool_name.startswith("qdrant_"): return "vector_databases"
@@ -2235,31 +2263,33 @@ class ToolExecutor:
         # For now assume access token is valid or we'd need a refresh mechanism.
 
         if tool_name == "outlook_email_management":
-            action = arguments.get("action")
+            action = arguments.get("action") or arguments.get("operation")
             
             if action == "read_emails":
-                limit = arguments.get("limit", 10)
+                limit = arguments.get("limit") or arguments.get("max_results") or 10
                 result = await outlook_service.get_recent_emails(limit)
                 return {
                     "success": result.get("success", False),
                     "result": f"Retrieved {result.get('count', 0)} emails",
+                    "emails": result.get("emails") or result.get("data") or [],
                     "data": result
                 }
             elif action == "search_emails":
                 query = arguments.get("query")
-                limit = arguments.get("limit", 10)
+                limit = arguments.get("limit") or arguments.get("max_results") or 10
                 if not query:
                     return {"success": False, "error": "Query required for search_emails"}
                 result = await outlook_service.search_emails(query, limit)
                 return {
                     "success": result.get("success", False),
                     "result": f"Found {result.get('count', 0)} emails for query '{query}'",
+                    "emails": result.get("emails") or result.get("data") or [],
                     "data": result
                 }
             elif action == "send_email":
-                to_email = arguments.get("to_email")
+                to_email = arguments.get("to_email") or arguments.get("to")
                 subject = arguments.get("subject")
-                content = arguments.get("content")
+                content = arguments.get("content") or arguments.get("body")
                 content_type = arguments.get("content_type", "text")
                 cc_email = arguments.get("cc")
                 bcc_email = arguments.get("bcc")
@@ -2318,18 +2348,19 @@ class ToolExecutor:
         notion_service.access_token = config.get("access_token")
 
         if tool_name == "notion_workspace_management":
-            action = arguments.get("action")
+            action = arguments.get("action") or arguments.get("operation")
             
-            if action == "search_pages":
+            if action in ("search_pages", "search"):
                 query = arguments.get("query", "")
                 limit = arguments.get("limit", 10)
                 result = await notion_service.search_pages(query, limit)
                 return {
                     "success": result.get("success", False),
                     "result": f"Found {result.get('count', 0)} pages",
+                    "pages": result.get("pages") or result.get("data") or [],
                     "data": result
                 }
-            elif action == "create_page":
+            elif action in ("create_page", "create"):
                 title = arguments.get("title")
                 parent_id = arguments.get("parent_id")
                 content = arguments.get("content", "")
@@ -2381,13 +2412,14 @@ class ToolExecutor:
         trello_service.access_token = config.get("access_token")
 
         if tool_name == "trello_project_management":
-            action = arguments.get("action")
+            action = arguments.get("action") or arguments.get("operation")
             
             if action == "get_boards":
                 result = await trello_service.get_boards()
                 return {
                     "success": result.get("success", False),
                     "result": f"Found {result.get('count', 0)} boards",
+                    "boards": result.get("boards") or result.get("data") or [],
                     "data": result
                 }
             elif action == "get_board_members":
@@ -2539,13 +2571,14 @@ class ToolExecutor:
             return res
 
         if tool_name == "jira_issue_tracking":
-            action = arguments.get("action")
+            action = arguments.get("action") or arguments.get("operation")
             
             if action == "get_projects":
                 result = await execute_with_retry(jira_service.get_projects)
                 return {
                     "success": result.get("success", False),
                     "result": f"Found {result.get('count', 0)} projects",
+                    "projects": result.get("projects") or result.get("data") or [],
                     "data": result
                 }
             elif action == "get_users":
@@ -3481,7 +3514,11 @@ class ToolExecutor:
                     return {"success": False, "error": f"Unknown Zoho Desk operation: {operation}"}
                     
             elif tool_name == "zoho_mail_operations":
-                return {"success": False, "error": "Zoho Mail operations not fully implemented yet."}
+                return {
+                    "success": False,
+                    "error": "Zoho Mail is not available in Ask AI yet. Use Gmail or Outlook for email, or connect Zoho Mail when support ships.",
+                    "result": None,
+                }
             
             else:
                 return {
@@ -3871,6 +3908,21 @@ class ToolExecutor:
                             )
 
                 result_summary = f"Message sent to {to_number}"
+                ok = bool(text_result and text_result.get("success", False))
+                if not text_result:
+                    ok = False
+                if not ok:
+                    err = (text_result or {}).get("error") or (text_result or {}).get("message") or "WhatsApp send failed"
+                    return {
+                        "success": False,
+                        "error": err,
+                        "result": None,
+                        "data": text_result,
+                        "processed_arguments": {
+                            "to_number": to_number,
+                            "message": clean_message,
+                        },
+                    }
 
                 return {
                     "success": True,
@@ -3919,8 +3971,9 @@ class ToolExecutor:
                             inbox_err,
                         )
                 return {
-                    "success": True,
-                    "result": f"Media message sent to {to_number}",
+                    "success": bool(result.get("success")),
+                    "result": f"Media message sent to {to_number}" if result.get("success") else None,
+                    "error": None if result.get("success") else (result.get("error") or "WhatsApp media send failed"),
                     "data": result,
                     "processed_arguments": {
                         "to_number": to_number,
@@ -3931,7 +3984,7 @@ class ToolExecutor:
             elif action == "send_location":
                 latitude = arguments.get("latitude", "")
                 longitude = arguments.get("longitude", "")
-                name = arguments.get("name", "")
+                name = arguments.get("name") or arguments.get("location_name") or ""
                 address = arguments.get("address", "")
 
                 if not to_number or not latitude or not longitude:
@@ -3985,9 +4038,11 @@ class ToolExecutor:
                 result = await whatsapp_service.send_template_message(
                     to_number, template_name, language_code, config=connection.config
                 )
+                ok = bool(result.get("success")) if isinstance(result, dict) else bool(result)
                 return {
-                    "success": True,
-                    "result": f"Template message sent to {to_number}",
+                    "success": ok,
+                    "result": f"Template message sent to {to_number}" if ok else None,
+                    "error": None if ok else ((result or {}).get("error") if isinstance(result, dict) else "Template send failed"),
                     "data": result
                 }
             elif action == "list_templates":
@@ -4013,9 +4068,11 @@ class ToolExecutor:
                 result = await whatsapp_service.create_template(
                     template_name, language_code, category, components, config=connection.config
                 )
+                ok = bool(result.get("success")) if isinstance(result, dict) else bool(result)
                 return {
-                    "success": True,
-                    "result": f"Template '{template_name}' created successfully",
+                    "success": ok,
+                    "result": f"Template '{template_name}' created successfully" if ok else None,
+                    "error": None if ok else ((result or {}).get("error") if isinstance(result, dict) else "Template create failed"),
                     "data": result
                 }
             else:
@@ -4671,6 +4728,39 @@ class ToolExecutor:
                     logger.warning(f"Error persisting Google Workspace token: {e}")
             
             operation = arguments.get("operation") or arguments.get("action")
+
+            # Normalize Gmail / Calendar operation aliases from prompts & schemas
+            GMAIL_OP_ALIASES = {
+                "send": "send_email",
+                "reply": "send_email",
+                "forward": "send_email",
+                "compose": "send_email",
+                "list": "read_emails",
+                "read": "read_emails",
+            }
+            CAL_OP_ALIASES = {
+                "create": "create_event",
+                "update": "update_event",
+                "delete": "delete_event",
+                "list": "list_events",
+                "availability": "check_availability",
+                "free": "check_availability",
+            }
+            if tool_name == "google_workspace_gmail" and operation in GMAIL_OP_ALIASES:
+                operation = GMAIL_OP_ALIASES[operation]
+            if tool_name == "google_workspace_calendar" and operation in CAL_OP_ALIASES:
+                operation = CAL_OP_ALIASES[operation]
+
+            # Calendar time window aliases (schema uses start_time/end_time)
+            if tool_name == "google_workspace_calendar":
+                if not arguments.get("time_min") and arguments.get("start_time"):
+                    arguments["time_min"] = arguments.get("start_time")
+                if not arguments.get("time_max") and arguments.get("end_time"):
+                    arguments["time_max"] = arguments.get("end_time")
+                if operation in (None, "", "check_availability") and (
+                    arguments.get("time_min") or arguments.get("start_time")
+                ) and not operation:
+                    operation = "check_availability"
             
             # Route to appropriate service based on tool name
             if tool_name == "google_workspace_gmail":
@@ -4723,6 +4813,23 @@ class ToolExecutor:
                         cc=arguments.get("cc"),
                         html=arguments.get("html", False)
                     )
+                elif operation == "list_drafts":
+                    return await service.list_drafts(
+                        max_results=arguments.get("max_results", 50)
+                    )
+                elif operation == "get_draft":
+                    return await service.get_draft(
+                        draft_id=arguments.get("draft_id") or arguments.get("message_id")
+                    )
+                elif operation == "update_draft":
+                    return await service.update_draft(
+                        draft_id=arguments.get("draft_id") or arguments.get("message_id"),
+                        to=arguments.get("to"),
+                        subject=arguments.get("subject"),
+                        body=arguments.get("body"),
+                        cc=arguments.get("cc"),
+                        html=arguments.get("html", False),
+                    )
                 elif operation == "delete_email":
                     return await service.delete_email(
                         message_id=arguments.get("message_id"),
@@ -4760,13 +4867,14 @@ class ToolExecutor:
                     )
                 elif operation == "list_events":
                     from datetime import datetime, timezone as dt_timezone
-                    time_min = arguments.get("time_min")
+                    time_min = arguments.get("time_min") or arguments.get("start_time")
+                    time_max = arguments.get("time_max") or arguments.get("end_time")
                     if not time_min:
                         # Default to "upcoming" — without this, Calendar returns oldest events first
                         time_min = datetime.now(dt_timezone.utc).isoformat().replace("+00:00", "Z")
                     return await service.list_events(
                         time_min=time_min,
-                        time_max=arguments.get("time_max"),
+                        time_max=time_max,
                         max_results=arguments.get("max_results", 10),
                     )
                 elif operation == "update_event":
@@ -4787,9 +4895,17 @@ class ToolExecutor:
                     if not attendees:
                         # "Am I free?" → check the user's primary calendar
                         attendees = ["primary"]
+                    time_min = arguments.get("time_min") or arguments.get("start_time")
+                    time_max = arguments.get("time_max") or arguments.get("end_time")
+                    if not time_min or not time_max:
+                        return {
+                            "success": False,
+                            "error": "check_availability requires start_time/time_min and end_time/time_max",
+                            "result": None,
+                        }
                     return await service.check_availability(
-                        time_min=arguments.get("time_min"),
-                        time_max=arguments.get("time_max"),
+                        time_min=time_min,
+                        time_max=time_max,
                         attendees=attendees,
                         timezone=arguments.get("timezone", "Africa/Nairobi"),
                     )
@@ -4920,6 +5036,11 @@ class ToolExecutor:
                 elif operation == "get_info":
                     return await service.get_spreadsheet_info(
                         spreadsheet_id=arguments.get("spreadsheet_id")
+                    )
+                elif operation == "update_spreadsheet_properties":
+                    return await service.update_spreadsheet_properties(
+                        spreadsheet_id=arguments.get("spreadsheet_id"),
+                        title=arguments.get("title") or arguments.get("name"),
                     )
             
             elif tool_name == "google_workspace_docs":
@@ -7239,6 +7360,25 @@ Description: {payment.description or 'N/A'}"""
             xero_service._configure_from_connection(config)
 
             operation = arguments.get("operation")
+            if tool_name == "xero_accounting":
+                # Unified Ask AI tool — route by operation
+                op = operation or "get_company_info"
+                if op == "get_company_info":
+                    return await xero_service.handle_operation("get_company_info", config=config)
+                if op in ("get_invoices", "create_invoice"):
+                    return await xero_service.handle_operation(op, config=config, **{
+                        k: arguments.get(k) for k in (
+                            "start_date", "end_date", "status", "contact_id", "customer_id",
+                            "max_results", "line_items", "due_date", "reference",
+                        ) if arguments.get(k) is not None
+                    })
+                if op in ("get_profit_loss", "get_balance_sheet", "get_accounts", "get_customers", "get_contacts"):
+                    return await xero_service.handle_operation(op, config=config, **{
+                        k: arguments.get(k) for k in (
+                            "start_date", "end_date", "date", "account_type", "max_results",
+                        ) if arguments.get(k) is not None
+                    })
+                return {"success": False, "error": f"Unknown Xero operation: {op}"}
             if tool_name == "xero_get_company_info":
                 return await xero_service.handle_operation("get_company_info", config=config)
             if tool_name == "xero_invoices":
@@ -7297,6 +7437,39 @@ Description: {payment.description or 'N/A'}"""
             return {"success": False, "error": f"Unknown Xero tool: {tool_name}"}
         except Exception as e:
             logger.error(f"Error executing Xero tool: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_quickbooks_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Execute QuickBooks accounting tools."""
+        try:
+            result = await db.execute(
+                select(Connection).filter(
+                    Connection.user_id == user.id,
+                    Connection.platform == "quickbooks",
+                    Connection.status == ConnectionStatus.ACTIVE,
+                )
+            )
+            connection = result.scalar_one_or_none()
+            if not connection:
+                return {
+                    "success": False,
+                    "error": "No active QuickBooks connection found. Connect QuickBooks at /connections.",
+                    "result": None,
+                }
+            config = connection.config or {}
+            qb = self.services.get("quickbooks") or QuickBooksService()
+            operation = arguments.get("operation") or "get_company_info"
+            return await qb.handle_operation(operation, config=config, **{
+                k: v for k, v in arguments.items() if k != "operation" and v is not None
+            })
+        except Exception as e:
+            logger.error(f"Error executing QuickBooks tool: {e}")
             return {"success": False, "error": str(e)}
 
     async def _execute_system_tool(

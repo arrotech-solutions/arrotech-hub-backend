@@ -18,7 +18,7 @@ class TestToolExecutor:
         from src.services.tool_executor import ToolExecutor
         svc = ToolExecutor()
         assert svc._get_platform_from_tool("slack_send_message") == "slack"
-        assert svc._get_platform_from_tool("whatsapp_send") == None # Handled differently
+        assert svc._get_platform_from_tool("whatsapp_send") == "whatsapp"
         assert svc._get_platform_from_tool("kra_validate") == "kra_portal"
         assert svc._get_platform_from_tool("unknown_tool") == None
 
