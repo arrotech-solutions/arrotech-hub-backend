@@ -286,6 +286,15 @@ def test_needs_confirmation_create_template_and_slack():
     assert needs_confirmation("telegram_send_message", {"chat_id": "1", "message": "hi"}) is True
 
 
+def test_whatsapp_send_needs_confirmation_for_ask_ai_but_skippable():
+    """Ask AI requires HITL; workflows/agents pass skip_confirmation=True."""
+    assert needs_confirmation("whatsapp_send_message", {"to_number": "2547", "message": "hi"}) is True
+    assert needs_confirmation(
+        "whatsapp_messaging",
+        {"action": "send_message", "to_number": "2547", "message": "hi"},
+    ) is True
+
+
 def test_synthesize_generic_slack_like_payload():
     from src.services.tool_result_grounding import synthesize_answer_from_tools
 

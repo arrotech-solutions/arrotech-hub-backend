@@ -734,9 +734,22 @@ class WorkflowBuilderService:
                 user = user_result.scalar_one_or_none()
                 
                 if user:
+                    # Automated workflows (ordering agent, triggers) must not wait for Ask AI HITL
                     tool_result = await self.tool_executor.execute_tool(
-                        step.tool_name, substituted_params, user, db
+                        step.tool_name,
+                        substituted_params,
+                        user,
+                        db,
+                        skip_confirmation=True,
                     )
+                    if isinstance(tool_result, dict) and tool_result.get("pending_confirmation"):
+                        raise Exception(
+                            f"Tool {step.tool_name} returned pending_confirmation in workflow context; "
+                            "automated sends cannot wait for Approve."
+                        )
+                    if isinstance(tool_result, dict) and tool_result.get("success") is False:
+                        err = tool_result.get("error") or tool_result.get("message") or "Tool failed"
+                        raise Exception(f"Tool {step.tool_name} failed: {err}")
                 else:
                     raise Exception(f"User {user_id} not found")
             else:
