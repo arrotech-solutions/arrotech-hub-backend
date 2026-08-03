@@ -894,7 +894,116 @@ async def get_current_user_info(
             "role": getattr(current_user, 'role', 'user') or 'user',
             "permissions": getattr(current_user, 'permissions', {}) or {},
             "email_verified": current_user.email_verified,
+            "onboarding_completed_at": (
+                current_user.onboarding_completed_at.isoformat()
+                if getattr(current_user, "onboarding_completed_at", None)
+                else None
+            ),
+            "onboarding_version": getattr(current_user, "onboarding_version", None),
+            "primary_goal": getattr(current_user, "primary_goal", None),
+            "secondary_goals": getattr(current_user, "secondary_goals", None) or [],
+            "workspace_type": getattr(current_user, "workspace_type", None),
+            "onboarding_role": getattr(current_user, "onboarding_role", None),
+            "preferred_apps": getattr(current_user, "preferred_apps", None) or [],
+            "activation_event": getattr(current_user, "activation_event", None),
+            "onboarding_step": getattr(current_user, "onboarding_step", None),
         }
+    }
+
+
+VALID_PRIMARY_GOALS = {
+    "unified_productivity",
+    "messaging_agents",
+    "ask_ai",
+    "automations",
+    "social_content",
+    "exploring",
+}
+
+VALID_WORKSPACE_TYPES = {"solo", "team"}
+
+
+class OnboardingUpdateRequest(BaseModel):
+    primary_goal: Optional[str] = None
+    secondary_goals: Optional[List[str]] = None
+    workspace_type: Optional[str] = None
+    onboarding_role: Optional[str] = None
+    preferred_apps: Optional[List[str]] = None
+    activation_event: Optional[str] = None
+    onboarding_step: Optional[int] = None
+    complete: Optional[bool] = None
+    onboarding_version: Optional[int] = 1
+
+
+@router.patch("/me/onboarding")
+async def update_onboarding_profile(
+    data: OnboardingUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upsert onboarding wizard progress and optionally mark complete."""
+    if data.primary_goal is not None:
+        if data.primary_goal not in VALID_PRIMARY_GOALS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid primary_goal. Allowed: {sorted(VALID_PRIMARY_GOALS)}",
+            )
+        current_user.primary_goal = data.primary_goal
+
+    if data.secondary_goals is not None:
+        filtered = [g for g in data.secondary_goals if g in VALID_PRIMARY_GOALS]
+        current_user.secondary_goals = filtered[:2]
+
+    if data.workspace_type is not None:
+        if data.workspace_type not in VALID_WORKSPACE_TYPES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="workspace_type must be 'solo' or 'team'",
+            )
+        current_user.workspace_type = data.workspace_type
+
+    if data.onboarding_role is not None:
+        current_user.onboarding_role = data.onboarding_role[:64] if data.onboarding_role else None
+
+    if data.preferred_apps is not None:
+        current_user.preferred_apps = data.preferred_apps[:20]
+
+    if data.activation_event is not None:
+        current_user.activation_event = data.activation_event[:128]
+
+    if data.onboarding_step is not None:
+        current_user.onboarding_step = max(0, min(int(data.onboarding_step), 20))
+
+    if data.onboarding_version is not None:
+        current_user.onboarding_version = data.onboarding_version
+
+    if data.complete:
+        current_user.onboarding_completed_at = datetime.now(timezone.utc)
+        if not current_user.onboarding_version:
+            current_user.onboarding_version = data.onboarding_version or 1
+        if not current_user.primary_goal:
+            current_user.primary_goal = "exploring"
+
+    await db.commit()
+    await db.refresh(current_user)
+
+    return {
+        "success": True,
+        "data": {
+            "onboarding_completed_at": (
+                current_user.onboarding_completed_at.isoformat()
+                if current_user.onboarding_completed_at
+                else None
+            ),
+            "onboarding_version": current_user.onboarding_version,
+            "primary_goal": current_user.primary_goal,
+            "secondary_goals": current_user.secondary_goals or [],
+            "workspace_type": current_user.workspace_type,
+            "onboarding_role": current_user.onboarding_role,
+            "preferred_apps": current_user.preferred_apps or [],
+            "activation_event": current_user.activation_event,
+            "onboarding_step": current_user.onboarding_step,
+        },
     }
 
 

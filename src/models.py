@@ -206,6 +206,16 @@ class User(Base):
     email_verified = Column(Boolean, default=False, server_default="true", nullable=False)  # server_default=true grandfathers existing users
     email_verification_token = Column(String, nullable=True)  # 6-digit OTP code
     email_verification_expiry = Column(DateTime(timezone=True), nullable=True)  # OTP expiry
+    # Onboarding wizard profile
+    onboarding_completed_at = Column(DateTime(timezone=True), nullable=True)
+    onboarding_version = Column(Integer, nullable=True)
+    primary_goal = Column(String, nullable=True)
+    secondary_goals = Column(JSON, nullable=True)  # list[str]
+    workspace_type = Column(String, nullable=True)  # solo | team
+    onboarding_role = Column(String, nullable=True)
+    preferred_apps = Column(JSON, nullable=True)  # list[str]
+    activation_event = Column(String, nullable=True)
+    onboarding_step = Column(Integer, nullable=True)  # last saved wizard step
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
