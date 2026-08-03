@@ -1210,22 +1210,32 @@ async def delete_account(
     if confirmation != "DELETE":
         raise HTTPException(status_code=400, detail="Confirmation string 'DELETE' required.")
 
-    # Delete dependent data manually
-    # 1. Child tables
-    await db.execute(delete(UsageLog).where(UsageLog.user_id == current_user.id))
-    await db.execute(delete(Conversation).where(Conversation.user_id == current_user.id))
-    await db.execute(delete(Workflow).where(Workflow.user_id == current_user.id))
-    await db.execute(delete(Connection).where(Connection.user_id == current_user.id))
-    await db.execute(delete(UserSettings).where(UserSettings.user_id == current_user.id))
-    await db.execute(delete(CreatorProfile).where(CreatorProfile.user_id == current_user.id))
-    await db.execute(delete(MpesaPayment).where(MpesaPayment.user_id == current_user.id))
-    await db.execute(delete(Invoice).where(Invoice.user_id == current_user.id))
-    
-    # 2. The User
-    await db.delete(current_user)
-    await db.commit()
+    from ..services.account_deletion_service import erase_user_account
+    import logging
+    from sqlalchemy.exc import SQLAlchemyError
 
-    return {"message": "Account permanently deleted."}
+    logger = logging.getLogger(__name__)
+    user_id = current_user.id
+
+    try:
+        await erase_user_account(db, current_user)
+        await db.commit()
+    except SQLAlchemyError as e:
+        await db.rollback()
+        logger.exception("Account deletion failed for user_id=%s", user_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Account deletion failed due to related data constraints. Please contact support.",
+        ) from e
+    except Exception as e:
+        await db.rollback()
+        logger.exception("Account deletion failed for user_id=%s", user_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Account deletion failed. Please try again or contact support.",
+        ) from e
+
+    return {"success": True, "message": "Account permanently deleted."}
 
 
 @router.post("/forgot-password")

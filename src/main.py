@@ -284,7 +284,14 @@ class CacheHeaderMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(CacheHeaderMiddleware)
 
-# Add CORS middleware
+# Add ProxyHeaders middleware for secure redirects behind proxy (Fly.io)
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+
+# Observability Middleware
+app.add_middleware(ObservabilityMiddleware)
+
+# CORS must be outermost so preflights and 5xx responses still include ACAO headers.
+# (Last added = first to run on the request / last to wrap the response.)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -292,12 +299,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Add ProxyHeaders middleware for secure redirects behind proxy (Fly.io)
-app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
-
-# Add Observability Middleware (at the end to wrap everything)
-app.add_middleware(ObservabilityMiddleware)
 
 # --- Consolidated Router Setup (Fixes FastAPI Lifespan Recursion) ---
 from fastapi import APIRouter
