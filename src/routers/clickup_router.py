@@ -1,3 +1,4 @@
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -6,6 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..services.clickup_service import ClickUpService
 from ..config import settings
+from ..utils.oauth_frontend import (
+    connections_redirect,
+    frontend_connections_path,
+    split_oauth_state,
+    with_frontend_origin,
+)
 from ..database import get_db
 from ..models import Connection, ConnectionStatus, User
 from ..routers.auth_router import get_current_user
@@ -14,14 +21,15 @@ router = APIRouter(prefix="/api/clickup", tags=["clickup"])
 clickup_service = ClickUpService()
 
 @router.get("/auth-url")
-async def get_auth_url(user: User = Depends(get_current_user)):
+async def get_auth_url(frontend_origin: Optional[str] = None,
+    user: User = Depends(get_current_user)):
     """Get the ClickUp OAuth URL."""
     try:
         # Check tier-based access BEFORE allowing OAuth flow
         from ..services.tier_gate import check_connection_access
         check_connection_access(user, "clickup")
         
-        state = f"user_{user.id}"
+        state = with_frontend_origin(f"user_{user.id}", frontend_origin)
         url = await clickup_service.get_auth_url(state=state)
         return {"url": url}
     except HTTPException:

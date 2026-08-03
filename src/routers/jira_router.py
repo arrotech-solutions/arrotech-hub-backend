@@ -4,7 +4,7 @@ Handles OAuth 2.0 authorization flow for Jira integration.
 """
 import logging
 import os
-from typing import Dict, Any
+from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +15,12 @@ from ..models import Connection, ConnectionStatus, User
 from ..routers.auth_router import get_current_user
 from ..services.jira_service import JiraService
 from ..config import settings
+from ..utils.oauth_frontend import (
+    connections_redirect,
+    frontend_connections_path,
+    split_oauth_state,
+    with_frontend_origin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +33,7 @@ JIRA_REDIRECT_URI = os.getenv("JIRA_REDIRECT_URI", "http://localhost:8000/api/ji
 
 @router.get("/auth-url")
 async def get_auth_url(
+    frontend_origin: Optional[str] = None,
     user: User = Depends(get_current_user)
 ) -> Dict[str, str]:
     """
@@ -42,7 +49,7 @@ async def get_auth_url(
         
         if JIRA_CLIENT_ID: service.client_id = JIRA_CLIENT_ID
         
-        state = f"user_{user.id}"
+        state = with_frontend_origin(f"user_{user.id}", frontend_origin)
         auth_url = service.get_auth_url(redirect_uri=JIRA_REDIRECT_URI, state=state)
         
         return {
@@ -69,16 +76,18 @@ async def oauth_callback(
     try:
         if not JIRA_CLIENT_ID or not JIRA_CLIENT_SECRET:
             error_msg = "Jira OAuth is not configured"
-            return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error={error_msg}")
+            return connections_redirect(state, error=error_msg)
         
+        raw_state, _fe_base = split_oauth_state(state)
+        state = raw_state or ""
         if not state.startswith("user_"):
-             return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error=Invalid state parameter")
+             return connections_redirect(state, extra_query="error=Invalid state parameter")
         
         try:
             import uuid
             user_id = uuid.UUID(state.replace("user_", ""))
         except ValueError:
-             return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error=Invalid state format")
+             return connections_redirect(state, extra_query="error=Invalid state format")
 
         service = JiraService()
         await service.initialize()
@@ -96,7 +105,7 @@ async def oauth_callback(
         # Get Cloud Resources
         resources = await service.get_accessible_resources()
         if not resources:
-             return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error=No Jira sites found")
+             return connections_redirect(state, extra_query="error=No Jira sites found")
              
         # Pick the first one for now
         # Ideally we let user choose if multiple
@@ -138,8 +147,8 @@ async def oauth_callback(
             db.add(new_connection)
             await db.commit()
         
-        return RedirectResponse(f"{settings.FRONTEND_URL}/connections?success=jira_connected")
+        return connections_redirect(state, success="jira_connected")
     
     except Exception as e:
         logger.error(f"Error in Jira OAuth callback: {e}")
-        return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error={str(e)}")
+        return connections_redirect(state, error=str(e))

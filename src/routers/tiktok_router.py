@@ -12,6 +12,12 @@ import uuid
 from ..database import get_db
 from ..models import Connection, ConnectionStatus, User, TikTokProfile, TikTokVideo, PremiumLink
 from ..config import settings
+from ..utils.oauth_frontend import (
+    connections_redirect,
+    frontend_connections_path,
+    split_oauth_state,
+    with_frontend_origin,
+)
 from ..routers.auth_router import get_current_user
 
 router = APIRouter(
@@ -26,7 +32,8 @@ TIKTOK_API_URL = "https://open.tiktokapis.com/v2"
 TIKTOK_AUTH_URL = "https://www.tiktok.com/v2/auth/authorize/"
 
 @router.get("/auth-url")
-async def get_auth_url(user: User = Depends(get_current_user)):
+async def get_auth_url(frontend_origin: Optional[str] = None,
+    user: User = Depends(get_current_user)):
     """Generate TikTok OAuth URL (Login Kit)."""
     
     if not settings.TIKTOK_CLIENT_KEY or not settings.TIKTOK_CLIENT_SECRET:
@@ -45,7 +52,7 @@ async def get_auth_url(user: User = Depends(get_current_user)):
     logger.info(f"TIKTOK DEBUG: API Base URL={settings.API_BASE_URL}")
     
     # State includes user_id to link connection
-    state = str(user.id)
+    state = with_frontend_origin(str(user.id), frontend_origin)
     
     # CSRF Token should logically be used here too, but simple state for now
     
@@ -77,14 +84,13 @@ async def oauth_callback(
     """Handle TikTok OAuth callback."""
     if error:
         logger.error(f"TikTok OAuth error: {error} - {error_description}")
-        return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/connections?error={error}"
-        )
+        return connections_redirect(state, error=error)
 
     service = TikTokService(db)
     try:
         import uuid
-        user_id = uuid.UUID(state)
+        raw_state, _ = split_oauth_state(state)
+        user_id = uuid.UUID(raw_state or "")
         redirect_uri = f"{settings.API_BASE_URL}/api/tiktok/callback"
         
         # 1. Exchange Code
@@ -93,14 +99,11 @@ async def oauth_callback(
         # 2. Sync Profile
         await service.sync_profile(user_id, auth_data)
         
-        return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/tiktok?success=connected"
-        )
+        _, fe_base = split_oauth_state(state)
+        return RedirectResponse(url=f"{fe_base}/tiktok?success=connected")
     except Exception as e:
         logger.error(f"Error in TikTok callback: {e}")
-        return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/connections?error=internal_error"
-        )
+        return connections_redirect(state, error="internal_error")
     finally:
         await service.close()
 

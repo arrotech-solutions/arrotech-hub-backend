@@ -4,7 +4,7 @@ Handles OAuth 2.0 authorization flow for Xero accounting integration.
 """
 import logging
 import os
-from typing import Any, Dict
+from typing import Optional, Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
@@ -12,6 +12,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
+from ..utils.oauth_frontend import (
+    connections_redirect,
+    frontend_connections_path,
+    split_oauth_state,
+    with_frontend_origin,
+)
 from ..database import get_db
 from ..models import Connection, ConnectionStatus, User
 from ..routers.auth_router import get_current_user
@@ -30,6 +36,7 @@ XERO_REDIRECT_URI = os.getenv(
 
 @router.get("/auth-url")
 async def get_auth_url(
+    frontend_origin: Optional[str] = None,
     user: User = Depends(get_current_user),
 ) -> Dict[str, str]:
     """Generate Xero OAuth authorization URL."""
@@ -43,7 +50,7 @@ async def get_auth_url(
         if XERO_CLIENT_ID:
             service.client_id = XERO_CLIENT_ID
 
-        state = f"user_{user.id}"
+        state = with_frontend_origin(f"user_{user.id}", frontend_origin)
         auth_url = service.get_auth_url(
             redirect_uri=XERO_REDIRECT_URI, state=state
         )
@@ -65,22 +72,18 @@ async def oauth_callback(
     """Handle OAuth callback for Xero. Exchange code for tokens, fetch tenants, upsert connection."""
     try:
         if not XERO_CLIENT_ID or not XERO_CLIENT_SECRET:
-            return RedirectResponse(
-                f"{settings.FRONTEND_URL}/connections?error=Xero OAuth is not configured"
-            )
+            return connections_redirect(state, extra_query="error=Xero OAuth is not configured")
 
+        raw_state, _fe_base = split_oauth_state(state)
+        state = raw_state or ""
         if not state.startswith("user_"):
-            return RedirectResponse(
-                f"{settings.FRONTEND_URL}/connections?error=Invalid state parameter"
-            )
+            return connections_redirect(state, extra_query="error=Invalid state parameter")
 
         try:
             import uuid
             user_id = uuid.UUID(state.replace("user_", ""))
         except ValueError:
-            return RedirectResponse(
-                f"{settings.FRONTEND_URL}/connections?error=Invalid state format"
-            )
+            return connections_redirect(state, extra_query="error=Invalid state format")
 
         service = XeroService()
         await service.initialize()
@@ -97,9 +100,7 @@ async def oauth_callback(
         # Get tenants (organisations) and use the first one
         connections = await service.get_connections()
         if not connections:
-            return RedirectResponse(
-                f"{settings.FRONTEND_URL}/connections?error=No Xero organisation found"
-            )
+            return connections_redirect(state, extra_query="error=No Xero organisation found")
         tenant_id = connections[0].get("tenantId")
         tenant_name = connections[0].get("tenantName", "Xero Organisation")
 
@@ -134,12 +135,8 @@ async def oauth_callback(
             db.add(new_connection)
             await db.commit()
 
-        return RedirectResponse(
-            f"{settings.FRONTEND_URL}/connections?success=xero_connected"
-        )
+        return connections_redirect(state, success="xero_connected")
 
     except Exception as e:
         logger.error(f"Error in Xero OAuth callback: {e}")
-        return RedirectResponse(
-            f"{settings.FRONTEND_URL}/connections?error={str(e)}"
-        )
+        return connections_redirect(state, error=str(e))

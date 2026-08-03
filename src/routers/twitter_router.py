@@ -13,6 +13,12 @@ from typing import Optional
 from ..database import get_db
 from ..models import Connection, ConnectionStatus, User
 from ..config import settings
+from ..utils.oauth_frontend import (
+    connections_redirect,
+    frontend_connections_path,
+    split_oauth_state,
+    with_frontend_origin,
+)
 from ..routers.auth_router import get_current_user
 
 router = APIRouter(
@@ -42,7 +48,8 @@ def create_code_challenge(code_verifier):
     return base64.urlsafe_b64encode(digest).decode().rstrip('=')
 
 @router.get("/auth-url")
-async def get_auth_url(user: User = Depends(get_current_user)):
+async def get_auth_url(frontend_origin: Optional[str] = None,
+    user: User = Depends(get_current_user)):
     """Generate Twitter OAuth 2.0 URL with PKCE."""
     # Check tier-based access BEFORE allowing OAuth flow
     from ..services.tier_gate import check_connection_access
@@ -95,9 +102,7 @@ async def oauth_callback(
     """Handle Twitter OAuth callback."""
     if error:
         logger.error(f"Twitter OAuth error: {error}")
-        return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/connections?error={error}"
-        )
+        return connections_redirect(state, error=error)
 
     try:
         # Retrieve stored PKCE data
@@ -105,9 +110,7 @@ async def oauth_callback(
         
         if not pkce_data:
             logger.error(f"Missing or invalid state: {state}")
-            return RedirectResponse(
-                url=f"{settings.FRONTEND_URL}/connections?error=invalid_state"
-            )
+            return connections_redirect(state, error="invalid_state")
 
         user_id = pkce_data["user_id"]
         code_verifier = pkce_data["verifier"]
@@ -171,10 +174,8 @@ async def oauth_callback(
             
             await db.commit()
             
-            return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?success=twitter_connected")
+            return connections_redirect(state, success="twitter_connected")
 
     except Exception as e:
         logger.error(f"Error in Twitter callback: {e}")
-        return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/connections?error=internal_error"
-        )
+        return connections_redirect(state, error="internal_error")

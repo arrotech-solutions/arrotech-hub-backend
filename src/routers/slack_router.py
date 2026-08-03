@@ -4,7 +4,7 @@ Handles OAuth 2.0 authorization flow for Slack integration.
 """
 import logging
 import os
-from typing import Dict, Any
+from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..models import Connection, ConnectionStatus, User
 from ..routers.auth_router import get_current_user
+from ..utils.oauth_frontend import (
+    connections_redirect,
+    frontend_connections_path,
+    split_oauth_state,
+    with_frontend_origin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +44,7 @@ SCOPES = [
 
 @router.get("/auth-url")
 async def get_auth_url(
+    frontend_origin: Optional[str] = None,
     user: User = Depends(get_current_user)
 ) -> Dict[str, str]:
     """
@@ -50,21 +57,24 @@ async def get_auth_url(
                 detail="Slack OAuth is not configured. Please set SLACK_CLIENT_ID."
             )
         
-        # Build OAuth URL
+        # Build OAuth URL — return to the frontend origin that started the flow
         from urllib.parse import urlencode
-        
+
+        redirect_uri = frontend_connections_path(frontend_origin, "/connections")
+        state = with_frontend_origin(f"user_{user.id}", frontend_origin)
+
         params = {
             "client_id": SLACK_CLIENT_ID,
             "scope": " ".join(SCOPES),
-            "redirect_uri": SLACK_REDIRECT_URI,
-            "state": f"user_{user.id}",  # Include user ID in state for validation
+            "redirect_uri": redirect_uri,
+            "state": state,
         }
         
         auth_url = f"https://slack.com/oauth/v2/authorize?{urlencode(params)}"
         
         return {
             "auth_url": auth_url,
-            "state": params["state"]
+            "state": state
         }
     
     except Exception as e:
@@ -89,6 +99,8 @@ async def oauth_callback(
             )
         
         # Extract user ID from state
+        raw_state, fe_base = split_oauth_state(state)
+        state = raw_state or ""
         if not state.startswith("user_"):
             raise HTTPException(status_code=400, detail="Invalid state parameter")
         
@@ -102,12 +114,14 @@ async def oauth_callback(
         # Exchange authorization code for tokens
         import requests
         
+        redirect_uri = f"{fe_base}/connections"
+        
         token_url = "https://slack.com/api/oauth.v2.access"
         token_data = {
             "code": code,
             "client_id": SLACK_CLIENT_ID,
             "client_secret": SLACK_CLIENT_SECRET,
-            "redirect_uri": SLACK_REDIRECT_URI,
+            "redirect_uri": redirect_uri,
         }
         
         token_response = requests.post(token_url, data=token_data)

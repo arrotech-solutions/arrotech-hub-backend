@@ -11,6 +11,12 @@ import os
 from ..database import get_db
 from ..models import Connection, ConnectionStatus, User
 from ..config import settings
+from ..utils.oauth_frontend import (
+    connections_redirect,
+    frontend_connections_path,
+    split_oauth_state,
+    with_frontend_origin,
+)
 from ..routers.auth_router import get_current_user
 
 router = APIRouter(
@@ -33,7 +39,8 @@ LINKEDIN_CLIENT_SECRET = os.getenv("LINKEDIN_CLIENT_SECRET")
 LINKEDIN_REDIRECT_URI = os.getenv("LINKEDIN_REDIRECT_URI", f"{settings.API_BASE_URL.rstrip('/')}/api/linkedin/callback")
 
 @router.get("/auth-url")
-async def get_auth_url(user: User = Depends(get_current_user)):
+async def get_auth_url(frontend_origin: Optional[str] = None,
+    user: User = Depends(get_current_user)):
     """Generate LinkedIn OAuth URL."""
     # Check tier-based access BEFORE allowing OAuth flow
     from ..services.tier_gate import check_connection_access
@@ -48,7 +55,7 @@ async def get_auth_url(user: User = Depends(get_current_user)):
     redirect_uri = LINKEDIN_REDIRECT_URI
     
     # State includes user_id to link connection back to user
-    state = str(user.id)
+    state = with_frontend_origin(str(user.id), frontend_origin)
     
     params = {
         "response_type": "code",
@@ -72,13 +79,12 @@ async def oauth_callback(
     """Handle LinkedIn OAuth callback."""
     if error:
         logger.error(f"LinkedIn OAuth error: {error} - {error_description}")
-        return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/connections?error={error}"
-        )
+        return connections_redirect(state, error=error)
 
     try:
         import uuid
-        user_id = uuid.UUID(state)
+        raw_state, _ = split_oauth_state(state)
+        user_id = uuid.UUID(raw_state or "")
         redirect_uri = LINKEDIN_REDIRECT_URI
         
         # 1. Exchange code for access token
@@ -99,7 +105,7 @@ async def oauth_callback(
             
             if response.status_code != 200:
                 logger.error(f"Failed to exchange code: {token_data}")
-                return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?error=token_exchange_failed")
+                return connections_redirect(state, error="token_exchange_failed")
                 
             access_token = token_data.get("access_token")
             expires_in = token_data.get("expires_in") # Usually 60 days
@@ -149,10 +155,8 @@ async def oauth_callback(
             
             await db.commit()
             
-            return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?success=linkedin_connected")
+            return connections_redirect(state, success="linkedin_connected")
 
     except Exception as e:
         logger.error(f"Error in LinkedIn callback: {e}")
-        return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/connections?error=internal_error"
-        )
+        return connections_redirect(state, error="internal_error")

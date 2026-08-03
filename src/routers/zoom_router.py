@@ -4,7 +4,7 @@ Handles OAuth 2.0 authorization flow for Zoom integration.
 """
 import logging
 import os
-from typing import Dict, Any
+from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,9 +25,16 @@ ZOOM_REDIRECT_URI = os.getenv("ZOOM_REDIRECT_URI", "http://localhost:3000/connec
 
 from fastapi.responses import RedirectResponse
 from ..config import settings
+from ..utils.oauth_frontend import (
+    connections_redirect,
+    frontend_connections_path,
+    split_oauth_state,
+    with_frontend_origin,
+)
 
 @router.get("/auth-url")
 async def get_auth_url(
+    frontend_origin: Optional[str] = None,
     user: User = Depends(get_current_user)
 ) -> Dict[str, str]:
     """
@@ -47,7 +54,7 @@ async def get_auth_url(
         # Use backend redirect URI
         final_redirect_uri = ZOOM_REDIRECT_URI
         
-        state = f"user_{user.id}"
+        state = with_frontend_origin(f"user_{user.id}", frontend_origin)
         auth_url = service.get_auth_url(redirect_uri=final_redirect_uri, state=state)
         
         return {
@@ -74,17 +81,19 @@ async def oauth_callback(
     try:
         if not ZOOM_CLIENT_ID or not ZOOM_CLIENT_SECRET:
             error_msg = "Zoom OAuth is not configured"
-            return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error={error_msg}")
+            return connections_redirect(state, error=error_msg)
         
         # Extract user ID from state
+        raw_state, _fe_base = split_oauth_state(state)
+        state = raw_state or ""
         if not state.startswith("user_"):
-            return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error=Invalid state parameter")
+            return connections_redirect(state, extra_query="error=Invalid state parameter")
         
         try:
             import uuid
             user_id = uuid.UUID(state.replace("user_", ""))
         except ValueError:
-             return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error=Invalid state format")
+             return connections_redirect(state, extra_query="error=Invalid state format")
 
         service = ZoomService()
         await service.initialize()
@@ -136,8 +145,8 @@ async def oauth_callback(
             db.add(new_connection)
             await db.commit()
         
-        return RedirectResponse(f"{settings.FRONTEND_URL}/connections?success=zoom_connected")
+        return connections_redirect(state, success="zoom_connected")
     
     except Exception as e:
         logger.error(f"Error in Zoom OAuth callback: {e}")
-        return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error={str(e)}")
+        return connections_redirect(state, error=str(e))

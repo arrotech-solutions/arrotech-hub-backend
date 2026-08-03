@@ -7,7 +7,7 @@ import os
 import time
 import base64
 import hashlib
-from typing import Dict, Any
+from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +18,12 @@ from ..models import Connection, ConnectionStatus, User
 from ..routers.auth_router import get_current_user
 from ..services.airtable_service import AirtableService
 from ..config import settings
+from ..utils.oauth_frontend import (
+    connections_redirect,
+    frontend_connections_path,
+    split_oauth_state,
+    with_frontend_origin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +45,7 @@ def get_code_challenge(verifier: str) -> str:
 
 @router.get("/auth-url")
 async def get_auth_url(
+    frontend_origin: Optional[str] = None,
     user: User = Depends(get_current_user),
 ) -> Dict[str, str]:
     """
@@ -100,9 +107,7 @@ async def oauth_callback(
     try:
         if state not in _pkce_store:
             logger.error("State not found in PKCE store")
-            return RedirectResponse(
-                f"{settings.FRONTEND_URL}/connections?error=Invalid or expired state parameter"
-            )
+            return connections_redirect(state, extra_query="error=Invalid or expired state parameter")
 
         state_data = _pkce_store.pop(state)
         user_id = state_data["user_id"]
@@ -110,9 +115,7 @@ async def oauth_callback(
 
         service = AirtableService()
         if not service.client_id or not service.client_secret:
-            return RedirectResponse(
-                f"{settings.FRONTEND_URL}/connections?error=Airtable OAuth is not configured"
-            )
+            return connections_redirect(state, extra_query="error=Airtable OAuth is not configured")
 
         # Exchange authorization code for tokens
         token_data = await service.exchange_code_for_token(code, code_verifier)
@@ -167,12 +170,8 @@ async def oauth_callback(
             db.add(new_connection)
             await db.commit()
 
-        return RedirectResponse(
-            f"{settings.FRONTEND_URL}/connections?success=airtable_connected"
-        )
+        return connections_redirect(state, success="airtable_connected")
 
     except Exception as e:
         logger.error(f"Error in Airtable OAuth callback: {e}")
-        return RedirectResponse(
-            f"{settings.FRONTEND_URL}/connections?error={str(e)}"
-        )
+        return connections_redirect(state, error=str(e))

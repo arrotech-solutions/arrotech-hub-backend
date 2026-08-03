@@ -10,6 +10,12 @@ from typing import Optional
 from ..database import get_db
 from ..models import Connection, ConnectionStatus, User
 from ..config import settings
+from ..utils.oauth_frontend import (
+    connections_redirect,
+    frontend_connections_path,
+    split_oauth_state,
+    with_frontend_origin,
+)
 from ..routers.auth_router import get_current_user
 
 router = APIRouter(
@@ -25,7 +31,8 @@ FACEBOOK_GRAPH_URL = "https://graph.facebook.com/v22.0"
 FACEBOOK_SCOPES = "pages_show_list,pages_read_engagement"
 
 @router.get("/auth-url")
-async def get_auth_url(user: User = Depends(get_current_user)):
+async def get_auth_url(frontend_origin: Optional[str] = None,
+    user: User = Depends(get_current_user)):
     """Generate Facebook OAuth URL."""
     # Check tier-based access BEFORE allowing OAuth flow
     from ..services.tier_gate import check_connection_access
@@ -40,7 +47,7 @@ async def get_auth_url(user: User = Depends(get_current_user)):
     redirect_uri = f"{settings.API_BASE_URL}/api/facebook/callback"
     
     # State includes user_id to link connection back to user
-    state = str(user.id)
+    state = with_frontend_origin(str(user.id), frontend_origin)
     
     params = {
         "client_id": settings.FACEBOOK_APP_ID,
@@ -64,13 +71,12 @@ async def oauth_callback(
     """Handle Facebook OAuth callback."""
     if error:
         logger.error(f"Facebook OAuth error: {error} - {error_reason}")
-        return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/connections?error={error}&reason={error_reason}"
-        )
+        return connections_redirect(state, error=error, detail=error_reason)
 
     try:
         import uuid
-        user_id = uuid.UUID(state)
+        raw_state, _ = split_oauth_state(state)
+        user_id = uuid.UUID(raw_state or "")
         redirect_uri = f"{settings.API_BASE_URL}/api/facebook/callback"
         
         # 1. Exchange code for short-lived token
@@ -139,10 +145,8 @@ async def oauth_callback(
             
             await db.commit()
             
-            return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?success=facebook_connected")
+            return connections_redirect(state, success="facebook_connected")
 
     except Exception as e:
         logger.error(f"Error in Facebook callback: {e}")
-        return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/connections?error=internal_error"
-        )
+        return connections_redirect(state, error="internal_error")

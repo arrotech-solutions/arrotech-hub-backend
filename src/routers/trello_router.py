@@ -4,7 +4,7 @@ Handles OAuth 2.0 authorization flow for Trello integration.
 """
 import logging
 import os
-from typing import Dict, Any
+from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +15,12 @@ from ..models import Connection, ConnectionStatus, User
 from ..routers.auth_router import get_current_user
 from ..services.trello_service import TrelloService
 from ..config import settings
+from ..utils.oauth_frontend import (
+    connections_redirect,
+    frontend_connections_path,
+    split_oauth_state,
+    with_frontend_origin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +37,7 @@ request_token_store: Dict[str, str] = {}
 
 @router.get("/auth-url")
 async def get_auth_url(
+    frontend_origin: Optional[str] = None,
     user: User = Depends(get_current_user)
 ) -> Dict[str, str]:
     """
@@ -91,14 +98,14 @@ async def oauth_callback(
     try:
         if not TRELLO_CLIENT_ID or not TRELLO_CLIENT_SECRET:
             error_msg = "Trello OAuth is not configured"
-            return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error={error_msg}")
+            return connections_redirect(state, error=error_msg)
         
         # Retrieve the secret and user_id for this token
         request_token_secret = request_token_store.get(oauth_token)
         user_id_str = request_token_store.get(f"{oauth_token}_user")
         
         if not request_token_secret or not user_id_str:
-             return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error=Invalid or expired session command")
+             return connections_redirect(state, extra_query="error=Invalid or expired session command")
 
         import uuid
         user_id = uuid.UUID(user_id_str)
@@ -121,7 +128,7 @@ async def oauth_callback(
         access_token_secret = access_token_data.get("oauth_token_secret")
         
         if not access_token:
-             return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error=Failed to obtain access token")
+             return connections_redirect(state, extra_query="error=Failed to obtain access token")
 
         # Get User Info
         service.access_token = access_token
@@ -168,8 +175,8 @@ async def oauth_callback(
             db.add(new_connection)
             await db.commit()
         
-        return RedirectResponse(f"{settings.FRONTEND_URL}/connections?success=trello_connected")
+        return connections_redirect(state, success="trello_connected")
     
     except Exception as e:
         logger.error(f"Error in Trello OAuth callback: {e}")
-        return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error={str(e)}")
+        return connections_redirect(state, error=str(e))
