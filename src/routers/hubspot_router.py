@@ -4,7 +4,7 @@ Handles OAuth 2.0 authorization flow for HubSpot CRM integration.
 """
 import logging
 import os
-from typing import Any, Dict
+from typing import Optional, Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -14,6 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..models import Connection, ConnectionStatus, User
 from ..routers.auth_router import get_current_user
+from ..utils.oauth_frontend import (
+    connections_redirect,
+    frontend_connections_path,
+    split_oauth_state,
+    with_frontend_origin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +48,7 @@ SCOPES = [
 
 @router.get("/auth-url")
 async def get_auth_url(
+    frontend_origin: Optional[str] = None,
     user: User = Depends(get_current_user)
 ) -> Dict[str, str]:
     """
@@ -96,6 +103,8 @@ async def oauth_callback(
             )
 
         # Extract user ID from state
+        raw_state, _fe_base = split_oauth_state(state)
+        state = raw_state or ""
         if not state.startswith("user_"):
             return RedirectResponse(
                 url=f"{FRONTEND_URL}?error=Invalid+state+parameter",

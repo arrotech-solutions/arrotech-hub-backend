@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter, Request, Response, BackgroundTasks, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +11,12 @@ from ..models import User, Connection, ConnectionStatus
 from .auth_router import get_current_user
 
 from ..config import settings
+from ..utils.oauth_frontend import (
+    connections_redirect,
+    frontend_connections_path,
+    split_oauth_state,
+    with_frontend_origin,
+)
 from ..services.telegram_workflow_trigger import TelegramWorkflowTrigger
 
 logger = logging.getLogger(__name__)
@@ -118,23 +125,40 @@ async def _answer_callback_query(callback_query_id: str):
 
 
 @router.get("/auth-url")
-async def get_auth_url(user: User = Depends(get_current_user)):
+async def get_auth_url(
+    frontend_origin: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
     """Return the auth URL which renders the Telegram widget."""
-    auth_url = f"{settings.API_BASE_URL.rstrip('/')}/api/telegram/login?user_id={user.id}"
+    from urllib.parse import quote
+    origin_q = quote(frontend_origin or "", safe="")
+    auth_url = (
+        f"{settings.API_BASE_URL.rstrip('/')}/api/telegram/login"
+        f"?user_id={user.id}&frontend_origin={origin_q}"
+    )
     return {"auth_url": auth_url, "state": str(user.id)}
 
 @router.get("/login", response_class=HTMLResponse)
-async def telegram_login_page(request: Request, user_id: str):
+async def telegram_login_page(
+    request: Request,
+    user_id: str,
+    frontend_origin: Optional[str] = None,
+):
     """Render the Telegram Login Widget."""
+    from urllib.parse import quote
     bot_name = settings.TELEGRAM_BOT_NAME or "ArrotechHubBot"
-    callback_url = f"{settings.API_BASE_URL.rstrip('/')}/api/telegram/callback"
+    origin_q = quote(frontend_origin or "", safe="")
+    callback_url = (
+        f"{settings.API_BASE_URL.rstrip('/')}/api/telegram/callback"
+        f"?user_id={user_id}&frontend_origin={origin_q}"
+    )
     html_content = f"""
     <html>
       <head><title>Connect Telegram</title></head>
       <body style="display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #f3f4f6; font-family: sans-serif;">
         <div style="text-align: center; background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
             <h2 style="margin-bottom: 20px;">Connect your Telegram Account</h2>
-            <script async src="https://telegram.org/js/telegram-widget.js?22" data-telegram-login="{bot_name}" data-size="large" data-auth-url="{callback_url}?user_id={user_id}" data-request-access="write"></script>
+            <script async src="https://telegram.org/js/telegram-widget.js?22" data-telegram-login="{bot_name}" data-size="large" data-auth-url="{callback_url}" data-request-access="write"></script>
         </div>
       </body>
     </html>
@@ -148,9 +172,11 @@ async def telegram_callback(
     first_name: str = None,
     username: str = None,
     hash: str = None,
+    frontend_origin: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
     """Handle Telegram Login callback."""
+    state = with_frontend_origin(user_id, frontend_origin)
     try:
         import uuid
         uid = uuid.UUID(user_id)
@@ -184,8 +210,8 @@ async def telegram_callback(
             db.add(connection)
         
         await db.commit()
-        return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?success=telegram_connected")
+        return connections_redirect(state, success="telegram_connected")
     except Exception as e:
         logger.error(f"Error in telegram callback: {e}")
-        return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?error=telegram_failed")
+        return connections_redirect(state, error="telegram_failed")
 

@@ -10,6 +10,12 @@ from typing import Optional
 from ..database import get_db
 from ..models import Connection, ConnectionStatus, User
 from ..config import settings
+from ..utils.oauth_frontend import (
+    connections_redirect,
+    frontend_connections_path,
+    split_oauth_state,
+    with_frontend_origin,
+)
 from ..services import WhatsAppService
 from pydantic import BaseModel
 
@@ -41,7 +47,8 @@ WHATSAPP_SCOPES = "whatsapp_business_management,whatsapp_business_messaging,busi
 from ..routers.auth_router import get_current_user
 
 @router.get("/auth-url")
-async def get_auth_url(config_id: Optional[str] = None, user: User = Depends(get_current_user)):
+async def get_auth_url(config_id: Optional[str] = None, frontend_origin: Optional[str] = None,
+    user: User = Depends(get_current_user)):
     """Generate WhatsApp (Meta) OAuth URL."""
     # Check tier-based access BEFORE allowing OAuth flow
     from ..services.tier_gate import check_connection_access
@@ -56,7 +63,7 @@ async def get_auth_url(config_id: Optional[str] = None, user: User = Depends(get
     redirect_uri = f"{settings.API_BASE_URL}/api/whatsapp/callback"
     
     # State includes user_id to link connection back to user
-    state = str(user.id)
+    state = with_frontend_origin(str(user.id), frontend_origin)
     
     params = {
         "client_id": settings.WHATSAPP_APP_ID,
@@ -91,19 +98,27 @@ async def oauth_callback(
     if error:
         detail = error_description or error_reason or error
         print(f"[WHATSAPP CALLBACK] Facebook returned error: {detail}")
-        encoded_error = urllib.parse.quote(f"Facebook authorization failed: {detail}")
-        return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?error=whatsapp_auth_failed&detail={encoded_error}")
+        return connections_redirect(
+            state,
+            error="whatsapp_auth_failed",
+            detail=f"Facebook authorization failed: {detail}",
+        )
     
     if not code or not state:
         print(f"[WHATSAPP CALLBACK] Missing code or state!")
-        return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?error=whatsapp_setup_failed&detail=Missing+authorization+code+or+state")
+        return connections_redirect(
+            state,
+            error="whatsapp_setup_failed",
+            detail="Missing authorization code or state",
+        )
     
     # State string contains the user id passed during the get_auth_url phase
     try:
         import uuid
-        user_id = uuid.UUID(state)
+        raw_state, _ = split_oauth_state(state)
+        user_id = uuid.UUID(raw_state or "")
     except ValueError:
-        return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?error=invalid_state")
+        return connections_redirect(state, error="invalid_state")
     
     try:
         redirect_uri = f"{settings.API_BASE_URL.rstrip('/')}/api/whatsapp/callback"
@@ -135,17 +150,15 @@ async def oauth_callback(
             auth_type="oauth_redirect"
         )
         
-        return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?success=whatsapp_connected")
+        return connections_redirect(state, success="whatsapp_connected")
 
     except HTTPException as he:
         detail_msg = he.detail if isinstance(he.detail, str) else str(he.detail)
         logger.error(f"WhatsApp callback HTTPException: {detail_msg}")
-        encoded_error = urllib.parse.quote(detail_msg)
-        return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?error=whatsapp_setup_failed&detail={encoded_error}")
+        return connections_redirect(state, error="whatsapp_setup_failed", detail=detail_msg)
     except Exception as e:
         logger.error(f"Error in WhatsApp callback: {e}", exc_info=True)
-        encoded_error = urllib.parse.quote(str(e))
-        return RedirectResponse(url=f"{settings.FRONTEND_URL}/connections?error=internal_error&detail={encoded_error}")
+        return connections_redirect(state, error="internal_error", detail=str(e))
 
 @router.post("/embedded-callback")
 async def embedded_oauth_callback(

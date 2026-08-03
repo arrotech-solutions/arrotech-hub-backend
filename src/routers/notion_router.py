@@ -4,7 +4,7 @@ Handles OAuth 2.0 authorization flow for Notion integration.
 """
 import logging
 import os
-from typing import Dict, Any
+from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +15,12 @@ from ..models import Connection, ConnectionStatus, User
 from ..routers.auth_router import get_current_user
 from ..services.notion_service import NotionService
 from ..config import settings
+from ..utils.oauth_frontend import (
+    connections_redirect,
+    frontend_connections_path,
+    split_oauth_state,
+    with_frontend_origin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +34,7 @@ NOTION_REDIRECT_URI = os.getenv("NOTION_REDIRECT_URI", "http://localhost:8000/ap
 
 @router.get("/auth-url")
 async def get_auth_url(
+    frontend_origin: Optional[str] = None,
     user: User = Depends(get_current_user)
 ) -> Dict[str, str]:
     """
@@ -43,7 +50,7 @@ async def get_auth_url(
         
         if NOTION_CLIENT_ID: service.client_id = NOTION_CLIENT_ID
         
-        state = f"user_{user.id}"
+        state = with_frontend_origin(f"user_{user.id}", frontend_origin)
         auth_url = service.get_auth_url(redirect_uri=NOTION_REDIRECT_URI, state=state)
         
         return {
@@ -70,16 +77,18 @@ async def oauth_callback(
     try:
         if not NOTION_CLIENT_ID or not NOTION_CLIENT_SECRET:
             error_msg = "Notion OAuth is not configured"
-            return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error={error_msg}")
+            return connections_redirect(state, error=error_msg)
         
+        raw_state, _fe_base = split_oauth_state(state)
+        state = raw_state or ""
         if not state.startswith("user_"):
-             return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error=Invalid state parameter")
+             return connections_redirect(state, extra_query="error=Invalid state parameter")
         
         try:
             import uuid
             user_id = uuid.UUID(state.replace("user_", ""))
         except ValueError:
-             return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error=Invalid state format")
+             return connections_redirect(state, extra_query="error=Invalid state format")
 
         service = NotionService()
         await service.initialize()
@@ -127,8 +136,8 @@ async def oauth_callback(
             db.add(new_connection)
             await db.commit()
         
-        return RedirectResponse(f"{settings.FRONTEND_URL}/connections?success=notion_connected")
+        return connections_redirect(state, success="notion_connected")
     
     except Exception as e:
         logger.error(f"Error in Notion OAuth callback: {e}")
-        return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error={str(e)}")
+        return connections_redirect(state, error=str(e))

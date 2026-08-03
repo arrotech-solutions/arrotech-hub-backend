@@ -14,6 +14,12 @@ from ..models import Connection, ConnectionStatus, User
 from ..routers.auth_router import get_current_user
 from ..services.github_service import GitHubService
 from ..config import settings
+from ..utils.oauth_frontend import (
+    connections_redirect,
+    frontend_connections_path,
+    split_oauth_state,
+    with_frontend_origin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +27,7 @@ router = APIRouter(prefix="/api/github", tags=["github-oauth"])
 
 @router.get("/auth-url")
 async def get_auth_url(
+    frontend_origin: Optional[str] = None,
     user: User = Depends(get_current_user),
 ) -> Dict[str, str]:
     """
@@ -83,15 +90,11 @@ async def oauth_callback(
             user_id = uuid.UUID(user_id_str)
         except (JWTError, ValueError) as e:
             logger.error(f"Invalid or expired GitHub OAuth state: {e}")
-            return RedirectResponse(
-                f"{settings.FRONTEND_URL}/connections?error=Invalid or expired state parameter"
-            )
+            return connections_redirect(state, extra_query="error=Invalid or expired state parameter")
 
         service = GitHubService()
         if not service.client_id or not service.client_secret:
-            return RedirectResponse(
-                f"{settings.FRONTEND_URL}/connections?error=GitHub OAuth is not configured"
-            )
+            return connections_redirect(state, extra_query="error=GitHub OAuth is not configured")
 
         # Exchange authorization code for tokens
         token_data = await service.exchange_code_for_token(code)
@@ -99,9 +102,7 @@ async def oauth_callback(
         refresh_token = token_data.get("refresh_token")
 
         if not access_token:
-             return RedirectResponse(
-                f"{settings.FRONTEND_URL}/connections?error=Failed to retrieve access token from GitHub"
-            )
+             return connections_redirect(state, extra_query="error=Failed to retrieve access token from GitHub")
 
         service.access_token = access_token
         
@@ -143,15 +144,11 @@ async def oauth_callback(
             db.add(new_connection)
             await db.commit()
 
-        return RedirectResponse(
-            f"{settings.FRONTEND_URL}/connections?success=github_connected"
-        )
+        return connections_redirect(state, success="github_connected")
 
     except Exception as e:
         logger.error(f"Error in GitHub OAuth callback: {e}")
-        return RedirectResponse(
-            f"{settings.FRONTEND_URL}/connections?error={str(e)}"
-        )
+        return connections_redirect(state, error=str(e))
 
 @router.post("/webhooks")
 async def github_webhook(

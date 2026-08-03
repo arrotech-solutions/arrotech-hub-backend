@@ -15,6 +15,12 @@ from ..models import Connection, ConnectionStatus, User
 from ..routers.auth_router import get_current_user
 from ..services.outlook_service import OutlookService
 from ..config import settings
+from ..utils.oauth_frontend import (
+    connections_redirect,
+    frontend_connections_path,
+    split_oauth_state,
+    with_frontend_origin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +35,7 @@ OUTLOOK_REDIRECT_URI = os.getenv("OUTLOOK_REDIRECT_URI", "http://localhost:8000/
 
 @router.get("/auth-url")
 async def get_auth_url(
+    frontend_origin: Optional[str] = None,
     user: User = Depends(get_current_user)
 ) -> Dict[str, str]:
     """
@@ -46,7 +53,7 @@ async def get_auth_url(
         if OUTLOOK_CLIENT_ID: service.client_id = OUTLOOK_CLIENT_ID
         if OUTLOOK_TENANT_ID: service.tenant_id = OUTLOOK_TENANT_ID
         
-        state = f"user_{user.id}"
+        state = with_frontend_origin(f"user_{user.id}", frontend_origin)
         auth_url = service.get_auth_url(redirect_uri=OUTLOOK_REDIRECT_URI, state=state)
         
         return {
@@ -76,24 +83,26 @@ async def oauth_callback(
         # Handle OAuth errors
         if error:
             logger.error(f"Outlook OAuth Error: {error} - {error_description}")
-            return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error={error_description or error}")
+            return connections_redirect(state, error=error_description or error)
 
         if not code or not state:
-            return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error=Missing code or state parameter")
+            return connections_redirect(state, extra_query="error=Missing code or state parameter")
 
         if not OUTLOOK_CLIENT_ID or not OUTLOOK_CLIENT_SECRET:
             error_msg = "Outlook OAuth is not configured"
-            return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error={error_msg}")
+            return connections_redirect(state, error=error_msg)
         
         # Extract user ID from state
+        raw_state, _fe_base = split_oauth_state(state)
+        state = raw_state or ""
         if not state.startswith("user_"):
-             return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error=Invalid state parameter")
+             return connections_redirect(state, extra_query="error=Invalid state parameter")
         
         try:
             import uuid
             user_id = uuid.UUID(state.replace("user_", ""))
         except ValueError:
-             return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error=Invalid state format")
+             return connections_redirect(state, extra_query="error=Invalid state format")
 
         service = OutlookService()
         await service.initialize()
@@ -143,8 +152,8 @@ async def oauth_callback(
             db.add(new_connection)
             await db.commit()
         
-        return RedirectResponse(f"{settings.FRONTEND_URL}/connections?success=outlook_connected")
+        return connections_redirect(state, success="outlook_connected")
     
     except Exception as e:
         logger.error(f"Error in Outlook OAuth callback: {e}")
-        return RedirectResponse(f"{settings.FRONTEND_URL}/connections?error={str(e)}")
+        return connections_redirect(state, error=str(e))
