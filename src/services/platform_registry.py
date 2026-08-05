@@ -684,14 +684,31 @@ class PlatformRegistry:
         self.platforms["telegram"] = Platform(
             id="telegram",
             name="Telegram Bot",
-            description="Automate Telegram sending messages and responding to users",
+            description="Connect your BotFather bot for ordering and support agents",
             icon="telegram",
             features=[
                 "Send Automated Messages",
-                "Receive Webhook Events"
+                "Receive Webhook Events",
+                "Ordering & Support Agents"
             ],
             capabilities=telegram_capabilities,
-            config_schema={},
+            config_schema={
+                "type": "object",
+                "properties": {
+                    "bot_token": {
+                        "type": "string",
+                        "description": "Bot token from @BotFather (format: 123456:ABC-DEF...)",
+                        "format": "password",
+                        "title": "Bot Token"
+                    },
+                    "notify_chat_id": {
+                        "type": "string",
+                        "description": "Your Telegram chat/user ID for order alerts (optional)",
+                        "title": "Notify Chat ID"
+                    }
+                },
+                "required": ["bot_token"]
+            },
             test_function="test_telegram_connection"
         )
 

@@ -44,6 +44,7 @@ _AGENT_CONFIG_KEYS = _STORAGE_CONFIG_KEYS + (
     "business_name",
     "business_phone",
     "business_email",
+    "business_telegram_chat_id",
     "order_type",
     "currency",
     "delivery_methods",

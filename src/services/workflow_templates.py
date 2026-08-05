@@ -465,11 +465,18 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "required": True
             },
             "business_phone": {
-                "label": "Notification Phone",
+                "label": "Customer Phone (optional)",
                 "type": "phone",
-                "description": "Phone number for SMS/WhatsApp order notifications",
+                "description": "Optional default phone for records — customers still confirm phone in chat for M-Pesa",
                 "required": False,
                 "placeholder": "+254..."
+            },
+            "business_telegram_chat_id": {
+                "label": "Owner Telegram Chat ID",
+                "type": "text",
+                "description": "Your Telegram user/chat ID for order and escalation alerts",
+                "required": True,
+                "placeholder": "e.g. 123456789"
             },
             "business_email": {
                 "label": "Notification Email",
@@ -509,6 +516,34 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                     {"value": "dine_in", "label": "🍽️ Dine In"}
                 ],
                 "default": ["delivery", "pickup"]
+            },
+            "reservations_enabled": {
+                "label": "Enable Reservations",
+                "type": "boolean",
+                "description": "Let customers book a table",
+                "required": False,
+                "default": False
+            },
+            "auto_escalation_enabled": {
+                "label": "Auto Escalation",
+                "type": "boolean",
+                "description": "Hand complex chats to a human",
+                "required": False,
+                "default": True
+            },
+            "supported_languages": {
+                "label": "Supported Languages",
+                "type": "text",
+                "description": "Comma-separated language codes",
+                "required": False,
+                "default": "en,sw,fr,ar,es"
+            },
+            "human_handoff_ttl_hours": {
+                "label": "Human Handoff TTL (hours)",
+                "type": "number",
+                "description": "Hours before AI resumes after handoff",
+                "required": False,
+                "default": 24
             },
             "system_prompt": {
                 "label": "Custom Instructions (Optional)",
@@ -564,6 +599,14 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "default": "Transactions",
                 "show_if": {"field": "storage_provider", "value": "google_sheets"}
             },
+            "storage_reservations_sheet_name": {
+                "label": "Reservations Sheet Name",
+                "type": "text",
+                "description": "Tab name for table reservations",
+                "required": False,
+                "default": "Reservations",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
             "storage_airtable_base_id": {
                 "label": "Airtable Base ID",
                 "type": "text",
@@ -599,6 +642,13 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "default": "Transactions",
                 "show_if": {"field": "storage_provider", "value": "airtable"}
             },
+            "storage_airtable_reservations_table": {
+                "label": "Airtable Reservations Table",
+                "type": "text",
+                "required": False,
+                "default": "Reservations",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
+            },
             "enabled_mcp_tools": {
                 "label": "Enabled MCP Tools",
                 "type": "multi_select",
@@ -619,21 +669,29 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                         "kb_id": "{{config.kb_id}}",
                         "business_name": "{{config.business_name}}",
                         "business_phone": "{{config.business_phone}}",
+                        "business_telegram_chat_id": "{{config.business_telegram_chat_id}}",
                         "business_email": "{{config.business_email}}",
                         "order_type": "{{config.order_type}}",
                         "currency": "{{config.currency}}",
                         "delivery_methods": "{{config.delivery_methods}}",
+                        "reservations_enabled": "{{config.reservations_enabled}}",
                         "system_prompt": "{{config.system_prompt}}",
                         "storage_provider": "{{config.storage_provider}}",
                         "storage_spreadsheet_id": "{{config.storage_spreadsheet_id}}",
                         "storage_orders_sheet_name": "{{config.storage_orders_sheet_name}}",
                         "storage_customers_sheet_name": "{{config.storage_customers_sheet_name}}",
                         "storage_transactions_sheet_name": "{{config.storage_transactions_sheet_name}}",
+                        "storage_reservations_sheet_name": "{{config.storage_reservations_sheet_name}}",
                         "storage_airtable_base_id": "{{config.storage_airtable_base_id}}",
                         "storage_airtable_orders_table": "{{config.storage_airtable_orders_table}}",
                         "storage_airtable_customers_table": "{{config.storage_airtable_customers_table}}",
                         "storage_airtable_transactions_table": "{{config.storage_airtable_transactions_table}}",
-                        "enabled_mcp_tools": "{{config.enabled_mcp_tools}}"
+                        "storage_airtable_reservations_table": "{{config.storage_airtable_reservations_table}}",
+                        "auto_escalation_enabled": "{{config.auto_escalation_enabled}}",
+                        "supported_languages": "{{config.supported_languages}}",
+                        "human_handoff_ttl_hours": "{{config.human_handoff_ttl_hours}}",
+                        "enabled_mcp_tools": "{{config.enabled_mcp_tools}}",
+                        "platform": "telegram"
                     }
                 }
             },
@@ -643,8 +701,36 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "parameters": {
                     "chat_id": "{{chat_id}}",
                     "message": "{{step_1.response_text}}",
-                    "image_urls": "{{step_1.image_urls}}"
+                    "image_urls": "{{step_1.image_urls}}",
+                    "session_key": "{{session_key}}"
                 }
+            },
+            {
+                "tool_name": "telegram_send_message",
+                "description": "Notify business owner of new order",
+                "parameters": {
+                    "chat_id": "{{config.business_telegram_chat_id}}",
+                    "message": "{{step_1.order_notification}}"
+                },
+                "condition": {"if": "step_1.order_created == True"}
+            },
+            {
+                "tool_name": "telegram_send_message",
+                "description": "Notify business owner of cancelled order",
+                "parameters": {
+                    "chat_id": "{{config.business_telegram_chat_id}}",
+                    "message": "{{step_1.order_notification}}"
+                },
+                "condition": {"if": "step_1.order_cancelled == True"}
+            },
+            {
+                "tool_name": "telegram_send_message",
+                "description": "Alert business owner — customer needs a human agent",
+                "parameters": {
+                    "chat_id": "{{config.business_telegram_chat_id}}",
+                    "message": "{{step_1.escalation_notification}}"
+                },
+                "condition": {"if": "step_1.escalation_triggered == True"}
             }
         ]
     },

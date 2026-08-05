@@ -2366,7 +2366,7 @@ WORKFLOW_TEMPLATES = [
     {
         "id": "telegram_ordering_agent",
         "name": "Telegram Ordering Agent",
-        "description": "AI-powered Telegram ordering agent with product browsing, conversational order capture, and automatic notifications.",
+        "description": "AI-powered Telegram ordering agent with product browsing, conversational order capture, and automatic business notifications.",
         "category": "Sales",
         "icon": "🤖",
         "difficulty": "intermediate",
@@ -2389,18 +2389,26 @@ WORKFLOW_TEMPLATES = [
                         "kb_id": "{{variables.kb_id}}",
                         "business_name": "{{variables.business_name}}",
                         "business_phone": "{{variables.business_phone}}",
+                        "business_telegram_chat_id": "{{variables.business_telegram_chat_id}}",
                         "order_type": "{{variables.order_type}}",
                         "currency": "{{variables.currency}}",
                         "delivery_methods": "{{variables.delivery_methods}}",
+                        "reservations_enabled": "{{variables.reservations_enabled}}",
                         "storage_provider": "{{variables.storage_provider}}",
                         "storage_spreadsheet_id": "{{variables.storage_spreadsheet_id}}",
                         "storage_orders_sheet_name": "{{variables.storage_orders_sheet_name}}",
                         "storage_customers_sheet_name": "{{variables.storage_customers_sheet_name}}",
                         "storage_transactions_sheet_name": "{{variables.storage_transactions_sheet_name}}",
+                        "storage_reservations_sheet_name": "{{variables.storage_reservations_sheet_name}}",
                         "storage_airtable_base_id": "{{variables.storage_airtable_base_id}}",
                         "storage_airtable_orders_table": "{{variables.storage_airtable_orders_table}}",
                         "storage_airtable_customers_table": "{{variables.storage_airtable_customers_table}}",
-                        "storage_airtable_transactions_table": "{{variables.storage_airtable_transactions_table}}"
+                        "storage_airtable_transactions_table": "{{variables.storage_airtable_transactions_table}}",
+                        "storage_airtable_reservations_table": "{{variables.storage_airtable_reservations_table}}",
+                        "auto_escalation_enabled": "{{variables.auto_escalation_enabled}}",
+                        "supported_languages": "{{variables.supported_languages}}",
+                        "human_handoff_ttl_hours": "{{variables.human_handoff_ttl_hours}}",
+                        "platform": "telegram"
                     }
                 },
                 "description": "AI agent handles conversation and order creation"
@@ -2411,9 +2419,40 @@ WORKFLOW_TEMPLATES = [
                 "tool_parameters": {
                     "chat_id": "{{chat_id}}",
                     "message": "{{step_1.response_text}}",
-                    "image_urls": "{{step_1.image_urls}}"
+                    "image_urls": "{{step_1.image_urls}}",
+                    "session_key": "{{session_key}}"
                 },
                 "description": "Send AI response back to customer"
+            },
+            {
+                "step_number": 3,
+                "tool_name": "telegram_send_message",
+                "tool_parameters": {
+                    "chat_id": "{{variables.business_telegram_chat_id}}",
+                    "message": "{{step_1.order_notification}}"
+                },
+                "description": "Notify business owner of new order",
+                "condition": {"if": "step_1.order_created == True"}
+            },
+            {
+                "step_number": 4,
+                "tool_name": "telegram_send_message",
+                "tool_parameters": {
+                    "chat_id": "{{variables.business_telegram_chat_id}}",
+                    "message": "{{step_1.order_notification}}"
+                },
+                "description": "Notify business owner of cancelled order",
+                "condition": {"if": "step_1.order_cancelled == True"}
+            },
+            {
+                "step_number": 5,
+                "tool_name": "telegram_send_message",
+                "tool_parameters": {
+                    "chat_id": "{{variables.business_telegram_chat_id}}",
+                    "message": "{{step_1.escalation_notification}}"
+                },
+                "description": "Alert business owner — customer needs a human agent",
+                "condition": {"if": "step_1.escalation_triggered == True"}
             }
         ],
         "variables": {
@@ -2423,8 +2462,14 @@ WORKFLOW_TEMPLATES = [
             "business_name": {
                 "type": "string", "required": True, "description": "Your business name (shown to customers)"
             },
+            "business_telegram_chat_id": {
+                "type": "string",
+                "required": True,
+                "description": "Your Telegram chat ID for order alerts (message your bot, then use @userinfobot or your user id)",
+                "connection_for": "telegram"
+            },
             "business_phone": {
-                "type": "string", "required": False, "description": "Phone number for notifications (optional)"
+                "type": "string", "required": False, "description": "Optional phone for M-Pesa / records (customers still provide phone in chat)"
             },
             "order_type": {
                 "type": "string", "enum": ["food", "clothing", "retail", "general"], "default": "food"
@@ -2433,7 +2478,16 @@ WORKFLOW_TEMPLATES = [
                 "type": "string", "default": "KES"
             },
             "delivery_methods": {
-                "type": "array", "items": {"type": "string"}, "default": ["delivery", "pickup"]
+                "type": "array",
+                "items": {"type": "string", "enum": ["delivery", "pickup", "dine_in"]},
+                "default": ["delivery", "pickup"],
+                "description": "How customers receive orders. Dine-in is for food/restaurant only.",
+            },
+            "reservations_enabled": {
+                "type": "boolean",
+                "default": False,
+                "description": "Let customers book a table (date, time, party size). Restaurants only.",
+                "show_if": {"field": "order_type", "value": "food"},
             },
             "storage_provider": {
                 "type": "string",
@@ -2465,6 +2519,12 @@ WORKFLOW_TEMPLATES = [
                 "default": "Transactions",
                 "show_if": {"field": "storage_provider", "value": "google_sheets"}
             },
+            "storage_reservations_sheet_name": {
+                "type": "string",
+                "description": "Reservations sheet/tab name for table bookings",
+                "default": "Reservations",
+                "show_if": {"field": "storage_provider", "value": "google_sheets"}
+            },
             "storage_airtable_base_id": {
                 "type": "string",
                 "description": "Airtable Base ID",
@@ -2485,6 +2545,27 @@ WORKFLOW_TEMPLATES = [
                 "type": "string",
                 "default": "Transactions",
                 "show_if": {"field": "storage_provider", "value": "airtable"}
+            },
+            "storage_airtable_reservations_table": {
+                "type": "string",
+                "default": "Reservations",
+                "description": "Airtable table name for table reservations",
+                "show_if": {"field": "storage_provider", "value": "airtable"}
+            },
+            "auto_escalation_enabled": {
+                "type": "boolean",
+                "default": True,
+                "description": "Automatically hand frustrated or complex chats to a human agent"
+            },
+            "supported_languages": {
+                "type": "string",
+                "default": "en,sw,fr,ar,es",
+                "description": "Comma-separated language codes the agent supports (e.g. en,sw,fr)"
+            },
+            "human_handoff_ttl_hours": {
+                "type": "number",
+                "default": 24,
+                "description": "Hours before the AI resumes automatically (0 = never auto-resume)"
             }
         }
     },
