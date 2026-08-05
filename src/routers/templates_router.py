@@ -4,6 +4,7 @@ Provides pre-built starter templates for common use cases.
 """
 
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -2834,16 +2835,52 @@ async def use_template(
         name=f"{template['name']} (from template)",
         description=template["description"],
         user_id=current_user.id,
-        steps=[WorkflowStep(**step) for step in template["steps"]],
-        variables=workflow_variables,
+        steps=[WorkflowStep(**{k: v for k, v in step.items() if k != "workflow_id"}) for step in template["steps"]],
+        variables={
+            **workflow_variables,
+            "template_id": template_id,
+            "created_from_template": True,
+        },
         trigger_type=template.get("trigger_type", WorkflowTriggerType.MANUAL),
         trigger_config=template.get("trigger_config", {}),
         status=WorkflowStatus.ACTIVE,
         category=template["category"],
         tags=template.get("tags", []),
+        required_connections=template.get("required_connections"),
+        workflow_metadata={
+            "template_id": template_id,
+            "template_name": template.get("name"),
+            "platform": (template.get("trigger_config") or {}).get("platform"),
+            "created_at": datetime.utcnow().isoformat(),
+        },
     )
     
     db.add(workflow)
+    await db.flush()
+
+    # Messaging / conversational templates are agents in the product surface
+    is_agent_template = (
+        template_id.endswith("_agent")
+        or "agent" in (template.get("tags") or [])
+        or any(
+            (step.get("tool_name") == "conversational_agent")
+            for step in template.get("steps", [])
+        )
+    )
+    if is_agent_template:
+        from ..services.autonomous_agent_service import AutonomousAgentService
+        agent_service = AutonomousAgentService()
+        await agent_service.ensure_agent_metadata(
+            workflow,
+            current_user.id,
+            db,
+            trigger_type="event_driven",
+            agent_kind="conversational",
+            channel=(template.get("trigger_config") or {}).get("platform"),
+            template_id=template_id,
+            commit=False,
+        )
+
     await db.commit()
     await db.refresh(workflow)
     

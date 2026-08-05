@@ -859,6 +859,19 @@ class WorkflowTemplateService:
             )
             db.add(step)
 
+        from .autonomous_agent_service import AutonomousAgentService
+        agent_service = AutonomousAgentService()
+        await agent_service.ensure_agent_metadata(
+            workflow,
+            user_id,
+            db,
+            trigger_type="event_driven",
+            agent_kind="conversational",
+            channel=template.get("platform") or (template.get("trigger") or {}).get("platform"),
+            template_id=template_id,
+            commit=False,
+        )
+
         await db.commit()
         await db.refresh(workflow)
 

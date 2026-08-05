@@ -49,6 +49,10 @@ class AgentResponse(BaseModel):
     performance_metrics: Dict[str, Any] = Field(..., description="Aggregated performance data (success rates, latencies).")
     created_at: str = Field(..., description="ISO 8601 timestamp of agent creation.")
     updated_at: str = Field(..., description="ISO 8601 timestamp of last update.")
+    channel: Optional[str] = Field(None, description="Messaging channel (whatsapp, telegram), if any.")
+    job_type: Optional[str] = Field(None, description="Agent job type (ordering, support, rent, etc.).")
+    agent_kind: Optional[str] = Field(None, description="conversational or autonomous.")
+    template_id: Optional[str] = Field(None, description="Source template id when deployed from a template.")
 
 
 class AgentStatusResponse(BaseModel):
@@ -62,6 +66,10 @@ class AgentStatusResponse(BaseModel):
     performance_metrics: Dict[str, Any]
     created_at: str
     updated_at: str
+    channel: Optional[str] = None
+    job_type: Optional[str] = None
+    agent_kind: Optional[str] = None
+    template_id: Optional[str] = None
 
 
 @router.post("/create", response_model=Dict[str, Any])
@@ -150,11 +158,15 @@ async def get_user_agents(
                 workflow_name=agent["workflow_name"],
                 status=agent["status"],
                 trigger_type=agent["trigger_type"],
-                schedule=None,  # Will be populated from agent status
-                monitoring=agent["monitoring"],
-                performance_metrics={},  # Will be populated from agent status
+                schedule=agent.get("schedule") or {},
+                monitoring=agent.get("monitoring") or {},
+                performance_metrics=agent.get("performance_metrics") or {},
                 created_at=agent["created_at"],
-                updated_at=agent["created_at"]  # Placeholder
+                updated_at=agent.get("updated_at") or agent["created_at"],
+                channel=agent.get("channel"),
+                job_type=agent.get("job_type"),
+                agent_kind=agent.get("agent_kind"),
+                template_id=agent.get("template_id"),
             ) for agent in agents
         ]
     except Exception as e:
