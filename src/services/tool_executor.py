@@ -1077,11 +1077,33 @@ class ToolExecutor:
     ) -> Dict[str, Any]:
         """Execute Telegram-related tools."""
         from .telegram_service import TelegramService
+        from ..models import Connection
+        from sqlalchemy import select, and_
+
         tg_service = TelegramService()
+        tg_config = None
+        try:
+            conn_res = await db.execute(
+                select(Connection).where(
+                    and_(
+                        Connection.user_id == user.id,
+                        Connection.platform == "telegram",
+                        Connection.status == "active",
+                    )
+                )
+            )
+            connection = conn_res.scalar_one_or_none()
+            if connection and connection.config:
+                tg_config = connection.config
+        except Exception as cfg_err:
+            logger.warning(f"[TG_TOOL] Failed to load Telegram connection config: {cfg_err}")
         
         if tool_name == "telegram_send_message":
             chat_id = arguments.get("chat_id")
             message = arguments.get("message", "")
+
+            if not chat_id:
+                return {"success": True, "result": "Skipped Telegram send (no chat_id)", "skipped": True}
 
             # ── Smart Image Dispatcher (Telegram) ──────────────
             # Detect image URLs and send them as native Telegram photos.
@@ -1094,10 +1116,15 @@ class ToolExecutor:
             clean_message = strip_image_urls(message, image_urls) if image_urls else message
             clean_message = self._sanitize_chat_message_for_channel(clean_message, "telegram")
 
+            if not (clean_message or "").strip() and not image_urls:
+                return {"success": True, "result": "Skipped empty Telegram message", "skipped": True}
+
             # 1) Send text message first (if any text remains)
             text_result = None
             if clean_message.strip():
-                text_result = await tg_service.send_message(chat_id=chat_id, message=clean_message)
+                text_result = await tg_service.send_message(
+                    chat_id=chat_id, message=clean_message, config=tg_config
+                )
 
             # 2) Send each image as a native Telegram photo
             media_results = []
@@ -1106,7 +1133,8 @@ class ToolExecutor:
                     photo_res = await tg_service.send_photo(
                         chat_id=chat_id,
                         photo_url=img_url,
-                        caption=""
+                        caption="",
+                        config=tg_config,
                     )
                     media_results.append({"url": img_url, "result": photo_res})
                     logger.info(f"[TG_SMART_DISPATCH] Sent photo to {chat_id}: {img_url[:80]}")

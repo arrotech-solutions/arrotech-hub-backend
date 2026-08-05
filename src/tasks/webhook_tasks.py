@@ -63,9 +63,9 @@ def process_whatsapp_message_task(self, payload: Dict[str, Any], user_id: str = 
     retry_backoff=True,
     acks_late=True,
 )
-def process_telegram_message_task(self, payload: Dict[str, Any]):
+def process_telegram_message_task(self, payload: Dict[str, Any], bot_id: str = None):
     """Process an incoming Telegram webhook update."""
-    logger.info(f"[CeleryWebhook] Processing Telegram update")
+    logger.info(f"[CeleryWebhook] Processing Telegram update bot_id={bot_id}")
 
     async def _process():
         from src.services.telegram_service import TelegramService
@@ -75,13 +75,13 @@ def process_telegram_message_task(self, payload: Dict[str, Any]):
         session_maker = get_session_maker()
         async with session_maker() as db:
             try:
-                await service.handle_update(payload, db)
+                await service.handle_update(payload, db, bot_id=bot_id)
             except Exception as e:
                 logger.error(f"[CeleryWebhook] Telegram processing error: {e}")
                 raise
 
     _run_async(_process())
-    return {"status": "processed", "type": "telegram"}
+    return {"status": "processed", "type": "telegram", "bot_id": bot_id}
 
 
 @app.task(

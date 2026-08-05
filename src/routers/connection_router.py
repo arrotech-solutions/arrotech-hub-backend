@@ -148,13 +148,34 @@ async def create_connection(
                 detail=f"Connection test failed: {test_result['error']}"
             )
 
+        connection_config = dict(connection_data.config or {})
+        if connection_data.platform == "telegram":
+            from ..services.telegram_service import TelegramService
+            provisioned = await TelegramService().provision_bot(
+                connection_config.get("bot_token", "")
+            )
+            if not provisioned.get("success"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Telegram bot setup failed: {provisioned.get('error')}"
+                )
+            connection_config.update({
+                "bot_id": provisioned.get("bot_id"),
+                "bot_username": provisioned.get("bot_username"),
+                "webhook_url": provisioned.get("webhook_url"),
+                "webhook_registered": provisioned.get("webhook_registered"),
+            })
+            if connection_config.get("notify_chat_id") in (None, ""):
+                # Allow optional notify chat; agent template asks separately
+                pass
+
         # Create connection
         connection = Connection(
             user_id=current_user.id,
             platform=connection_data.platform,
             name=connection_data.name,
             status=ConnectionStatus.ACTIVE,
-            config=connection_data.config
+            config=connection_config
         )
 
         db.add(connection)
@@ -205,7 +226,18 @@ async def update_connection(
         # Update connection
         connection.name = connection_data.name
         connection.status = connection_data.status
-        connection.config = connection_data.config
+        new_config = dict(connection_data.config or {})
+        if connection.platform == "telegram" and new_config.get("bot_token"):
+            from ..services.telegram_service import TelegramService
+            provisioned = await TelegramService().provision_bot(new_config["bot_token"])
+            if provisioned.get("success"):
+                new_config.update({
+                    "bot_id": provisioned.get("bot_id"),
+                    "bot_username": provisioned.get("bot_username"),
+                    "webhook_url": provisioned.get("webhook_url"),
+                    "webhook_registered": provisioned.get("webhook_registered"),
+                })
+        connection.config = new_config
         
         await db.commit()
         await db.refresh(connection)
