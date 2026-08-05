@@ -21,7 +21,15 @@ class TestWebhookTasks:
         mock_run_async.return_value = {"status": "processed", "type": "telegram"}
         
         result = process_telegram_message_task({"update_id": 123})
-        assert result == {"status": "processed", "type": "telegram"}
+        assert result == {"status": "processed", "type": "telegram", "bot_id": None}
+        mock_run_async.assert_called_once()
+
+    def test_process_telegram_message_task_with_bot_id(self, mock_run_async):
+        from src.tasks.webhook_tasks import process_telegram_message_task
+        mock_run_async.return_value = {"status": "processed", "type": "telegram"}
+
+        result = process_telegram_message_task({"update_id": 123}, bot_id="987654321")
+        assert result == {"status": "processed", "type": "telegram", "bot_id": "987654321"}
         mock_run_async.assert_called_once()
 
     def test_process_slack_event_task(self, mock_run_async):
