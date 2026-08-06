@@ -1000,6 +1000,7 @@ async def create_workflow_from_steps(
             trigger_type=WorkflowTriggerType(data.trigger_type) if data.trigger_type else WorkflowTriggerType.MANUAL,
             trigger_config=data.trigger_config,
             variables=data.variables or {},
+            workflow_metadata=data.workflow_metadata or {},
             version=1,
             is_template=False
         )

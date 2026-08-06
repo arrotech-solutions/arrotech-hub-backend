@@ -5,7 +5,7 @@ import asyncio
 import json
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Set, Union
 import uuid
 
 from jinja2 import DebugUndefined, Template
@@ -431,19 +431,75 @@ class WorkflowBuilderService:
                     if key not in context:  # Don't overwrite existing keys like 'input', 'workflow', 'steps'
                         context[key] = value
             
-            # Execute steps in order
-            for step in workflow.steps:
-                # Check conditional logic
+            # Execute steps in order (with canvas router branch skipping)
+            skip_steps: Set[int] = set()
+            meta_branch_keys = (workflow.workflow_metadata or {}).get("branch_keys") or {}
+            ordered_steps = sorted(workflow.steps, key=lambda s: s.step_number)
+
+            for step in ordered_steps:
+                if step.step_number in skip_steps:
+                    print(f"Step {step.step_number} skipped (inactive branch)")
+                    continue
+
+                cond = step.condition if isinstance(step.condition, dict) else None
+                if self._is_router_step(step, cond):
+                    chosen_key = await self._resolve_router_branch(cond or {}, context)
+                    branches = (cond or {}).get("branches") or {}
+
+                    # Skip rejected branch roots + any steps tagged with a non-chosen branch_key.
+                    # Do NOT greedily skip unmarked steps after a branch (those may be join/linear).
+                    for key, target in branches.items():
+                        if str(key) == str(chosen_key):
+                            continue
+                        try:
+                            skip_steps.add(int(target))
+                        except (TypeError, ValueError):
+                            continue
+                        # Extend skip set for tagged descendants of this branch key
+                        for sn_str, bkey in meta_branch_keys.items():
+                            if str(bkey) != str(key):
+                                continue
+                            try:
+                                skip_steps.add(int(sn_str))
+                            except (TypeError, ValueError):
+                                continue
+
+                    for sn_str, bkey in meta_branch_keys.items():
+                        if str(bkey) == str(chosen_key):
+                            continue
+                        try:
+                            skip_steps.add(int(sn_str))
+                        except (TypeError, ValueError):
+                            continue
+
+                    step_execution = await self._execute_control_step(
+                        step,
+                        execution.id,
+                        db,
+                        {
+                            "router": True,
+                            "chosen_branch": chosen_key,
+                            "expression": (cond or {}).get("expression"),
+                            "skipped_steps": sorted(skip_steps),
+                        },
+                        user_id,
+                    )
+                    step_result = step_execution.output_data or {}
+                    context["steps"][f"step_{step.step_number}"] = step_result
+                    context[f"step_{step.step_number}"] = step_result
+                    continue
+
+                # Legacy / field-operator conditional skip
                 if step.condition and not await self._evaluate_condition(step.condition, context):
                     print(f"Step {step.step_number} skipped due to condition")
                     continue
-                
+
                 # Execute step with variable substitution
                 step_execution = await self._execute_workflow_step(step, execution.id, db, context, user_id)
-                
+
                 # Update context with step results
                 step_result = step_execution.output_data or {}
-                
+
                 # Make step_result more forgiving for templates that expect direct array access
                 if isinstance(step_result, dict) and "data" in step_result and isinstance(step_result["data"], dict):
                     # Copy data contents to root of step_result for easier access (e.g. step_2.results instead of step_2.data.results)
@@ -452,26 +508,26 @@ class WorkflowBuilderService:
                             step_result[k] = v
 
                 context["steps"][f"step_{step.step_number}"] = step_result
-                
+
                 # Also add to root context for easier variable access (e.g. {{step_1.field}})
                 context[f"step_{step.step_number}"] = step_result
-                
+
                 # GAP 2 FIX: Also store by operation name for intuitive access
                 # e.g. {{auto_resolve_ticket.resolved}} instead of {{step_2.resolved}}
                 operation_name = (step.tool_parameters or {}).get("operation", "")
                 if operation_name:
                     context[operation_name] = step_result
-                
+
                 # Check if step failed
                 if step_execution.status == WorkflowExecutionStatus.FAILED or str(step_execution.status) == "failed":
                     execution.status = WorkflowExecutionStatus.FAILED.value if hasattr(WorkflowExecutionStatus.FAILED, 'value') else "failed"
                     execution.error_message = f"Step {step.step_number} failed: {step_execution.error_message}"
                     break
-            
+
             if execution.status == WorkflowExecutionStatus.RUNNING or str(execution.status) == "running":
                 execution.status = WorkflowExecutionStatus.COMPLETED.value if hasattr(WorkflowExecutionStatus.COMPLETED, 'value') else "completed"
                 execution.output_data = context["steps"]
-            
+
         except Exception as e:
             execution.status = WorkflowExecutionStatus.FAILED.value if hasattr(WorkflowExecutionStatus.FAILED, 'value') else "failed"
             execution.error_message = str(e)
@@ -524,9 +580,136 @@ class WorkflowBuilderService:
         
         return execution
     
+    def _is_router_step(self, step: WorkflowStep, condition: Optional[Dict[str, Any]]) -> bool:
+        """Canvas condition_router / type:router nodes are control-flow, not tools."""
+        tool = (step.tool_name or "").lower()
+        if tool in ("condition_router", "condition"):
+            return True
+        if not condition:
+            return False
+        if condition.get("type") == "router":
+            return True
+        branches = condition.get("branches")
+        return isinstance(branches, dict) and len(branches) > 0
+
+    def _collect_branch_step_numbers(
+        self,
+        start_num: int,
+        ordered_steps: List[WorkflowStep],
+        sibling_starts: Set[int],
+    ) -> Set[int]:
+        """
+        Collect contiguous steps belonging to a rejected branch, starting at start_num
+        until another sibling branch root (or end).
+        """
+        collected: Set[int] = set()
+        started = False
+        for s in ordered_steps:
+            if s.step_number == start_num:
+                started = True
+            if not started:
+                continue
+            if s.step_number != start_num and s.step_number in sibling_starts:
+                break
+            collected.add(s.step_number)
+        return collected
+
+    def _evaluate_boolean_expression(self, expression: str, context: Dict[str, Any]) -> bool:
+        """Evaluate canvas router expressions like '{{intent}} == confirmed'."""
+        if not expression or not str(expression).strip():
+            return True
+        expr = str(expression).strip()
+        try:
+            env = SandboxedEnvironment(undefined=DebugUndefined)
+            # "{{intent}} == confirmed" → "intent == confirmed" for {% if %}
+            normalized = re.sub(r"\{\{\s*(.*?)\s*\}\}", r"\1", expr)
+            # Quote bare RHS identifiers after ==/!= for common canvas patterns
+            # e.g. intent == confirmed → intent == 'confirmed' (when RHS isn't already quoted/numeric)
+            def _quote_rhs(match: re.Match) -> str:
+                op, rhs = match.group(1), match.group(2)
+                if rhs[0] in ("'", '"') or rhs.lower() in ("true", "false", "none", "null"):
+                    return match.group(0)
+                try:
+                    float(rhs)
+                    return match.group(0)
+                except ValueError:
+                    return f"{op} '{rhs}'"
+
+            normalized = re.sub(
+                r"(==|!=)\s*([A-Za-z_][\w]*)\s*$",
+                _quote_rhs,
+                normalized.strip(),
+            )
+            template = env.from_string(
+                "{% if " + normalized + " %}true{% else %}false{% endif %}"
+            )
+            rendered = template.render(**(context or {}))
+            return str(rendered).strip().lower() in ("true", "1", "yes")
+        except Exception as exc:
+            logger.warning("Failed to evaluate router expression %r: %s", expression, exc)
+            return False
+
+    async def _resolve_router_branch(self, condition: Dict[str, Any], context: Dict[str, Any]) -> str:
+        """Return branch key ('true'/'false' or custom) for a router node."""
+        branches = condition.get("branches") or {}
+        keys = [str(k) for k in branches.keys()] if branches else ["true", "false"]
+
+        expr = condition.get("expression") or condition.get("if") or ""
+        if expr:
+            result = self._evaluate_boolean_expression(str(expr), context)
+        elif condition.get("field"):
+            result = await self._evaluate_condition({**condition, "type": "if"}, context)
+        else:
+            result = True
+
+        preferred = "true" if result else "false"
+        if preferred in keys:
+            return preferred
+        if result and keys:
+            return keys[0]
+        if not result and len(keys) > 1:
+            return keys[1]
+        return preferred
+
+    async def _execute_control_step(
+        self,
+        step: WorkflowStep,
+        execution_id: uuid.UUID,
+        db: AsyncSession,
+        output: Dict[str, Any],
+        user_id: uuid.UUID = None,
+    ) -> WorkflowStepExecution:
+        """Record a successful control-flow step without invoking a tool."""
+        step_execution = WorkflowStepExecution(
+            workflow_execution_id=execution_id,
+            step_id=step.id,
+            status=WorkflowExecutionStatus.COMPLETED.value
+            if hasattr(WorkflowExecutionStatus.COMPLETED, "value")
+            else "completed",
+            input_data=step.tool_parameters or {},
+            output_data=output,
+            started_at=datetime.utcnow(),
+            completed_at=datetime.utcnow(),
+        )
+        db.add(step_execution)
+        await db.flush()
+        if user_id:
+            await connection_manager.push_to_user(
+                user_id,
+                "workflow_step_completed",
+                {
+                    "execution_id": execution_id,
+                    "step_id": step.id,
+                    "step_number": step.step_number,
+                    "status": "completed",
+                },
+            )
+        return step_execution
+
     async def _evaluate_condition(self, condition: Dict[str, Any], context: Dict[str, Any]) -> bool:
         """
         Evaluate conditional logic for workflow steps with robust type-forgiving comparison.
+        Returns True when the step should RUN (condition passes).
         """
         if not condition:
             return True
@@ -543,16 +726,24 @@ class WorkflowBuilderService:
                 logger.warning("Failed to evaluate workflow condition %r: %s", legacy_if, exc)
                 return False
 
+        # Canvas router / expression conditions (also used by /test-condition)
+        if condition.get("type") == "router" or (
+            condition.get("expression") and condition.get("type") not in ("if",)
+        ):
+            return self._evaluate_boolean_expression(
+                str(condition.get("expression") or ""), context
+            )
+
         if condition.get("type") != "if":
             return True
-        
+
         field_path = condition.get("field", "")
         operator = condition.get("operator", "equals")
         expected_value = condition.get("value")
-        
+
         # Extract actual value from context
         actual_value = self._extract_value_from_context(field_path, context)
-        
+
         # Helper to safely coerce values to booleans/strings for comparison
         def _to_bool_str(val) -> str:
             if val is True or str(val).lower() in ("true", "1", "yes"):
@@ -590,9 +781,9 @@ class WorkflowBuilderService:
             return actual_value is not None and actual_value != ""
         elif operator == "not_exists":
             return actual_value is None or actual_value == ""
-        
+
         return True
-    
+
     def _extract_value_from_context(self, field_path: str, context: Dict[str, Any]) -> Any:
         """
         Extract value from context using dot notation (e.g., "input.email", "step_1.status").
@@ -629,6 +820,19 @@ class WorkflowBuilderService:
         await db.flush()
         
         try:
+            # Control-flow routers must never hit the tool executor
+            if self._is_router_step(step, step.condition if isinstance(step.condition, dict) else None):
+                chosen = await self._resolve_router_branch(
+                    step.condition if isinstance(step.condition, dict) else {},
+                    context or {},
+                )
+                step_execution.input_data = step.tool_parameters or {}
+                step_execution.output_data = {"router": True, "chosen_branch": chosen}
+                step_execution.status = WorkflowExecutionStatus.COMPLETED.value if hasattr(WorkflowExecutionStatus.COMPLETED, "value") else "completed"
+                step_execution.completed_at = datetime.utcnow()
+                await db.commit()
+                return step_execution
+
             # Prepare parameters with overrides first
             effective_params = step.tool_parameters.copy() if step.tool_parameters else {}
             
