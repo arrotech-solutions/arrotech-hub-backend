@@ -107,8 +107,11 @@ class AutonomousAgentService:
             "updated_at": datetime.utcnow().isoformat()
         }
         
-        # Update workflow with agent metadata
+        # Update workflow with agent metadata; clear prior remove flag if re-promoting
         meta = dict(workflow.workflow_metadata or {})
+        meta.pop("agent_removed", None)
+        meta.pop("agent_removed_at", None)
+        meta.pop("agent_removed_id", None)
         meta["agent"] = agent_metadata
         workflow.workflow_metadata = meta
         flag_modified(workflow, "workflow_metadata")
@@ -643,8 +646,9 @@ You are now an autonomous agent ready to execute this workflow independently.
         user_id: Optional[uuid.UUID] = None,
     ) -> bool:
         """
-        Delete an autonomous agent wrapper.
-        Deactivates the underlying workflow so messaging triggers stop.
+        Remove an agent from My Agents.
+        Deactivates the workflow (stops messaging triggers) but keeps the automation.
+        Marks agent_removed so conversational workflows are not auto-relisted.
         """
         workflow = await self._find_workflow_by_agent_id(agent_id, db, user_id=user_id)
 
@@ -652,10 +656,16 @@ You are now an autonomous agent ready to execute this workflow independently.
             return False
 
         meta = dict(workflow.workflow_metadata or {})
-        if "agent" in meta:
-            del meta["agent"]
-            workflow.workflow_metadata = meta
-            flag_modified(workflow, "workflow_metadata")
+        meta["agent_removed"] = True
+        meta["agent_removed_at"] = datetime.utcnow().isoformat()
+        meta["agent_removed_id"] = agent_id
+        existing = dict(meta.get("agent") or {})
+        existing["agent_id"] = existing.get("agent_id") or agent_id
+        existing["status"] = "removed"
+        existing["updated_at"] = datetime.utcnow().isoformat()
+        meta["agent"] = existing
+        workflow.workflow_metadata = meta
+        flag_modified(workflow, "workflow_metadata")
 
         workflow.status = WorkflowStatus.INACTIVE
 
@@ -677,6 +687,7 @@ You are now an autonomous agent ready to execute this workflow independently.
         - Workflows with workflow_metadata.agent (autonomous wrappers)
         - Conversational messaging workflows (WhatsApp/Telegram ordering/support)
           even if agent metadata was never stamped
+        Excludes agents explicitly removed from My Agents.
         """
         stmt = select(Workflow).where(Workflow.user_id == user_id)
         result = await db.execute(stmt)
@@ -688,7 +699,20 @@ You are now an autonomous agent ready to execute this workflow independently.
 
         for workflow in workflows:
             meta = workflow.workflow_metadata or {}
-            agent_meta = meta.get("agent") if isinstance(meta, dict) else None
+            if not isinstance(meta, dict):
+                meta = {}
+
+            # Explicitly removed from Agents page — do not reappear on refresh
+            if meta.get("agent_removed"):
+                continue
+
+            agent_meta = meta.get("agent")
+            if isinstance(agent_meta, dict) and agent_meta.get("status") in (
+                "removed",
+                "deleted",
+            ):
+                continue
+
             is_conversational = await self._is_conversational_messaging_workflow(workflow, db)
 
             if not agent_meta and not is_conversational:
@@ -853,8 +877,14 @@ You are now an autonomous agent ready to execute this workflow independently.
         commit: bool = True,
     ) -> Dict[str, Any]:
         """Ensure workflow_metadata.agent exists; create a lightweight stamp if missing."""
-        existing = (workflow.workflow_metadata or {}).get("agent")
-        if existing and existing.get("agent_id"):
+        meta = workflow.workflow_metadata or {}
+        if isinstance(meta, dict) and meta.get("agent_removed"):
+            return meta.get("agent") or {}
+
+        existing = meta.get("agent") if isinstance(meta, dict) else None
+        if existing and existing.get("agent_id") and existing.get("status") not in ("removed", "deleted"):
+            return existing
+        if existing and existing.get("status") in ("removed", "deleted"):
             return existing
 
         inferred_channel = channel or self._infer_channel(workflow, None)
