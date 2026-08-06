@@ -900,14 +900,21 @@ Your task is to execute the following workflow steps:
 
 """
         
-        for step in workflow.steps:
+        for step in (workflow.steps or []):
+            try:
+                params_json = json.dumps(step.tool_parameters, indent=2, default=str)
+            except Exception:
+                params_json = str(step.tool_parameters)
             prompt += f"""
-Step {step.step_number}: {step.description}
+Step {step.step_number}: {step.description or ''}
 - Tool: {step.tool_name}
-- Parameters: {json.dumps(step.tool_parameters, indent=2)}
+- Parameters: {params_json}
 """
             if step.condition:
-                prompt += f"- Condition: {json.dumps(step.condition, indent=2)}\n"
+                try:
+                    prompt += f"- Condition: {json.dumps(step.condition, indent=2, default=str)}\n"
+                except Exception:
+                    prompt += f"- Condition: {step.condition}\n"
         
         prompt += """
 
