@@ -8,7 +8,7 @@ from httpx import AsyncClient
 @pytest.mark.asyncio
 async def test_list_agents_unauthorized(client: AsyncClient):
     """Test listing agents without auth returns 401."""
-    response = await client.get("/agents/agents/")
+    response = await client.get("/agents/")
     assert response.status_code in (401, 403)
 
 
@@ -16,7 +16,7 @@ async def test_list_agents_unauthorized(client: AsyncClient):
 async def test_list_agents(client: AsyncClient, auth_headers):
     """Test listing user agents."""
     response = await client.get(
-        "/agents/agents/", headers=auth_headers
+        "/agents/", headers=auth_headers
     )
     assert response.status_code == 200
 
@@ -27,7 +27,7 @@ async def test_create_agent(
 ):
     """Test creating an agent."""
     response = await client.post(
-        "/agents/agents/create",
+        "/agents/create",
         headers=auth_headers,
         json={
             "name": "Test Agent",
@@ -42,7 +42,7 @@ async def test_create_agent(
 async def test_get_agent_not_found(client: AsyncClient, auth_headers):
     """Test getting a non-existent agent returns 404."""
     response = await client.get(
-        "/agents/agents/99999/status", headers=auth_headers
+        "/agents/99999/status", headers=auth_headers
     )
     assert response.status_code in [404, 400, 500]
 
@@ -51,6 +51,6 @@ async def test_get_agent_not_found(client: AsyncClient, auth_headers):
 async def test_delete_agent_not_found(client: AsyncClient, auth_headers):
     """Test deleting a non-existent agent."""
     response = await client.delete(
-        "/agents/agents/99999", headers=auth_headers
+        "/agents/99999", headers=auth_headers
     )
     assert response.status_code in [404, 400, 500]

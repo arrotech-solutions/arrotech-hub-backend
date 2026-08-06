@@ -13,7 +13,7 @@ from ..models import User
 from ..services.autonomous_agent_service import AutonomousAgentService
 from .auth_router import get_current_user
 
-router = APIRouter(prefix="/agents", tags=["agents"])
+router = APIRouter(tags=["agents"])
 
 
 class AgentCreate(BaseModel):
