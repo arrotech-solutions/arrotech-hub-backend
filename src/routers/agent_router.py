@@ -200,7 +200,7 @@ async def get_agent_status(
     """
     try:
         agent_service = AutonomousAgentService()
-        agent_status = await agent_service.get_agent_status(agent_id, db)
+        agent_status = await agent_service.get_agent_status(agent_id, db, user_id=user.id)
 
         if not agent_status:
             raise HTTPException(
@@ -238,7 +238,7 @@ async def pause_agent(
     """Pause an autonomous agent."""
     try:
         agent_service = AutonomousAgentService()
-        success = await agent_service.pause_agent(agent_id, db)
+        success = await agent_service.pause_agent(agent_id, db, user_id=user.id)
 
         if not success:
             raise HTTPException(
@@ -269,7 +269,7 @@ async def resume_agent(
     """Resume a paused autonomous agent."""
     try:
         agent_service = AutonomousAgentService()
-        success = await agent_service.resume_agent(agent_id, db)
+        success = await agent_service.resume_agent(agent_id, db, user_id=user.id)
 
         if not success:
             raise HTTPException(
@@ -300,7 +300,7 @@ async def delete_agent(
     """Delete an autonomous agent."""
     try:
         agent_service = AutonomousAgentService()
-        success = await agent_service.delete_agent(agent_id, db)
+        success = await agent_service.delete_agent(agent_id, db, user_id=user.id)
 
         if not success:
             raise HTTPException(
@@ -334,7 +334,7 @@ async def execute_agent_manual(
         agent_service = AutonomousAgentService()
 
         # Get agent status first to verify it exists
-        agent_status = await agent_service.get_agent_status(agent_id, db)
+        agent_status = await agent_service.get_agent_status(agent_id, db, user_id=user.id)
         if not agent_status:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -367,7 +367,7 @@ async def get_agent_analytics(
     """Get detailed analytics for an agent."""
     try:
         agent_service = AutonomousAgentService()
-        agent_status = await agent_service.get_agent_status(agent_id, db)
+        agent_status = await agent_service.get_agent_status(agent_id, db, user_id=user.id)
 
         if not agent_status:
             raise HTTPException(

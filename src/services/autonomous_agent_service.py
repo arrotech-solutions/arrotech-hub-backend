@@ -66,14 +66,24 @@ class AutonomousAgentService:
         agent_id = str(uuid.uuid4())
         agent_config = agent_config or {}
         
-        # Create agent prompt
-        agent_prompt = await self._generate_agent_prompt(workflow, agent_config)
+        # Create agent prompt (best-effort; never block agent creation)
+        try:
+            agent_prompt = await self._generate_agent_prompt(workflow, agent_config)
+        except Exception as prompt_err:
+            agent_prompt = f"Autonomous agent for workflow: {workflow.name}"
+            # Log but continue — prompt is informational only
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to generate agent prompt for workflow %s: %s",
+                workflow_id,
+                prompt_err,
+            )
         
-        # Create agent metadata
+        # Create agent metadata — UUIDs must be strings for JSON columns
         agent_metadata = {
             "agent_id": agent_id,
-            "workflow_id": workflow_id,
-            "user_id": user_id,
+            "workflow_id": str(workflow_id),
+            "user_id": str(user_id),
             "status": AgentStatus.ACTIVE.value,
             "trigger_type": agent_config.get("trigger_type", AgentTriggerType.MANUAL.value),
             "schedule": agent_config.get("schedule", {}),
@@ -89,15 +99,16 @@ class AutonomousAgentService:
                 "response_time": [],
                 "success_rate": 0,
                 "error_rate": 0,
-                "cost_per_execution": 0
+                "cost_per_execution": 0,
+                "execution_count": 0,
             },
+            "agent_kind": agent_config.get("agent_kind", "autonomous"),
             "created_at": datetime.utcnow().isoformat(),
             "updated_at": datetime.utcnow().isoformat()
         }
         
         # Update workflow with agent metadata
-        workflow.workflow_metadata = workflow.workflow_metadata or {}
-        meta = dict(workflow.workflow_metadata)
+        meta = dict(workflow.workflow_metadata or {})
         meta["agent"] = agent_metadata
         workflow.workflow_metadata = meta
         flag_modified(workflow, "workflow_metadata")
@@ -108,7 +119,7 @@ class AutonomousAgentService:
         
         return {
             "agent_id": agent_id,
-            "workflow_id": workflow_id,
+            "workflow_id": str(workflow_id),
             "agent_prompt": agent_prompt,
             "agent_config": agent_metadata,
             "status": "created"
@@ -509,20 +520,43 @@ You are now an autonomous agent ready to execute this workflow independently.
         
         await db.commit()
     
-    async def get_agent_status(self, agent_id: str, db: AsyncSession) -> Optional[Dict[str, Any]]:
+    async def _find_workflow_by_agent_id(
+        self,
+        agent_id: str,
+        db: AsyncSession,
+        *,
+        user_id: Optional[uuid.UUID] = None,
+    ) -> Optional[Workflow]:
+        """Find a workflow by agent_id in metadata (DB-agnostic; scoped by user when provided)."""
+        stmt = select(Workflow)
+        if user_id is not None:
+            stmt = stmt.where(Workflow.user_id == user_id)
+        result = await db.execute(stmt)
+        target = str(agent_id)
+        for workflow in result.scalars().all():
+            meta = workflow.workflow_metadata
+            if not isinstance(meta, dict):
+                continue
+            agent_meta = meta.get("agent") or {}
+            if str(agent_meta.get("agent_id") or "") == target:
+                return workflow
+        return None
+
+    async def get_agent_status(
+        self,
+        agent_id: str,
+        db: AsyncSession,
+        user_id: Optional[uuid.UUID] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Get the status and monitoring data for an agent.
         """
-        stmt = select(Workflow).where(
-            Workflow.workflow_metadata.contains({"agent": {"agent_id": agent_id}})
-        )
-        result = await db.execute(stmt)
-        workflow = result.scalar_one_or_none()
+        workflow = await self._find_workflow_by_agent_id(agent_id, db, user_id=user_id)
         
         if not workflow:
             return None
         
-        agent_metadata = workflow.workflow_metadata.get("agent", {})
+        agent_metadata = (workflow.workflow_metadata or {}).get("agent", {})
         
         return {
             "agent_id": agent_id,
@@ -543,16 +577,17 @@ You are now an autonomous agent ready to execute this workflow independently.
         workflow.workflow_metadata = meta
         flag_modified(workflow, "workflow_metadata")
 
-    async def pause_agent(self, agent_id: str, db: AsyncSession) -> bool:
+    async def pause_agent(
+        self,
+        agent_id: str,
+        db: AsyncSession,
+        user_id: Optional[uuid.UUID] = None,
+    ) -> bool:
         """
         Pause an autonomous agent.
         Also sets workflow.status to inactive so messaging triggers stop.
         """
-        stmt = select(Workflow).where(
-            Workflow.workflow_metadata.contains({"agent": {"agent_id": agent_id}})
-        )
-        result = await db.execute(stmt)
-        workflow = result.scalar_one_or_none()
+        workflow = await self._find_workflow_by_agent_id(agent_id, db, user_id=user_id)
 
         if not workflow:
             return False
@@ -564,22 +599,26 @@ You are now an autonomous agent ready to execute this workflow independently.
         workflow.status = WorkflowStatus.INACTIVE
 
         if agent_id in self.active_agents:
-            self.active_agents[agent_id].cancel()
-            del self.active_agents[agent_id]
+            try:
+                self.active_agents[agent_id].cancel()
+            except Exception:
+                pass
+            self.active_agents.pop(agent_id, None)
 
         await db.commit()
         return True
 
-    async def resume_agent(self, agent_id: str, db: AsyncSession) -> bool:
+    async def resume_agent(
+        self,
+        agent_id: str,
+        db: AsyncSession,
+        user_id: Optional[uuid.UUID] = None,
+    ) -> bool:
         """
         Resume a paused autonomous agent.
         Also sets workflow.status to active so messaging triggers resume.
         """
-        stmt = select(Workflow).where(
-            Workflow.workflow_metadata.contains({"agent": {"agent_id": agent_id}})
-        )
-        result = await db.execute(stmt)
-        workflow = result.scalar_one_or_none()
+        workflow = await self._find_workflow_by_agent_id(agent_id, db, user_id=user_id)
 
         if not workflow:
             return False
@@ -597,16 +636,17 @@ You are now an autonomous agent ready to execute this workflow independently.
         await db.commit()
         return True
 
-    async def delete_agent(self, agent_id: str, db: AsyncSession) -> bool:
+    async def delete_agent(
+        self,
+        agent_id: str,
+        db: AsyncSession,
+        user_id: Optional[uuid.UUID] = None,
+    ) -> bool:
         """
         Delete an autonomous agent wrapper.
         Deactivates the underlying workflow so messaging triggers stop.
         """
-        stmt = select(Workflow).where(
-            Workflow.workflow_metadata.contains({"agent": {"agent_id": agent_id}})
-        )
-        result = await db.execute(stmt)
-        workflow = result.scalar_one_or_none()
+        workflow = await self._find_workflow_by_agent_id(agent_id, db, user_id=user_id)
 
         if not workflow:
             return False
@@ -620,8 +660,11 @@ You are now an autonomous agent ready to execute this workflow independently.
         workflow.status = WorkflowStatus.INACTIVE
 
         if agent_id in self.active_agents:
-            self.active_agents[agent_id].cancel()
-            del self.active_agents[agent_id]
+            try:
+                self.active_agents[agent_id].cancel()
+            except Exception:
+                pass
+            self.active_agents.pop(agent_id, None)
 
         await db.commit()
         return True
