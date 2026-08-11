@@ -79,7 +79,9 @@ class WorkflowBuilderService:
                 tool_name=step_data['tool_name'],
                 tool_parameters=step_data['parameters'],
                 description=step_data['description'],
-                condition=step_data.get('condition'),
+                condition=self._sanitize_step_condition(
+                    step_data['tool_name'], step_data.get('condition')
+                ),
                 retry_config=step_data.get('retry_config', {"max_retries": 3, "retry_delay": 5}),
                 timeout=step_data.get('timeout', 30)
             )
@@ -152,7 +154,9 @@ class WorkflowBuilderService:
                     tool_name=s_data.get('tool_name'),
                     tool_parameters=s_data.get('tool_parameters', {}),
                     description=s_data.get('description', ''),
-                    condition=s_data.get('condition'),
+                    condition=self._sanitize_step_condition(
+                        s_data.get('tool_name'), s_data.get('condition')
+                    ),
                     retry_config=s_data.get('retry_config', {"max_retries": 3, "retry_delay": 5}),
                     timeout=s_data.get('timeout', 30)
                 )
@@ -496,13 +500,23 @@ class WorkflowBuilderService:
                             except (TypeError, ValueError):
                                 continue
 
-                    for sn_str, bkey in meta_branch_keys.items():
-                        if str(bkey) == str(chosen_key):
-                            continue
+                    branch_targets: Set[int] = set()
+                    for target in branches.values():
                         try:
-                            skip_steps.add(int(sn_str))
+                            branch_targets.add(int(target))
                         except (TypeError, ValueError):
                             continue
+
+                    for sn_str, bkey in meta_branch_keys.items():
+                        try:
+                            sn = int(sn_str)
+                        except (TypeError, ValueError):
+                            continue
+                        if branch_targets and sn not in branch_targets:
+                            continue
+                        if str(bkey) == str(chosen_key):
+                            continue
+                        skip_steps.add(sn)
 
                     step_execution = await self._execute_control_step(
                         step,
@@ -613,11 +627,23 @@ class WorkflowBuilderService:
         )
         return await self.run_workflow_execution(execution.id, user_id, db)
 
+    @staticmethod
+    def _sanitize_step_condition(tool_name: str, condition: Any) -> Any:
+        """Drop stale router metadata from executable tool steps (canvas/form save bugs)."""
+        tool = (tool_name or "").lower()
+        if tool in ("condition_router", "condition"):
+            return condition
+        return None
+
     def _is_router_step(self, step: WorkflowStep, condition: Optional[Dict[str, Any]]) -> bool:
         """Canvas condition_router / type:router nodes are control-flow, not tools."""
         tool = (step.tool_name or "").lower()
         if tool in ("condition_router", "condition"):
             return True
+        # Executable MCP tools must never be treated as routers even if stale
+        # condition.type=router metadata was left on the step record.
+        if tool:
+            return False
         if not condition:
             return False
         if condition.get("type") == "router":
@@ -877,6 +903,8 @@ class WorkflowBuilderService:
                     # Only apply override if it's not None/Empty, otherwise stick to default
                     if input_overrides[override_key]:
                         effective_params[param_name] = input_overrides[override_key]
+                elif param_name in input_overrides and input_overrides[param_name] not in (None, ""):
+                    effective_params[param_name] = input_overrides[param_name]
             
             # Substitute variables in parameters (now including any overrides)
             substituted_params = self._substitute_variables(effective_params, context or {})
@@ -1203,7 +1231,9 @@ You have access to all the tools mentioned above. Execute the workflow step by s
                 tool_name=step_data['tool_name'],
                 tool_parameters=step_data['parameters'],
                 description=step_data['description'],
-                condition=step_data.get('condition'),
+                condition=self._sanitize_step_condition(
+                    step_data['tool_name'], step_data.get('condition')
+                ),
                 retry_config=step_data.get('retry_config', {"max_retries": 3, "retry_delay": 5}),
                 timeout=step_data.get('timeout', 30)
             )
