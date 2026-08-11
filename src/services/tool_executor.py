@@ -7971,6 +7971,37 @@ Description: {payment.description or 'N/A'}"""
             url_or_id = arguments.get("url_or_id", arguments.get("url", arguments.get("id", "")))
             source_type = arguments.get("source_type", "website")
             kb_id = arguments.get("kb_id")
+
+            # Long-running sources: dispatch via Celery when not already in a worker
+            long_running_sources = {"google_drive", "notion", "website"}
+            in_celery_worker = False
+            try:
+                from celery import current_task
+                in_celery_worker = bool(current_task and getattr(current_task.request, "id", None))
+            except Exception:
+                pass
+
+            if source_type in long_running_sources and not in_celery_worker and user_id and kb_id:
+                try:
+                    from ..tasks.rag_tasks import rag_ingest_source_task
+                    import asyncio
+
+                    async_result = rag_ingest_source_task.delay(
+                        url_or_id=str(url_or_id),
+                        kb_id=str(kb_id),
+                        user_id=str(user_id),
+                        source_type=str(source_type),
+                    )
+                    loop = asyncio.get_event_loop()
+                    res = await loop.run_in_executor(None, lambda: async_result.get(timeout=600))
+                    return {
+                        "success": res.get("status") == "success" if isinstance(res, dict) else True,
+                        "result": res.get("message") if isinstance(res, dict) else str(res),
+                        "data": res,
+                    }
+                except Exception as celery_err:
+                    logger.warning(f"[RAG] Celery ingest fallback to inline: {celery_err}")
+
             res = await service.rag_ingest_source(
                 url_or_id=url_or_id,
                 kb_id=kb_id,

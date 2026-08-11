@@ -57,14 +57,19 @@ def media_proxy_url(message_id) -> str:
     return f"/api/whatsapp/messages/{message_id}/media"
 
 
-def record_csat_score(contact, score: int) -> None:
-    """Persist CSAT rating on contact metadata."""
+def record_csat_score(contact, score: int, agent_id: Optional[str] = None) -> None:
+    """Persist CSAT rating on contact metadata with optional agent attribution."""
     from sqlalchemy.orm.attributes import flag_modified
 
     meta = dict(getattr(contact, "metadata_", None) or {})
     meta["csat_score"] = score
     meta["csat_at"] = datetime.utcnow().isoformat()
     meta.pop("csat_pending", None)
+    resolved_agent = agent_id or (
+        str(contact.assigned_to_id) if getattr(contact, "assigned_to_id", None) else None
+    )
+    if resolved_agent:
+        meta["csat_agent_id"] = resolved_agent
     contact.metadata_ = meta
     flag_modified(contact, "metadata_")
 

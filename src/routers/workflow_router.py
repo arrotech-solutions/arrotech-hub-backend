@@ -1,8 +1,10 @@
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -681,11 +683,10 @@ async def execute_workflow(
     """
     try:
         workflow_service = WorkflowBuilderService()
-        execution = await workflow_service.execute_workflow(
+        execution = await workflow_service.prepare_workflow_execution(
             workflow_id, user.id, db, data.input_data
         )
-        
-        # Format response data
+
         execution_data = {
             "id": execution.id,
             "workflow_id": execution.workflow_id,
@@ -697,13 +698,35 @@ async def execute_workflow(
             "error_message": execution.error_message,
             "started_at": execution.started_at.isoformat() if execution.started_at else None,
             "completed_at": execution.completed_at.isoformat() if execution.completed_at else None,
-            "created_at": execution.created_at.isoformat()
+            "created_at": execution.created_at.isoformat(),
+            "async": True,
         }
-        
-        return {
-            "success": True,
-            "data": execution_data
-        }
+
+        try:
+            from ..tasks.workflow_tasks import execute_workflow_task
+
+            execute_workflow_task.delay(
+                str(workflow_id),
+                str(user.id),
+                str(execution.id),
+            )
+        except Exception as dispatch_err:
+            logger.error(
+                f"Failed to dispatch workflow execution {execution.id}: {dispatch_err}"
+            )
+            execution.status = WorkflowExecutionStatus.FAILED.value
+            execution.error_message = f"Failed to dispatch execution: {dispatch_err}"
+            execution.completed_at = datetime.utcnow()
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Workflow worker unavailable. Please try again shortly.",
+            )
+
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={"success": True, "data": execution_data},
+        )
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

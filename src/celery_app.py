@@ -116,6 +116,13 @@ app.conf.beat_schedule = {
         "options": {"queue": "default"},
     },
 
+    # ── Stale workflow execution watchdog (every 30 minutes) ──
+    "stale-workflow-executions-every-30m": {
+        "task": "src.tasks.workflow_tasks.stale_execution_watchdog_task",
+        "schedule": crontab(minute="*/30"),
+        "options": {"queue": "default"},
+    },
+
     # ── Scheduled Broadcasts (every 60s) ──
     "check-scheduled-broadcasts-every-60s": {
         "task": "src.tasks.scheduled_broadcast_beat.check_scheduled_broadcasts_task",
@@ -149,6 +156,13 @@ app.conf.beat_schedule = {
     "log-cleanup-daily": {
         "task": "src.tasks.maintenance_tasks.log_cleanup_task",
         "schedule": crontab(hour=4, minute=0),
+        "options": {"queue": "low"},
+    },
+
+    # ── WhatsApp message retention (weekly Sunday 05:00 UTC) ──
+    "whatsapp-message-retention-weekly": {
+        "task": "src.tasks.maintenance_tasks.whatsapp_message_retention_task",
+        "schedule": crontab(hour=5, minute=0, day_of_week=0),
         "options": {"queue": "low"},
     },
 
