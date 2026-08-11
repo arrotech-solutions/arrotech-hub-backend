@@ -419,7 +419,7 @@ class WorkflowBuilderService:
             await connection_manager.push_to_user(
                 user_id,
                 "workflow_execution_started",
-                {"workflow_id": workflow_id, "execution_id": execution.id},
+                {"workflow_id": str(workflow_id), "execution_id": str(execution.id)},
             )
 
         return execution
