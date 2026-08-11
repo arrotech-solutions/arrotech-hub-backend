@@ -92,7 +92,14 @@ async def receive_webhook(
 
         import json as _json
         body = _json.loads(raw_body.decode("utf-8") if raw_body else "{}")
-        logger.info(f"[WHATSAPP WEBHOOK] Received webhook payload: {body}")
+        from ..config import settings as app_settings
+        if getattr(app_settings, "ENVIRONMENT", "development") == "production":
+            logger.info(
+                "[WHATSAPP WEBHOOK] Received webhook (entry_count=%s)",
+                len(body.get("entry", [])),
+            )
+        else:
+            logger.info("[WHATSAPP WEBHOOK] Received webhook payload: %s", body)
         
         # Extract the entry array
         entries = body.get("entry", [])
@@ -572,6 +579,11 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
             contact.last_message_at = datetime.utcnow()
             contact.message_count = (contact.message_count or 0) + 1
             contact.unread_count = (contact.unread_count or 0) + 1
+            try:
+                from ..services.whatsapp_compliance_service import WhatsAppComplianceService
+                await WhatsAppComplianceService.touch_inbound_customer_message(contact, db)
+            except Exception:
+                pass
             if not contact.first_message_at:
                 contact.first_message_at = datetime.utcnow()
             if (contact.status or "open") == "open" and not contact.first_inbound_at:

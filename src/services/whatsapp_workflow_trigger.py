@@ -53,6 +53,7 @@ _AGENT_CONFIG_KEYS = _STORAGE_CONFIG_KEYS + (
     "auto_escalation_enabled",
     "supported_languages",
     "human_handoff_ttl_hours",
+    "agent_mode",
 )
 
 
@@ -315,6 +316,24 @@ class WhatsAppWorkflowTrigger:
                         )
 
                 for workflow, event_type in to_execute:
+                    # Global handoff gate — skip AI when a human agent owns the thread
+                    if session_key:
+                        try:
+                            from ..services.conversation_context_manager import context_manager
+
+                            if await context_manager.is_human_handoff_active(session_key):
+                                logger.info(
+                                    "[WA_TRIGGER] Skipping workflow '%s' — human handoff active for %s",
+                                    workflow.name,
+                                    contact.phone_number,
+                                )
+                                continue
+                        except Exception as handoff_gate_err:
+                            logger.warning(
+                                "[WA_TRIGGER] Handoff gate check failed (continuing): %s",
+                                handoff_gate_err,
+                            )
+
                     wf_config = dict((workflow.variables or {}).get("config", {}) or {})
                     wf_config = _merge_workflow_storage_into_config(
                         wf_config, workflow.variables
@@ -325,6 +344,20 @@ class WhatsAppWorkflowTrigger:
                         contact.name or contact.profile_name or "Customer",
                     )
                     wf_config.setdefault("platform", "whatsapp")
+
+                    agent_mode = str(wf_config.get("agent_mode", "") or "").strip().lower()
+                    if agent_mode == "support":
+                        try:
+                            from ..services.whatsapp_compliance_service import WhatsAppComplianceService
+
+                            if not await WhatsAppComplianceService.is_business_open(user_id, db):
+                                logger.info(
+                                    "[WA_TRIGGER] Outside business hours — skipping support workflow '%s'",
+                                    workflow.name,
+                                )
+                                continue
+                        except Exception as bh_err:
+                            logger.warning("[WA_TRIGGER] Business hours check failed: %s", bh_err)
 
                     input_vars = {
                         "whatsapp_contact_id": str(contact.id) if contact.id else None,

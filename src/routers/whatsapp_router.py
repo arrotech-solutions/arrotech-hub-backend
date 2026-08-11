@@ -430,7 +430,9 @@ async def _upsert_whatsapp_connection(
     )
     connection = result.scalar_one_or_none()
     
-    config_data = {
+    from ..utils.secret_encryption import encrypt_connection_config
+
+    config_data = encrypt_connection_config({
         "access_token": access_token,
         "auth_type": auth_type,
         "business_id": business_id,
@@ -442,11 +444,11 @@ async def _upsert_whatsapp_connection(
         "token_refreshed_at": datetime.utcnow().isoformat(),
         "token_expires_at": (datetime.utcnow() + timedelta(days=60)).isoformat(),
         "setup_needed": False
-    }
+    })
     
     if connection:
         connection.status = ConnectionStatus.ACTIVE
-        connection.config = {**connection.config, **config_data}
+        connection.config = encrypt_connection_config({**connection.config, **config_data})
         connection.error_message = None
     else:
         connection = Connection(
@@ -478,8 +480,10 @@ async def get_whatsapp_phone_numbers(
     if not connection or not connection.config.get("waba_id") or not connection.config.get("access_token"):
         return {"success": False, "data": []}
         
+    from ..utils.secret_encryption import decrypt_value
+
     waba_id = connection.config["waba_id"]
-    access_token = connection.config["access_token"]
+    access_token = decrypt_value(connection.config["access_token"])
     
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -587,7 +591,9 @@ async def register_whatsapp_phone(
     if not connection or not connection.config.get("access_token"):
         raise HTTPException(status_code=400, detail="WhatsApp connection not found or incomplete.")
         
-    access_token = connection.config.get("access_token")
+    from ..utils.secret_encryption import decrypt_value
+
+    access_token = decrypt_value(connection.config.get("access_token"))
     
     # Send registration request to Meta
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -637,7 +643,9 @@ async def deregister_whatsapp_phone(
     if not connection or not connection.config.get("access_token"):
         raise HTTPException(status_code=400, detail="WhatsApp connection not found or incomplete.")
         
-    access_token = connection.config.get("access_token")
+    from ..utils.secret_encryption import decrypt_value
+
+    access_token = decrypt_value(connection.config.get("access_token"))
     
     # Send deregistration request to Meta
     async with httpx.AsyncClient(timeout=30.0) as client:
