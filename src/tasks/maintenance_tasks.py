@@ -54,6 +54,36 @@ def log_cleanup_task(self, retention_days: int = 14):
 
 
 @app.task(
+    name="src.tasks.maintenance_tasks.whatsapp_message_retention_task",
+    bind=True,
+    max_retries=1,
+    acks_late=True,
+    ignore_result=True,
+)
+def whatsapp_message_retention_task(self, retention_days: int = 365):
+    """Delete WhatsApp messages older than retention_days (GDPR/data minimization)."""
+    async def _cleanup():
+        from datetime import datetime, timedelta
+        from sqlalchemy import delete
+        from src.database import get_session_maker
+        from src.models import WhatsAppMessage
+
+        cutoff = datetime.utcnow() - timedelta(days=retention_days)
+        session_maker = get_session_maker()
+        async with session_maker() as session:
+            result = await session.execute(
+                delete(WhatsAppMessage).where(WhatsAppMessage.created_at < cutoff)
+            )
+            await session.commit()
+            return result.rowcount
+
+    deleted = _run_async(_cleanup())
+    if deleted:
+        logger.info("[CeleryMaintenance] Deleted %s old WhatsApp messages", deleted)
+    return {"deleted": deleted}
+
+
+@app.task(
     name="src.tasks.maintenance_tasks.refresh_whatsapp_tokens_task",
     bind=True,
     max_retries=2,

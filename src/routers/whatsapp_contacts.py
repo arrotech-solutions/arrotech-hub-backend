@@ -965,6 +965,19 @@ async def send_message(
     
     if contact.is_blocked:
         raise HTTPException(status_code=400, detail="Cannot send message to blocked contact")
+
+    # Meta 24-hour messaging window: free-form text only inside window
+    from ..services.whatsapp_compliance_service import WhatsAppComplianceService
+
+    await WhatsAppComplianceService.backfill_last_customer_message(contact, db)
+    if not WhatsAppComplianceService.is_messaging_window_open(contact):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "WhatsApp 24-hour messaging window has closed for this contact. "
+                "Send an approved template message instead."
+            ),
+        )
     
     # Internal notes: store locally without sending to WhatsApp
     if data.is_internal_note:
@@ -1035,6 +1048,38 @@ async def send_message(
     
     await db.commit()
     await db.refresh(message)
+
+    # Human agent reply → pause AI for this conversation
+    try:
+        from ..services.conversation_context_manager import context_manager, _build_session_key
+
+        session_key = _build_session_key(
+            "whatsapp", str(user.id), contact.phone_number
+        )
+        await context_manager.set_human_handoff(
+            session_key, reason="agent_inbox_reply", escalated_by=str(user.id)
+        )
+        tags = list(contact.tags or [])
+        if "human_handoff" not in tags:
+            tags.append("human_handoff")
+            contact.tags = tags
+            await db.commit()
+    except Exception as handoff_err:
+        logger.warning("[INBOX] Failed to set human handoff on agent reply: %s", handoff_err)
+
+    try:
+        from ..services.whatsapp_compliance_service import WhatsAppComplianceService
+
+        await WhatsAppComplianceService.log_audit_event(
+            db,
+            user_id=user.id,
+            contact_id=contact.id,
+            action="agent_reply",
+            actor_id=user.id,
+            details={"message_id": str(message.id)},
+        )
+    except Exception:
+        pass
 
     try:
         from ..services.whatsapp_inbox_events import emit_to_org_members

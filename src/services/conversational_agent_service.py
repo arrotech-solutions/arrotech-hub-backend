@@ -726,6 +726,12 @@ AGENT_SUB_TOOLS = [
 ]
 
 
+SUPPORT_AGENT_TOOL_NAMES = frozenset({
+    "search_products",
+    "escalate_to_human",
+    "show_options_menu",
+})
+
 RENT_AGENT_TOOL_NAMES = frozenset({"escalate_to_human", "initiate_rent_stk_payment"})
 
 INITIATE_RENT_STK_TOOL = {
@@ -849,6 +855,9 @@ class ConversationalAgentService:
             business_phone = business_config.get("business_phone", "")
             business_email = business_config.get("business_email", "")
             order_type = business_config.get("order_type", "general")
+            agent_mode = str(business_config.get("agent_mode", "") or "").strip().lower()
+            if agent_mode == "support":
+                order_type = "support"
             currency = business_config.get("currency", "KES")
             from .whatsapp_ordering_helpers import (
                 apply_food_only_fulfillment,
@@ -2403,6 +2412,11 @@ class ConversationalAgentService:
                 ]
                 if mpesa_stk_available:
                     dynamic_tools.append(INITIATE_RENT_STK_TOOL)
+            elif order_type == "support" or agent_mode == "support":
+                dynamic_tools = [
+                    t for t in AGENT_SUB_TOOLS
+                    if t.get("function", {}).get("name") in SUPPORT_AGENT_TOOL_NAMES
+                ]
             else:
                 # `create_reservation` is intentionally NEVER exposed to the LLM.
                 # Reservations are handled end-to-end by the deterministic booking
@@ -3387,6 +3401,17 @@ class ConversationalAgentService:
         reservations_enabled: bool = False,
     ) -> str:
         """Build the business-specific system prompt for the AI agent."""
+        agent_mode = str((business_config or {}).get("agent_mode", "") or "").strip().lower()
+        if agent_mode == "support" or order_type == "support":
+            return self._build_support_system_prompt(
+                business_name=business_name,
+                custom_prompt=custom_prompt,
+                customer_phone=customer_phone,
+                customer_name=customer_name,
+                preferred_language=preferred_language,
+                auto_escalation_enabled=auto_escalation_enabled,
+            )
+
         from .whatsapp_ordering_helpers import coerce_delivery_methods, is_food_business
 
         methods = coerce_delivery_methods(delivery_methods)
@@ -3648,6 +3673,63 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
 
         if customer_context:
             prompt += customer_context
+
+        if custom_prompt:
+            prompt += f"\n## Additional Business Instructions\n{custom_prompt}\n"
+
+        return prompt
+
+    def _build_support_system_prompt(
+        self,
+        business_name: str,
+        custom_prompt: str = "",
+        customer_phone: str = "",
+        customer_name: str = "",
+        preferred_language: str = DEFAULT_LANGUAGE,
+        auto_escalation_enabled: bool = True,
+    ) -> str:
+        """System prompt for WhatsApp customer support (KB Q&A + escalation, no ordering)."""
+        from . import agent_intelligence
+
+        customer_context = ""
+        if customer_phone or customer_name:
+            customer_context = "\n## Known customer\n"
+            if customer_name:
+                customer_context += f"- Name: {customer_name}\n"
+            if customer_phone:
+                customer_context += f"- Phone: {customer_phone}\n"
+
+        prompt = f"""You are the customer support assistant for {business_name} on WhatsApp.
+
+## Your role
+- Answer questions using the company knowledge base via `search_products` (FAQs, docs, policies, product info).
+- Be concise, professional, and friendly (WhatsApp style, under 150 words).
+- If the knowledge base has no relevant answer, say so honestly — do not invent facts.
+- When helpful, briefly cite what you found (e.g. "According to our docs…").
+
+## Tools
+- `search_products` — search the knowledge base for every customer question.
+- `escalate_to_human` — transfer to a live agent when needed.
+- `show_options_menu` — show help menu when the customer is lost or asks for options.
+
+## Rules
+- Do NOT take orders, manage carts, or initiate payments.
+- Do NOT use product cards or ordering flows.
+- Always search the KB before answering factual questions.
+- If unsure after searching, offer to connect them with a human.
+
+{customer_context}"""
+
+        prompt += agent_intelligence.build_language_instruction(preferred_language)
+
+        if auto_escalation_enabled:
+            prompt += (
+                "\n## Human escalation (IMPORTANT)\n"
+                "- If the customer asks for a person, manager, or human — call `escalate_to_human` immediately.\n"
+                "- If you cannot help after 2 attempts, or they are upset — call `escalate_to_human`.\n"
+                "- For billing disputes, refunds, or account access — escalate.\n"
+                "- After escalating, send a short reassuring message; do not keep troubleshooting.\n"
+            )
 
         if custom_prompt:
             prompt += f"\n## Additional Business Instructions\n{custom_prompt}\n"

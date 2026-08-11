@@ -64,6 +64,103 @@ def execute_scheduled_workflow_task(self, workflow_id: str, user_id: str):
 
 
 @app.task(
+    name="src.tasks.workflow_tasks.execute_workflow_task",
+    bind=True,
+    max_retries=1,
+    default_retry_delay=30,
+    acks_late=True,
+    time_limit=3600,
+    soft_time_limit=3300,
+)
+def execute_workflow_task(
+    self,
+    workflow_id: str,
+    user_id: str,
+    execution_id: str,
+):
+    """
+    Run a workflow execution asynchronously (manual trigger from UI).
+    The execution record must already exist (created by prepare_workflow_execution).
+    """
+    logger.info(
+        f"[CeleryWorkflow] Running execution {execution_id} for workflow {workflow_id}"
+    )
+
+    async def _run():
+        from src.database import get_session_maker
+        from src.services.workflow_builder_service import WorkflowBuilderService
+
+        service = WorkflowBuilderService()
+        session_maker = get_session_maker()
+
+        async with session_maker() as db:
+            try:
+                result = await service.run_workflow_execution(
+                    execution_id=uuid.UUID(execution_id),
+                    user_id=uuid.UUID(user_id),
+                    db=db,
+                )
+                status = result.status.value if hasattr(result.status, "value") else str(result.status)
+                logger.info(
+                    f"[CeleryWorkflow] Execution {execution_id} finished with status {status}"
+                )
+                return {"status": status, "execution_id": execution_id}
+            except Exception as e:
+                logger.error(f"[CeleryWorkflow] Execution {execution_id} failed: {e}")
+                raise
+
+    return _run_async(_run())
+
+
+@app.task(
+    name="src.tasks.workflow_tasks.stale_execution_watchdog_task",
+    bind=True,
+    acks_late=True,
+)
+def stale_execution_watchdog_task(self, max_age_hours: int = 4):
+    """
+    Mark workflow executions stuck in running/pending beyond max_age_hours as failed.
+    """
+    logger.info(f"[CeleryWorkflow] Checking for stale executions older than {max_age_hours}h")
+
+    async def _watchdog():
+        from datetime import timedelta
+        from sqlalchemy import select, update
+        from src.database import get_session_maker
+        from src.models import WorkflowExecution, WorkflowExecutionStatus
+
+        cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+        session_maker = get_session_maker()
+
+        async with session_maker() as db:
+            stmt = (
+                select(WorkflowExecution)
+                .where(
+                    WorkflowExecution.status.in_(["running", "pending"]),
+                    WorkflowExecution.started_at.isnot(None),
+                    WorkflowExecution.started_at < cutoff,
+                )
+            )
+            result = await db.execute(stmt)
+            stale = result.scalars().all()
+            if not stale:
+                return {"marked_failed": 0}
+
+            for ex in stale:
+                ex.status = WorkflowExecutionStatus.FAILED.value
+                ex.error_message = (
+                    f"Execution timed out (no completion within {max_age_hours} hours)"
+                )
+                ex.completed_at = datetime.utcnow()
+
+            await db.commit()
+            logger.warning(f"[CeleryWorkflow] Marked {len(stale)} stale executions as failed")
+            return {"marked_failed": len(stale)}
+
+    return _run_async(_watchdog())
+
+
+@app.task(
     name="src.tasks.workflow_tasks.sync_workflows_task",
     bind=True,
     max_retries=1,

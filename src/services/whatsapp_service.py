@@ -13,6 +13,14 @@ from ..config import settings
 logger = logging.getLogger(__name__)
 
 
+def _cfg_token(config: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Resolve access_token from connection config (supports encrypted-at-rest values)."""
+    if not config:
+        return None
+    from ..utils.secret_encryption import decrypt_value
+    return decrypt_value(config.get("access_token"))
+
+
 class WhatsAppService:
     """Service for WhatsApp Business API integration."""
 
@@ -54,7 +62,7 @@ class WhatsAppService:
             # Use provided config or fresh credentials
             if config:
                 phone_number_id = config.get("phone_number_id")
-                access_token = config.get("access_token")
+                access_token = _cfg_token(config)
                 base_url = config.get("base_url", credentials["base_url"])
                 business_account_id = config.get(
                     "business_account_id", credentials["business_account_id"])
@@ -122,7 +130,6 @@ class WhatsAppService:
                             "debug_info": {
                                 "url": url,
                                 "phone_number_id": phone_number_id,
-                                "access_token": access_token,
                                 "payload": payload,
                                 "response": result
                             }
@@ -149,7 +156,7 @@ class WhatsAppService:
 
             if config:
                 phone_number_id = config.get("phone_number_id")
-                access_token = config.get("access_token")
+                access_token = _cfg_token(config)
                 base_url = config.get("base_url", credentials["base_url"])
             else:
                 phone_number_id = credentials["phone_number_id"]
@@ -218,7 +225,7 @@ class WhatsAppService:
             
             if config:
                 phone_number_id = config.get("phone_number_id")
-                access_token = config.get("access_token")
+                access_token = _cfg_token(config)
                 base_url = config.get("base_url", credentials["base_url"])
             else:
                 phone_number_id = credentials["phone_number_id"]
@@ -282,7 +289,7 @@ class WhatsAppService:
             
             if config:
                 phone_number_id = config.get("phone_number_id")
-                access_token = config.get("access_token")
+                access_token = _cfg_token(config)
                 base_url = config.get("base_url", credentials["base_url"])
             else:
                 phone_number_id = credentials["phone_number_id"]
@@ -388,7 +395,7 @@ class WhatsAppService:
 
             if config:
                 phone_number_id = config.get("phone_number_id")
-                access_token = config.get("access_token")
+                access_token = _cfg_token(config)
                 base_url = config.get("base_url", credentials["base_url"])
             else:
                 phone_number_id = credentials["phone_number_id"]
@@ -506,7 +513,7 @@ class WhatsAppService:
             # Use provided config or fresh credentials
             if config:
                 phone_number_id = config.get("phone_number_id")
-                access_token = config.get("access_token")
+                access_token = _cfg_token(config)
                 base_url = config.get("base_url", credentials["base_url"])
                 business_account_id = config.get(
                     "business_account_id", credentials["business_account_id"])
@@ -577,7 +584,7 @@ class WhatsAppService:
             # Use provided config or fresh credentials
             if config:
                 phone_number_id = config.get("phone_number_id")
-                access_token = config.get("access_token")
+                access_token = _cfg_token(config)
                 base_url = config.get("base_url", credentials["base_url"])
             else:
                 phone_number_id = credentials["phone_number_id"]
@@ -633,7 +640,7 @@ class WhatsAppService:
             # Use provided config or fresh credentials
             if config:
                 phone_number_id = config.get("phone_number_id")
-                access_token = config.get("access_token")
+                access_token = _cfg_token(config)
                 base_url = config.get("base_url", credentials["base_url"])
                 business_account_id = config.get(
                     "business_account_id", credentials["business_account_id"])
@@ -704,7 +711,7 @@ class WhatsAppService:
         try:
             credentials = self._get_credentials()
             if config:
-                access_token = config.get("access_token")
+                access_token = _cfg_token(config)
                 base_url = config.get("base_url", credentials["base_url"])
             else:
                 access_token = credentials["access_token"]
@@ -753,7 +760,7 @@ class WhatsAppService:
             credentials = self._get_credentials()
             if config:
                 phone_number_id = config.get("phone_number_id")
-                access_token = config.get("access_token")
+                access_token = _cfg_token(config)
                 base_url = config.get("base_url", credentials["base_url"])
             else:
                 phone_number_id = credentials["phone_number_id"]
@@ -829,7 +836,7 @@ class WhatsAppService:
             # Use provided config or fresh credentials
             if config:
                 phone_number_id = config.get("phone_number_id")
-                access_token = config.get("access_token")
+                access_token = _cfg_token(config)
                 base_url = config.get("base_url", credentials["base_url"])
                 business_account_id = config.get(
                     "business_account_id", credentials["business_account_id"])
@@ -900,7 +907,7 @@ class WhatsAppService:
             # Use provided config or fresh credentials
             if config:
                 phone_number_id = config.get("phone_number_id")
-                access_token = config.get("access_token")
+                access_token = _cfg_token(config)
                 base_url = config.get("base_url", credentials["base_url"])
                 business_account_id = config.get(
                     "business_account_id", credentials["business_account_id"])
@@ -961,7 +968,7 @@ class WhatsAppService:
             # Use provided config or fresh credentials
             if config:
                 phone_number_id = config.get("phone_number_id")
-                access_token = config.get("access_token")
+                access_token = _cfg_token(config)
                 base_url = config.get("base_url", credentials["base_url"])
                 business_account_id = config.get(
                     "business_account_id", credentials["business_account_id"])
@@ -1038,7 +1045,7 @@ class WhatsAppService:
             credentials = self._get_credentials()
             if config:
                 phone_number_id = config.get("phone_number_id")
-                access_token = config.get("access_token")
+                access_token = _cfg_token(config)
                 base_url = config.get("base_url", credentials["base_url"])
             else:
                 phone_number_id = credentials["phone_number_id"]
@@ -1137,7 +1144,7 @@ class WhatsAppService:
             credentials = self._get_credentials()
             if config:
                 phone_number_id = config.get("phone_number_id")
-                access_token = config.get("access_token")
+                access_token = _cfg_token(config)
                 base_url = config.get("base_url", credentials["base_url"])
             else:
                 phone_number_id = credentials["phone_number_id"]
@@ -1217,7 +1224,7 @@ class WhatsAppService:
             # Use provided config or fresh credentials
             if config:
                 phone_number_id = config.get("phone_number_id")
-                access_token = config.get("access_token")
+                access_token = _cfg_token(config)
                 base_url = config.get("base_url", credentials["base_url"])
                 business_account_id = config.get(
                     "business_account_id", credentials["business_account_id"])

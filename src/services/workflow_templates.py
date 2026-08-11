@@ -764,36 +764,65 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "description": "Your business name",
                 "required": True
             },
+            "business_phone": {
+                "label": "Escalation Phone",
+                "type": "phone",
+                "description": "Phone number to alert when a customer needs a human agent",
+                "required": False,
+                "placeholder": "+254..."
+            },
             "system_prompt": {
                 "label": "Custom Instructions (Optional)",
                 "type": "textarea",
                 "description": "Instructions for the AI (e.g. tone, escalation rules)",
                 "required": False,
                 "placeholder": "e.g. Be professional and concise. If the customer asks for a refund, direct them to support@company.com."
+            },
+            "auto_escalation_enabled": {
+                "label": "Auto-Escalation",
+                "type": "boolean",
+                "description": "Automatically escalate frustrated customers or human requests",
+                "required": False,
+                "default": True
+            },
+            "supported_languages": {
+                "label": "Supported Languages",
+                "type": "multi_select",
+                "description": "Languages the agent can reply in",
+                "required": False,
+                "options": [
+                    {"value": "en", "label": "English"},
+                    {"value": "sw", "label": "Swahili"},
+                    {"value": "sheng", "label": "Sheng"}
+                ],
+                "default": ["en", "sw"]
+            },
+            "human_handoff_ttl_hours": {
+                "label": "Human Handoff Duration (hours)",
+                "type": "number",
+                "description": "How long AI stays paused after human takeover",
+                "required": False,
+                "default": 24
             }
         },
         "steps": [
             {
-                "tool_name": "rag_search",
-                "description": "Search knowledge base for relevant information",
+                "tool_name": "conversational_agent",
+                "description": "AI support agent — KB Q&A with escalation",
                 "parameters": {
-                    "query": "{{whatsapp_message_content}}",
-                    "kb_id": "{{config.kb_id}}",
-                    "top_k": 5,
-                    "session_key": "{{session_key}}"
-                }
-            },
-            {
-                "tool_name": "ai_text_generation",
-                "description": "Generate contextual response using KB results",
-                "parameters": {
-                    "operation": "generate",
-                    "prompt": "{{whatsapp_message_content}}",
-                    "context": "{{step_1.result}}",
-                    "system_prompt": "You are a helpful customer support assistant for {{config.business_name}}. Answer based on the provided context. Be concise and friendly (WhatsApp style). {{config.system_prompt}}",
                     "session_key": "{{session_key}}",
-                    "temperature": 0.3,
-                    "max_tokens": 500
+                    "user_message": "{{whatsapp_message_content}}",
+                    "business_config": {
+                        "agent_mode": "support",
+                        "kb_id": "{{config.kb_id}}",
+                        "business_name": "{{config.business_name}}",
+                        "business_phone": "{{config.business_phone}}",
+                        "system_prompt": "{{config.system_prompt}}",
+                        "auto_escalation_enabled": "{{config.auto_escalation_enabled}}",
+                        "supported_languages": "{{config.supported_languages}}",
+                        "human_handoff_ttl_hours": "{{config.human_handoff_ttl_hours}}",
+                        "platform": "whatsapp"
+                    }
                 }
             },
             {
@@ -802,7 +831,23 @@ AGENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "parameters": {
                     "operation": "send_message",
                     "to_number": "{{whatsapp_contact_phone}}",
-                    "message": "{{step_2.result}}",
+                    "message": "{{step_1.response_text}}",
+                    "session_key": "{{session_key}}"
+                }
+            },
+            {
+                "tool_name": "whatsapp_send_message",
+                "description": "Alert team — customer needs a human agent",
+                "condition": {
+                    "type": "if",
+                    "field": "step_1.escalation_triggered",
+                    "operator": "equals",
+                    "value": True
+                },
+                "parameters": {
+                    "operation": "send_message",
+                    "to_number": "{{config.business_phone}}",
+                    "message": "{{step_1.escalation_notification}}"
                 }
             }
         ]

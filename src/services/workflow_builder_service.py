@@ -354,84 +354,119 @@ class WorkflowBuilderService:
         
         return steps
     
-    async def execute_workflow(self, workflow_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession, input_data: Dict[str, Any] = None, trigger_type: Union[str, Any] = "manual") -> WorkflowExecution:
+    async def prepare_workflow_execution(
+        self,
+        workflow_id: uuid.UUID,
+        user_id: uuid.UUID,
+        db: AsyncSession,
+        input_data: Dict[str, Any] = None,
+        trigger_type: Union[str, Any] = "manual",
+    ) -> WorkflowExecution:
         """
-        Execute a workflow with enhanced conditional logic and variable substitution.
+        Create a workflow execution record and notify clients that it started.
+        Does not run steps — use run_workflow_execution() or Celery for that.
         """
         workflow = await self.get_workflow(workflow_id, user_id, db)
         if not workflow:
             raise ValueError("Workflow not found")
-        
-        # ===== AUTOMATION RUN USAGE TRACKING =====
-        # Get user for usage tracking
+
         user_stmt = select(User).where(User.id == user_id)
         user_result = await db.execute(user_stmt)
         user = user_result.scalar_one_or_none()
-        
+
         if user:
             try:
-                # Lazy import to avoid circular dependency
                 from ..routers.subscription_router import get_or_create_usage_record
                 usage_record = await get_or_create_usage_record(db, user)
-                # Check if at limit
                 if usage_record.automation_runs_count >= usage_record.automation_runs_limit:
-                    logger.warning(f"User {user_id} exceeded automation run limit: {usage_record.automation_runs_count}/{usage_record.automation_runs_limit}")
-                    raise ValueError(f"Monthly automation run limit reached ({usage_record.automation_runs_limit}). Please upgrade to continue.")
-                # Increment counter
+                    logger.warning(
+                        f"User {user_id} exceeded automation run limit: "
+                        f"{usage_record.automation_runs_count}/{usage_record.automation_runs_limit}"
+                    )
+                    raise ValueError(
+                        f"Monthly automation run limit reached ({usage_record.automation_runs_limit}). "
+                        "Please upgrade to continue."
+                    )
                 usage_record.automation_runs_count += 1
                 await db.commit()
-                logger.info(f"Automation run tracked: {usage_record.automation_runs_count}/{usage_record.automation_runs_limit}")
+                logger.info(
+                    f"Automation run tracked: {usage_record.automation_runs_count}/"
+                    f"{usage_record.automation_runs_limit}"
+                )
             except ValueError:
-                raise  # Re-raise limit exceeded error
+                raise
             except Exception as tracking_error:
                 logger.error(f"Failed to track automation run: {tracking_error}")
-        # ===== END USAGE TRACKING =====
-        
-        # Create execution record
+
         execution = WorkflowExecution(
             workflow_id=workflow_id,
             user_id=user_id,
-            status=WorkflowExecutionStatus.RUNNING.value if hasattr(WorkflowExecutionStatus.RUNNING, 'value') else "running",
-            trigger_type=trigger_type.value if hasattr(trigger_type, 'value') else str(trigger_type),
+            status=WorkflowExecutionStatus.RUNNING.value
+            if hasattr(WorkflowExecutionStatus.RUNNING, "value")
+            else "running",
+            trigger_type=trigger_type.value if hasattr(trigger_type, "value") else str(trigger_type),
             trigger_data={},
             input_data=input_data or {},
             output_data={},
-            started_at=datetime.utcnow()
+            started_at=datetime.utcnow(),
         )
-        
+
         db.add(execution)
-        await db.flush()
-        
-        # Notify clients that workflow execution started
+        await db.commit()
+        await db.refresh(execution)
+
         if user_id:
             await connection_manager.push_to_user(
-                user_id, 
-                "workflow_execution_started", 
-                {"workflow_id": workflow.id, "execution_id": execution.id}
+                user_id,
+                "workflow_execution_started",
+                {"workflow_id": workflow_id, "execution_id": execution.id},
             )
-        
+
+        return execution
+
+    async def run_workflow_execution(
+        self,
+        execution_id: uuid.UUID,
+        user_id: uuid.UUID,
+        db: AsyncSession,
+    ) -> WorkflowExecution:
+        """Run all steps for an existing execution record."""
+        stmt = (
+            select(WorkflowExecution)
+            .options(selectinload(WorkflowExecution.workflow).selectinload(Workflow.steps))
+            .where(WorkflowExecution.id == execution_id, WorkflowExecution.user_id == user_id)
+        )
+        result = await db.execute(stmt)
+        execution = result.scalar_one_or_none()
+        if not execution:
+            raise ValueError("Execution not found")
+
+        workflow = execution.workflow
+        if not workflow:
+            workflow = await self.get_workflow(execution.workflow_id, user_id, db)
+        if not workflow:
+            raise ValueError("Workflow not found")
+
+        input_data = execution.input_data or {}
+
         try:
             context = {
-                "input": input_data or {},
+                "input": input_data,
                 "workflow": workflow.workflow_metadata or {},
                 "steps": {},
-                "variables": workflow.variables or {}
+                "variables": workflow.variables or {},
             }
-            
-            # Merge workflow variables into root context (e.g. for {{config.kb_id}})
+
             if workflow.variables:
                 for key, value in workflow.variables.items():
                     if key not in context:
                         context[key] = value
-            
-            # GAP 1 FIX: Merge input_data keys to top-level context
-            # so Jinja2 can resolve {{Trigger.id}} directly (not {{input.Trigger.id}})
+
             if input_data:
                 for key, value in input_data.items():
-                    if key not in context:  # Don't overwrite existing keys like 'input', 'workflow', 'steps'
+                    if key not in context:
                         context[key] = value
-            
-            # Execute steps in order (with canvas router branch skipping)
+
             skip_steps: Set[int] = set()
             meta_branch_keys = (workflow.workflow_metadata or {}).get("branch_keys") or {}
             ordered_steps = sorted(workflow.steps, key=lambda s: s.step_number)
@@ -446,8 +481,6 @@ class WorkflowBuilderService:
                     chosen_key = await self._resolve_router_branch(cond or {}, context)
                     branches = (cond or {}).get("branches") or {}
 
-                    # Skip rejected branch roots + any steps tagged with a non-chosen branch_key.
-                    # Do NOT greedily skip unmarked steps after a branch (those may be join/linear).
                     for key, target in branches.items():
                         if str(key) == str(chosen_key):
                             continue
@@ -455,7 +488,6 @@ class WorkflowBuilderService:
                             skip_steps.add(int(target))
                         except (TypeError, ValueError):
                             continue
-                        # Extend skip set for tagged descendants of this branch key
                         for sn_str, bkey in meta_branch_keys.items():
                             if str(bkey) != str(key):
                                 continue
@@ -489,64 +521,55 @@ class WorkflowBuilderService:
                     context[f"step_{step.step_number}"] = step_result
                     continue
 
-                # Legacy / field-operator conditional skip
                 if step.condition and not await self._evaluate_condition(step.condition, context):
                     print(f"Step {step.step_number} skipped due to condition")
                     continue
 
-                # Execute step with variable substitution
-                step_execution = await self._execute_workflow_step(step, execution.id, db, context, user_id)
+                step_execution = await self._execute_workflow_step(
+                    step, execution.id, db, context, user_id
+                )
 
-                # Update context with step results
                 step_result = step_execution.output_data or {}
 
-                # Make step_result more forgiving for templates that expect direct array access
                 if isinstance(step_result, dict) and "data" in step_result and isinstance(step_result["data"], dict):
-                    # Copy data contents to root of step_result for easier access (e.g. step_2.results instead of step_2.data.results)
                     for k, v in step_result["data"].items():
                         if k not in step_result:
                             step_result[k] = v
 
                 context["steps"][f"step_{step.step_number}"] = step_result
-
-                # Also add to root context for easier variable access (e.g. {{step_1.field}})
                 context[f"step_{step.step_number}"] = step_result
 
-                # GAP 2 FIX: Also store by operation name for intuitive access
-                # e.g. {{auto_resolve_ticket.resolved}} instead of {{step_2.resolved}}
                 operation_name = (step.tool_parameters or {}).get("operation", "")
                 if operation_name:
                     context[operation_name] = step_result
 
-                # Check if step failed
                 if step_execution.status == WorkflowExecutionStatus.FAILED or str(step_execution.status) == "failed":
-                    execution.status = WorkflowExecutionStatus.FAILED.value if hasattr(WorkflowExecutionStatus.FAILED, 'value') else "failed"
+                    execution.status = WorkflowExecutionStatus.FAILED.value if hasattr(WorkflowExecutionStatus.FAILED, "value") else "failed"
                     execution.error_message = f"Step {step.step_number} failed: {step_execution.error_message}"
                     break
 
             if execution.status == WorkflowExecutionStatus.RUNNING or str(execution.status) == "running":
-                execution.status = WorkflowExecutionStatus.COMPLETED.value if hasattr(WorkflowExecutionStatus.COMPLETED, 'value') else "completed"
+                execution.status = WorkflowExecutionStatus.COMPLETED.value if hasattr(WorkflowExecutionStatus.COMPLETED, "value") else "completed"
                 execution.output_data = context["steps"]
 
         except Exception as e:
-            execution.status = WorkflowExecutionStatus.FAILED.value if hasattr(WorkflowExecutionStatus.FAILED, 'value') else "failed"
+            execution.status = WorkflowExecutionStatus.FAILED.value if hasattr(WorkflowExecutionStatus.FAILED, "value") else "failed"
             execution.error_message = str(e)
-        
+
         execution.completed_at = datetime.utcnow()
         await db.commit()
         await db.refresh(execution)
-        
-        # Notify clients that workflow execution completed
+
         if user_id:
             await connection_manager.push_to_user(
-                user_id, 
-                "workflow_execution_completed", 
+                user_id,
+                "workflow_execution_completed",
                 {
                     "workflow_id": workflow.id,
                     "execution_id": execution.id,
-                    "status": execution.status.value if hasattr(execution.status, 'value') else str(execution.status),
-                    "completed_at": execution.completed_at.isoformat()
-                }
+                    "status": execution.status.value if hasattr(execution.status, "value") else str(execution.status),
+                    "completed_at": execution.completed_at.isoformat(),
+                },
             )
             try:
                 from .notification_service import NotificationService
@@ -577,9 +600,19 @@ class WorkflowBuilderService:
                     )
             except Exception as notif_err:
                 logger.debug("Workflow notification failed: %s", notif_err)
-        
+
         return execution
-    
+
+    async def execute_workflow(self, workflow_id: uuid.UUID, user_id: uuid.UUID, db: AsyncSession, input_data: Dict[str, Any] = None, trigger_type: Union[str, Any] = "manual") -> WorkflowExecution:
+        """
+        Execute a workflow with enhanced conditional logic and variable substitution.
+        Synchronous: prepares execution then runs all steps inline (used by Celery scheduled tasks).
+        """
+        execution = await self.prepare_workflow_execution(
+            workflow_id, user_id, db, input_data, trigger_type
+        )
+        return await self.run_workflow_execution(execution.id, user_id, db)
+
     def _is_router_step(self, step: WorkflowStep, condition: Optional[Dict[str, Any]]) -> bool:
         """Canvas condition_router / type:router nodes are control-flow, not tools."""
         tool = (step.tool_name or "").lower()
@@ -938,13 +971,23 @@ class WorkflowBuilderService:
                 user = user_result.scalar_one_or_none()
                 
                 if user:
-                    # Automated workflows (ordering agent, triggers) must not wait for Ask AI HITL
-                    tool_result = await self.tool_executor.execute_tool(
+                    from ..core.runtime.timeout import execute_with_timeout
+
+                    step_timeout = step.timeout or 60
+                    if step.tool_name == "rag_ingest_source":
+                        step_timeout = max(step_timeout, 600)
+
+                    tool_coro = self.tool_executor.execute_tool(
                         step.tool_name,
                         substituted_params,
                         user,
                         db,
                         skip_confirmation=True,
+                    )
+                    tool_result = await execute_with_timeout(
+                        tool_coro,
+                        step_timeout,
+                        step.tool_name,
                     )
                     if isinstance(tool_result, dict) and tool_result.get("pending_confirmation"):
                         raise Exception(
