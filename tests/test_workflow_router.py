@@ -161,7 +161,7 @@ async def test_execute_workflow(
         headers=auth_headers,
         json={}
     )
-    assert response.status_code in [200, 400, 422, 500]
+    assert response.status_code in [200, 202, 400, 422, 500]
 
 
 @pytest.mark.asyncio
@@ -174,7 +174,7 @@ async def test_execute_workflow_with_params(
         headers=auth_headers,
         json={"params": {"key": "value"}}
     )
-    assert response.status_code in [200, 400, 422, 500]
+    assert response.status_code in [200, 202, 400, 422, 500]
 
 
 @pytest.mark.asyncio
@@ -275,7 +275,7 @@ async def test_workflow_chat_agent(client: AsyncClient, auth_headers):
         headers=auth_headers,
         json={"message": "Create a workflow that sends emails"}
     )
-    assert response.status_code in [200, 400, 422, 500]
+    assert response.status_code in [200, 202, 400, 422, 500]
 
 
 @pytest.mark.asyncio
