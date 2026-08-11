@@ -4,9 +4,12 @@ Orchestrates fetching, parsing, chunking, embedding, and vector DB insertion.
 Fully dynamic — routes to the correct vector DB, embedding model, and parser
 based on each KnowledgeBase's stored configuration.
 """
+import io
 import logging
+import os
 import re
 import uuid
+import zipfile
 import tiktoken
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
@@ -65,6 +68,35 @@ def extract_image_urls(text: str) -> List[str]:
     return urls
 
 
+_PLAIN_TEXT_EXTENSIONS = frozenset({
+    ".md", ".markdown", ".txt", ".csv", ".json", ".html", ".htm",
+    ".xml", ".yaml", ".yml", ".rst", ".log", ".tsv",
+})
+_PLAIN_TEXT_MIMES = frozenset({
+    "text/plain", "text/markdown", "text/csv", "text/html",
+    "application/json", "application/xml", "text/xml",
+})
+
+
+def _is_plain_text_file(filename: str, mime_type: str) -> bool:
+    ext = os.path.splitext((filename or "").lower())[1]
+    if ext in _PLAIN_TEXT_EXTENSIONS:
+        return True
+    mime = (mime_type or "").lower()
+    if mime in _PLAIN_TEXT_MIMES or mime.startswith("text/"):
+        return True
+    return False
+
+
+def _decode_plain_text(content: bytes) -> str:
+    for encoding in ("utf-8", "utf-8-sig", "latin-1"):
+        try:
+            return content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return content.decode("utf-8", errors="replace")
+
+
 class RAGPipelineService:
     """Zero File Storage RAG Pipeline Orchestrator.
     
@@ -95,6 +127,129 @@ class RAGPipelineService:
             self.tokenizer = tiktoken.get_encoding("cl100k_base")
         except Exception:
             self.tokenizer = tiktoken.encoding_for_model("gpt-4o")
+
+    async def _extract_text_from_downloaded_file(
+        self,
+        content: bytes,
+        source_name: str,
+        mime_type: str = "",
+    ) -> Dict[str, Any]:
+        """Parse downloaded Drive/binary file content into plain text."""
+        name_lower = (source_name or "").lower()
+        mime = mime_type or ""
+
+        if name_lower.endswith(".zip") or mime == "application/zip":
+            return {"success": False, "zip": True, "content": content, "source_name": source_name}
+
+        if _is_plain_text_file(source_name, mime):
+            text = _decode_plain_text(content)
+            if text.strip():
+                return {"success": True, "text": text}
+            return {"success": False, "error": "File is empty or contains no readable text"}
+
+        if mime == "application/pdf" or name_lower.endswith(".pdf"):
+            from .llamaparse_service import LlamaParseService
+            import asyncio
+
+            parse_res = await LlamaParseService().llamaparse_parse_document(content, source_name)
+            if parse_res.get("success"):
+                job_id = parse_res.get("job_id")
+                for _ in range(6):
+                    await asyncio.sleep(10)
+                    job_res = await LlamaParseService().llamaparse_get_job_result(job_id)
+                    if job_res.get("status") == "SUCCESS":
+                        markdown = job_res.get("markdown", "")
+                        if markdown.strip():
+                            return {"success": True, "text": markdown}
+                        break
+            error_msg = parse_res.get("error", "LlamaParse job timed out or failed")
+            return {"success": False, "error": error_msg}
+
+        parse_res = await self.unstructured.unstructured_partition_document(content, source_name)
+        if parse_res.get("success"):
+            elements = parse_res.get("elements", [])
+            raw_text = "\n\n".join([el.get("text", "") for el in elements if el.get("text")])
+            if raw_text.strip():
+                return {"success": True, "text": raw_text}
+            return {"success": False, "error": "Parser returned no text elements"}
+
+        err = parse_res.get("error") or "Unknown parser error"
+        return {"success": False, "error": err}
+
+    async def _ingest_zip_archive(
+        self,
+        content: bytes,
+        archive_name: str,
+        kb_id: str,
+        user_id: str,
+        source_type: str,
+        user: Any,
+        db: Any,
+        parent_url: str,
+    ) -> Dict[str, Any]:
+        """Extract and ingest each supported file inside a zip archive."""
+        total_chunks = 0
+        processed = 0
+        errors: List[str] = []
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                members = [
+                    info for info in zf.infolist()
+                    if not info.is_dir()
+                    and not info.filename.startswith("__MACOSX/")
+                    and not os.path.basename(info.filename).startswith(".")
+                ]
+                if not members:
+                    return {"status": "error", "message": f"Zip archive {archive_name} is empty"}
+
+                for info in members:
+                    if info.file_size > 15 * 1024 * 1024:
+                        errors.append(f"{info.filename}: file too large (>15MB)")
+                        continue
+                    member_name = os.path.basename(info.filename)
+                    try:
+                        data = zf.read(info)
+                    except Exception as read_err:
+                        errors.append(f"{member_name}: {read_err}")
+                        continue
+
+                    parsed = await self._extract_text_from_downloaded_file(data, member_name)
+                    if parsed.get("zip"):
+                        errors.append(f"{member_name}: nested zip archives are not supported")
+                        continue
+                    if not parsed.get("success"):
+                        errors.append(f"{member_name}: {parsed.get('error', 'parse failed')}")
+                        continue
+
+                    ingest_res = await self.rag_ingest_content(
+                        content=parsed["text"],
+                        kb_id=kb_id,
+                        user_id=user_id,
+                        source_url=f"{parent_url}#{member_name}",
+                        source_name=f"{archive_name}/{member_name}",
+                        source_tool=source_type,
+                        user=user,
+                        db=db,
+                    )
+                    if ingest_res.get("status") == "success":
+                        total_chunks += ingest_res.get("chunks_added", 0)
+                        processed += 1
+                    else:
+                        errors.append(f"{member_name}: {ingest_res.get('message', 'ingest failed')}")
+        except zipfile.BadZipFile:
+            return {"status": "error", "message": f"{archive_name} is not a valid zip file"}
+
+        msg = f"Ingested {processed} file(s) from zip {archive_name}."
+        if errors:
+            msg += f" Encountered {len(errors)} errors: " + " | ".join(errors[:3])
+            if len(errors) > 3:
+                msg += "..."
+        return {
+            "status": "success" if processed > 0 else "error",
+            "chunks_added": total_chunks,
+            "message": msg,
+        }
 
     # ================================================================
     # CREDENTIAL RESOLUTION — user BYOK keys → platform env vars
@@ -928,32 +1083,25 @@ class RAGPipelineService:
                 content = res.get("content")
                 mime_type = res.get("mime_type", "")
                 source_name = res.get("name", url_or_id)
-                
-                # Smart parser routing based on MIME type
-                if mime_type == "application/pdf":
-                    from .llamaparse_service import LlamaParseService
-                    import asyncio
-                    parse_res = await LlamaParseService().llamaparse_parse_document(content, f"{source_name}")
-                    if parse_res.get("success"):
-                        job_id = parse_res.get("job_id")
-                        for _ in range(6): 
-                            await asyncio.sleep(10)
-                            job_res = await LlamaParseService().llamaparse_get_job_result(job_id)
-                            if job_res.get("status") == "SUCCESS":
-                                raw_text = job_res.get("markdown", "")
-                                break
-                    if not raw_text:
-                        error_msg = parse_res.get("error", "LlamaParse job timed out or failed")
-                        return {"status": "error", "message": f"Parsing failed for {source_name}: {error_msg}"}
-                else:
-                    # Use Unstructured for Office Docs (DOCX, PPTX, XLSX, TXT)
-                    parse_res = await self.unstructured.unstructured_partition_document(content, source_name)
-                    if parse_res.get("success"):
-                        elements = parse_res.get("elements", [])
-                        raw_text = "\n\n".join([el.get("text", "") for el in elements if el.get("text")])
-                    else:
-                        return {"status": "error", "message": f"Unstructured parser failed for {source_name}: {parse_res.get('error')}"}
-                
+
+                parsed = await self._extract_text_from_downloaded_file(content, source_name, mime_type)
+                if parsed.get("zip"):
+                    return await self._ingest_zip_archive(
+                        content=parsed["content"],
+                        archive_name=source_name,
+                        kb_id=kb_id,
+                        user_id=user_id,
+                        source_type=source_type,
+                        user=user,
+                        db=db,
+                        parent_url=f"https://drive.google.com/file/d/{url_or_id}/view",
+                    )
+                if not parsed.get("success"):
+                    return {
+                        "status": "error",
+                        "message": f"Parsing failed for {source_name}: {parsed.get('error', 'Unknown error')}",
+                    }
+                raw_text = parsed["text"]
                 source_url = f"https://drive.google.com/file/d/{url_or_id}/view"
                 
             # ---- Notion ----
