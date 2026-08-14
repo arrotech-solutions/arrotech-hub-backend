@@ -930,7 +930,7 @@ class WorkflowBuilderService:
                             bc[key] = coerce_delivery_methods(value)
                         else:
                             bc[key] = value
-                inp_cfg = (context or {}).get("config")
+                inp_cfg = (context or {}).get("input", {}).get("config")
                 if isinstance(inp_cfg, dict):
                     from .whatsapp_ordering_helpers import coerce_delivery_methods
 
