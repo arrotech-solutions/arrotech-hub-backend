@@ -2169,7 +2169,7 @@ WORKFLOW_TEMPLATES = [
         "difficulty": "intermediate",
         "estimated_time": "5 mins",
         "tags": ["whatsapp", "agent", "food", "retail", "ordering"],
-        "required_connections": ["whatsapp", "rag_pipeline"],
+        "required_connections": ["whatsapp", "rag_pipeline", "google_workspace"],
         "trigger_type": WorkflowTriggerType.EVENT,
         "trigger_config": {
             "platform": "whatsapp",
@@ -2911,6 +2911,9 @@ async def use_template(
             workflow_variables[key] = config[key]
         elif "default" in var_meta:
             workflow_variables[key] = var_meta["default"]
+
+    from ..services.whatsapp_ordering_helpers import normalize_agent_storage_settings
+    workflow_variables = normalize_agent_storage_settings(workflow_variables)
     
     workflow = Workflow(
         name=f"{template['name']} (from template)",

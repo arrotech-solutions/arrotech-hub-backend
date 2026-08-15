@@ -93,9 +93,12 @@ def test_build_order_sheet_record_separates_whatsapp_and_mpesa_phone():
 def test_orders_sheet_tab_candidates_prefers_orders_after_sheet1_rename():
     from src.services.conversational_agent_service import _orders_sheet_tab_candidates
 
+    # Legacy workflows still pointing at Sheet1 after rename → try Orders first
     assert _orders_sheet_tab_candidates("Sheet1") == ["Orders", "Sheet1"]
-    assert _orders_sheet_tab_candidates("Orders") == ["Orders", "Sheet1"]
-    assert _orders_sheet_tab_candidates("") == ["Orders", "Sheet1"]
+    # Explicit Orders tab — do not fall back to Sheet1 (avoids wrong-tab writes)
+    assert _orders_sheet_tab_candidates("Orders") == ["Orders"]
+    assert _orders_sheet_tab_candidates("") == ["Orders"]
+    assert _orders_sheet_tab_candidates("Custom Orders") == ["Custom Orders", "Orders"]
 
 
 def test_merge_preserves_whatsapp_customer_phone_on_paid_update():

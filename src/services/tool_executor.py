@@ -8295,8 +8295,15 @@ Description: {payment.description or 'N/A'}"""
             workflow_config = parameters.get("config")
             if isinstance(workflow_config, dict):
                 for key, value in workflow_config.items():
-                    if value is not None and value != "":
+                    if value is None or value == "":
+                        continue
+                    if key.startswith("storage_"):
+                        business_config[key] = value
+                    else:
                         business_config.setdefault(key, value)
+
+            from .whatsapp_ordering_helpers import normalize_agent_storage_settings
+            business_config = normalize_agent_storage_settings(business_config)
 
             if parameters.get("whatsapp_contact_phone"):
                 business_config.setdefault("customer_phone", parameters["whatsapp_contact_phone"])

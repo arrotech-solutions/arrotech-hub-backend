@@ -206,7 +206,7 @@ def _orders_sheet_tab_candidates(preferred_sheet: str) -> List[str]:
     preferred = (preferred_sheet or "Orders").strip() or "Orders"
     if preferred.lower() == "sheet1":
         return _dedupe_keep_order(["Orders", "Sheet1"])
-    return _dedupe_keep_order([preferred, "Orders", "Sheet1"])
+    return _dedupe_keep_order([preferred, "Orders"])
 
 def _col_idx_to_a1(idx0: int) -> str:
     """0-based column index → A1 column letters."""
@@ -5044,18 +5044,21 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
 
     @staticmethod
     def _storage_config_from_business(business_config: Dict[str, Any]) -> Dict[str, Any]:
+        from .whatsapp_ordering_helpers import normalize_agent_storage_settings
+
+        bc = normalize_agent_storage_settings(business_config or {})
         return {
-            "provider": business_config.get("storage_provider", "none"),
-            "spreadsheet_id": business_config.get("storage_spreadsheet_id", ""),
-            "orders_sheet_name": business_config.get("storage_orders_sheet_name", "Orders"),
-            "customers_sheet_name": business_config.get("storage_customers_sheet_name", "Customers"),
-            "transactions_sheet_name": business_config.get("storage_transactions_sheet_name", "Transactions"),
-            "reservations_sheet_name": business_config.get("storage_reservations_sheet_name", "Reservations"),
-            "airtable_base_id": business_config.get("storage_airtable_base_id", ""),
-            "airtable_orders_table": business_config.get("storage_airtable_orders_table", "Orders"),
-            "airtable_customers_table": business_config.get("storage_airtable_customers_table", "Customers"),
-            "airtable_transactions_table": business_config.get("storage_airtable_transactions_table", "Transactions"),
-            "airtable_reservations_table": business_config.get("storage_airtable_reservations_table", "Reservations"),
+            "provider": bc.get("storage_provider", "none"),
+            "spreadsheet_id": bc.get("storage_spreadsheet_id", ""),
+            "orders_sheet_name": bc.get("storage_orders_sheet_name", "Orders"),
+            "customers_sheet_name": bc.get("storage_customers_sheet_name", "Customers"),
+            "transactions_sheet_name": bc.get("storage_transactions_sheet_name", "Transactions"),
+            "reservations_sheet_name": bc.get("storage_reservations_sheet_name", "Reservations"),
+            "airtable_base_id": bc.get("storage_airtable_base_id", ""),
+            "airtable_orders_table": bc.get("storage_airtable_orders_table", "Orders"),
+            "airtable_customers_table": bc.get("storage_airtable_customers_table", "Customers"),
+            "airtable_transactions_table": bc.get("storage_airtable_transactions_table", "Transactions"),
+            "airtable_reservations_table": bc.get("storage_airtable_reservations_table", "Reservations"),
         }
 
     async def _get_allowed_mpesa_phones(
