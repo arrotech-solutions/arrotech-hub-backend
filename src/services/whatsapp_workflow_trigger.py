@@ -62,17 +62,21 @@ def _merge_workflow_storage_into_config(
     workflow_variables: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
     """Backfill agent + storage settings from top-level workflow variables."""
+    from .whatsapp_ordering_helpers import normalize_agent_storage_settings
+
     merged = dict(wf_config or {})
     variables = workflow_variables or {}
     nested_config = variables.get("config") if isinstance(variables.get("config"), dict) else {}
+
     for key in _AGENT_CONFIG_KEYS:
-        if merged.get(key) not in (None, "", []):
-            continue
-        if key in variables and variables.get(key) not in (None, "", []):
+        # Legacy nested config fills gaps only; top-level workflow.variables always wins.
+        if merged.get(key) in (None, "", []):
+            if nested_config.get(key) not in (None, "", []):
+                merged[key] = nested_config[key]
+        if variables.get(key) not in (None, "", []):
             merged[key] = variables[key]
-        elif nested_config.get(key) not in (None, "", []):
-            merged[key] = nested_config[key]
-    return merged
+
+    return normalize_agent_storage_settings(merged)
 
 
 # Real estate keyword groups for trigger matching

@@ -1092,6 +1092,46 @@ def cart_quantity_updated_message(item_name: str, quantity: float) -> str:
 CART_BUTTONS_TEXT_MARKER = "Use the buttons below"
 
 
+# ── Agent storage (Google Sheets / Airtable) ───────────────────────────────
+
+STORAGE_SHEET_DEFAULTS: Dict[str, str] = {
+    "storage_orders_sheet_name": "Orders",
+    "storage_customers_sheet_name": "Customers",
+    "storage_transactions_sheet_name": "Transactions",
+    "storage_reservations_sheet_name": "Reservations",
+}
+
+
+def normalize_agent_storage_settings(config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalize ordering-agent storage settings from workflow variables / business_config.
+
+    - Infer ``storage_provider`` when a spreadsheet or Airtable base is configured
+      but the provider was left at the template default ``none``.
+    - Apply default tab names (Orders, Transactions, Reservations, Customers).
+    """
+    out = dict(config or {})
+
+    spreadsheet_id = str(out.get("storage_spreadsheet_id") or "").strip()
+    airtable_base = str(out.get("storage_airtable_base_id") or "").strip()
+    provider = str(out.get("storage_provider") or "").strip().lower()
+
+    if provider in ("", "none"):
+        if spreadsheet_id:
+            provider = "google_sheets"
+            out["storage_provider"] = provider
+        elif airtable_base:
+            provider = "airtable"
+            out["storage_provider"] = provider
+
+    if provider == "google_sheets":
+        for key, default in STORAGE_SHEET_DEFAULTS.items():
+            if not str(out.get(key) or "").strip():
+                out[key] = default
+
+    return out
+
+
 def message_requests_cart_buttons(message: str) -> bool:
     """True when agent cart summary expects follow-up interactive buttons."""
     return bool(message and CART_BUTTONS_TEXT_MARKER in message)

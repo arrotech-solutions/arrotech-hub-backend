@@ -49,9 +49,23 @@ def test_merge_workflow_storage_into_config_backfills_top_level_variables():
     assert merged["storage_transactions_sheet_name"] == "Transactions"
 
 
-def test_merge_workflow_storage_into_config_prefers_existing_config():
+def test_merge_workflow_storage_into_config_prefers_top_level_variables():
     merged = _merge_workflow_storage_into_config(
         {"storage_orders_sheet_name": "Orders"},
         {"storage_orders_sheet_name": "Sheet1"},
     )
-    assert merged["storage_orders_sheet_name"] == "Orders"
+    assert merged["storage_orders_sheet_name"] == "Sheet1"
+
+
+def test_merge_workflow_storage_infers_google_sheets_provider():
+    from src.services.whatsapp_ordering_helpers import normalize_agent_storage_settings
+
+    normalized = normalize_agent_storage_settings(
+        {
+            "storage_provider": "none",
+            "storage_spreadsheet_id": "abc123",
+        }
+    )
+    assert normalized["storage_provider"] == "google_sheets"
+    assert normalized["storage_orders_sheet_name"] == "Orders"
+    assert normalized["storage_transactions_sheet_name"] == "Transactions"

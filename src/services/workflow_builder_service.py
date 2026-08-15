@@ -918,7 +918,10 @@ class WorkflowBuilderService:
                     bc = {}
                 wf_vars = (context or {}).get("variables") or {}
                 if isinstance(wf_vars, dict):
-                    from .whatsapp_ordering_helpers import coerce_delivery_methods
+                    from .whatsapp_ordering_helpers import (
+                        coerce_delivery_methods,
+                        normalize_agent_storage_settings,
+                    )
 
                     for key, value in wf_vars.items():
                         if key == "config":
@@ -939,9 +942,13 @@ class WorkflowBuilderService:
                             continue
                         if key == "delivery_methods":
                             bc[key] = coerce_delivery_methods(value)
+                        elif key.startswith("storage_"):
+                            bc[key] = value
                         else:
                             bc.setdefault(key, value)
-                substituted_params["business_config"] = bc
+                substituted_params["business_config"] = normalize_agent_storage_settings(bc)
+                if isinstance(inp_cfg, dict):
+                    substituted_params["config"] = inp_cfg
 
             # WhatsApp cart buttons: inherit from prior conversational_agent step
             # (workflows created before send_cart_buttons/session_key were added to step 2)
