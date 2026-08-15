@@ -188,6 +188,13 @@ def _dedupe_keep_order(values: List[str]) -> List[str]:
             out.append(v)
     return out
 
+def _escape_sheet_name(name: str) -> str:
+    """Escape sheet name for Google Sheets A1 notation."""
+    if not name:
+        return ""
+    escaped = str(name).replace("'", "''")
+    return f"'{escaped}'"
+
 
 def _orders_sheet_tab_candidates(preferred_sheet: str) -> List[str]:
     """Tab names to try when locating the Orders sheet.
@@ -6884,7 +6891,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             {
                 "operation": "read_range",
                 "spreadsheet_id": spreadsheet_id,
-                "range_name": f"{actual_sheet_name}!{phone_col}:{phone_col}",
+                "range_name": f"{_escape_sheet_name(actual_sheet_name)}!{phone_col}:{phone_col}",
             },
             user,
             db,
@@ -7117,7 +7124,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 {
                     "operation": "read_range",
                     "spreadsheet_id": spreadsheet_id,
-                    "range_name": f"{sheet_name}!A1:ZZ1",
+                    "range_name": f"{_escape_sheet_name(sheet_name)}!A1:ZZ1",
                 },
                 user,
                 db,
@@ -8521,7 +8528,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             {
                 "operation": "read_range",
                 "spreadsheet_id": spreadsheet_id,
-                "range_name": f"{actual_sheet_name}!A1:ZZ1",
+                "range_name": f"{_escape_sheet_name(actual_sheet_name)}!A1:ZZ1",
             },
             user,
             db,
@@ -8561,7 +8568,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             return
             
         status_col_a1 = _col_idx_to_a1(status_idx)
-        range_to_update = f"{actual_sheet_name}!{status_col_a1}{target_row_num}"
+        range_to_update = f"{_escape_sheet_name(actual_sheet_name)}!{status_col_a1}{target_row_num}"
         
         await executor.execute_tool(
             "google_workspace_sheets",
@@ -8781,7 +8788,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             {
                 "operation": "write_range",
                 "spreadsheet_id": spreadsheet_id,
-                "range_name": f"{sheet_name}!A{target_row_num}",
+                "range_name": f"{_escape_sheet_name(sheet_name)}!A{target_row_num}",
                 "values": [row_values],
             },
             user,
@@ -9019,7 +9026,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             append_res = await self._append_row_with_fallback_ranges(
                 executor=executor,
                 spreadsheet_id=spreadsheet_id,
-                candidate_ranges=[f"{sheet_name}!A:A", f"{sheet_name}!A1"],
+                candidate_ranges=[f"{_escape_sheet_name(sheet_name)}!A:A", f"{_escape_sheet_name(sheet_name)}!A1"],
                 row=row_values,
                 user=user,
                 db=db,
@@ -9333,7 +9340,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             {
                 "operation": "write_range",
                 "spreadsheet_id": spreadsheet_id,
-                "range_name": f"{sheet_name}!A{target_row_num}",
+                "range_name": f"{_escape_sheet_name(sheet_name)}!A{target_row_num}",
                 "values": [row],
             },
             user,
@@ -9468,12 +9475,46 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
     ) -> Optional[Dict[str, Any]]:
         """
         Ensure the header row exists for a sheet tab. If the preferred tab doesn't exist,
-        tries fallbacks. Returns {"sheet_name": str, "headers": List[str]} or None.
+        it will be created. If creation fails, it tries fallbacks.
+        Returns {"sheet_name": str, "headers": List[str]} or None.
         """
         if candidate_sheets:
             sheets_to_try = _dedupe_keep_order(candidate_sheets)
         else:
             sheets_to_try = _dedupe_keep_order([preferred_sheet] + (fallback_sheets or []))
+            
+        primary_candidate = sheets_to_try[0] if sheets_to_try else preferred_sheet
+        
+        # Try to fetch spreadsheet info to see if we need to create the primary candidate
+        try:
+            info_res = await executor.execute_tool(
+                "google_workspace_sheets",
+                {
+                    "operation": "get_info",
+                    "spreadsheet_id": spreadsheet_id,
+                },
+                user,
+                db,
+            )
+            if info_res.get("success"):
+                existing_sheets = [s.get("title") for s in info_res.get("sheets", []) if s.get("title")]
+                
+                # If the primary candidate does not exist, we should create it
+                # rather than writing to an unrelated fallback sheet (like Sheet1).
+                if primary_candidate not in existing_sheets:
+                    await executor.execute_tool(
+                        "google_workspace_sheets",
+                        {
+                            "operation": "batch_update",
+                            "spreadsheet_id": spreadsheet_id,
+                            "requests": [{"addSheet": {"properties": {"title": primary_candidate}}}]
+                        },
+                        user,
+                        db,
+                    )
+        except Exception as e:
+            logger.warning(f"[CONV_AGENT] Failed to auto-create sheet '{primary_candidate}': {e}")
+
         last_error = ""
         for sheet_name in sheets_to_try:
             try:
@@ -9511,7 +9552,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             {
                 "operation": "read_range",
                 "spreadsheet_id": spreadsheet_id,
-                "range_name": f"{sheet_name}!A1:ZZ1",
+                "range_name": f"{_escape_sheet_name(sheet_name)}!A1:ZZ1",
             },
             user,
             db,
@@ -9533,7 +9574,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 {
                     "operation": "write_range",
                     "spreadsheet_id": spreadsheet_id,
-                    "range_name": f"{sheet_name}!A1",
+                    "range_name": f"{_escape_sheet_name(sheet_name)}!A1",
                     "values": [required_headers],
                 },
                 user,
@@ -9558,7 +9599,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             {
                 "operation": "write_range",
                 "spreadsheet_id": spreadsheet_id,
-                "range_name": f"{sheet_name}!A1",
+                "range_name": f"{_escape_sheet_name(sheet_name)}!A1",
                 "values": [merged],
             },
             user,
@@ -9602,7 +9643,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             {
                 "operation": "read_range",
                 "spreadsheet_id": spreadsheet_id,
-                "range_name": f"{sheet_name}!{col}:{col}",
+                "range_name": f"{_escape_sheet_name(sheet_name)}!{col}:{col}",
             },
             user,
             db,
@@ -9650,7 +9691,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             {
                 "operation": "read_range",
                 "spreadsheet_id": spreadsheet_id,
-                "range_name": f"{sheet_name}!{col}:{col}",
+                "range_name": f"{_escape_sheet_name(sheet_name)}!{col}:{col}",
             },
             user,
             db,
@@ -9686,7 +9727,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             {
                 "operation": "read_range",
                 "spreadsheet_id": spreadsheet_id,
-                "range_name": f"{sheet_name}!A{row_num}:ZZ{row_num}",
+                "range_name": f"{_escape_sheet_name(sheet_name)}!A{row_num}:ZZ{row_num}",
             },
             user,
             db,
@@ -9724,7 +9765,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             {
                 "operation": "write_range",
                 "spreadsheet_id": spreadsheet_id,
-                "range_name": f"{sheet_name}!A{next_row}",
+                "range_name": f"{_escape_sheet_name(sheet_name)}!A{next_row}",
                 "values": [row],
             },
             user,
@@ -9765,7 +9806,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             {
                 "operation": "read_range",
                 "spreadsheet_id": spreadsheet_id,
-                "range_name": f"{sheet_name}!{col}2:{col}",
+                "range_name": f"{_escape_sheet_name(sheet_name)}!{col}2:{col}",
             },
             user,
             db,
