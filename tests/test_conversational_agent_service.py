@@ -240,5 +240,5 @@ class TestGoogleSheetsRowAlignment:
         write_call = executor.execute_tool.call_args_list[-1]
         assert write_call.args[0] == "google_workspace_sheets"
         assert write_call.args[1]["operation"] == "write_range"
-        assert write_call.args[1]["range_name"] == "Orders!A4"
+        assert write_call.args[1]["range_name"] == "'Orders'!A4"
         assert write_call.args[1]["values"] == [["ORD-3", "30"]]
