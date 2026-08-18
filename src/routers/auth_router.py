@@ -121,6 +121,19 @@ def _build_auth_response(
                 "name": user.name,
                 "subscription_tier": user.subscription_tier,
                 "email_verified": user.email_verified,
+                "onboarding_completed_at": (
+                    user.onboarding_completed_at.isoformat()
+                    if getattr(user, "onboarding_completed_at", None)
+                    else None
+                ),
+                "onboarding_version": getattr(user, "onboarding_version", None),
+                "primary_goal": getattr(user, "primary_goal", None),
+                "secondary_goals": getattr(user, "secondary_goals", None) or [],
+                "workspace_type": getattr(user, "workspace_type", None),
+                "onboarding_role": getattr(user, "onboarding_role", None),
+                "preferred_apps": getattr(user, "preferred_apps", None) or [],
+                "activation_event": getattr(user, "activation_event", None),
+                "onboarding_step": getattr(user, "onboarding_step", None),
             },
             "organizations": organizations or [],
             "is_new_user": is_new_user,
@@ -146,6 +159,32 @@ async def _get_user_orgs(db: AsyncSession, user_id: uuid.UUID) -> list:
         }
         for org, role in result.all()
     ]
+
+
+async def _user_has_existing_data(db: AsyncSession, user_id) -> bool:
+    """Check if user has any pre-existing workflows, connections, or org memberships."""
+    from sqlalchemy import exists as sa_exists
+    for _model, col in [
+        (Workflow, Workflow.user_id),
+        (Connection, Connection.user_id),
+        (OrganizationMember, OrganizationMember.user_id),
+    ]:
+        result = await db.execute(select(sa_exists().where(col == user_id)))
+        if result.scalar():
+            return True
+    return False
+
+
+async def _auto_grandfather_if_needed(db: AsyncSession, user: User) -> None:
+    """Auto-stamp onboarding_completed_at for pre-existing users who already have data."""
+    if user.onboarding_completed_at:
+        return
+    if await _user_has_existing_data(db, user.id):
+        user.onboarding_completed_at = user.created_at or datetime.now(timezone.utc)
+        user.onboarding_version = 0  # indicates grandfathered, not wizard-completed
+        user.primary_goal = "exploring"
+        await db.commit()
+        await db.refresh(user)
 
 
 async def get_current_user(
@@ -389,6 +428,8 @@ async def google_auth(
         )
         refresh_token = create_refresh_token(data={"sub": user.email})
         
+        if not is_new:
+            await _auto_grandfather_if_needed(db, user)
         orgs = await _get_user_orgs(db, user.id)
         return _build_auth_response(user, access_token, refresh_token, organizations=orgs, is_new_user=is_new)
         
@@ -470,6 +511,8 @@ async def microsoft_auth(
         )
         refresh_token = create_refresh_token(data={"sub": user.email})
         
+        if not is_new:
+            await _auto_grandfather_if_needed(db, user)
         orgs = await _get_user_orgs(db, user.id)
         return _build_auth_response(user, access_token, refresh_token, organizations=orgs, is_new_user=is_new)
         
@@ -568,6 +611,7 @@ async def login(
     )
     refresh_token = create_refresh_token(data={"sub": user.email})
 
+    await _auto_grandfather_if_needed(db, user)
     orgs = await _get_user_orgs(db, user.id)
     return _build_auth_response(user, access_token, refresh_token, organizations=orgs)
 
@@ -607,6 +651,7 @@ async def login_2fa_totp(
         raise HTTPException(status_code=401, detail="Invalid authenticator code.")
         
     # Valid code, issue full tokens
+    await _auto_grandfather_if_needed(db, user)
     access_token = create_access_token(data={"sub": user.email}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     refresh_token = create_refresh_token(data={"sub": user.email})
     
@@ -655,6 +700,7 @@ async def login_2fa_backup(
     await db.commit()
     
     # Issue full tokens
+    await _auto_grandfather_if_needed(db, user)
     access_token = create_access_token(data={"sub": user.email}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     refresh_token = create_refresh_token(data={"sub": user.email})
     
@@ -749,6 +795,7 @@ async def login_2fa_email_verify(
     user.login_otp_expiry = None
     await db.commit()
     
+    await _auto_grandfather_if_needed(db, user)
     access_token = create_access_token(data={"sub": user.email}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     refresh_token = create_refresh_token(data={"sub": user.email})
     
