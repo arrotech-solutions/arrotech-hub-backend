@@ -216,6 +216,8 @@ class User(Base):
     preferred_apps = Column(JSON, nullable=True)  # list[str]
     activation_event = Column(String, nullable=True)
     onboarding_step = Column(Integer, nullable=True)  # last saved wizard step
+    checklist_dismissed = Column(Boolean, nullable=True, default=False)
+    checklist_done_ids = Column(JSON, nullable=True)   # list[str] of completed checklist item IDs
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
