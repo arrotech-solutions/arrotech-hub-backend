@@ -49,7 +49,6 @@ class RuntimeAuditLogger:
         self._last_hash: Optional[str] = None
         self._chain_genesis_hash: Optional[str] = None
         self._seen_execution_ids: set[UUID] = set()
-        self._pending_execution_ids: set[UUID] = set()
         self._lock = threading.Lock()
         self._rebuild_replay_index()
 
@@ -85,7 +84,7 @@ class RuntimeAuditLogger:
 
     def record(self, record: ExecutionAuditRecord) -> None:
         """
-        Three-phase atomic audit commit.
+        Atomic audit commit.
 
         Guarantees:
         - No partial mutation
@@ -93,30 +92,17 @@ class RuntimeAuditLogger:
         - No hash drift
         - Immutable persistence
         """
-
         from .exceptions import RuntimeExecutionError
-
-        # ==================================================
-        # PHASE 1 — BUILD IMMUTABLE RECORD
-        # ==================================================
-
-        genesis = self._store.get_chain_genesis_hash()
 
         frozen_output = freeze_structure(record.output)
 
         with self._lock:
-
-            if (
-                record.execution_id in self._seen_execution_ids
-                or record.execution_id in self._pending_execution_ids
-            ):
+            if record.execution_id in self._seen_execution_ids:
                 raise RuntimeExecutionError(
                     f"Duplicate execution ID: {record.execution_id}"
                 )
 
-            # RESERVE ID IMMEDIATELY
-            self._pending_execution_ids.add(record.execution_id)
-
+            genesis = self._chain_genesis_hash
             previous_hash = (
                 self._last_hash
                 if self._last_hash is not None
@@ -141,49 +127,16 @@ class RuntimeAuditLogger:
                 }
             )
 
-        # ==================================================
-        # PHASE 2 — PERSIST
-        # ==================================================
+            # Persist and update memory state together atomically
+            evicted = self._store.append(hashed_record)
 
-        try:
-            evicted = self._store.append(
-                hashed_record
-            )
-        except Exception:
-            with self._lock:
-                self._pending_execution_ids.discard(record.execution_id)
-            raise
-
-        # ==================================================
-        # PHASE 3 — MEMORY SYNCHRONIZATION
-        # ==================================================
-
-        with self._lock:
-
-            self._last_hash = (
-                hashed_record.record_hash
-            )
-
-            self._seen_execution_ids.add(
-                record.execution_id
-            )
-
-            # REMOVE PENDING RESERVATION
-            self._pending_execution_ids.discard(record.execution_id)
+            self._last_hash = hashed_record.record_hash
+            self._seen_execution_ids.add(record.execution_id)
 
             if evicted:
-
-                self._store.set_chain_genesis_hash(
-                    evicted.record_hash
-                )
-
-                self._chain_genesis_hash = (
-                    evicted.record_hash
-                )
-
-                self._seen_execution_ids.discard(
-                    evicted.execution_id
-                )
+                self._store.set_chain_genesis_hash(evicted.record_hash)
+                self._chain_genesis_hash = evicted.record_hash
+                self._seen_execution_ids.discard(evicted.execution_id)
 
 
     def all(self) -> Tuple[ExecutionAuditRecord, ...]:
@@ -228,9 +181,6 @@ class RuntimeAuditLogger:
 
         with self._lock:
 
-            if self._pending_execution_ids:
-                return False
-
             if self._chain_genesis_hash != genesis:
                 return False
 
@@ -247,7 +197,6 @@ class RuntimeAuditLogger:
             self._last_hash = None
             self._chain_genesis_hash = None
             self._seen_execution_ids.clear()
-            self._pending_execution_ids.clear()
 
 # ── STORE SELECTION ──────────────────────────────────────────────────
 def _create_audit_store() -> AuditStore:
