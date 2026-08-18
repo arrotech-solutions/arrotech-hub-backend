@@ -134,6 +134,8 @@ def _build_auth_response(
                 "preferred_apps": getattr(user, "preferred_apps", None) or [],
                 "activation_event": getattr(user, "activation_event", None),
                 "onboarding_step": getattr(user, "onboarding_step", None),
+                "checklist_dismissed": bool(getattr(user, "checklist_dismissed", False)),
+                "checklist_done_ids": getattr(user, "checklist_done_ids", None) or [],
             },
             "organizations": organizations or [],
             "is_new_user": is_new_user,
@@ -183,6 +185,7 @@ async def _auto_grandfather_if_needed(db: AsyncSession, user: User) -> None:
         user.onboarding_completed_at = user.created_at or datetime.now(timezone.utc)
         user.onboarding_version = 0  # indicates grandfathered, not wizard-completed
         user.primary_goal = "exploring"
+        user.checklist_dismissed = True  # don't show checklist to grandfathered users
         await db.commit()
         await db.refresh(user)
 
@@ -954,6 +957,8 @@ async def get_current_user_info(
             "preferred_apps": getattr(current_user, "preferred_apps", None) or [],
             "activation_event": getattr(current_user, "activation_event", None),
             "onboarding_step": getattr(current_user, "onboarding_step", None),
+            "checklist_dismissed": bool(getattr(current_user, "checklist_dismissed", False)),
+            "checklist_done_ids": getattr(current_user, "checklist_done_ids", None) or [],
         }
     }
 
@@ -980,6 +985,8 @@ class OnboardingUpdateRequest(BaseModel):
     onboarding_step: Optional[int] = None
     complete: Optional[bool] = None
     onboarding_version: Optional[int] = 1
+    checklist_dismissed: Optional[bool] = None
+    checklist_done_ids: Optional[List[str]] = None
 
 
 @router.patch("/me/onboarding")
@@ -1024,6 +1031,12 @@ async def update_onboarding_profile(
     if data.onboarding_version is not None:
         current_user.onboarding_version = data.onboarding_version
 
+    if data.checklist_dismissed is not None:
+        current_user.checklist_dismissed = data.checklist_dismissed
+
+    if data.checklist_done_ids is not None:
+        current_user.checklist_done_ids = data.checklist_done_ids[:20]
+
     if data.complete:
         current_user.onboarding_completed_at = datetime.now(timezone.utc)
         if not current_user.onboarding_version:
@@ -1050,6 +1063,8 @@ async def update_onboarding_profile(
             "preferred_apps": current_user.preferred_apps or [],
             "activation_event": current_user.activation_event,
             "onboarding_step": current_user.onboarding_step,
+            "checklist_dismissed": bool(current_user.checklist_dismissed or False),
+            "checklist_done_ids": current_user.checklist_done_ids or [],
         },
     }
 
