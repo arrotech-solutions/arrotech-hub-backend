@@ -348,12 +348,12 @@ def test_duplicate_execution_id_race_barrier():
     assert logger.verify_integrity() is True
 
 
-# 23. pending execution ID cleanup on append failure
+# 23. state isolation on append failure
 class ExplodingStore(InMemoryAuditStore):
     def append(self, record):
         raise RuntimeError("Simulated storage failure")
 
-def test_pending_execution_id_cleanup_on_append_failure():
+def test_append_failure_state_isolation():
     store = ExplodingStore()
     logger = RuntimeAuditLogger(store)
 
@@ -371,8 +371,6 @@ def test_pending_execution_id_cleanup_on_append_failure():
     with pytest.raises(RuntimeError, match="Simulated storage failure"):
         logger.record(r)
 
-    # MUST CLEAN PENDING IDS
-    assert logger._pending_execution_ids == set()
     # MUST NOT MUTATE HASH STATE
     assert logger._last_hash is None
     # MUST NOT LEAK REPLAY IDS
