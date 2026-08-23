@@ -83,12 +83,19 @@ def _get_cookie_settings() -> dict:
     same production API serve both ``hub.arrotechsolutions.com`` *and* a local
     ``localhost`` frontend without cookie-domain mismatches.
 
-    ``secure`` is ``True`` in production / staging / release (HTTPS) and
-    ``False`` in development / testing (plain HTTP on localhost).
+    Production / staging / release:
+      - ``secure=True``   — cookie only sent over HTTPS.
+      - ``samesite=none`` — allows cross-site XHR (localhost → prod API).
+        CSRF protection is handled by the CORS allow-list instead.
+
+    Development / testing:
+      - ``secure=False``  — works on plain HTTP (localhost).
+      - ``samesite=lax``  — adequate when frontend & backend share localhost.
     """
     env = getattr(settings, "ENVIRONMENT", "development").lower()
-    is_secure = env in ("production", "staging", "release")
-    return {"domain": None, "secure": is_secure}
+    if env in ("production", "staging", "release"):
+        return {"domain": None, "secure": True, "samesite": "none"}
+    return {"domain": None, "secure": False, "samesite": "lax"}
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -159,13 +166,13 @@ def _build_auth_response(
     }))
     
     cs = _get_cookie_settings()
-    cookie_kwargs = dict(httponly=True, secure=cs["secure"], samesite="lax",
+    cookie_kwargs = dict(httponly=True, secure=cs["secure"], samesite=cs["samesite"],
                          max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60)
     if cs["domain"]:
         cookie_kwargs["domain"] = cs["domain"]
     response.set_cookie(key="auth_token", value=access_token, **cookie_kwargs)
 
-    refresh_kwargs = dict(httponly=True, secure=cs["secure"], samesite="lax",
+    refresh_kwargs = dict(httponly=True, secure=cs["secure"], samesite=cs["samesite"],
                           max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60)
     if cs["domain"]:
         refresh_kwargs["domain"] = cs["domain"]
@@ -954,7 +961,7 @@ async def refresh_token(
         
         response = JSONResponse(content={"success": True, "data": {}})
         cs = _get_cookie_settings()
-        cookie_kwargs = dict(httponly=True, secure=cs["secure"], samesite="lax",
+        cookie_kwargs = dict(httponly=True, secure=cs["secure"], samesite=cs["samesite"],
                              max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60)
         if cs["domain"]:
             cookie_kwargs["domain"] = cs["domain"]
