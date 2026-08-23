@@ -76,17 +76,19 @@ REFRESH_TOKEN_EXPIRE_DAYS = 7
 def _get_cookie_settings() -> dict:
     """Return cookie settings appropriate for the current environment.
 
-    In production / staging / release cookies are scoped to
-    .arrotechsolutions.com and marked Secure (HTTPS-only).
+    The ``domain`` key is always ``None`` (omitted from Set-Cookie).
+    When the domain attribute is absent the browser scopes the cookie to the
+    *exact* host that set it and still sends it on cross-origin requests when
+    ``withCredentials`` / ``credentials: 'include'`` is used.  This lets the
+    same production API serve both ``hub.arrotechsolutions.com`` *and* a local
+    ``localhost`` frontend without cookie-domain mismatches.
 
-    In development and testing the domain is omitted (so cookies work on
-    localhost / testserver) and Secure is disabled so the browser accepts
-    them over plain HTTP.
+    ``secure`` is ``True`` in production / staging / release (HTTPS) and
+    ``False`` in development / testing (plain HTTP on localhost).
     """
     env = getattr(settings, "ENVIRONMENT", "development").lower()
-    if env in ("production", "staging", "release"):
-        return {"domain": ".arrotechsolutions.com", "secure": True}
-    return {"domain": None, "secure": False}
+    is_secure = env in ("production", "staging", "release")
+    return {"domain": None, "secure": is_secure}
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
