@@ -73,18 +73,20 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 
-def _get_cookie_domain() -> Optional[str]:
-    """Return the cookie domain for Set-Cookie headers.
+def _get_cookie_settings() -> dict:
+    """Return cookie settings appropriate for the current environment.
 
-    In production / staging / release the cookie is scoped to
-    .arrotechsolutions.com.  In development and testing we return
-    None so that the cookie is accepted regardless of the request host
-    (which is 'testserver' in pytest and 'localhost' during local dev).
+    In production / staging / release cookies are scoped to
+    .arrotechsolutions.com and marked Secure (HTTPS-only).
+
+    In development and testing the domain is omitted (so cookies work on
+    localhost / testserver) and Secure is disabled so the browser accepts
+    them over plain HTTP.
     """
     env = getattr(settings, "ENVIRONMENT", "development").lower()
     if env in ("production", "staging", "release"):
-        return ".arrotechsolutions.com"
-    return None
+        return {"domain": ".arrotechsolutions.com", "secure": True}
+    return {"domain": None, "secure": False}
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -154,17 +156,17 @@ def _build_auth_response(
         }
     }))
     
-    cookie_domain = _get_cookie_domain()
-    cookie_kwargs = dict(httponly=True, secure=True, samesite="lax",
+    cs = _get_cookie_settings()
+    cookie_kwargs = dict(httponly=True, secure=cs["secure"], samesite="lax",
                          max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60)
-    if cookie_domain:
-        cookie_kwargs["domain"] = cookie_domain
+    if cs["domain"]:
+        cookie_kwargs["domain"] = cs["domain"]
     response.set_cookie(key="auth_token", value=access_token, **cookie_kwargs)
 
-    refresh_kwargs = dict(httponly=True, secure=True, samesite="lax",
+    refresh_kwargs = dict(httponly=True, secure=cs["secure"], samesite="lax",
                           max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60)
-    if cookie_domain:
-        refresh_kwargs["domain"] = cookie_domain
+    if cs["domain"]:
+        refresh_kwargs["domain"] = cs["domain"]
     response.set_cookie(key="refresh_token", value=refresh_token, **refresh_kwargs)
     return response
 
@@ -949,11 +951,11 @@ async def refresh_token(
         )
         
         response = JSONResponse(content={"success": True, "data": {}})
-        cookie_domain = _get_cookie_domain()
-        cookie_kwargs = dict(httponly=True, secure=True, samesite="lax",
+        cs = _get_cookie_settings()
+        cookie_kwargs = dict(httponly=True, secure=cs["secure"], samesite="lax",
                              max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60)
-        if cookie_domain:
-            cookie_kwargs["domain"] = cookie_domain
+        if cs["domain"]:
+            cookie_kwargs["domain"] = cs["domain"]
         response.set_cookie(key="auth_token", value=new_access_token, **cookie_kwargs)
         return response
     
@@ -1650,10 +1652,10 @@ async def oauth_token(
 async def logout():
     """Clear authentication cookies."""
     response = JSONResponse(content={"success": True, "message": "Logged out successfully"})
-    cookie_domain = _get_cookie_domain()
+    cs = _get_cookie_settings()
     del_kwargs = {}
-    if cookie_domain:
-        del_kwargs["domain"] = cookie_domain
+    if cs["domain"]:
+        del_kwargs["domain"] = cs["domain"]
     response.delete_cookie(key="auth_token", **del_kwargs)
     response.delete_cookie(key="refresh_token", **del_kwargs)
     return response
