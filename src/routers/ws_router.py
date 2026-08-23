@@ -20,23 +20,24 @@ router = APIRouter(
 @router.websocket("/realtime")
 async def websocket_endpoint(
     websocket: WebSocket,
-    token: str,
+    token: str = None,
     db: AsyncSession = Depends(get_db)
 ):
     """
     WebSocket endpoint for real-time frontend updates.
-    The client must connect with ?token=<JWT> to authenticate.
+    Authenticates via ?token=<JWT> query param or the auth_token HttpOnly cookie.
     """
     user = None
     # We can't use generic HTTPBearer for WebSockets natively because browsers don't send auth headers for WS.
-    # We passed the token as a query parameter in the frontend: ?token=...
+    # Prefer cookie-based auth; fall back to query param for backward compatibility.
     try:
-        if not token:
+        jwt_token = token or websocket.cookies.get("auth_token")
+        if not jwt_token:
             await websocket.close(code=1008, reason="Missing token")
             return
             
         # Decode the token directly
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(jwt_token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
         if not email:
             await websocket.close(code=1008, reason="Invalid token")

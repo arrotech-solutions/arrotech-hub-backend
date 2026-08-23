@@ -49,7 +49,7 @@ class UserLogin(BaseModel):
 
 
 router = APIRouter()
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 from ..services.email_service import email_service
 
@@ -108,13 +108,11 @@ def create_refresh_token(data: dict) -> str:
 def _build_auth_response(
     user: User, access_token: str, refresh_token: str,
     organizations: list = None, is_new_user: bool = False,
-) -> dict:
-    """Build a standard auth response with both tokens."""
-    return {
+) -> JSONResponse:
+    """Build a standard auth response and set HttpOnly cookies."""
+    response = JSONResponse(content=jsonable_encoder({
         "success": True,
         "data": {
-            "token": access_token,
-            "refresh_token": refresh_token,
             "user": {
                 "id": user.id,
                 "email": user.email,
@@ -140,7 +138,18 @@ def _build_auth_response(
             "organizations": organizations or [],
             "is_new_user": is_new_user,
         }
-    }
+    }))
+    
+    cookie_domain = ".arrotechsolutions.com"
+    response.set_cookie(
+        key="auth_token", value=access_token, httponly=True, secure=True,
+        samesite="lax", domain=cookie_domain, max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    )
+    response.set_cookie(
+        key="refresh_token", value=refresh_token, httponly=True, secure=True,
+        samesite="lax", domain=cookie_domain, max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
+    )
+    return response
 
 
 async def _get_user_orgs(db: AsyncSession, user_id: uuid.UUID) -> list:
@@ -192,7 +201,7 @@ async def _auto_grandfather_if_needed(db: AsyncSession, user: User) -> None:
 
 async def get_current_user(
     request: Request,
-    token: str = Depends(security),
+    token: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: AsyncSession = Depends(get_db)
 ) -> User:
     """Get the current user from the JWT token."""
@@ -201,9 +210,17 @@ async def get_current_user(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    
+    jwt_token = request.cookies.get("auth_token")
+    if not jwt_token and token:
+        jwt_token = token.credentials
+        
+    if not jwt_token:
+        raise credentials_exception
+
     try:
         payload = jwt.decode(
-            token.credentials, SECRET_KEY, algorithms=[ALGORITHM]
+            jwt_token, SECRET_KEY, algorithms=[ALGORITHM]
         )
         email: str = payload.get("sub")
         if email is None:
@@ -241,14 +258,22 @@ async def get_current_user(
 
 
 async def get_optional_current_user(
+    request: Request,
     token: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
     db: AsyncSession = Depends(get_db)
 ) -> Optional[User]:
     """Get the current user from the JWT token if present, else return None."""
-    if not token:
+    jwt_token = request.cookies.get("auth_token")
+    if not jwt_token and token:
+        jwt_token = token.credentials
+        
+    if not jwt_token:
         return None
+        
     try:
-        payload = jwt.decode(token.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(
+            jwt_token, SECRET_KEY, algorithms=[ALGORITHM]
+        )
         email = payload.get("sub")
         if not email:
             return None
@@ -858,12 +883,23 @@ class RefreshTokenRequest(BaseModel):
 
 @router.post("/refresh")
 async def refresh_token(
-    data: RefreshTokenRequest,
+    request: Request,
+    data: Optional[RefreshTokenRequest] = None,
     db: AsyncSession = Depends(get_db)
 ):
     """Exchange a valid refresh token for a new access token."""
     try:
-        payload = jwt.decode(data.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        req_token = request.cookies.get("refresh_token")
+        if not req_token and data:
+            req_token = data.refresh_token
+            
+        if not req_token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing refresh token"
+            )
+            
+        payload = jwt.decode(req_token, SECRET_KEY, algorithms=[ALGORITHM])
         
         # Ensure it's actually a refresh token
         if payload.get("type") != "refresh":
@@ -895,12 +931,12 @@ async def refresh_token(
             expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         )
         
-        return {
-            "success": True,
-            "data": {
-                "token": new_access_token,
-            }
-        }
+        response = JSONResponse(content={"success": True, "data": {}})
+        response.set_cookie(
+            key="auth_token", value=new_access_token, httponly=True, secure=True,
+            samesite="lax", domain=".arrotechsolutions.com", max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        )
+        return response
     
     except JWTError:
         raise HTTPException(
@@ -1590,3 +1626,12 @@ async def oauth_token(
         }
 
     raise HTTPException(status_code=400, detail="unsupported_grant_type")
+
+@router.post("/logout")
+async def logout():
+    """Clear authentication cookies."""
+    response = JSONResponse(content={"success": True, "message": "Logged out successfully"})
+    cookie_domain = ".arrotechsolutions.com"
+    response.delete_cookie(key="auth_token", domain=cookie_domain)
+    response.delete_cookie(key="refresh_token", domain=cookie_domain)
+    return response

@@ -222,3 +222,88 @@ async def test_missing_bearer_prefix(client: AsyncClient, auth_token):
         headers={"Authorization": auth_token}
     )
     assert response.status_code in (401, 403)
+
+
+# ─── Cookie-Based Auth Tests ────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_register_sets_auth_cookies(client: AsyncClient):
+    """Test that registration response sets HttpOnly auth cookies."""
+    response = await client.post(
+        "/auth/register",
+        json={
+            "email": "cookietest@example.com",
+            "password": "SecurePassword123!",
+            "name": "Cookie User"
+        }
+    )
+    assert response.status_code in [200, 201]
+    cookies = response.cookies
+    assert "auth_token" in cookies
+    assert "refresh_token" in cookies
+
+
+@pytest.mark.asyncio
+async def test_auth_via_cookie(client: AsyncClient):
+    """Test that auth_token cookie authenticates /auth/me."""
+    # Register to get cookies
+    reg_response = await client.post(
+        "/auth/register",
+        json={
+            "email": "cookieauth@example.com",
+            "password": "SecurePassword123!",
+            "name": "Cookie Auth User"
+        }
+    )
+    assert reg_response.status_code in [200, 201]
+    auth_cookie = reg_response.cookies.get("auth_token")
+    assert auth_cookie is not None
+
+    # Use cookie to access /auth/me
+    response = await client.get(
+        "/auth/me",
+        cookies={"auth_token": auth_cookie}
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_refresh_via_cookie(client: AsyncClient):
+    """Test that /auth/refresh works with refresh_token cookie."""
+    # Register to get cookies
+    reg_response = await client.post(
+        "/auth/register",
+        json={
+            "email": "refreshcookie@example.com",
+            "password": "SecurePassword123!",
+            "name": "Refresh Cookie User"
+        }
+    )
+    assert reg_response.status_code in [200, 201]
+    refresh_cookie = reg_response.cookies.get("refresh_token")
+    assert refresh_cookie is not None
+
+    # Use refresh cookie to get new auth token
+    response = await client.post(
+        "/auth/refresh",
+        json={},
+        cookies={"refresh_token": refresh_cookie}
+    )
+    assert response.status_code == 200
+    assert "auth_token" in response.cookies
+
+
+@pytest.mark.asyncio
+async def test_refresh_without_token_fails(client: AsyncClient):
+    """Test that /auth/refresh without any refresh token returns 401."""
+    response = await client.post("/auth/refresh", json={})
+    assert response.status_code in [401, 422]
+
+
+@pytest.mark.asyncio
+async def test_logout_clears_cookies(client: AsyncClient):
+    """Test that /auth/logout clears auth cookies."""
+    response = await client.post("/auth/logout")
+    assert response.status_code == 200
+    data = response.json()
+    assert data.get("success") is True
