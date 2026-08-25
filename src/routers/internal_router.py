@@ -1,6 +1,7 @@
-from typing import Any, Dict, List
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, desc
+from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select, desc, and_, or_, cast, String, func
 from sqlalchemy.ext.asyncio import AsyncSession
 import uuid
 
@@ -47,6 +48,114 @@ async def get_trace_timeline(
                 "payload": log.payload
             } for log in logs
         ]
+    }
+
+@router.get("/logs/search")
+async def search_logs(
+    phone: Optional[str] = Query(None, description="Phone number to search for in log payloads (e.g. +254712345678)"),
+    customer_id: Optional[str] = Query(None, description="Business owner user ID"),
+    level: Optional[str] = Query(None, description="Log level filter: ERROR, WARNING, INFO"),
+    event_type: Optional[str] = Query(None, description="Event type filter, e.g. HTTP_ERROR, TOOL_EXECUTION"),
+    time_from: Optional[datetime] = Query(None, alias="from", description="Start of time range (ISO 8601)"),
+    time_to: Optional[datetime] = Query(None, alias="to", description="End of time range (ISO 8601)"),
+    limit: int = Query(50, ge=1, le=200, description="Max results to return"),
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(check_admin),
+):
+    """
+    Search observability logs by phone number, customer ID, time range, and level.
+
+    This is the primary tool for debugging customer-reported issues.
+    Typical workflow:
+      1. Customer says "my bot stopped working around 2pm for +254712345678"
+      2. Call this endpoint with phone=+254712345678&from=2026-08-25T11:00:00
+      3. Get back matching trace_ids
+      4. Use GET /traces/{trace_id} to see the full lifecycle
+    """
+    if not any([phone, customer_id, level, event_type, time_from]):
+        raise HTTPException(
+            status_code=400,
+            detail="Provide at least one filter: phone, customer_id, level, event_type, or from/to time range.",
+        )
+
+    filters = []
+
+    # Time range — default to last 24 hours if only 'from' is omitted
+    if time_from:
+        filters.append(ObservabilityLog.timestamp >= time_from)
+    else:
+        # Default: last 24 hours
+        filters.append(ObservabilityLog.timestamp >= datetime.utcnow() - timedelta(hours=24))
+    if time_to:
+        filters.append(ObservabilityLog.timestamp <= time_to)
+
+    # Customer ID (the business owner on Arrotech Hub)
+    if customer_id:
+        filters.append(ObservabilityLog.customer_id == customer_id)
+
+    # Log level
+    if level:
+        filters.append(ObservabilityLog.level == level.upper())
+
+    # Event type
+    if event_type:
+        filters.append(ObservabilityLog.event_type == event_type)
+
+    # Phone number — search inside the JSON payload column and the error_message text
+    if phone:
+        # Strip any spaces for a cleaner search
+        phone_clean = phone.strip()
+        filters.append(
+            or_(
+                cast(ObservabilityLog.payload, String).contains(phone_clean),
+                ObservabilityLog.error_message.contains(phone_clean),
+            )
+        )
+
+    result = await db.execute(
+        select(ObservabilityLog)
+        .where(and_(*filters))
+        .order_by(desc(ObservabilityLog.timestamp))
+        .limit(limit)
+    )
+    logs = result.scalars().all()
+
+    # Group by trace_id for easy consumption
+    traces_seen = {}
+    log_entries = []
+    for log in logs:
+        log_entries.append({
+            "id": str(log.id),
+            "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+            "trace_id": log.trace_id,
+            "level": log.level,
+            "event_type": log.event_type,
+            "customer_id": log.customer_id,
+            "status": log.status,
+            "duration_ms": log.duration_ms,
+            "error_type": log.error_type,
+            "error_message": log.error_message,
+            "tool_name": log.tool_name,
+        })
+        if log.trace_id and log.trace_id not in traces_seen:
+            traces_seen[log.trace_id] = {
+                "trace_id": log.trace_id,
+                "first_seen": log.timestamp.isoformat() if log.timestamp else None,
+                "has_errors": log.level in ("ERROR", "CRITICAL"),
+            }
+
+    return {
+        "query": {
+            "phone": phone,
+            "customer_id": customer_id,
+            "level": level,
+            "event_type": event_type,
+            "time_from": time_from.isoformat() if time_from else None,
+            "time_to": time_to.isoformat() if time_to else None,
+        },
+        "total_results": len(log_entries),
+        "unique_traces": list(traces_seen.values()),
+        "logs": log_entries,
     }
 
 @router.get("/failures")

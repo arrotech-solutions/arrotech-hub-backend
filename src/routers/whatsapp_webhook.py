@@ -138,7 +138,8 @@ def _dispatch_whatsapp_incoming(value: dict, background_tasks: Optional[Backgrou
     if use_celery:
         try:
             from ..tasks.webhook_tasks import process_whatsapp_message_task
-            process_whatsapp_message_task.delay(value)
+            from ..observability.tracer import get_trace_id
+            process_whatsapp_message_task.delay(value, trace_id=get_trace_id())
             queued = True
             logger.info("[WHATSAPP WEBHOOK] Message queued to Celery")
         except Exception as e:
