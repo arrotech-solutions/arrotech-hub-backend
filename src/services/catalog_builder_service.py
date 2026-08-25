@@ -24,7 +24,10 @@ PRODUCT_PHOTOS_FOLDER = "Arrotech Product Photos"
 
 # Tab + canonical headers compatible with rag_pipeline_service._rows_to_product_records.
 PRODUCTS_SHEET_NAME = "Products"
-CATALOG_HEADERS = ["name", "Price", "Description", "Category", "SKU", "Brand", "image_url", "Availability"]
+CATALOG_HEADERS = [
+    "name", "Price", "Cost Price", "Description", "Category", "SKU", "Brand",
+    "Quantity", "Unit", "Condition", "image_url", "Availability"
+]
 
 
 def _normalize_header(header: str) -> str:
@@ -32,14 +35,17 @@ def _normalize_header(header: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (header or "").lower())
 
 
-# Map normalized product-record keys to the canonical header they belong under.
 _FIELD_TO_HEADER = {
     "name": "name",
     "price": "Price",
+    "costprice": "Cost Price",
     "description": "Description",
     "category": "Category",
     "sku": "SKU",
     "brand": "Brand",
+    "quantity": "Quantity",
+    "unit": "Unit",
+    "condition": "Condition",
     "imageurl": "image_url",
     "availability": "Availability",
 }
@@ -167,11 +173,11 @@ class CatalogBuilderService:
         }
 
     async def _resolve_headers(
-        self, sheets_service, spreadsheet_id: str, sheet_name: str
+        self, sheets_service, spreadsheet_id: str, sheet_name: str, expected_headers: List[str]
     ) -> Tuple[str, List[str]]:
         """
         Ensure a usable header row exists on `sheet_name`. If the tab has no
-        header row, write CATALOG_HEADERS.  If the tab already has headers but
+        header row, write expected_headers.  If the tab already has headers but
         is missing newer canonical columns (e.g. Availability added after the
         sheet was created), append those columns to the header row so that
         product data is never silently dropped.
@@ -195,7 +201,7 @@ class CatalogBuilderService:
                     # were added.
                     existing_norm = {_normalize_header(h) for h in header_row}
                     missing = [
-                        h for h in CATALOG_HEADERS
+                        h for h in expected_headers
                         if _normalize_header(h) not in existing_norm
                     ]
                     if missing:
@@ -220,22 +226,20 @@ class CatalogBuilderService:
 
         # No headers yet — write canonical headers.
         write = await sheets_service.write_range(
-            spreadsheet_id, f"{sheet_name}!A1", [CATALOG_HEADERS]
+            spreadsheet_id, f"{sheet_name}!A1", [expected_headers]
         )
         if not write.get("success"):
             raise CatalogBuilderError(
                 write.get("error", "Failed to write header row")
             )
-        return sheet_name, list(CATALOG_HEADERS)
+        return sheet_name, list(expected_headers)
 
     def _record_to_row(self, record: Dict[str, Any], headers: List[str]) -> List[str]:
         """Align a product record to the sheet's header columns."""
         # Map canonical header -> value from the record.
         header_value: Dict[str, str] = {}
         for field, value in record.items():
-            canonical = _FIELD_TO_HEADER.get(_normalize_header(field))
-            if canonical is None:
-                continue
+            canonical = _FIELD_TO_HEADER.get(_normalize_header(field), field)
             header_value[_normalize_header(canonical)] = "" if value is None else str(value)
 
         row: List[str] = []
@@ -253,10 +257,11 @@ class CatalogBuilderService:
         spreadsheet_id: str,
         sheet_name: str,
         products: List[Dict[str, Any]],
+        expected_headers: List[str]
     ) -> int:
         """Append product rows aligned to the sheet headers. Returns rows written."""
         target_sheet, headers = await self._resolve_headers(
-            sheets_service, spreadsheet_id, sheet_name
+            sheets_service, spreadsheet_id, sheet_name, expected_headers
         )
         rows = [self._record_to_row(p, headers) for p in products]
         if not rows:
@@ -317,19 +322,33 @@ class CatalogBuilderService:
         uploaded_file_ids: List[str] = []
         rows: List[Dict[str, Any]] = []
 
+        # Determine dynamic headers based on all unique custom attributes
+        dynamic_headers = list(CATALOG_HEADERS)
+        custom_fields = set()
+        for p in products:
+            attrs = p.get("attributes", {})
+            for k in attrs.keys():
+                custom_fields.add(k)
+        dynamic_headers.extend(sorted(list(custom_fields)))
+
         try:
             for idx, product in enumerate(products):
                 record = {
                     "name": product.get("name", ""),
                     "Price": product.get("price", ""),
+                    "Cost Price": product.get("cost_price", ""),
                     "Description": product.get("description", ""),
                     "Category": product.get("category", ""),
                     "SKU": product.get("sku", ""),
                     "Brand": product.get("brand", ""),
+                    "Quantity": product.get("quantity", ""),
+                    "Unit": product.get("unit", ""),
+                    "Condition": product.get("condition", ""),
                     "image_url": product.get("image_url", ""),
                     "Availability": product.get("availability", ""),
                 }
-
+                for k, v in product.get("attributes", {}).items():
+                    record[k] = v
                 image = product.get("_image")
                 if image and image.get("content"):
                     filename = image.get("filename") or f"product_{idx + 1}.jpg"
@@ -393,7 +412,7 @@ class CatalogBuilderService:
 
             # 3. Write rows.
             rows_written = await self.write_products(
-                sheets_service, spreadsheet_id, sheet_name, rows
+                sheets_service, spreadsheet_id, sheet_name, rows, dynamic_headers
             )
 
             result: Dict[str, Any] = {
