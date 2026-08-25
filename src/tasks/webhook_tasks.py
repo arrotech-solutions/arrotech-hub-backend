@@ -29,13 +29,17 @@ from .utils import run_async as _run_async
     # The DB-level idempotency guard (ProcessedWebhookMessage unique
     # constraint) now prevents duplicates even if a task is retried.
 )
-def process_whatsapp_message_task(self, payload: Dict[str, Any], user_id: str = None):
+def process_whatsapp_message_task(self, payload: Dict[str, Any], user_id: str = None, trace_id: str = None):
     """
     Process an incoming WhatsApp webhook message payload.
 
     This handles the heavy lifting: contact resolution, message persistence,
     auto-reply engine, and AI agent invocation.
     """
+    if trace_id:
+        from src.observability.tracer import set_trace_id
+        set_trace_id(trace_id)
+        
     logger.info(f"[CeleryWebhook] Processing WhatsApp message payload")
 
     async def _process():
