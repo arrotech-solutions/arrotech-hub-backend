@@ -59,6 +59,9 @@ def _build_extraction_instruction(currency: str, hint: Optional[str]) -> str:
         '  "suggested_sku": a short uppercase SKU you propose, e.g. "HEADSET-001" (string),\n'
         f'  "price_estimate": rough market price as a number in {currency} with NO '
         "currency symbol, or null if you cannot estimate (number or null),\n"
+        '  "unit_of_measure": e.g., "kg", "piece", "pack", "liter" if visible or strongly implied, else "" (string),\n'
+        '  "condition": "New", "Used", or "Refurbished" if apparent, else "" (string),\n'
+        '  "attributes": a dictionary of any other notable dynamic attributes like {"Color": "Red", "Size": "M", "Weight": "1kg"} if visible, otherwise empty {} (object),\n'
         '  "confidence": your confidence the identification is correct, 0.0-1.0 (number).\n'
         "Return ONLY the JSON object, no markdown, no commentary."
     )
@@ -206,6 +209,12 @@ class ProductVisionService:
             except (ValueError, TypeError):
                 confidence = None
 
+        attributes = data.get("attributes")
+        if not isinstance(attributes, dict):
+            attributes = {}
+        # Ensure keys and values are strings
+        attributes = {str(k).strip(): str(v).strip() for k, v in attributes.items() if str(k).strip()}
+
         return {
             "name": _s(data.get("name")),
             "category": _s(data.get("category")),
@@ -215,6 +224,9 @@ class ProductVisionService:
             "suggested_sku": _s(data.get("suggested_sku")),
             "price_estimate": price_estimate,
             "confidence": confidence,
+            "unit_of_measure": _s(data.get("unit_of_measure")),
+            "condition": _s(data.get("condition")),
+            "attributes": attributes,
         }
 
 
