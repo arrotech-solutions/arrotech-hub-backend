@@ -213,43 +213,88 @@ class IdempotencyService:
                 e,
             )
 
-    async def get_order_for_message(
+    async def claim_order_creation(
         self,
         db: AsyncSession,
         user_id,
         wa_message_id: str,
-    ) -> Optional[str]:
-        """Return the order_id created for this message, or None."""
+    ) -> tuple:
+        """Atomically claim the right to create an order for this message.
+
+        Uses UPDATE … WHERE order_id IS NULL — PostgreSQL row-level locking
+        guarantees that only ONE worker's UPDATE can succeed:
+
+          Worker A:  UPDATE … SET order_id='__creating__' WHERE order_id IS NULL
+                     → acquires row lock, rowcount=1 ✓
+          Worker B:  UPDATE … SET order_id='__creating__' WHERE order_id IS NULL
+                     → blocks on row lock, then re-evaluates WHERE → order_id
+                     is now '__creating__' (not NULL) → rowcount=0 ✗
+
+        This eliminates the check-then-act race condition because the check
+        (WHERE order_id IS NULL) and the act (SET order_id='__creating__')
+        happen inside a single atomic database operation.
+
+        Returns:
+            (True, None)                — this worker won; proceed to create order
+            (False, existing_order_id)  — another worker already created it; skip
+        """
         from ..models import ProcessedWebhookMessage
 
         try:
-            result = await db.execute(
+            # Atomic claim: only one worker can flip order_id from NULL
+            stmt = (
+                update(ProcessedWebhookMessage)
+                .where(
+                    and_(
+                        ProcessedWebhookMessage.user_id == user_id,
+                        ProcessedWebhookMessage.whatsapp_message_id == wa_message_id,
+                        ProcessedWebhookMessage.order_id.is_(None),
+                    )
+                )
+                .values(order_id="__creating__")
+            )
+            result = await db.execute(stmt)
+            await db.commit()
+
+            if result.rowcount == 1:
+                # We won the race — caller should create the order
+                return True, None
+
+            # Another worker already claimed it — fetch the real order_id
+            existing = await db.execute(
                 select(ProcessedWebhookMessage.order_id).where(
                     and_(
                         ProcessedWebhookMessage.user_id == user_id,
                         ProcessedWebhookMessage.whatsapp_message_id == wa_message_id,
-                        ProcessedWebhookMessage.order_id.isnot(None),
                     )
                 )
             )
-            row = result.scalar_one_or_none()
-            return row
+            existing_order_id = existing.scalar_one_or_none()
+            # If it's still '__creating__', another worker is mid-creation
+            if existing_order_id == "__creating__":
+                existing_order_id = None
+            return False, existing_order_id
+
         except Exception as e:
             logger.warning(
-                "[IDEMPOTENCY] get_order_for_message failed for %s: %s",
+                "[IDEMPOTENCY] claim_order_creation failed for %s (proceeding): %s",
                 wa_message_id,
                 e,
             )
-            return None
+            # Fail open: let the caller proceed rather than dropping the order
+            return True, None
 
-    async def record_order_created(
+    async def finalize_order_creation(
         self,
         db: AsyncSession,
         user_id,
         wa_message_id: str,
         order_id: str,
     ) -> None:
-        """Record which order was created for this message."""
+        """Replace the '__creating__' sentinel with the real order_id.
+
+        Called after order_service.create_order() succeeds.
+        """
         from ..models import ProcessedWebhookMessage
 
         try:
@@ -266,7 +311,7 @@ class IdempotencyService:
             await db.commit()
         except Exception as e:
             logger.warning(
-                "[IDEMPOTENCY] record_order_created failed for %s / %s: %s",
+                "[IDEMPOTENCY] finalize_order_creation failed for %s / %s: %s",
                 wa_message_id,
                 order_id,
                 e,

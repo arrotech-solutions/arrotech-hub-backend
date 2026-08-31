@@ -6390,15 +6390,17 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             if session_key:
                 session = await context_manager.get_session_by_key(session_key)
 
-            # ── Idempotency: check if an order was already created for this message ──
+            # ── Idempotency: atomically claim the right to create an order ──
+            # Uses UPDATE … WHERE order_id IS NULL — PostgreSQL row-level locking
+            # means only one worker can win, even if two check simultaneously.
             meta_msg_id = (session.metadata.get("meta_message_id") or "") if session else ""
             if meta_msg_id and user and db:
                 try:
                     from .idempotency_service import idempotency_service
-                    existing_order_id = await idempotency_service.get_order_for_message(
+                    claimed, existing_order_id = await idempotency_service.claim_order_creation(
                         db, user.id, meta_msg_id
                     )
-                    if existing_order_id:
+                    if not claimed:
                         logger.info(
                             "[CONV_AGENT] Idempotency: order %s already created for "
                             "message %s — skipping duplicate",
@@ -6406,13 +6408,13 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                         )
                         return {
                             "success": True,
-                            "result": f"Order {existing_order_id} already placed",
+                            "result": f"Order {existing_order_id or '(in progress)'} already placed",
                             "order_data": {"order_id": existing_order_id},
                             "idempotent_skip": True,
                         }
                 except Exception as idemp_err:
                     logger.warning(
-                        "[CONV_AGENT] Idempotency order check failed (proceeding): %s",
+                        "[CONV_AGENT] Idempotency claim failed (proceeding): %s",
                         idemp_err,
                     )
 
@@ -6476,17 +6478,17 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             if order_result.get("success"):
                 order_obj = order_result.get("order") or order_result
 
-                # ── Idempotency: record order_id against the originating message ──
+                # ── Idempotency: finalize — replace '__creating__' sentinel with real order_id ──
                 new_order_id = order_obj.get("order_id", "")
                 if meta_msg_id and user and db and new_order_id:
                     try:
                         from .idempotency_service import idempotency_service
-                        await idempotency_service.record_order_created(
+                        await idempotency_service.finalize_order_creation(
                             db, user.id, meta_msg_id, new_order_id
                         )
                     except Exception as rec_err:
                         logger.warning(
-                            "[CONV_AGENT] Idempotency record_order_created failed: %s",
+                            "[CONV_AGENT] Idempotency finalize_order_creation failed: %s",
                             rec_err,
                         )
 
