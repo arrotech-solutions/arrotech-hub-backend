@@ -371,6 +371,9 @@ class WhatsAppWorkflowTrigger:
                         "whatsapp_message_content": message.content or "",
                         "whatsapp_message_type": message.message_type or "",
                         "whatsapp_is_location": message.message_type == "location",
+                        # Meta's actual message ID (wam.xxx) for idempotency.
+                        # Distinct from whatsapp_message_id which is the internal DB UUID.
+                        "meta_message_id": message.whatsapp_message_id or "",
                         "timestamp": datetime.utcnow().isoformat(),
                         "session_key": session_key,
                         "platform": "whatsapp",

@@ -26,8 +26,13 @@ from .utils import run_async as _run_async
     # NOTE: acks_late and autoretry_for deliberately removed.
     # acks_late caused duplicate processing when a worker crashed after
     # order creation but before ack — Celery would redeliver the task.
-    # The DB-level idempotency guard (ProcessedWebhookMessage unique
-    # constraint) now prevents duplicates even if a task is retried.
+    # The two-phase DB idempotency guard (ProcessedWebhookMessage with
+    # processing_status 'started'→'completed'/'failed') now handles both:
+    #   - Worker crash before completion: status stays 'started', becomes
+    #     stale after 5 min, and the next retry can safely reclaim it.
+    #   - Worker crash after completion: status is 'completed', retry skips.
+    # Per-operation flags (order_id, confirmation_sent, receipt_sent) ensure
+    # individual side effects are never duplicated even on partial retries.
 )
 def process_whatsapp_message_task(self, payload: Dict[str, Any], user_id: str = None, trace_id: str = None):
     """

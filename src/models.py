@@ -2100,10 +2100,20 @@ class ProcessedWebhookMessage(Base):
     Prevents duplicate processing when the same message is delivered
     multiple times (Meta retries, Celery redelivery, concurrent workers).
 
+    Two-phase lifecycle:
+      1. INSERT with processing_status='started' (claim the message)
+      2. UPDATE to 'completed' after all side effects finish, or 'failed' on error
+
     The UNIQUE constraint on (user_id, whatsapp_message_id) provides
     database-level atomicity: INSERT ... ON CONFLICT DO NOTHING ensures
-    only one worker ever processes a given message through the agent
-    pipeline, even under race conditions.
+    only one worker ever claims a given message, even under race conditions.
+
+    Per-operation flags (order_id, confirmation_sent, receipt_sent) guard
+    individual side effects so that a retry after a mid-processing crash
+    can skip steps that already completed without repeating them.
+
+    Backward compatibility: rows created before the two-phase migration
+    have processing_status=NULL, which is treated as 'completed'.
     """
     __tablename__ = "processed_webhook_messages"
 
@@ -2113,6 +2123,22 @@ class ProcessedWebhookMessage(Base):
 
     # What happened: 'completed', 'order_created', 'auto_reply', 'skipped'
     processing_result = Column(String(32), nullable=True)
+
+    # Two-phase processing lifecycle: 'started' → 'completed' | 'failed'
+    # NULL is treated as 'completed' for backward compatibility.
+    processing_status = Column(String(16), nullable=True, default="started")
+
+    # When processing finished (set on status → 'completed')
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Order ID created for this message (if any). Used to prevent
+    # duplicate order creation when a message is retried.
+    order_id = Column(String, nullable=True)
+
+    # Per-operation idempotency flags — each is set atomically via
+    # UPDATE … WHERE flag = false so only one worker can flip it.
+    confirmation_sent = Column(Boolean, nullable=False, server_default="false")
+    receipt_sent = Column(Boolean, nullable=False, server_default="false")
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
