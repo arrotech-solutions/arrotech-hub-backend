@@ -18,7 +18,6 @@ from ..models import (
     User, Connection, WhatsAppContact, WhatsAppMessage,
     WhatsAppMessageDirection, WhatsAppMessageStatus,
     WhatsAppBroadcast, WhatsAppBroadcastRecipient,
-    ProcessedWebhookMessage,
 )
 from ..config import settings
 from ..services import WhatsAppService
@@ -668,6 +667,7 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
 async def background_process_message(user_id: uuid.UUID, contact_id: uuid.UUID, message_id: uuid.UUID):
     """Process auto-reply and workflow triggers in the background with a fresh DB session."""
     session_maker = get_session_maker()
+    meta_message_id = ""  # Meta's wam.xxx message ID, threaded to downstream ops
     async with session_maker() as db:
         try:
             # Fetch contact and message freshly
@@ -681,38 +681,47 @@ async def background_process_message(user_id: uuid.UUID, contact_id: uuid.UUID, 
                 logger.error(f"[WHATSAPP WEBHOOK BG] Contact or message not found")
                 return
 
-            # ── Idempotency Layer 2: atomic INSERT prevents duplicate processing ──
-            # Even if two Celery workers or background tasks race on the same
-            # message_id, the UNIQUE constraint on (user_id, whatsapp_message_id)
-            # guarantees only one succeeds.  The other gets 0 rows inserted and
-            # skips the entire agent pipeline — no duplicate orders, receipts,
-            # or replies.
-            if message.whatsapp_message_id:
-                try:
-                    from sqlalchemy.dialects.postgresql import insert as pg_insert
-                    stmt = pg_insert(ProcessedWebhookMessage).values(
-                        id=uuid.uuid4(),
-                        user_id=user_id,
-                        whatsapp_message_id=message.whatsapp_message_id,
-                    ).on_conflict_do_nothing(
-                        constraint="uq_processed_user_wa_msg"
-                    )
-                    result = await db.execute(stmt)
-                    await db.commit()
+            meta_message_id = message.whatsapp_message_id or ""
 
-                    if result.rowcount == 0:
+            # ── Idempotency Layer 2: two-phase claim prevents duplicate processing ──
+            # Phase 1: INSERT with processing_status='started' (or skip if already
+            # completed). The UNIQUE constraint on (user_id, whatsapp_message_id)
+            # guarantees only one worker can claim a message, even under race.
+            # Phase 2: After all side effects finish, mark_completed() transitions
+            # the status to 'completed'. On error, mark_failed() allows retry.
+            if meta_message_id:
+                try:
+                    from ..services.idempotency_service import idempotency_service, ClaimResult
+                    claim = await idempotency_service.claim_message(
+                        db, user_id, meta_message_id
+                    )
+                    if claim == ClaimResult.ALREADY_COMPLETED:
                         logger.info(
-                            f"[WHATSAPP WEBHOOK BG] Idempotency guard: message "
-                            f"{message.whatsapp_message_id} already processed — skipping"
+                            "[WHATSAPP WEBHOOK BG] Idempotency guard: message "
+                            "%s already completed — skipping",
+                            meta_message_id,
                         )
                         return
+                    if claim == ClaimResult.ALREADY_IN_PROGRESS:
+                        logger.info(
+                            "[WHATSAPP WEBHOOK BG] Idempotency guard: message "
+                            "%s is being processed by another worker — skipping",
+                            meta_message_id,
+                        )
+                        return
+                    if claim in (ClaimResult.CLAIMED, ClaimResult.STALE_RETRY):
+                        logger.info(
+                            "[WHATSAPP WEBHOOK BG] Idempotency: claimed message %s (result=%s)",
+                            meta_message_id, claim.value,
+                        )
                 except Exception as idemp_err:
                     # If the idempotency check itself fails (e.g. table doesn't
                     # exist yet during migration rollout), log and continue
                     # processing rather than dropping the message silently.
                     logger.warning(
-                        f"[WHATSAPP WEBHOOK BG] Idempotency check failed, "
-                        f"proceeding with processing: {idemp_err}"
+                        "[WHATSAPP WEBHOOK BG] Idempotency check failed, "
+                        "proceeding with processing: %s",
+                        idemp_err,
                     )
 
             wa_config = None
@@ -869,9 +878,31 @@ async def background_process_message(user_id: uuid.UUID, contact_id: uuid.UUID, 
                 )
             except Exception as e:
                 logger.error(f"[WHATSAPP WEBHOOK BG] Workflow trigger error: {e}")
-                
+
+            # ── Idempotency Phase 2: mark processing as completed ──
+            if meta_message_id:
+                try:
+                    from ..services.idempotency_service import idempotency_service
+                    await idempotency_service.mark_completed(
+                        db, user_id, meta_message_id
+                    )
+                except Exception as mc_err:
+                    logger.warning(
+                        "[WHATSAPP WEBHOOK BG] mark_completed failed (non-fatal): %s",
+                        mc_err,
+                    )
+
         except Exception as e:
             logger.error(f"[WHATSAPP WEBHOOK BG] Error in background processing: {e}")
+            # ── Idempotency: mark as failed so the message can be retried ──
+            if meta_message_id:
+                try:
+                    from ..services.idempotency_service import idempotency_service
+                    await idempotency_service.mark_failed(
+                        db, user_id, meta_message_id
+                    )
+                except Exception:
+                    pass
 
 
 async def _update_broadcast_recipient_status(

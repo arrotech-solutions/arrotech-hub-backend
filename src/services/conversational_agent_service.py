@@ -829,7 +829,8 @@ class ConversationalAgentService:
         business_config: Dict[str, Any],
         user: User,
         db: AsyncSession,
-        background_tasks: Optional['BackgroundTasks'] = None
+        background_tasks: Optional['BackgroundTasks'] = None,
+        meta_message_id: str = "",
     ) -> Dict[str, Any]:
         """
         Run the conversational agent for one turn.
@@ -840,6 +841,7 @@ class ConversationalAgentService:
             business_config: Business-specific settings from workflow variables
             user: The business owner's User record
             db: Database session
+            meta_message_id: Meta's WhatsApp message ID (wam.xxx) for idempotency
 
         Returns:
             {
@@ -900,8 +902,14 @@ class ConversationalAgentService:
 
             if session_key:
                 try:
+                    meta_update = {"catalog_word": catalog_word, "order_type": order_type}
+                    # Thread Meta's message ID into the session so downstream
+                    # sub-tools (_sub_create_order, _bg_notify_order_placed)
+                    # can use it for per-operation idempotency checks.
+                    if meta_message_id:
+                        meta_update["meta_message_id"] = meta_message_id
                     await context_manager.update_session_metadata(
-                        session_key, {"catalog_word": catalog_word, "order_type": order_type}
+                        session_key, meta_update
                     )
                 except Exception:
                     pass
@@ -6381,6 +6389,33 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             session = None
             if session_key:
                 session = await context_manager.get_session_by_key(session_key)
+
+            # ── Idempotency: check if an order was already created for this message ──
+            meta_msg_id = (session.metadata.get("meta_message_id") or "") if session else ""
+            if meta_msg_id and user and db:
+                try:
+                    from .idempotency_service import idempotency_service
+                    existing_order_id = await idempotency_service.get_order_for_message(
+                        db, user.id, meta_msg_id
+                    )
+                    if existing_order_id:
+                        logger.info(
+                            "[CONV_AGENT] Idempotency: order %s already created for "
+                            "message %s — skipping duplicate",
+                            existing_order_id, meta_msg_id,
+                        )
+                        return {
+                            "success": True,
+                            "result": f"Order {existing_order_id} already placed",
+                            "order_data": {"order_id": existing_order_id},
+                            "idempotent_skip": True,
+                        }
+                except Exception as idemp_err:
+                    logger.warning(
+                        "[CONV_AGENT] Idempotency order check failed (proceeding): %s",
+                        idemp_err,
+                    )
+
             pending = (
                 session.metadata.get("pending_confirmation") if session else None
             )
@@ -6440,6 +6475,21 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
 
             if order_result.get("success"):
                 order_obj = order_result.get("order") or order_result
+
+                # ── Idempotency: record order_id against the originating message ──
+                new_order_id = order_obj.get("order_id", "")
+                if meta_msg_id and user and db and new_order_id:
+                    try:
+                        from .idempotency_service import idempotency_service
+                        await idempotency_service.record_order_created(
+                            db, user.id, meta_msg_id, new_order_id
+                        )
+                    except Exception as rec_err:
+                        logger.warning(
+                            "[CONV_AGENT] Idempotency record_order_created failed: %s",
+                            rec_err,
+                        )
+
                 if session_key:
                     try:
                         session = await context_manager.get_session_by_key(session_key)
@@ -6519,6 +6569,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                                 business_name,
                                 business_phone,
                                 currency,
+                                meta_msg_id,
                             )
                         else:
                             await self._bg_notify_order_placed(
@@ -6528,6 +6579,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                                 business_name,
                                 business_phone,
                                 currency,
+                                meta_msg_id,
                             )
 
             return {
@@ -6548,6 +6600,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         business_name: str,
         business_phone: str,
         currency: str,
+        meta_message_id: str = "",
     ) -> None:
         """Background task: confirmation, receipt, and tracking registry."""
         try:
@@ -6570,6 +6623,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                     business_name=business_name,
                     business_phone=business_phone,
                     currency=currency,
+                    meta_message_id=meta_message_id,
                 )
         except Exception as e:
             logger.warning(f"[CONV_AGENT] Order tracking notify failed: {e}")

@@ -731,6 +731,7 @@ class OrderTrackingService:
         business_phone: str = "",
         currency: str = "KES",
         skip_payment_prompt: bool = False,
+        meta_message_id: str = "",
     ) -> Dict[str, Any]:
         """
         Send confirmation + PDF receipt when an order is created.
@@ -815,11 +816,47 @@ class OrderTrackingService:
         from .whatsapp_service import WhatsAppService
 
         wa = WhatsAppService()
-        r1 = await wa.send_message(customer_phone, confirmation, config=wa_config)
-        sent.append("confirmation" if r1.get("success") else "confirmation_failed")
+
+        # ── Idempotency: DB-backed guard for confirmation send ──
+        should_send_confirmation = True
+        if meta_message_id:
+            try:
+                from .idempotency_service import idempotency_service
+                should_send_confirmation = await idempotency_service.check_and_set_flag(
+                    db, user.id, meta_message_id, "confirmation_sent"
+                )
+            except Exception as idemp_err:
+                logger.warning(
+                    "[ORDER_TRACK] Confirmation idempotency check failed (proceeding): %s",
+                    idemp_err,
+                )
+
+        if should_send_confirmation:
+            r1 = await wa.send_message(customer_phone, confirmation, config=wa_config)
+            sent.append("confirmation" if r1.get("success") else "confirmation_failed")
+        else:
+            logger.info(
+                "[ORDER_TRACK] Confirmation already sent for message %s — skipping",
+                meta_message_id,
+            )
+            sent.append("confirmation_idempotent_skip")
+
+        # ── Idempotency: DB-backed guard for receipt send ──
+        should_send_receipt = True
+        if meta_message_id:
+            try:
+                from .idempotency_service import idempotency_service
+                should_send_receipt = await idempotency_service.check_and_set_flag(
+                    db, user.id, meta_message_id, "receipt_sent"
+                )
+            except Exception as idemp_err:
+                logger.warning(
+                    "[ORDER_TRACK] Receipt idempotency check failed (proceeding): %s",
+                    idemp_err,
+                )
 
         pdf_bytes = None
-        if not registry.get("placement_receipt_sent"):
+        if should_send_receipt and not registry.get("placement_receipt_sent"):
             amount = self._order_amount(order)
             pdf_bytes = await self._generate_receipt_pdf_bytes(
                 order=order,
@@ -849,6 +886,12 @@ class OrderTrackingService:
                     sent.append("pdf_generation_failed")
             else:
                 sent.append("pdf_generation_failed")
+        elif not should_send_receipt:
+            logger.info(
+                "[ORDER_TRACK] Receipt already sent for message %s — skipping",
+                meta_message_id,
+            )
+            sent.append("receipt_idempotent_skip")
 
         if not registry.get("placement_receipt_sent") and receipt_text:
             r2 = await wa.send_message(customer_phone, receipt_text, config=wa_config)

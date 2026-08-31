@@ -8327,7 +8327,8 @@ Description: {payment.description or 'N/A'}"""
                 business_config=business_config,
                 user=user,
                 db=db,
-                background_tasks=background_tasks
+                background_tasks=background_tasks,
+                meta_message_id=parameters.get("meta_message_id", ""),
             )
 
             return {
