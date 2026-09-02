@@ -158,8 +158,8 @@ def _dispatch_whatsapp_incoming(value: dict, background_tasks: Optional[Backgrou
 
 async def _process_whatsapp_payload_inline(value: dict) -> None:
     """Process webhook payload in-process (when Celery is not running)."""
-    session_maker = get_session_maker()
-    async with session_maker() as db:
+    from ..database import system_session
+    async with system_session() as db:
         try:
             await process_incoming_messages(value, db, background_tasks=None)
         except Exception as e:

@@ -206,3 +206,25 @@ async def tenant_session(user_id) -> AsyncGenerator[AsyncSession, None]:
             yield session
         finally:
             await session.close()
+
+
+@asynccontextmanager
+async def system_session() -> AsyncGenerator[AsyncSession, None]:
+    """Create a DB session that bypasses RLS.
+    
+    Use this for background tasks (like incoming webhooks) that process data
+    globally and do not have a specific tenant context.
+    """
+    from sqlalchemy import text
+    session_maker = get_session_maker()
+    async with session_maker() as session:
+        try:
+            # Set the bypass flag to true
+            await session.execute(text("SELECT set_config('app.bypass_rls', 'true', true)"))
+        except Exception:
+            pass
+        
+        try:
+            yield session
+        finally:
+            await session.close()
