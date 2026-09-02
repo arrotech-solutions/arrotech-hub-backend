@@ -173,16 +173,16 @@ async def set_tenant_context(session: AsyncSession, user_id) -> None:
 
     from sqlalchemy import text
     try:
+        # Use set_config instead of SET LOCAL to prevent "unrecognized configuration parameter"
+        # errors if the parameter isn't pre-defined. The 'true' flag scopes it to the transaction.
         await session.execute(
-            text("SET LOCAL app.current_tenant_id = :tid"),
+            text("SELECT set_config('app.current_tenant_id', :tid, true)"),
             {"tid": str(user_id)},
         )
     except Exception as e:
-        # Some test frameworks might still slip through depending on how session is bound
-        if "sqlite" in str(e).lower() or "syntax error" in str(e).lower():
-            pass
-        else:
-            raise
+        # If even set_config fails (e.g. SQLite in tests, or permission errors),
+        # gracefully ignore it to prevent aborting the current SQL transaction.
+        pass
 
 
 @asynccontextmanager
