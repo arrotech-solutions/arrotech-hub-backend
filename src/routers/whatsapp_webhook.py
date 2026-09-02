@@ -1040,7 +1040,6 @@ async def get_or_create_contact(
     )
     db.add(contact)
     await db.commit()
-    await db.refresh(contact)
     
     logger.info(f"[WHATSAPP WEBHOOK] Created new contact: {phone_number} for user {user_id}")
     

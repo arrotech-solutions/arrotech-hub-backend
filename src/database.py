@@ -71,25 +71,7 @@ def get_engine() -> AsyncEngine:
             
         _engine = create_async_engine(db_url, **kwargs)
 
-        # ── Reset RLS settings when a connection is checked out from the pool ──
-        # This prevents tenant context from leaking between sessions via reuse.
-        from sqlalchemy import event, text as _text
-
-        @event.listens_for(_engine.sync_engine, "checkout")
-        def _reset_rls_on_checkout(dbapi_conn, connection_record, connection_proxy):
-            cursor = dbapi_conn.cursor()
-            try:
-                cursor.execute("SELECT set_config('app.current_tenant_id', '', false)")
-                cursor.execute("SELECT set_config('app.bypass_rls', 'false', false)")
-            except Exception:
-                pass
-            finally:
-                cursor.close()
-
     return _engine
-
-
-# Create base class for models
 
 
 # Create base class for models
@@ -97,6 +79,32 @@ Base = declarative_base()
 
 # Metadata for migrations
 metadata = MetaData()
+
+# ── RLS Event Hook ──
+# Automatically inject the tenant context at the start of every transaction.
+# This ensures that even after a `db.commit()` (which ends the transaction and 
+# clears SET LOCAL), the next database operation within the same session will 
+# trigger a new transaction and re-inject the RLS context.
+from sqlalchemy import event
+from sqlalchemy.orm import Session
+from sqlalchemy import text as _text
+
+@event.listens_for(Session, "after_begin")
+def _set_tenant_after_begin(session, transaction, connection):
+    tenant_id = session.info.get("tenant_id")
+    bypass_rls = session.info.get("bypass_rls")
+    
+    # We must skip sqlite for tests
+    if connection.dialect.name == "sqlite":
+        return
+
+    try:
+        if bypass_rls:
+            connection.execute(_text("SELECT set_config('app.bypass_rls', 'true', true)"))
+        elif tenant_id:
+            connection.execute(_text("SELECT set_config('app.current_tenant_id', :tid, true)"), {"tid": str(tenant_id)})
+    except Exception:
+        pass
 
 
 def get_session_maker() -> async_sessionmaker[AsyncSession]:
@@ -175,30 +183,31 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 async def set_tenant_context(session: AsyncSession, user_id) -> None:
     """Set the RLS tenant context on an existing database session.
 
-    Must be called before any tenant-scoped queries.  Uses session-level
-    set_config (is_local=false) so the setting survives across commits within
-    the same session.  A pool checkout event in get_engine() resets these
-    settings when a connection is returned/reused, preventing tenant leaks.
+    This function configures the session so that every transaction automatically
+    injects the current tenant ID. Because it uses the `after_begin` event with
+    transaction-local variables, the context survives across commits without leaking.
 
     Args:
         session: An active SQLAlchemy AsyncSession.
         user_id: The tenant's user UUID (accepts str or uuid.UUID).
     """
-    # Only apply RLS in PostgreSQL. SQLite (used in tests) doesn't support this.
     if session.bind and session.bind.dialect.name == "sqlite":
         return
 
-    from sqlalchemy import text
-    try:
-        # is_local=false → session-level (survives COMMIT, cleared by pool checkout event)
-        await session.execute(
-            text("SELECT set_config('app.current_tenant_id', :tid, false)"),
-            {"tid": str(user_id)},
-        )
-    except Exception as e:
-        # If even set_config fails (e.g. SQLite in tests, or permission errors),
-        # gracefully ignore it to prevent aborting the current SQL transaction.
-        pass
+    # Store the tenant ID in the session info for the after_begin hook
+    session.sync_session.info["tenant_id"] = str(user_id)
+    session.sync_session.info["bypass_rls"] = False
+
+    # Also apply immediately if a transaction is already active
+    if session.in_transaction():
+        from sqlalchemy import text
+        try:
+            await session.execute(
+                text("SELECT set_config('app.current_tenant_id', :tid, true)"),
+                {"tid": str(user_id)},
+            )
+        except Exception:
+            pass
 
 
 @asynccontextmanager
@@ -231,14 +240,18 @@ async def system_session() -> AsyncGenerator[AsyncSession, None]:
     Use this for background tasks (like incoming webhooks) that process data
     globally and do not have a specific tenant context.
     """
-    from sqlalchemy import text
     session_maker = get_session_maker()
     async with session_maker() as session:
-        try:
-            # is_local=false → session-level (survives COMMIT, cleared by pool checkout event)
-            await session.execute(text("SELECT set_config('app.bypass_rls', 'true', false)"))
-        except Exception:
-            pass
+        session.sync_session.info["bypass_rls"] = True
+        session.sync_session.info["tenant_id"] = None
+        
+        # Also apply immediately if a transaction is already active
+        if session.in_transaction():
+            from sqlalchemy import text
+            try:
+                await session.execute(text("SELECT set_config('app.bypass_rls', 'true', true)"))
+            except Exception:
+                pass
         
         try:
             yield session
