@@ -70,6 +70,22 @@ def get_engine() -> AsyncEngine:
             })
             
         _engine = create_async_engine(db_url, **kwargs)
+
+        # ── Reset RLS settings when a connection is checked out from the pool ──
+        # This prevents tenant context from leaking between sessions via reuse.
+        from sqlalchemy import event, text as _text
+
+        @event.listens_for(_engine.sync_engine, "checkout")
+        def _reset_rls_on_checkout(dbapi_conn, connection_record, connection_proxy):
+            cursor = dbapi_conn.cursor()
+            try:
+                cursor.execute("SELECT set_config('app.current_tenant_id', '', false)")
+                cursor.execute("SELECT set_config('app.bypass_rls', 'false', false)")
+            except Exception:
+                pass
+            finally:
+                cursor.close()
+
     return _engine
 
 
@@ -159,24 +175,24 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 async def set_tenant_context(session: AsyncSession, user_id) -> None:
     """Set the RLS tenant context on an existing database session.
 
-    Must be called before any tenant-scoped queries.  Uses SET LOCAL so the
-    setting is transaction-scoped and automatically resets when the session
-    closes — no risk of leaking tenant context across connection-pool reuse.
+    Must be called before any tenant-scoped queries.  Uses session-level
+    set_config (is_local=false) so the setting survives across commits within
+    the same session.  A pool checkout event in get_engine() resets these
+    settings when a connection is returned/reused, preventing tenant leaks.
 
     Args:
         session: An active SQLAlchemy AsyncSession.
         user_id: The tenant's user UUID (accepts str or uuid.UUID).
     """
-    # Only apply RLS in PostgreSQL. SQLite (used in tests) doesn't support SET LOCAL.
+    # Only apply RLS in PostgreSQL. SQLite (used in tests) doesn't support this.
     if session.bind and session.bind.dialect.name == "sqlite":
         return
 
     from sqlalchemy import text
     try:
-        # Use set_config instead of SET LOCAL to prevent "unrecognized configuration parameter"
-        # errors if the parameter isn't pre-defined. The 'true' flag scopes it to the transaction.
+        # is_local=false → session-level (survives COMMIT, cleared by pool checkout event)
         await session.execute(
-            text("SELECT set_config('app.current_tenant_id', :tid, true)"),
+            text("SELECT set_config('app.current_tenant_id', :tid, false)"),
             {"tid": str(user_id)},
         )
     except Exception as e:
@@ -219,8 +235,8 @@ async def system_session() -> AsyncGenerator[AsyncSession, None]:
     session_maker = get_session_maker()
     async with session_maker() as session:
         try:
-            # Set the bypass flag to true
-            await session.execute(text("SELECT set_config('app.bypass_rls', 'true', true)"))
+            # is_local=false → session-level (survives COMMIT, cleared by pool checkout event)
+            await session.execute(text("SELECT set_config('app.bypass_rls', 'true', false)"))
         except Exception:
             pass
         
