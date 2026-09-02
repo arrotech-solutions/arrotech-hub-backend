@@ -597,7 +597,6 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
             await maybe_auto_assign_contact(db, owner_user_id, contact)
             
             await db.commit()
-            await db.refresh(message)
             
             logger.info(f"[WHATSAPP WEBHOOK] Saved message {msg_id} from {from_number}")
 
