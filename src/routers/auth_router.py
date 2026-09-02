@@ -282,6 +282,11 @@ async def get_current_user(
     request.state.app_id = payload.get("app_id")
     request.state.scopes = payload.get("scopes", [])
 
+    # Set RLS tenant context so all subsequent queries on this session
+    # are automatically filtered to this user's data
+    from ..database import set_tenant_context
+    await set_tenant_context(db, user.id)
+
     return user
 
 

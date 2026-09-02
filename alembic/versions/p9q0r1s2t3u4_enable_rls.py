@@ -92,23 +92,23 @@ def upgrade() -> None:
         )
 
     # ── Step 2: Enable RLS + create policies on user_id tables ────────────
+    #   • No FORCE — table owner (postgres) bypasses RLS for Celery/system tasks
+    #   • current_setting(..., true) returns NULL on missing → safe deny-by-default
     for table in TENANT_TABLES_USER_ID:
         op.execute(f'ALTER TABLE "{table}" ENABLE ROW LEVEL SECURITY;')
-        op.execute(f'ALTER TABLE "{table}" FORCE ROW LEVEL SECURITY;')
         op.execute(f"""
             CREATE POLICY tenant_isolation ON "{table}"
-                USING (user_id = current_setting('app.current_tenant_id')::uuid)
-                WITH CHECK (user_id = current_setting('app.current_tenant_id')::uuid);
+                USING (user_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid)
+                WITH CHECK (user_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
         """)
 
     # ── Step 3: Enable RLS on tables with different tenant columns ────────
     for table, col in SPECIAL_TENANT_TABLES.items():
         op.execute(f'ALTER TABLE "{table}" ENABLE ROW LEVEL SECURITY;')
-        op.execute(f'ALTER TABLE "{table}" FORCE ROW LEVEL SECURITY;')
         op.execute(f"""
             CREATE POLICY tenant_isolation ON "{table}"
-                USING ({col} = current_setting('app.current_tenant_id')::uuid)
-                WITH CHECK ({col} = current_setting('app.current_tenant_id')::uuid);
+                USING ({col} = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid)
+                WITH CHECK ({col} = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
         """)
 
 
