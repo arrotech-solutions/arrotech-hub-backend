@@ -17,6 +17,7 @@ class BaseConfig(BaseSettings):
 
     # Database
     DATABASE_URL: str = "postgresql://user:pass@localhost/minihub"
+    ALEMBIC_DATABASE_URL: Optional[str] = None  # Admin URL for migrations
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379"

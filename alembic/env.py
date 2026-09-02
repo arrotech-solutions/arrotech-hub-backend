@@ -35,7 +35,7 @@ target_metadata = Base.metadata
 
 def get_url():
     """Get database URL from settings."""
-    url = settings.DATABASE_URL
+    url = getattr(settings, "ALEMBIC_DATABASE_URL", None) or settings.DATABASE_URL
     # Fly Postgres uses postgres:// but SQLAlchemy requires postgresql://
     url = url.replace("postgres://", "postgresql://")
     # Use asyncpg driver for async operations
