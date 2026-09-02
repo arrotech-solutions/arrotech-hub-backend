@@ -42,7 +42,6 @@ TENANT_TABLES_USER_ID = [
     "mpesa_agent_configs",
     "invoices",
     "knowledge_bases",
-    "data_sources",
     "conversations",
     "notifications",
     "processed_webhook_messages",
@@ -63,7 +62,6 @@ TENANT_TABLES_USER_ID = [
     "fraud_signals",
     "developer_apps",
     "authorization_codes",
-    "audit_log",
     "organization_members",
 ]
 
@@ -79,7 +77,6 @@ TABLES_NEEDING_INDEX = [
     "connections",
     "workflows",
     "workflow_executions",
-    "data_sources",
     "conversations",
 ]
 
