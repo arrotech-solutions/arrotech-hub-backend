@@ -48,11 +48,10 @@ def process_whatsapp_message_task(self, payload: Dict[str, Any], user_id: str = 
     logger.info(f"[CeleryWebhook] Processing WhatsApp message payload")
 
     async def _process():
-        from src.database import get_session_maker
+        from src.database import system_session
         from src.routers.whatsapp_webhook import process_incoming_messages
 
-        session_maker = get_session_maker()
-        async with session_maker() as db:
+        async with system_session() as db:
             try:
                 await process_incoming_messages(payload, db, background_tasks=None)
             except Exception as e:

@@ -84,8 +84,12 @@ async def search_logs(
     if time_from:
         filters.append(ObservabilityLog.timestamp >= time_from)
     else:
-        # Default: last 24 hours
-        filters.append(ObservabilityLog.timestamp >= datetime.utcnow() - timedelta(hours=24))
+        # Default: last 30 days if searching by phone/customer, else last 24 hours
+        if phone or customer_id:
+            filters.append(ObservabilityLog.timestamp >= datetime.utcnow() - timedelta(days=30))
+        else:
+            filters.append(ObservabilityLog.timestamp >= datetime.utcnow() - timedelta(hours=24))
+
     if time_to:
         filters.append(ObservabilityLog.timestamp <= time_to)
 
