@@ -6606,13 +6606,13 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
     ) -> None:
         """Background task: confirmation, receipt, and tracking registry."""
         try:
-            from ..database import get_session_maker
+            from ..database import tenant_session
             from ..models import User
             from sqlalchemy import select
             from .order_tracking_service import order_tracking_service
 
-            session_maker = get_session_maker()
-            async with session_maker() as db:
+            # Use tenant_session() so RLS is automatically enforced
+            async with tenant_session(user_id) as db:
                 result = await db.execute(select(User).where(User.id == user_id))
                 user = result.scalar_one_or_none()
                 if not user:

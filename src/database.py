@@ -3,6 +3,7 @@ Database connection and initialization.
 """
 
 import os
+from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
 from sqlalchemy import MetaData
@@ -149,6 +150,47 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Get database session."""
     session_maker = get_session_maker()
     async with session_maker() as session:
+        try:
+            yield session
+        finally:
+            await session.close()
+
+
+async def set_tenant_context(session: AsyncSession, user_id) -> None:
+    """Set the RLS tenant context on an existing database session.
+
+    Must be called before any tenant-scoped queries.  Uses SET LOCAL so the
+    setting is transaction-scoped and automatically resets when the session
+    closes — no risk of leaking tenant context across connection-pool reuse.
+
+    Args:
+        session: An active SQLAlchemy AsyncSession.
+        user_id: The tenant's user UUID (accepts str or uuid.UUID).
+    """
+    from sqlalchemy import text
+    await session.execute(
+        text("SET LOCAL app.current_tenant_id = :tid"),
+        {"tid": str(user_id)},
+    )
+
+
+@asynccontextmanager
+async def tenant_session(user_id) -> AsyncGenerator[AsyncSession, None]:
+    """Create a DB session with RLS tenant context for background tasks.
+
+    Use this in Celery tasks, BackgroundTasks, and any code path that creates
+    its own session outside the FastAPI request lifecycle.
+
+    Usage:
+        async with tenant_session(user_id) as db:
+            result = await db.execute(select(WhatsAppContact))  # auto-filtered by RLS
+
+    Args:
+        user_id: The tenant's user UUID (accepts str or uuid.UUID).
+    """
+    session_maker = get_session_maker()
+    async with session_maker() as session:
+        await set_tenant_context(session, user_id)
         try:
             yield session
         finally:

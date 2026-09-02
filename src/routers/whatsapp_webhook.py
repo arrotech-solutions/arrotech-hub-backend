@@ -536,6 +536,10 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                     f"Ensure the customer's connection config has the correct phone_number_id."
                 )
                 continue
+
+            # ── RLS: set tenant context now that we know who owns this message ──
+            from ..database import set_tenant_context
+            await set_tenant_context(db, owner_user_id)
             
             # Find or create contact
             contact = await get_or_create_contact(
@@ -670,6 +674,9 @@ async def background_process_message(user_id: uuid.UUID, contact_id: uuid.UUID, 
     meta_message_id = ""  # Meta's wam.xxx message ID, threaded to downstream ops
     async with session_maker() as db:
         try:
+            # ── RLS: set tenant context for this background session ──
+            from ..database import set_tenant_context
+            await set_tenant_context(db, user_id)
             # Fetch contact and message freshly
             contact_res = await db.execute(select(WhatsAppContact).filter(WhatsAppContact.id == contact_id))
             contact = contact_res.scalar_one_or_none()

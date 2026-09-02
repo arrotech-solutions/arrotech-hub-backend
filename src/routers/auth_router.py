@@ -285,6 +285,29 @@ async def get_current_user(
     return user
 
 
+async def get_tenant_scoped_db(
+    request: Request,
+    token: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: AsyncSession = Depends(get_db),
+) -> AsyncSession:
+    """Authenticate the current user AND set the RLS tenant context on the DB session.
+
+    Use this dependency in place of ``Depends(get_db)`` + ``Depends(get_current_user)``
+    when you want automatic Row-Level Security enforcement.  The authenticated
+    user is stashed on ``request.state.current_user`` for route handlers that
+    need it.
+
+    Returns:
+        The *same* AsyncSession that was injected by ``get_db``, now scoped to
+        the current tenant via ``SET LOCAL app.current_tenant_id``.
+    """
+    user = await get_current_user(request, token, db)
+    from ..database import set_tenant_context
+    await set_tenant_context(db, user.id)
+    request.state.current_user = user
+    return db
+
+
 async def get_optional_current_user(
     request: Request,
     token: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
