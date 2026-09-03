@@ -5,7 +5,7 @@ import asyncio
 from typing import Any, Dict, Optional
 import sys
 
-from .tracer import get_trace_id, get_span_id, get_customer_id
+from .tracer import get_trace_id, get_span_id, get_customer_id, get_phone_number_hash
 
 class JSONFormatter(logging.Formatter):
     """Custom JSON formatter for production logs."""
@@ -16,6 +16,7 @@ class JSONFormatter(logging.Formatter):
             "trace_id": get_trace_id(),
             "span_id": get_span_id(),
             "customer_id": get_customer_id(),
+            "phone_number_hash": get_phone_number_hash(),
             "logger": record.name,
             "message": record.getMessage(),
         }
@@ -70,6 +71,7 @@ async def flush_all_logs_async():
                     span_id=log_data.get("span_id"),
                     event_type=log_data.get("event_type", "GENERIC"),
                     customer_id=log_data.get("customer_id"),
+                    phone_number_hash=log_data.get("phone_number_hash"),
                     agent_id=log_data.get("agent_id"),
                     workflow_id=log_data.get("workflow_id"),
                     tool_name=log_data.get("tool_name"),
@@ -98,12 +100,11 @@ async def flush_all_logs_async():
 async def db_log_worker():
     """Background worker to persist logs from queue to database (FastAPI only)."""
     while True:
-        # Wait until there is at least one item
-        await log_queue.get()
-        # Put it back so flush_all_logs_async can grab it in its batch
-        log_queue.put_nowait(log_queue.get_nowait())
-        log_queue.task_done()
-        
+        # Avoid race condition by just peeking/sleeping, then flushing
+        if log_queue.empty():
+            await asyncio.sleep(0.5)
+            continue
+            
         await flush_all_logs_async()
         await asyncio.sleep(0.5)  # Small backoff before checking again
 
@@ -119,13 +120,26 @@ async def log_cleanup_job(retention_days: int = 14):
     while True:
         try:
             cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=retention_days)
+            # More aggressive cleanup for high-volume logs (e.g. WhatsApp read receipts, webhooks)
+            fast_cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=3)
+            high_volume_events = ["WA_API_SEND", "WA_API_READ_RECEIPT", "WEBHOOK_RECEIVED", "WEBHOOK_DISPATCH", "MESSAGE_RECEIVED", "MESSAGE_SAVED"]
+            
             async with session_maker() as session:
-                # Delete old logs
+                # Delete old logs (standard retention for ERROR/CRITICAL etc)
                 result = await session.execute(
                     delete(ObservabilityLog).where(ObservabilityLog.timestamp < cutoff)
                 )
+                
+                # Delete high-volume INFO logs sooner
+                result_fast = await session.execute(
+                    delete(ObservabilityLog).where(
+                        ObservabilityLog.timestamp < fast_cutoff,
+                        ObservabilityLog.event_type.in_(high_volume_events)
+                    )
+                )
+                
                 await session.commit()
-                deleted_count = result.rowcount
+                deleted_count = result.rowcount + result_fast.rowcount
                 if deleted_count > 0:
                     logging.info(f"Cleaned up {deleted_count} old logs from database.")
             
@@ -178,6 +192,7 @@ def log_event(
         "trace_id": get_trace_id(),
         "span_id": get_span_id(),
         "customer_id": get_customer_id(),
+        "phone_number_hash": get_phone_number_hash(),
         "event_type": event_type,
         "status": status,
         "duration_ms": duration_ms,

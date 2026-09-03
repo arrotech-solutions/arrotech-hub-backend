@@ -118,12 +118,29 @@ class WhatsAppService:
                     logger.info(f"WhatsApp API Response - Result: {result}")
 
                     if response.status == 200:
+                        from ..observability.logger import log_event
+                        import logging as _logging
+                        log_event(
+                            level=_logging.INFO,
+                            event_type="WA_API_SEND",
+                            message=f"Sent WhatsApp message to {formatted_number}",
+                            payload={"to_number": formatted_number, "message_id": result.get("messages", [{}])[0].get("id")}
+                        )
                         return {
                             "success": True,
                             "message_id": result.get("messages", [{}])[0].get("id"),
                             "result": f"Message sent to {formatted_number}",
                         }
                     else:
+                        from ..observability.logger import log_event
+                        import logging as _logging
+                        log_event(
+                            level=_logging.ERROR,
+                            event_type="WA_API_SEND_ERROR",
+                            status="failed",
+                            message=f"WhatsApp API error: {result.get('error', {}).get('message', 'Unknown error')}",
+                            payload={"to_number": formatted_number, "status_code": response.status}
+                        )
                         return {
                             "success": False,
                             "error": f"WhatsApp API error: {result.get('error', {}).get('message', 'Unknown error')}",
@@ -136,6 +153,15 @@ class WhatsAppService:
                         }
 
         except Exception as e:
+            from ..observability.logger import log_event
+            import logging as _logging
+            log_event(
+                level=_logging.ERROR,
+                event_type="WA_API_SEND_ERROR",
+                status="failed",
+                message=f"Exception sending WhatsApp message: {str(e)}",
+                error_message=str(e)
+            )
             logger.error(f"Error sending WhatsApp message: {str(e)}")
             return {
                 "success": False,
@@ -260,14 +286,40 @@ class WhatsAppService:
                 async with session.post(url, json=read_payload, headers=headers) as response:
                     result = await response.json()
                     if response.status != 200:
+                        from ..observability.logger import log_event
+                        import logging as _logging
+                        log_event(
+                            level=_logging.ERROR,
+                            event_type="WA_API_READ_RECEIPT_ERROR",
+                            status="failed",
+                            message=f"Failed to mark as read: {result.get('error', {}).get('message', 'Unknown error')}",
+                            payload={"message_id": message_id, "status_code": response.status}
+                        )
                         logger.warning(f"[WA_SERVICE] Failed to mark as read / send typing: {result}")
                     else:
+                        from ..observability.logger import log_event
+                        import logging as _logging
+                        log_event(
+                            level=_logging.INFO,
+                            event_type="WA_API_READ_RECEIPT",
+                            message=f"Read receipt sent for message {message_id}",
+                            payload={"message_id": message_id, "show_typing": show_typing}
+                        )
                         if show_typing:
                             logger.info(f"[WA_SERVICE] Read receipt + typing indicator sent successfully")
 
             return {"success": True, "result": "Read receipt sent"}
                 
         except Exception as e:
+            from ..observability.logger import log_event
+            import logging as _logging
+            log_event(
+                level=_logging.ERROR,
+                event_type="WA_API_READ_RECEIPT_ERROR",
+                status="failed",
+                message=f"Exception marking message read: {str(e)}",
+                error_message=str(e)
+            )
             logger.error(f"Error marking message read: {e}")
             return {"success": False, "error": str(e)}
 
