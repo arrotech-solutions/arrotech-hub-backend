@@ -123,8 +123,8 @@ class WhatsAppWorkflowTrigger:
             select(Workflow).where(
                 and_(
                     Workflow.user_id == user_id,
-                    Workflow.status == WorkflowStatus.ACTIVE,
-                    Workflow.trigger_type == WorkflowTriggerType.EVENT.value,
+                    Workflow.status.in_([WorkflowStatus.ACTIVE, WorkflowStatus.ACTIVE.value]),
+                    Workflow.trigger_type.in_([WorkflowTriggerType.EVENT, WorkflowTriggerType.EVENT.value, WorkflowTriggerType.WEBHOOK, WorkflowTriggerType.WEBHOOK.value]),
                 )
             )
         )
@@ -229,7 +229,7 @@ class WhatsAppWorkflowTrigger:
                         and_(
                             Workflow.user_id == user_id,
                             Workflow.status.in_([WorkflowStatus.ACTIVE, WorkflowStatus.ACTIVE.value]),
-                            Workflow.trigger_type.in_([WorkflowTriggerType.EVENT, WorkflowTriggerType.EVENT.value]),
+                            Workflow.trigger_type.in_([WorkflowTriggerType.EVENT, WorkflowTriggerType.EVENT.value, WorkflowTriggerType.WEBHOOK, WorkflowTriggerType.WEBHOOK.value]),
                         )
                     )
                 )
