@@ -105,12 +105,15 @@ async def search_logs(
     if event_type:
         filters.append(ObservabilityLog.event_type == event_type)
 
-    # Phone number — search inside the JSON payload column and the error_message text
+    # Phone number — search inside the JSON payload column, error_message text, and the hashed column
     if phone:
         # Strip any spaces for a cleaner search
         phone_clean = phone.strip()
+        from ..utils.pii import hash_phone_number
+        hashed_phone = hash_phone_number(phone_clean)
         filters.append(
             or_(
+                ObservabilityLog.phone_number_hash == hashed_phone,
                 cast(ObservabilityLog.payload, String).contains(phone_clean),
                 ObservabilityLog.error_message.contains(phone_clean),
             )

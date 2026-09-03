@@ -2717,6 +2717,16 @@ class ConversationalAgentService:
                         except Exception as e:
                             logger.warning(f"[CONV_AGENT] Feedback loop failed: {e}")
 
+                    from ..observability.logger import log_event
+                    import logging as _logging
+                    log_event(
+                        level=_logging.INFO if tool_result.get("success") else _logging.WARNING,
+                        event_type="AGENT_TOOL_CALL",
+                        message=f"Agent executed tool {tool_name}",
+                        tool_name=tool_name,
+                        payload={"args": tool_args, "success": tool_result.get("success"), "error": tool_result.get("error")}
+                    )
+
                     actions_taken.append({
                         "tool": tool_name,
                         "args": tool_args,
@@ -2875,6 +2885,20 @@ class ConversationalAgentService:
                 await self._save_to_ccm(session_key, "assistant", final_text)
             else:
                 await self._save_to_ccm(session_key, "assistant", final_text)
+
+            from ..observability.logger import log_event
+            import logging as _logging
+            log_event(
+                level=_logging.INFO,
+                event_type="AGENT_TURN_COMPLETE",
+                message=f"Agent turn completed with {len(actions_taken)} actions",
+                payload={
+                    "actions_taken": [a.get("tool") for a in actions_taken],
+                    "order_created": order_created,
+                    "escalation_triggered": escalation_triggered,
+                    "response_length": len(final_text)
+                }
+            )
 
             result = {
                 "response_text": final_text,

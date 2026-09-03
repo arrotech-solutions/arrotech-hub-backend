@@ -92,10 +92,22 @@ async def receive_webhook(
         import json as _json
         body = _json.loads(raw_body.decode("utf-8") if raw_body else "{}")
         from ..config import settings as app_settings
+        from ..observability.logger import log_event
+        import logging as _logging
+        
+        entry_count = len(body.get("entry", []))
+        
+        log_event(
+            level=_logging.INFO,
+            event_type="WEBHOOK_RECEIVED",
+            message=f"Received WhatsApp webhook with {entry_count} entries",
+            payload={"entry_count": entry_count, "hub_mode": "subscribe" if not body else "webhook"}
+        )
+        
         if getattr(app_settings, "ENVIRONMENT", "development") == "production":
             logger.info(
                 "[WHATSAPP WEBHOOK] Received webhook (entry_count=%s)",
-                len(body.get("entry", [])),
+                entry_count,
             )
         else:
             logger.info("[WHATSAPP WEBHOOK] Received webhook payload: %s", body)
@@ -137,9 +149,22 @@ def _dispatch_whatsapp_incoming(value: dict, background_tasks: Optional[Backgrou
     if use_celery:
         try:
             from ..tasks.webhook_tasks import process_whatsapp_message_task
-            from ..observability.tracer import get_trace_id
-            process_whatsapp_message_task.delay(value, trace_id=get_trace_id())
+            from ..observability.tracer import get_trace_id, get_customer_id, get_phone_number_hash
+            process_whatsapp_message_task.delay(
+                value, 
+                trace_id=get_trace_id(),
+                customer_id=get_customer_id(),
+                phone_number_hash=get_phone_number_hash()
+            )
             queued = True
+            from ..observability.logger import log_event
+            import logging as _logging
+            log_event(
+                level=_logging.INFO,
+                event_type="WEBHOOK_DISPATCH",
+                message="WhatsApp message queued to Celery",
+                status="success"
+            )
             logger.info("[WHATSAPP WEBHOOK] Message queued to Celery")
         except Exception as e:
             logger.warning(
@@ -202,6 +227,20 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
             from_number = msg.get("from")  # Sender's phone number
             msg_type = msg.get("type", "text")
             timestamp = msg.get("timestamp")
+            
+            if from_number:
+                from ..utils.pii import hash_phone_number
+                from ..observability.tracer import set_phone_number_hash
+                set_phone_number_hash(hash_phone_number(from_number))
+                
+            from ..observability.logger import log_event
+            import logging as _logging
+            log_event(
+                level=_logging.INFO,
+                event_type="MESSAGE_RECEIVED",
+                message=f"Processing incoming {msg_type} message from {from_number}",
+                payload={"msg_id": msg_id, "msg_type": msg_type}
+            )
             
             # Get contact info
             contact_info = next((c for c in contacts if c.get("wa_id") == from_number), {})
@@ -530,12 +569,30 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                     break
             
             if not owner_user_id:
+                log_event(
+                    level=_logging.ERROR,
+                    event_type="CONNECTION_LOOKUP",
+                    status="failed",
+                    message=f"No connection found for phone_number_id={phone_number_id}",
+                    payload={"phone_number_id": phone_number_id}
+                )
                 logger.error(
                     f"[WHATSAPP WEBHOOK] No connection found for phone_number_id={phone_number_id}. "
                     f"Checked {len(connections)} active connection(s). Message from {from_number} will be skipped. "
                     f"Ensure the customer's connection config has the correct phone_number_id."
                 )
                 continue
+                
+            log_event(
+                level=_logging.INFO,
+                event_type="CONNECTION_LOOKUP",
+                status="success",
+                message=f"Found connection for user {owner_user_id}",
+                customer_id=str(owner_user_id)
+            )
+
+            from ..observability.tracer import set_customer_id
+            set_customer_id(str(owner_user_id))
 
             # ── RLS: set tenant context now that we know who owns this message ──
             from ..database import set_tenant_context
@@ -578,6 +635,14 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
                 status=WhatsAppMessageStatus.DELIVERED
             )
             db.add(message)
+            
+            log_event(
+                level=_logging.INFO,
+                event_type="MESSAGE_SAVED",
+                message=f"Saved incoming message {msg_id}",
+                customer_id=str(owner_user_id),
+                payload={"msg_type": msg_type}
+            )
             
             # Update contact's last message timestamp and count
             contact.last_message_at = datetime.utcnow()

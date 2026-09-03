@@ -34,7 +34,7 @@ from .utils import run_async as _run_async
     # Per-operation flags (order_id, confirmation_sent, receipt_sent) ensure
     # individual side effects are never duplicated even on partial retries.
 )
-def process_whatsapp_message_task(self, payload: Dict[str, Any], user_id: str = None, trace_id: str = None):
+def process_whatsapp_message_task(self, payload: Dict[str, Any], user_id: str = None, trace_id: str = None, customer_id: str = None, phone_number_hash: str = None):
     """
     Process an incoming WhatsApp webhook message payload.
 
@@ -42,9 +42,20 @@ def process_whatsapp_message_task(self, payload: Dict[str, Any], user_id: str = 
     auto-reply engine, and AI agent invocation.
     """
     if trace_id:
-        from src.observability.tracer import set_trace_id
+        from src.observability.tracer import set_trace_id, set_customer_id, set_phone_number_hash
         set_trace_id(trace_id)
-        
+        if customer_id:
+            set_customer_id(customer_id)
+        if phone_number_hash:
+            set_phone_number_hash(phone_number_hash)
+            
+    # Also log the Celery task start with structured logging
+    from src.observability.logger import log_event
+    log_event(
+        level=logging.INFO,
+        event_type="CELERY_WEBHOOK_START",
+        message="Processing WhatsApp message payload in Celery"
+    )
     logger.info(f"[CeleryWebhook] Processing WhatsApp message payload")
 
     async def _process():

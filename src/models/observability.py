@@ -30,6 +30,7 @@ class ObservabilityLog(Base):
     
     # Context
     customer_id = Column(String, index=True, nullable=True)
+    phone_number_hash = Column(String, index=True, nullable=True)
     agent_id = Column(String, index=True, nullable=True)
     workflow_id = Column(String, index=True, nullable=True)
     tool_name = Column(String, index=True, nullable=True)

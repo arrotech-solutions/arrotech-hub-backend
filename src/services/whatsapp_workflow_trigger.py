@@ -319,6 +319,16 @@ class WhatsAppWorkflowTrigger:
                             preferred.name,
                         )
 
+                if not to_execute:
+                    from ..observability.logger import log_event
+                    import logging as _logging
+                    log_event(
+                        level=_logging.INFO,
+                        event_type="NO_WORKFLOW_MATCHED",
+                        message=f"No active workflow matched for message from {contact.phone_number}",
+                        payload={"matched_workflows_count": len(matched)}
+                    )
+
                 for workflow, event_type in to_execute:
                     # Global handoff gate — skip AI when a human agent owns the thread
                     if session_key:
@@ -326,6 +336,14 @@ class WhatsAppWorkflowTrigger:
                             from ..services.conversation_context_manager import context_manager
 
                             if await context_manager.is_human_handoff_active(session_key):
+                                from ..observability.logger import log_event
+                                import logging as _logging
+                                log_event(
+                                    level=_logging.INFO,
+                                    event_type="WORKFLOW_SKIPPED_HANDOFF",
+                                    message=f"Skipping workflow '{workflow.name}' due to human handoff",
+                                    workflow_id=str(workflow.id)
+                                )
                                 logger.info(
                                     "[WA_TRIGGER] Skipping workflow '%s' — human handoff active for %s",
                                     workflow.name,
@@ -394,12 +412,28 @@ class WhatsAppWorkflowTrigger:
                         input_vars["real_estate_intent"] = re_intent
                         input_vars["real_estate_event"] = re_event_type
 
+                    from ..observability.logger import log_event
+                    import logging as _logging
+                    log_event(
+                        level=_logging.INFO,
+                        event_type="WORKFLOW_MATCH",
+                        message=f"Firing workflow '{workflow.name}'",
+                        workflow_id=str(workflow.id),
+                        payload={"trigger_type": event_type, "re_intent": re_intent}
+                    )
+                    
                     logger.info(
                         f"[WA_TRIGGER] Firing workflow '{workflow.name}' for contact {contact.phone_number}"
                         + (f" (RE intent: {re_intent})" if attach_re_intent else "")
                     )
 
                     try:
+                        log_event(
+                            level=_logging.INFO,
+                            event_type="WORKFLOW_EXECUTION_START",
+                            message=f"Executing workflow '{workflow.name}'",
+                            workflow_id=str(workflow.id)
+                        )
                         builder = WorkflowBuilderService()
                         await builder.execute_workflow(
                             workflow_id=workflow.id,
@@ -408,7 +442,21 @@ class WhatsAppWorkflowTrigger:
                             input_data=input_vars,
                             trigger_type=event_type or "whatsapp_message_received",
                         )
+                        log_event(
+                            level=_logging.INFO,
+                            event_type="WORKFLOW_EXECUTION_SUCCESS",
+                            message=f"Successfully executed workflow '{workflow.name}'",
+                            workflow_id=str(workflow.id)
+                        )
                     except Exception as e:
+                        log_event(
+                            level=_logging.ERROR,
+                            event_type="WORKFLOW_EXECUTION_ERROR",
+                            status="failed",
+                            message=f"Failed to execute workflow {workflow.id}: {e}",
+                            workflow_id=str(workflow.id),
+                            error_message=str(e)
+                        )
                         logger.error(
                             f"[WA_TRIGGER] Failed to execute workflow {workflow.id}: {e}"
                         )
