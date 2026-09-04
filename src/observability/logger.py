@@ -5,7 +5,7 @@ import asyncio
 from typing import Any, Dict, Optional
 import sys
 
-from .tracer import get_trace_id, get_span_id, get_customer_id, get_phone_number_hash
+from .tracer import get_trace_id, get_span_id, get_parent_span_id, get_customer_id, get_phone_number_hash
 
 class JSONFormatter(logging.Formatter):
     """Custom JSON formatter for production logs."""
@@ -15,6 +15,7 @@ class JSONFormatter(logging.Formatter):
             "level": record.levelname,
             "trace_id": get_trace_id(),
             "span_id": get_span_id(),
+            "parent_span_id": get_parent_span_id(),
             "customer_id": get_customer_id(),
             "phone_number_hash": get_phone_number_hash(),
             "logger": record.name,
@@ -69,6 +70,7 @@ async def flush_all_logs_async():
                     level=log_data.get("level", "INFO"),
                     trace_id=log_data.get("trace_id"),
                     span_id=log_data.get("span_id"),
+                    parent_span_id=log_data.get("parent_span_id"),
                     event_type=log_data.get("event_type", "GENERIC"),
                     customer_id=log_data.get("customer_id"),
                     phone_number_hash=log_data.get("phone_number_hash"),
@@ -191,6 +193,7 @@ def log_event(
         "level": logging.getLevelName(level),
         "trace_id": get_trace_id(),
         "span_id": get_span_id(),
+        "parent_span_id": get_parent_span_id(),
         "customer_id": get_customer_id(),
         "phone_number_hash": get_phone_number_hash(),
         "event_type": event_type,

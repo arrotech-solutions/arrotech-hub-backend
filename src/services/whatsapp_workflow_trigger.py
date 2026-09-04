@@ -20,6 +20,7 @@ from ..models import (
     WhatsAppContact, WhatsAppMessage, WhatsAppMessageDirection
 )
 from ..services.workflow_builder_service import WorkflowBuilderService
+from ..observability.tracer import trace_span
 
 logger = logging.getLogger(__name__)
 
@@ -428,26 +429,27 @@ class WhatsAppWorkflowTrigger:
                     )
 
                     try:
-                        log_event(
-                            level=_logging.INFO,
-                            event_type="WORKFLOW_EXECUTION_START",
-                            message=f"Executing workflow '{workflow.name}'",
-                            workflow_id=str(workflow.id)
-                        )
-                        builder = WorkflowBuilderService()
-                        await builder.execute_workflow(
-                            workflow_id=workflow.id,
-                            user_id=user_id,
-                            db=db,
-                            input_data=input_vars,
-                            trigger_type=event_type or "whatsapp_message_received",
-                        )
-                        log_event(
-                            level=_logging.INFO,
-                            event_type="WORKFLOW_EXECUTION_SUCCESS",
-                            message=f"Successfully executed workflow '{workflow.name}'",
-                            workflow_id=str(workflow.id)
-                        )
+                        with trace_span("execute_workflow", payload={"workflow_id": str(workflow.id), "workflow_name": workflow.name}):
+                            log_event(
+                                level=_logging.INFO,
+                                event_type="WORKFLOW_EXECUTION_START",
+                                message=f"Executing workflow '{workflow.name}'",
+                                workflow_id=str(workflow.id)
+                            )
+                            builder = WorkflowBuilderService()
+                            await builder.execute_workflow(
+                                workflow_id=workflow.id,
+                                user_id=user_id,
+                                db=db,
+                                input_data=input_vars,
+                                trigger_type=event_type or "whatsapp_message_received",
+                            )
+                            log_event(
+                                level=_logging.INFO,
+                                event_type="WORKFLOW_EXECUTION_SUCCESS",
+                                message=f"Successfully executed workflow '{workflow.name}'",
+                                workflow_id=str(workflow.id)
+                            )
                     except Exception as e:
                         log_event(
                             level=_logging.ERROR,
@@ -540,208 +542,209 @@ async def execute_whatsapp_action(
     
     session_maker = get_session_maker()
     async with session_maker() as db:
-        try:
-            # Get user's WhatsApp connection config
-            conn_result = await db.execute(
-                select(Connection).where(
-                    and_(
-                        Connection.user_id == user_id,
-                        Connection.platform == "whatsapp",
-                        Connection.status == "active"
-                    )
-                )
-            )
-            connection = conn_result.scalar_one_or_none()
-            wa_config = connection.config if connection and connection.config else {
-                "access_token": settings.WHATSAPP_TOKEN,
-                "phone_number_id": settings.WHATSAPP_PHONE_NUMBER_ID
-            }
-
-            if action_name == "whatsapp_send_message":
-                contact_id = parameters.get("contact_id")
-                message_content = parameters.get("message")
-                
-                # Get contact
-                result = await db.execute(
-                    select(WhatsAppContact).where(
+        with trace_span(f"action_{action_name}", payload={"parameters": parameters}):
+            try:
+                    # Get user's WhatsApp connection config
+                conn_result = await db.execute(
+                    select(Connection).where(
                         and_(
-                            WhatsAppContact.id == contact_id,
-                            WhatsAppContact.user_id == user_id
+                            Connection.user_id == user_id,
+                            Connection.platform == "whatsapp",
+                            Connection.status == "active"
                         )
                     )
                 )
-                contact = result.scalar_one_or_none()
-                
-                if not contact:
-                    return {"success": False, "error": "Contact not found"}
-                
-                # Send message
-                wa_service = WhatsAppService()
-                result = await wa_service.send_message(
-                    to_number=contact.phone_number,
-                    message=message_content,
-                    message_type="text",
-                    config=wa_config
-                )
+                connection = conn_result.scalar_one_or_none()
+                wa_config = connection.config if connection and connection.config else {
+                    "access_token": settings.WHATSAPP_TOKEN,
+                    "phone_number_id": settings.WHATSAPP_PHONE_NUMBER_ID
+                }
 
-                if result.get("success") and message_content:
-                    try:
-                        from ..services.whatsapp_inbox_service import record_outbound_message
+                if action_name == "whatsapp_send_message":
+                    contact_id = parameters.get("contact_id")
+                    message_content = parameters.get("message")
+                
+                    # Get contact
+                    result = await db.execute(
+                        select(WhatsAppContact).where(
+                            and_(
+                                WhatsAppContact.id == contact_id,
+                                WhatsAppContact.user_id == user_id
+                            )
+                        )
+                    )
+                    contact = result.scalar_one_or_none()
+                
+                    if not contact:
+                        return {"success": False, "error": "Contact not found"}
+                
+                    # Send message
+                    wa_service = WhatsAppService()
+                    result = await wa_service.send_message(
+                        to_number=contact.phone_number,
+                        message=message_content,
+                        message_type="text",
+                        config=wa_config
+                    )
 
-                        await record_outbound_message(
-                            db,
-                            user_id=user_id,
-                            phone_number=contact.phone_number,
-                            content=message_content,
-                            whatsapp_message_id=result.get("message_id"),
-                            contact_id=contact.id,
-                            is_agent=True,
+                    if result.get("success") and message_content:
+                        try:
+                            from ..services.whatsapp_inbox_service import record_outbound_message
+
+                            await record_outbound_message(
+                                db,
+                                user_id=user_id,
+                                phone_number=contact.phone_number,
+                                content=message_content,
+                                whatsapp_message_id=result.get("message_id"),
+                                contact_id=contact.id,
+                                is_agent=True,
+                            )
+                        except Exception as inbox_err:
+                            logger.warning(
+                                "[WA_ACTION] Failed to persist outbound to inbox: %s",
+                                inbox_err,
+                            )
+                
+                    return {"success": True, "message_id": result.get("message_id")}
+                
+                elif action_name == "whatsapp_add_tag":
+                    contact_id = parameters.get("contact_id")
+                    tag = parameters.get("tag")
+                
+                    result = await db.execute(
+                        select(WhatsAppContact).where(
+                            and_(
+                                WhatsAppContact.id == contact_id,
+                                WhatsAppContact.user_id == user_id
+                            )
                         )
-                    except Exception as inbox_err:
-                        logger.warning(
-                            "[WA_ACTION] Failed to persist outbound to inbox: %s",
-                            inbox_err,
+                    )
+                    contact = result.scalar_one_or_none()
+                
+                    if not contact:
+                        return {"success": False, "error": "Contact not found"}
+                
+                    # Add tag
+                    current_tags = contact.tags or []
+                    if tag not in current_tags:
+                        current_tags.append(tag)
+                        contact.tags = current_tags
+                        await db.commit()
+                
+                    return {"success": True, "tags": contact.tags}
+            
+                elif action_name == "whatsapp_send_rent_reminder":
+                    # Use real estate tools to format, then send via WhatsApp
+                    from .real_estate_service import RealEstateService
+                    re_service = RealEstateService()
+                
+                    formatted = await re_service.format_rent_reminder(
+                        tenant_name=parameters.get("tenant_name", "Tenant"),
+                        amount=parameters.get("amount", 0),
+                        due_date=parameters.get("due_date", ""),
+                        reminder_level=parameters.get("reminder_level", "first"),
+                        paybill=parameters.get("paybill", ""),
+                        account_number=parameters.get("account_number", ""),
+                    )
+                
+                    if not formatted.get("success"):
+                        return formatted
+                
+                    contact_id = parameters.get("contact_id")
+                    result_contact = await db.execute(
+                        select(WhatsAppContact).where(
+                            and_(WhatsAppContact.id == contact_id, WhatsAppContact.user_id == user_id)
                         )
+                    )
+                    contact = result_contact.scalar_one_or_none()
                 
-                return {"success": True, "message_id": result.get("message_id")}
+                    if not contact:
+                        return {"success": False, "error": "Contact not found"}
                 
-            elif action_name == "whatsapp_add_tag":
-                contact_id = parameters.get("contact_id")
-                tag = parameters.get("tag")
+                    wa_service = WhatsAppService()
+                    send_result = await wa_service.send_message(
+                        to_number=contact.phone_number,
+                        message=formatted["message"],
+                        message_type="text",
+                        config=wa_config
+                    )
                 
-                result = await db.execute(
-                    select(WhatsAppContact).where(
-                        and_(
-                            WhatsAppContact.id == contact_id,
-                            WhatsAppContact.user_id == user_id
+                    return {"success": True, "message_id": send_result.get("message_id"), "formatted_message": formatted["message"]}
+            
+                elif action_name == "whatsapp_send_maintenance_ack":
+                    from .real_estate_service import RealEstateService
+                    re_service = RealEstateService()
+                
+                    formatted = await re_service.format_maintenance_response(
+                        tenant_name=parameters.get("tenant_name", "Tenant"),
+                        category=parameters.get("category", "general"),
+                        priority=parameters.get("priority", "normal"),
+                    )
+                
+                    if not formatted.get("success"):
+                        return formatted
+                
+                    contact_id = parameters.get("contact_id")
+                    result_contact = await db.execute(
+                        select(WhatsAppContact).where(
+                            and_(WhatsAppContact.id == contact_id, WhatsAppContact.user_id == user_id)
                         )
                     )
-                )
-                contact = result.scalar_one_or_none()
+                    contact = result_contact.scalar_one_or_none()
                 
-                if not contact:
-                    return {"success": False, "error": "Contact not found"}
+                    if not contact:
+                        return {"success": False, "error": "Contact not found"}
                 
-                # Add tag
-                current_tags = contact.tags or []
-                if tag not in current_tags:
-                    current_tags.append(tag)
-                    contact.tags = current_tags
-                    await db.commit()
-                
-                return {"success": True, "tags": contact.tags}
-            
-            elif action_name == "whatsapp_send_rent_reminder":
-                # Use real estate tools to format, then send via WhatsApp
-                from .real_estate_service import RealEstateService
-                re_service = RealEstateService()
-                
-                formatted = await re_service.format_rent_reminder(
-                    tenant_name=parameters.get("tenant_name", "Tenant"),
-                    amount=parameters.get("amount", 0),
-                    due_date=parameters.get("due_date", ""),
-                    reminder_level=parameters.get("reminder_level", "first"),
-                    paybill=parameters.get("paybill", ""),
-                    account_number=parameters.get("account_number", ""),
-                )
-                
-                if not formatted.get("success"):
-                    return formatted
-                
-                contact_id = parameters.get("contact_id")
-                result_contact = await db.execute(
-                    select(WhatsAppContact).where(
-                        and_(WhatsAppContact.id == contact_id, WhatsAppContact.user_id == user_id)
+                    wa_service = WhatsAppService()
+                    send_result = await wa_service.send_message(
+                        to_number=contact.phone_number,
+                        message=formatted["message"],
+                        message_type="text",
+                        config=wa_config
                     )
-                )
-                contact = result_contact.scalar_one_or_none()
                 
-                if not contact:
-                    return {"success": False, "error": "Contact not found"}
-                
-                wa_service = WhatsAppService()
-                send_result = await wa_service.send_message(
-                    to_number=contact.phone_number,
-                    message=formatted["message"],
-                    message_type="text",
-                    config=wa_config
-                )
-                
-                return {"success": True, "message_id": send_result.get("message_id"), "formatted_message": formatted["message"]}
+                    return {"success": True, "message_id": send_result.get("message_id"), "ticket_id": formatted.get("ticket_id")}
             
-            elif action_name == "whatsapp_send_maintenance_ack":
-                from .real_estate_service import RealEstateService
-                re_service = RealEstateService()
+                elif action_name == "whatsapp_send_viewing_slots":
+                    from .real_estate_service import RealEstateService
+                    re_service = RealEstateService()
                 
-                formatted = await re_service.format_maintenance_response(
-                    tenant_name=parameters.get("tenant_name", "Tenant"),
-                    category=parameters.get("category", "general"),
-                    priority=parameters.get("priority", "normal"),
-                )
-                
-                if not formatted.get("success"):
-                    return formatted
-                
-                contact_id = parameters.get("contact_id")
-                result_contact = await db.execute(
-                    select(WhatsAppContact).where(
-                        and_(WhatsAppContact.id == contact_id, WhatsAppContact.user_id == user_id)
+                    formatted = await re_service.format_viewing_slots(
+                        property_description=parameters.get("property_description", "the property"),
+                        slots=parameters.get("slots"),
+                        location=parameters.get("location", ""),
+                        agent_name=parameters.get("agent_name", ""),
                     )
-                )
-                contact = result_contact.scalar_one_or_none()
                 
-                if not contact:
-                    return {"success": False, "error": "Contact not found"}
+                    if not formatted.get("success"):
+                        return formatted
                 
-                wa_service = WhatsAppService()
-                send_result = await wa_service.send_message(
-                    to_number=contact.phone_number,
-                    message=formatted["message"],
-                    message_type="text",
-                    config=wa_config
-                )
-                
-                return {"success": True, "message_id": send_result.get("message_id"), "ticket_id": formatted.get("ticket_id")}
-            
-            elif action_name == "whatsapp_send_viewing_slots":
-                from .real_estate_service import RealEstateService
-                re_service = RealEstateService()
-                
-                formatted = await re_service.format_viewing_slots(
-                    property_description=parameters.get("property_description", "the property"),
-                    slots=parameters.get("slots"),
-                    location=parameters.get("location", ""),
-                    agent_name=parameters.get("agent_name", ""),
-                )
-                
-                if not formatted.get("success"):
-                    return formatted
-                
-                contact_id = parameters.get("contact_id")
-                result_contact = await db.execute(
-                    select(WhatsAppContact).where(
-                        and_(WhatsAppContact.id == contact_id, WhatsAppContact.user_id == user_id)
+                    contact_id = parameters.get("contact_id")
+                    result_contact = await db.execute(
+                        select(WhatsAppContact).where(
+                            and_(WhatsAppContact.id == contact_id, WhatsAppContact.user_id == user_id)
+                        )
                     )
-                )
-                contact = result_contact.scalar_one_or_none()
+                    contact = result_contact.scalar_one_or_none()
                 
-                if not contact:
-                    return {"success": False, "error": "Contact not found"}
+                    if not contact:
+                        return {"success": False, "error": "Contact not found"}
                 
-                wa_service = WhatsAppService()
-                send_result = await wa_service.send_message(
-                    to_number=contact.phone_number,
-                    message=formatted["message"],
-                    message_type="text",
-                    config=wa_config
-                )
+                    wa_service = WhatsAppService()
+                    send_result = await wa_service.send_message(
+                        to_number=contact.phone_number,
+                        message=formatted["message"],
+                        message_type="text",
+                        config=wa_config
+                    )
                 
-                return {"success": True, "message_id": send_result.get("message_id"), "slots": formatted.get("available_slots")}
+                    return {"success": True, "message_id": send_result.get("message_id"), "slots": formatted.get("available_slots")}
                 
-            else:
-                return {"success": False, "error": f"Unknown action: {action_name}"}
+                else:
+                    return {"success": False, "error": f"Unknown action: {action_name}"}
                 
-        except Exception as e:
-            logger.error(f"[WA_ACTION] Error executing {action_name}: {e}")
+            except Exception as e:
+                logger.error(f"[WA_ACTION] Error executing {action_name}: {e}")
             return {"success": False, "error": str(e)}
 
