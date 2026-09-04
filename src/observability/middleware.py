@@ -5,7 +5,7 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
-from .tracer import set_trace_id, clear_context, set_customer_id
+from .tracer import set_trace_id, clear_context, set_customer_id, trace_span
 from .logger import log_event
 from .errors import AppError, ErrorType
 
@@ -25,42 +25,48 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
         # 2. Extract context if available (e.g. from JWT in later steps)
         # For now, we'll just prepare the context
         
-        start_time = time.time()
-        
-        log_event(
-            level=logging.INFO,
-            event_type="HTTP_REQUEST",
-            message=f"Incoming {request.method} {request.url.path}",
-            status="pending",
-            payload={
+        try:
+            with trace_span("http_request", payload={
                 "method": request.method,
                 "path": request.url.path,
                 "query_params": dict(request.query_params),
                 "client_ip": request.client.host if request.client else None
-            }
-        )
-        
-        try:
-            response = await call_next(request)
-            
-            duration_ms = int((time.time() - start_time) * 1000)
-            
-            # Add trace ID to response headers
-            response.headers["X-Trace-ID"] = trace_id
-            
-            log_event(
-                level=logging.INFO,
-                event_type="HTTP_RESPONSE",
-                message=f"Finished {request.method} {request.url.path} with {response.status_code}",
-                status="success",
-                duration_ms=duration_ms,
-                payload={
-                    "status_code": response.status_code
-                }
-            )
-            
-            return response
-            
+            }):
+                start_time = time.time()
+                
+                log_event(
+                    level=logging.INFO,
+                    event_type="HTTP_REQUEST",
+                    message=f"Incoming {request.method} {request.url.path}",
+                    status="pending",
+                    payload={
+                        "method": request.method,
+                        "path": request.url.path,
+                        "query_params": dict(request.query_params),
+                        "client_ip": request.client.host if request.client else None
+                    }
+                )
+                
+                response = await call_next(request)
+                
+                duration_ms = int((time.time() - start_time) * 1000)
+                
+                # Add trace ID to response headers
+                response.headers["X-Trace-ID"] = trace_id
+                
+                log_event(
+                    level=logging.INFO,
+                    event_type="HTTP_RESPONSE",
+                    message=f"Finished {request.method} {request.url.path} with {response.status_code}",
+                    status="success",
+                    duration_ms=duration_ms,
+                    payload={
+                        "status_code": response.status_code
+                    }
+                )
+                
+                return response
+                
         except Exception as e:
             duration_ms = int((time.time() - start_time) * 1000)
             

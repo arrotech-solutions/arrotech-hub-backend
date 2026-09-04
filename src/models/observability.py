@@ -26,6 +26,7 @@ class ObservabilityLog(Base):
     level = Column(String, nullable=False)
     trace_id = Column(String, index=True, nullable=True)
     span_id = Column(String, index=True, nullable=True)
+    parent_span_id = Column(String, index=True, nullable=True)
     event_type = Column(String, index=True, nullable=False)
     
     # Context
