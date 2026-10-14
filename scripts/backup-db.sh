@@ -9,7 +9,7 @@
 #
 # Prerequisites:
 #   - AWS CLI configured with S3 write permissions
-#   - S3 bucket created: aws s3 mb s3://arrotech-hub-backups
+#   - S3 bucket created: aws s3 mb s3://arrotech-hub-backups-prod
 # =============================================================================
 
 set -euo pipefail
@@ -17,7 +17,7 @@ set -euo pipefail
 # ── Configuration ───────────────────────────────────────────────────────────
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_DIR="/home/ubuntu/backups"
-S3_BUCKET="s3://arrotech-hub-backups/db-backups"
+S3_BUCKET="s3://arrotech-hub-backups-prod/db-backups"
 COMPOSE_FILE="/home/ubuntu/arrotech-hub-backend/docker-compose.prod.yml"
 DB_USER="${POSTGRES_USER:-minihub}"
 DB_NAME="${POSTGRES_DB:-minihub}"
