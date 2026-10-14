@@ -736,8 +736,80 @@ startCommand = "python -m src.main"
 
 ### CI/CD Pipeline (`.github/workflows/`)
 
-1. **PR Checks:** Linting (`flake8`/`black`), type checking, automated tests
-2. **Main Branch Push:** Docker build → Railway deployment
+1. **PR Checks:** Code quality, security scanning, architecture checks, and tests
+2. **Push to `main`:** Production EC2 deployment through AWS Systems Manager
+   using GitHub OIDC; inbound SSH is not required.
+3. **`develop`:** No EC2 deployment is configured until a separate staging
+   instance is provisioned. This prevents development commits from deploying to
+   the production host.
+
+#### Configure GitHub Actions to deploy through SSM
+
+The production deployment requires an IAM OIDC provider for
+`token.actions.githubusercontent.com` and an IAM role trusted only for this
+repository's `production` GitHub Environment.
+
+Use this trust policy on the deployment role, replacing `<AWS_ACCOUNT_ID>`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::<AWS_ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub": "repo:arrotech-solutions/arrotech-hub-backend:environment:production"
+        }
+      }
+    }
+  ]
+}
+```
+
+Attach this least-privilege permissions policy to the role, replacing
+`<AWS_ACCOUNT_ID>` and `<PRODUCTION_INSTANCE_ID>`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RunDeploymentOnProductionInstance",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": [
+        "arn:aws:ec2:us-east-1:<AWS_ACCOUNT_ID>:instance/<PRODUCTION_INSTANCE_ID>",
+        "arn:aws:ssm:us-east-1::document/AWS-RunShellScript"
+      ]
+    },
+    {
+      "Sid": "ReadDeploymentCommandResult",
+      "Effect": "Allow",
+      "Action": "ssm:GetCommandInvocation",
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+In **GitHub → Settings → Environments → `production`**, configure:
+
+- Secret `AWS_DEPLOY_ROLE_ARN`: ARN of the IAM role above.
+- Variable `AWS_REGION`: `us-east-1`.
+- Variable `EC2_INSTANCE_ID`: ID of the active encrypted production EC2.
+- Keep the existing `PROD_API_URL` secret used by the post-deployment health
+  check.
+
+Restrict the `production` environment to deployments from the `main` branch and
+consider requiring a reviewer. After an SSM deployment succeeds, remove the
+obsolete `EC2_HOST` and `EC2_SSH_KEY` GitHub secrets. Do not open inbound SSH
+for GitHub Actions.
 
 ### Docker Image
 

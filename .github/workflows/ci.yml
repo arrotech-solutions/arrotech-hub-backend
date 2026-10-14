@@ -128,134 +128,135 @@ jobs:
 
 
   # ===========================================================================
-  # Stage 3: Deploy to AWS EC2
+  # Stage 3: Deploy to AWS EC2 through Systems Manager
   # ===========================================================================
-  # Requires GitHub Secrets:
-  #   EC2_HOST       — Elastic IP of the EC2 instance
-  #   EC2_SSH_KEY    — Private SSH key for the ubuntu user
-  #   PROD_API_URL   — e.g. https://prod.api.arrotechsolutions.com
+  # Production deploy uses GitHub OIDC and SSM; no inbound SSH is required.
+  # Configure the production environment with:
+  #   Secret: AWS_DEPLOY_ROLE_ARN
+  #   Variables: AWS_REGION, EC2_INSTANCE_ID
   # ===========================================================================
-
-  deploy-staging:
-    name: Deploy to Staging (EC2)
-    needs: [security-scan]
-    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
-    runs-on: ubuntu-latest
-    environment: staging
-    steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ubuntu
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script_stop: true
-          script: |
-            cd /home/ubuntu/arrotech-hub-backend
-            git fetch origin develop
-            git checkout develop
-            git reset --hard origin/develop
-
-            echo "Building and deploying staging..."
-            docker compose --env-file .env.production -f docker-compose.prod.yml build app celery-worker
-            docker compose --env-file .env.production -f docker-compose.prod.yml up -d --force-recreate app celery-worker celery-beat nginx
-
-            # Wait for app health (check inside container — avoids nginx SSL/host issues)
-            echo "Waiting for application health..."
-            ELAPSED=0
-            while [ $ELAPSED -lt 90 ]; do
-              if docker compose --env-file .env.production -f docker-compose.prod.yml exec -T app curl -sf http://localhost:8000/health > /dev/null 2>&1; then
-                echo "App health check passed after ${ELAPSED}s"
-                break
-              fi
-              sleep 5
-              ELAPSED=$((ELAPSED + 5))
-            done
-
-            if [ $ELAPSED -ge 90 ]; then
-              echo "App health check failed! Recent app logs:"
-              docker compose --env-file .env.production -f docker-compose.prod.yml logs app --tail 80 || true
-              exit 1
-            fi
-
-            # Verify nginx can reach app (nginx caches app IP — must recreate nginx with app)
-            if ! curl -sf -k https://prod.api.arrotechsolutions.com/health > /dev/null 2>&1; then
-              echo "External health check failed! Recent nginx logs:"
-              docker compose --env-file .env.production -f docker-compose.prod.yml logs nginx --tail 40 || true
-              exit 1
-            fi
-            echo "Staging deployment successful!"
-
-            # Cleanup
-            docker image prune -f --filter "until=72h" 2>/dev/null || true
 
   deploy-production:
     name: Deploy to Production (EC2)
-    needs: [security-scan]
+    needs: [security-scan, architecture-check, test]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     environment: production
+    permissions:
+      contents: read
+      id-token: write
     steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ubuntu
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script_stop: true
-          command_timeout: 10m
-          script: |
-            cd /home/ubuntu/arrotech-hub-backend
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
 
-            # Save current commit for rollback
-            PREVIOUS_COMMIT=$(git rev-parse HEAD)
-            echo "Previous commit: $PREVIOUS_COMMIT"
+      - name: Deploy through Systems Manager
+        env:
+          INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "$INSTANCE_ID" ]; then
+            echo "::error::Set EC2_INSTANCE_ID in the production environment."
+            exit 1
+          fi
 
-            # Pull latest
-            git fetch origin main
-            git reset --hard origin/main
-            NEW_COMMIT=$(git rev-parse HEAD)
-            echo "Deploying commit: $NEW_COMMIT"
+          DEPLOY_SCRIPT=$(cat <<'SCRIPT'
+          set -eu
+          sudo -u ubuntu -H bash <<'DEPLOY_AS_UBUNTU'
+          set -euo pipefail
+          cd /home/ubuntu/arrotech-hub-backend
 
-            # Build and restart (--force-recreate required: image tag stays :latest)
-            docker compose --env-file .env.production -f docker-compose.prod.yml build app celery-worker
-            docker compose --env-file .env.production -f docker-compose.prod.yml up -d --force-recreate app celery-worker celery-beat nginx
+          PREVIOUS_COMMIT=$(git rev-parse HEAD)
+          echo "Previous commit: $PREVIOUS_COMMIT"
 
-            # Wait for app health (check inside container — avoids nginx SSL/host issues)
-            echo "Waiting for application health..."
-            ELAPSED=0
-            while [ $ELAPSED -lt 90 ]; do
-              if docker compose --env-file .env.production -f docker-compose.prod.yml exec -T app curl -sf http://localhost:8000/health > /dev/null 2>&1; then
-                echo "App health check passed after ${ELAPSED}s"
-                break
-              fi
-              sleep 5
-              ELAPSED=$((ELAPSED + 5))
-            done
+          git fetch origin main
+          git reset --hard origin/main
+          NEW_COMMIT=$(git rev-parse HEAD)
+          echo "Deploying commit: $NEW_COMMIT"
 
-            if [ $ELAPSED -ge 90 ]; then
-              echo "App health check FAILED! Recent app logs:"
-              docker compose --env-file .env.production -f docker-compose.prod.yml logs app --tail 80 || true
-              echo "Rolling back to $PREVIOUS_COMMIT"
-              git checkout "$PREVIOUS_COMMIT"
-              docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build --force-recreate app celery-worker celery-beat nginx
-              exit 1
+          COMPOSE=(docker compose --env-file .env.production -f docker-compose.prod.yml)
+          "${COMPOSE[@]}" build app celery-worker
+          "${COMPOSE[@]}" up -d --force-recreate app celery-worker celery-beat nginx
+
+          echo "Waiting for application health..."
+          ELAPSED=0
+          while [ "$ELAPSED" -lt 90 ]; do
+            if "${COMPOSE[@]}" exec -T app curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+              echo "App health check passed after ${ELAPSED}s"
+              break
             fi
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+          done
 
-            # Verify nginx can reach app (nginx caches app IP — must recreate nginx with app)
-            if ! curl -sf -k https://prod.api.arrotechsolutions.com/health > /dev/null 2>&1; then
-              echo "External health check FAILED! Recent nginx logs:"
-              docker compose --env-file .env.production -f docker-compose.prod.yml logs nginx --tail 40 || true
-              echo "Rolling back to $PREVIOUS_COMMIT"
-              git checkout "$PREVIOUS_COMMIT"
-              docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build --force-recreate app celery-worker celery-beat nginx
-              exit 1
-            fi
+          if [ "$ELAPSED" -ge 90 ]; then
+            echo "App health check failed. Recent app logs:"
+            "${COMPOSE[@]}" logs app --tail 80 || true
+            echo "Rolling back to $PREVIOUS_COMMIT"
+            git reset --hard "$PREVIOUS_COMMIT"
+            "${COMPOSE[@]}" up -d --build --force-recreate app celery-worker celery-beat nginx
+            exit 1
+          fi
 
-            echo "Production deployment successful!"
+          if ! curl -sf -k https://prod.api.arrotechsolutions.com/health > /dev/null 2>&1; then
+            echo "External health check failed. Recent nginx logs:"
+            "${COMPOSE[@]}" logs nginx --tail 40 || true
+            echo "Rolling back to $PREVIOUS_COMMIT"
+            git reset --hard "$PREVIOUS_COMMIT"
+            "${COMPOSE[@]}" up -d --build --force-recreate app celery-worker celery-beat nginx
+            exit 1
+          fi
 
-            # Cleanup
-            docker image prune -f --filter "until=72h" 2>/dev/null || true
+          echo "Production deployment successful!"
+          docker image prune -f --filter "until=72h" 2>/dev/null || true
+          DEPLOY_AS_UBUNTU
+          SCRIPT
+          )
+
+          PARAMETERS=$(jq -n --arg commands "$DEPLOY_SCRIPT" '{commands: [$commands]}')
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "Deploy ${GITHUB_SHA} from GitHub Actions" \
+            --parameters "$PARAMETERS" \
+            --query 'Command.CommandId' \
+            --output text)
+          echo "SSM command: $COMMAND_ID"
+
+          for attempt in $(seq 1 180); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query Status \
+              --output text 2>/dev/null || true)
+
+            case "$STATUS" in
+              Success)
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query '{Status:Status,Output:StandardOutputContent}' \
+                  --output json
+                exit 0
+                ;;
+              Failed|TimedOut|Cancelled|Cancelling|Undeliverable|Terminated|DeliveryTimedOut|ExecutionTimedOut)
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query '{Status:Status,ExitCode:ResponseCode,Output:StandardOutputContent,Error:StandardErrorContent}' \
+                  --output json || true
+                echo "::error::SSM deployment command ended with status $STATUS."
+                exit 1
+                ;;
+            esac
+
+            sleep 5
+          done
+
+          echo "::error::Timed out waiting for the SSM deployment command."
+          exit 1
 
   # ===========================================================================
   # Post-Deployment Health Check
@@ -263,8 +264,8 @@ jobs:
 
   health-check:
     name: Health Check
-    needs: [deploy-staging, deploy-production]
-    if: always() && (needs.deploy-staging.result == 'success' || needs.deploy-production.result == 'success')
+    needs: [deploy-production]
+    if: always() && needs.deploy-production.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Wait for deployment to stabilize
