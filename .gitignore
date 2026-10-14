@@ -69,6 +69,25 @@ ssl/
 !tsconfig.json
 !railway.json
 
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+*.tfvars.json
+tfplan
+*.tfplan
+.terraform.tfstate.lock.info
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+terraform.rc
+.terraformrc
+
 # Google Service Account Credentials (NEVER commit these!)
 *-credentials.json
 *service-account*.json

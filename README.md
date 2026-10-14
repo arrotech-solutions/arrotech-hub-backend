@@ -719,9 +719,11 @@ Tests use `pytest-asyncio` with an in-memory SQLite database (`aiosqlite`). The 
 
 ## Deployment
 
-### Production (Railway)
+### Railway deployment configuration
 
-The application is deployed to Railway via GitHub Actions. Configuration in `railway.toml`:
+The repository includes configuration for deploying to Railway via GitHub Actions.
+The separately managed existing AWS EC2 resources are described under Terraform.
+Configuration in `railway.toml`:
 
 ```toml
 [build]
@@ -734,14 +736,126 @@ startCommand = "python -m src.main"
 
 ### CI/CD Pipeline (`.github/workflows/`)
 
-1. **PR Checks:** Linting (`flake8`/`black`), type checking, automated tests
-2. **Main Branch Push:** Docker build → Railway deployment
+1. **PR Checks:** Code quality, security scanning, architecture checks, and tests
+2. **Push to `main`:** Production EC2 deployment through AWS Systems Manager
+   using GitHub OIDC; inbound SSH is not required.
+3. **`develop`:** No EC2 deployment is configured until a separate staging
+   instance is provisioned. This prevents development commits from deploying to
+   the production host.
+
+#### Configure GitHub Actions to deploy through SSM
+
+The production deployment requires an IAM OIDC provider for
+`token.actions.githubusercontent.com` and an IAM role trusted only for this
+repository's `production` GitHub Environment.
+
+Use this trust policy on the deployment role, replacing `<AWS_ACCOUNT_ID>`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::<AWS_ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub": "repo:arrotech-solutions/arrotech-hub-backend:environment:production"
+        }
+      }
+    }
+  ]
+}
+```
+
+Attach this least-privilege permissions policy to the role, replacing
+`<AWS_ACCOUNT_ID>` and `<PRODUCTION_INSTANCE_ID>`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RunDeploymentOnProductionInstance",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": [
+        "arn:aws:ec2:us-east-1:<AWS_ACCOUNT_ID>:instance/<PRODUCTION_INSTANCE_ID>",
+        "arn:aws:ssm:us-east-1::document/AWS-RunShellScript"
+      ]
+    },
+    {
+      "Sid": "ReadDeploymentCommandResult",
+      "Effect": "Allow",
+      "Action": "ssm:GetCommandInvocation",
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+In **GitHub → Settings → Environments → `production`**, configure:
+
+- Secret `AWS_DEPLOY_ROLE_ARN`: ARN of the IAM role above.
+- Variable `AWS_REGION`: `us-east-1`.
+- Variable `EC2_INSTANCE_ID`: ID of the active encrypted production EC2.
+- Keep the existing `PROD_API_URL` secret used by the post-deployment health
+  check.
+
+Restrict the `production` environment to deployments from the `main` branch and
+consider requiring a reviewer. After an SSM deployment succeeds, remove the
+obsolete `EC2_HOST` and `EC2_SSH_KEY` GitHub secrets. Do not open inbound SSH
+for GitHub Actions.
 
 ### Docker Image
 
 The `Dockerfile` uses a multi-stage build:
 - Stage 1: Install Python dependencies
 - Stage 2: Copy source code, expose port, run via `python -m src.main`
+
+### Terraform (existing AWS EC2)
+
+The `terraform/` configuration is for importing the existing backend EC2 instance,
+its security group, and its Elastic IP. It does not create a new VPC or ECS stack.
+The default VPC, subnet, S3 backup bucket, and other unrelated resources are not
+managed by this initial configuration. The EC2 instance references the
+`arrotech-hub-ec2-ssm-role` instance profile, which must be created and maintained
+separately with the `AmazonSSMManagedInstanceCore` policy attached to its role.
+
+After the October 2026 disk-encryption cutover, `aws_instance.backend` represents
+the active encrypted instance and `aws_instance.backend_rollback` represents the
+original stopped, unencrypted instance retained for rollback. Keep both instance
+IDs in the local `terraform.tfvars`; do not apply or destroy until Terraform state
+has been reconciled with the cutover and a reviewed plan shows only intended actions.
+
+Use the configured AWS CLI profile (`arrotech`) and keep Terraform state local and
+private for this first import:
+
+```powershell
+cd terraform
+Copy-Item terraform.tfvars.example terraform.tfvars
+terraform init
+terraform plan -out=tfplan
+```
+
+Review the plan before applying it. It should import the three existing resources
+without adding, changing, or destroying AWS resources. If the plan proposes any
+AWS changes, do not apply it; reconcile the configuration with the live resource
+settings first. After confirming the plan is import-only, run:
+
+```powershell
+terraform apply tfplan
+```
+
+The local state file contains infrastructure details; do not commit it or share
+it. `.gitignore` excludes Terraform state and the local `terraform.tfvars`.
+The current security group allows SSH from `0.0.0.0/0`, and the EC2 root volume is
+unencrypted. These settings are preserved during import and should be reviewed
+before making subsequent infrastructure changes.
 
 ---
 
