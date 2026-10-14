@@ -719,9 +719,11 @@ Tests use `pytest-asyncio` with an in-memory SQLite database (`aiosqlite`). The 
 
 ## Deployment
 
-### Production (Railway)
+### Railway deployment configuration
 
-The application is deployed to Railway via GitHub Actions. Configuration in `railway.toml`:
+The repository includes configuration for deploying to Railway via GitHub Actions.
+The separately managed existing AWS EC2 resources are described under Terraform.
+Configuration in `railway.toml`:
 
 ```toml
 [build]
@@ -742,6 +744,46 @@ startCommand = "python -m src.main"
 The `Dockerfile` uses a multi-stage build:
 - Stage 1: Install Python dependencies
 - Stage 2: Copy source code, expose port, run via `python -m src.main`
+
+### Terraform (existing AWS EC2)
+
+The `terraform/` configuration is for importing the existing backend EC2 instance,
+its security group, and its Elastic IP. It does not create a new VPC or ECS stack.
+The default VPC, subnet, S3 backup bucket, and other unrelated resources are not
+managed by this initial configuration. The EC2 instance references the
+`arrotech-hub-ec2-ssm-role` instance profile, which must be created and maintained
+separately with the `AmazonSSMManagedInstanceCore` policy attached to its role.
+
+After the October 2026 disk-encryption cutover, `aws_instance.backend` represents
+the active encrypted instance and `aws_instance.backend_rollback` represents the
+original stopped, unencrypted instance retained for rollback. Keep both instance
+IDs in the local `terraform.tfvars`; do not apply or destroy until Terraform state
+has been reconciled with the cutover and a reviewed plan shows only intended actions.
+
+Use the configured AWS CLI profile (`arrotech`) and keep Terraform state local and
+private for this first import:
+
+```powershell
+cd terraform
+Copy-Item terraform.tfvars.example terraform.tfvars
+terraform init
+terraform plan -out=tfplan
+```
+
+Review the plan before applying it. It should import the three existing resources
+without adding, changing, or destroying AWS resources. If the plan proposes any
+AWS changes, do not apply it; reconcile the configuration with the live resource
+settings first. After confirming the plan is import-only, run:
+
+```powershell
+terraform apply tfplan
+```
+
+The local state file contains infrastructure details; do not commit it or share
+it. `.gitignore` excludes Terraform state and the local `terraform.tfvars`.
+The current security group allows SSH from `0.0.0.0/0`, and the EC2 root volume is
+unencrypted. These settings are preserved during import and should be reviewed
+before making subsequent infrastructure changes.
 
 ---
 

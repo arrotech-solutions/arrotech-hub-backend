@@ -224,6 +224,8 @@ services:
         limits:
           memory: 128M
           cpus: '0.1'
+    healthcheck:
+      disable: true
     logging:
       driver: "json-file"
       options:
