@@ -1,0 +1,15 @@
+meta {
+  name: google_drive_events
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/google-drive/events
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

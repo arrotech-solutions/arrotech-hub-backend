@@ -1,0 +1,15 @@
+meta {
+  name: resume_agent
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/agents/{agent_id}/resume
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

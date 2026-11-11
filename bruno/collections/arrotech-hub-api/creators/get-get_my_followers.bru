@@ -1,0 +1,11 @@
+meta {
+  name: get_my_followers
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/creators/me/followers
+  body: none
+  auth: inherit
+}

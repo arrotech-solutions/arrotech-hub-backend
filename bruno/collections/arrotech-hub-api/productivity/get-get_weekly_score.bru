@@ -1,0 +1,11 @@
+meta {
+  name: get_weekly_score
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/productivity/score/weekly
+  body: none
+  auth: inherit
+}

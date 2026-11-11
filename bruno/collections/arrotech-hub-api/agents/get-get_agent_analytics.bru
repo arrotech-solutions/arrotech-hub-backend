@@ -1,0 +1,11 @@
+meta {
+  name: get_agent_analytics
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/agents/{agent_id}/analytics
+  body: none
+  auth: inherit
+}

@@ -1,0 +1,11 @@
+meta {
+  name: get_workflow_reviews
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/marketplace/workflow/{workflow_id}/reviews
+  body: none
+  auth: inherit
+}

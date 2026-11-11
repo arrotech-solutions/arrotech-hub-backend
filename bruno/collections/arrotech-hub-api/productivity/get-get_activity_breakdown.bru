@@ -1,0 +1,11 @@
+meta {
+  name: get_activity_breakdown
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/productivity/breakdown/{period}
+  body: none
+  auth: inherit
+}

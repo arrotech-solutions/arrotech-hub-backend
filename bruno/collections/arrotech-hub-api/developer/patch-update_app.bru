@@ -1,0 +1,15 @@
+meta {
+  name: update_app
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{baseUrl}}/{app_id}
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

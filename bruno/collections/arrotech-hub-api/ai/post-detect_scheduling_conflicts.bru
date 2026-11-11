@@ -1,0 +1,15 @@
+meta {
+  name: detect_scheduling_conflicts
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/ai/detect-conflicts
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

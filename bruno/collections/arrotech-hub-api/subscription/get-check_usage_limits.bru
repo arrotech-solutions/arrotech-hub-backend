@@ -1,0 +1,11 @@
+meta {
+  name: check_usage_limits
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/subscription/usage/check
+  body: none
+  auth: inherit
+}

@@ -1,0 +1,11 @@
+meta {
+  name: gmail_webhook_health
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/webhooks/gmail/health
+  body: none
+  auth: inherit
+}

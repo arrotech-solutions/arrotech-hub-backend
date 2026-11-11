@@ -1,0 +1,15 @@
+meta {
+  name: receive_desk_webhook
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/zoho/webhook/desk/{user_id}
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

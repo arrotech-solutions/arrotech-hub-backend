@@ -1,0 +1,15 @@
+meta {
+  name: sync_whatsapp_phone_numbers
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/whatsapp/phone-numbers/sync
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

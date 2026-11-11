@@ -1,0 +1,11 @@
+meta {
+  name: get_template
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/templates/{template_id}
+  body: none
+  auth: inherit
+}

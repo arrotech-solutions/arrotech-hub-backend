@@ -1,0 +1,15 @@
+meta {
+  name: update_theme
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{baseUrl}}/preferences/theme
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

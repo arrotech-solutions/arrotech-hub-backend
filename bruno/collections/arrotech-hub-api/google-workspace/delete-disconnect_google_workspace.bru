@@ -1,0 +1,11 @@
+meta {
+  name: disconnect_google_workspace
+  type: http
+  seq: 3
+}
+
+delete {
+  url: {{baseUrl}}/api/google-workspace/disconnect/{connection_id}
+  body: none
+  auth: inherit
+}

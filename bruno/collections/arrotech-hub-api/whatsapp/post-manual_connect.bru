@@ -1,0 +1,15 @@
+meta {
+  name: manual_connect
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/whatsapp/manual-connect
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

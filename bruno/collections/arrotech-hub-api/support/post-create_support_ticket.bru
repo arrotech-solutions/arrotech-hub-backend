@@ -1,0 +1,15 @@
+meta {
+  name: create_support_ticket
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/support/ticket
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

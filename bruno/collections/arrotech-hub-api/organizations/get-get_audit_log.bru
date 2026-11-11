@@ -1,0 +1,11 @@
+meta {
+  name: get_audit_log
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/api/v1/organizations/{org_id}/audit-log
+  body: none
+  auth: inherit
+}

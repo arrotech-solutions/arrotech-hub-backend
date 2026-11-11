@@ -1,0 +1,11 @@
+meta {
+  name: get_available_platforms
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/connections/platforms
+  body: none
+  auth: inherit
+}

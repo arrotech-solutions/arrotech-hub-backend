@@ -1,0 +1,11 @@
+meta {
+  name: get_post
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/api/blog/posts/{slug}
+  body: none
+  auth: inherit
+}

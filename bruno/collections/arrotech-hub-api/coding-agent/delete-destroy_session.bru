@@ -1,0 +1,11 @@
+meta {
+  name: destroy_session
+  type: http
+  seq: 3
+}
+
+delete {
+  url: {{baseUrl}}/coding-agent/sessions/{session_id}
+  body: none
+  auth: inherit
+}

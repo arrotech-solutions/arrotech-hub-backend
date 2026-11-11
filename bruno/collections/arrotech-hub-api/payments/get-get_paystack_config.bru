@@ -1,0 +1,11 @@
+meta {
+  name: get_paystack_config
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/payments/paystack/config
+  body: none
+  auth: inherit
+}

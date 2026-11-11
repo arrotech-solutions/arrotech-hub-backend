@@ -1,0 +1,15 @@
+meta {
+  name: disable_2fa
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/security/2fa/disable
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

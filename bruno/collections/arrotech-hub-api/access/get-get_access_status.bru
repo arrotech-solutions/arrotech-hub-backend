@@ -1,0 +1,11 @@
+meta {
+  name: get_access_status
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/access/status
+  body: none
+  auth: inherit
+}

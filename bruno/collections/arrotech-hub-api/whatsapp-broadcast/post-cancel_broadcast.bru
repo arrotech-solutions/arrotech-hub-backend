@@ -1,0 +1,15 @@
+meta {
+  name: cancel_broadcast
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/whatsapp/broadcasts/{broadcast_id}/cancel
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

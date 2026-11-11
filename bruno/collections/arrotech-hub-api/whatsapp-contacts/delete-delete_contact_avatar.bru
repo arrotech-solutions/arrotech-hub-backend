@@ -1,0 +1,11 @@
+meta {
+  name: delete_contact_avatar
+  type: http
+  seq: 19
+}
+
+delete {
+  url: {{baseUrl}}/api/whatsapp/contacts/{contact_id}/avatar
+  body: none
+  auth: inherit
+}

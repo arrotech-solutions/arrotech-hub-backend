@@ -1,0 +1,11 @@
+meta {
+  name: check_following
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/creators/{creator_id}/is-following
+  body: none
+  auth: inherit
+}

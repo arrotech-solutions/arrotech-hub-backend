@@ -1,0 +1,15 @@
+meta {
+  name: change_email
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/v1/security/change-email
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

@@ -1,0 +1,8 @@
+name: Production
+variables:
+  - name: baseUrl
+    value: https://prod.api.arrotechsolutions.com
+  - name: email
+    value: ""
+  - name: password
+    value: ""

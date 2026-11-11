@@ -1,0 +1,15 @@
+meta {
+  name: update_department
+  type: http
+  seq: 11
+}
+
+put {
+  url: {{baseUrl}}/api/v1/organizations/{org_id}/departments/{dept_id}
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

@@ -1,0 +1,11 @@
+meta {
+  name: get_tool_capabilities
+  type: http
+  seq: 20
+}
+
+get {
+  url: {{baseUrl}}/chat/tools/capabilities
+  body: none
+  auth: inherit
+}

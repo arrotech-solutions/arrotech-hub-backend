@@ -1,0 +1,15 @@
+meta {
+  name: add_data_source
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/api/rag/knowledge-bases/{kb_id}/data-sources
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

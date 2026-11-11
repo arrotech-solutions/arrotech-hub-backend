@@ -1,0 +1,11 @@
+meta {
+  name: get_popular_templates
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/templates/stats/popular
+  body: none
+  auth: inherit
+}

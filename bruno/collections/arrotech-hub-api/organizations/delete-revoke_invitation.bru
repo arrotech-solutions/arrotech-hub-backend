@@ -1,0 +1,11 @@
+meta {
+  name: revoke_invitation
+  type: http
+  seq: 15
+}
+
+delete {
+  url: {{baseUrl}}/api/v1/organizations/{org_id}/invitations/{invitation_id}
+  body: none
+  auth: inherit
+}

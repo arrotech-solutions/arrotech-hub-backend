@@ -1,0 +1,15 @@
+meta {
+  name: update_conversation
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/chat/conversations/{conversation_id}
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

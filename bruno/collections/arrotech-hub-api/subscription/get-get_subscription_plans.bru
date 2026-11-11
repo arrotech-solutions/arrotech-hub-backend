@@ -1,0 +1,11 @@
+meta {
+  name: get_subscription_plans
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/subscription/plans
+  body: none
+  auth: inherit
+}

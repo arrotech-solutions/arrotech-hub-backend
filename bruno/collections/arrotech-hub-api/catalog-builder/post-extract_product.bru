@@ -1,0 +1,15 @@
+meta {
+  name: extract_product
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/catalog-builder/extract
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

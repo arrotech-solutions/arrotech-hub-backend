@@ -1,0 +1,15 @@
+meta {
+  name: rollback_to_version
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/marketplace/workflow/{workflow_id}/rollback/{version_number}
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

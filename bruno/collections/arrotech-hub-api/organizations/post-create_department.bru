@@ -1,0 +1,15 @@
+meta {
+  name: create_department
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/api/v1/organizations/{org_id}/departments
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

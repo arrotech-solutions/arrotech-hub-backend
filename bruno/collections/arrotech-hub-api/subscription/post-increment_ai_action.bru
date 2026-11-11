@@ -1,0 +1,15 @@
+meta {
+  name: increment_ai_action
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/subscription/usage/ai-action
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

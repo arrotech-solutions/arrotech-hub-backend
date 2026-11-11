@@ -1,0 +1,15 @@
+meta {
+  name: refresh_my_stats
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/creators/me/refresh-stats
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

@@ -1,0 +1,15 @@
+meta {
+  name: release_agent_for_contact
+  type: http
+  seq: 28
+}
+
+post {
+  url: {{baseUrl}}/api/whatsapp/contacts/{contact_id}/release-agent
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

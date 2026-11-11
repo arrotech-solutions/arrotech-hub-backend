@@ -1,0 +1,15 @@
+meta {
+  name: login_2fa_email_verify
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/auth/login/2fa/email/verify
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

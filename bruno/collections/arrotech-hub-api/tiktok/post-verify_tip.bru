@@ -1,0 +1,15 @@
+meta {
+  name: verify_tip
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{baseUrl}}/api/tiktok/public/tip/{tip_id}/verify
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

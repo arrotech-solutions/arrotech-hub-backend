@@ -1,0 +1,15 @@
+meta {
+  name: github_webhook
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/github/webhooks
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

@@ -1,0 +1,11 @@
+meta {
+  name: get_team_members
+  type: http
+  seq: 42
+}
+
+get {
+  url: {{baseUrl}}/api/whatsapp/team-members
+  body: none
+  auth: inherit
+}

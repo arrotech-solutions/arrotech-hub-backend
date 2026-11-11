@@ -1,0 +1,11 @@
+meta {
+  name: get_whatsapp_analytics
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/whatsapp/analytics
+  body: none
+  auth: inherit
+}

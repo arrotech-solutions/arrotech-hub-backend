@@ -1,0 +1,11 @@
+meta {
+  name: list_recent_failures
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/internal/failures
+  body: none
+  auth: inherit
+}

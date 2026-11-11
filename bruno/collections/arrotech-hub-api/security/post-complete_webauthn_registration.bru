@@ -1,0 +1,15 @@
+meta {
+  name: complete_webauthn_registration
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/api/v1/security/webauthn/register/complete
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

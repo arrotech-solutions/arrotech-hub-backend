@@ -1,0 +1,15 @@
+meta {
+  name: submit_assistant_feedback
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/assistant/feedback
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

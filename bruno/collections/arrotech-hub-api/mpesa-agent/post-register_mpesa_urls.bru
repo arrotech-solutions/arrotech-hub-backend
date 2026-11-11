@@ -1,0 +1,15 @@
+meta {
+  name: register_mpesa_urls
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/agents/daraja/register-urls
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

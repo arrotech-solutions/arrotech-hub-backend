@@ -1,0 +1,15 @@
+meta {
+  name: update_order_status_and_notify
+  type: http
+  seq: 36
+}
+
+post {
+  url: {{baseUrl}}/api/whatsapp/orders/{order_id}/status
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

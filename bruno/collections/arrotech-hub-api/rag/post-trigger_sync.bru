@@ -1,0 +1,15 @@
+meta {
+  name: trigger_sync
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/rag/data-sources/{source_id}/sync
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

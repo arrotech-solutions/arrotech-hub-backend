@@ -1,0 +1,15 @@
+meta {
+  name: update_quick_reply
+  type: http
+  seq: 39
+}
+
+put {
+  url: {{baseUrl}}/api/whatsapp/quick-replies/{reply_id}
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

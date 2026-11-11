@@ -1,0 +1,11 @@
+meta {
+  name: get_daily_score
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/productivity/score/daily
+  body: none
+  auth: inherit
+}

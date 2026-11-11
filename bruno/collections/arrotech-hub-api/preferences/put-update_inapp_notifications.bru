@@ -1,0 +1,15 @@
+meta {
+  name: update_inapp_notifications
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/preferences/notifications/in-app
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

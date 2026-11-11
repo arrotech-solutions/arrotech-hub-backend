@@ -125,31 +125,42 @@ def test_generate_invokes_import_and_patch(tmp_path, monkeypatch):
     assert calls.get("import") and calls.get("patch") and calls.get("scaffold") and calls.get("readme")
 
 
-def test_run_bruno_import_builds_expected_argv(monkeypatch, tmp_path):
-    captured: dict = {}
-
-    def fake_run(argv, **kwargs):
-        captured["argv"] = list(argv)
-
-        class R:
-            returncode = 0
-
-        return R()
-
-    monkeypatch.setattr("scripts.generate_bruno_workspace.shutil.which", lambda name: "bru" if name == "bru" else None)
-    monkeypatch.setattr("scripts.generate_bruno_workspace.subprocess.run", fake_run)
+def test_run_bruno_import_writes_bru_collection(tmp_path):
     from scripts.generate_bruno_workspace import run_bruno_import
 
     openapi = tmp_path / "openapi.json"
-    openapi.write_text("{}", encoding="utf-8")
+    openapi.write_text(
+        """
+        {
+          "openapi": "3.0.3",
+          "info": {"title": "t", "version": "1"},
+          "paths": {
+            "/health": {"get": {"tags": ["root"], "summary": "Health"}},
+            "/auth/login": {"post": {"tags": ["auth"], "summary": "Login"}}
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
     out = tmp_path / "collections"
     out.mkdir()
     run_bruno_import(openapi, out, collection_name="Arrotech Hub API")
-    argv = captured["argv"]
-    assert "import" in argv and "openapi" in argv
-    assert "--source" in argv and str(openapi) in argv
-    assert "--output" in argv
-    assert "--collection-name" in argv
-    assert "Arrotech Hub API" in argv
-    assert "--collection-format" in argv
-    assert "opencollection" in argv
+    coll = out / "arrotech-hub-api"
+    assert (coll / "bruno.json").is_file()
+    bru_files = list(coll.rglob("*.bru"))
+    assert len(bru_files) >= 2
+    login = next(p for p in bru_files if "login" in p.name.lower())
+    text = login.read_text(encoding="utf-8")
+    assert "{{baseUrl}}/auth/login" in text
+
+
+def test_build_openapi_from_source_includes_spot_checks():
+    from scripts.bruno_openapi import build_openapi_from_source
+
+    spec = build_openapi_from_source()
+    paths = spec["paths"]
+    assert "/health" in paths
+    assert "/auth/login" in paths
+    assert "/auth/me" in paths
+    assert any("whatsapp" in p.lower() for p in paths)
+    assert any("workflow" in p.lower() for p in paths)

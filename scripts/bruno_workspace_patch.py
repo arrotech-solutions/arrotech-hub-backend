@@ -14,7 +14,8 @@ _HOST_RE = re.compile(
 
 README_TEMPLATE = """# Arrotech Hub API — Bruno Workspace
 
-Bruno **3.0+** workspace generated from the FastAPI OpenAPI schema.
+Bruno **3.0+** workspace generated from the FastAPI OpenAPI schema
+(classic `.bru` collection under `collections/arrotech-hub-api`).
 
 ## Open / import in Bruno
 

@@ -1,0 +1,11 @@
+meta {
+  name: get_user_settings
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/settings
+  body: none
+  auth: inherit
+}

@@ -1,0 +1,15 @@
+meta {
+  name: setup_email_2fa
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/v1/security/2fa/email/setup
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

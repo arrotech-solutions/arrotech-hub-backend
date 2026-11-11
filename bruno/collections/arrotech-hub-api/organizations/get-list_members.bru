@@ -1,0 +1,11 @@
+meta {
+  name: list_members
+  type: http
+  seq: 16
+}
+
+get {
+  url: {{baseUrl}}/api/v1/organizations/{org_id}/members
+  body: none
+  auth: inherit
+}

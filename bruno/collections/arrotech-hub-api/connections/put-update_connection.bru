@@ -1,0 +1,15 @@
+meta {
+  name: update_connection
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{baseUrl}}/connections/{connection_id}
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

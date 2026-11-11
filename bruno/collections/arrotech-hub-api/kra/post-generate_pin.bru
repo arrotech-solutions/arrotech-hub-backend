@@ -1,0 +1,15 @@
+meta {
+  name: generate_pin
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/kra/generate-pin
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

@@ -1,0 +1,15 @@
+meta {
+  name: create_workflow_version
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/marketplace/workflow/{workflow_id}/version
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

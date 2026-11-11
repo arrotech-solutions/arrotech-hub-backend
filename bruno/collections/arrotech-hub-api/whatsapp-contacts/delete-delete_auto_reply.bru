@@ -1,0 +1,11 @@
+meta {
+  name: delete_auto_reply
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{baseUrl}}/api/whatsapp/auto-replies/{rule_id}
+  body: none
+  auth: inherit
+}

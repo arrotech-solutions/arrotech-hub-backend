@@ -1,0 +1,11 @@
+meta {
+  name: guardrail_stats
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/_internal/harness/guardrails/stats
+  body: none
+  auth: inherit
+}

@@ -1,0 +1,15 @@
+meta {
+  name: explain_intent
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/chat/conversations/{conversation_id}/explain-intent
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

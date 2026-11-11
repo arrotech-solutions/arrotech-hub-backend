@@ -1,0 +1,11 @@
+meta {
+  name: delete_quick_reply
+  type: http
+  seq: 40
+}
+
+delete {
+  url: {{baseUrl}}/api/whatsapp/quick-replies/{reply_id}
+  body: none
+  auth: inherit
+}

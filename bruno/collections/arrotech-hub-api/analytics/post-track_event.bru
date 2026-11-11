@@ -1,0 +1,15 @@
+meta {
+  name: track_event
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/analytics/track
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

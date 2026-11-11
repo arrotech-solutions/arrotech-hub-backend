@@ -1,0 +1,15 @@
+meta {
+  name: microsoft_auth
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/auth/microsoft
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

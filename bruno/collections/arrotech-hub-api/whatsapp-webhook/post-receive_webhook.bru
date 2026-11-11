@@ -1,0 +1,15 @@
+meta {
+  name: receive_webhook
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/whatsapp/webhook
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

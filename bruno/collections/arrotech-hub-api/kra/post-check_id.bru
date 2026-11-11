@@ -1,0 +1,15 @@
+meta {
+  name: check_id
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/kra/check-id
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

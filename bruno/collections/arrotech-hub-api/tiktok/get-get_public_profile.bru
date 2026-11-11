@@ -1,0 +1,11 @@
+meta {
+  name: get_public_profile
+  type: http
+  seq: 20
+}
+
+get {
+  url: {{baseUrl}}/api/tiktok/public/u/{username}
+  body: none
+  auth: inherit
+}

@@ -1,0 +1,15 @@
+meta {
+  name: verify_email
+  type: http
+  seq: 24
+}
+
+post {
+  url: {{baseUrl}}/auth/verify-email
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

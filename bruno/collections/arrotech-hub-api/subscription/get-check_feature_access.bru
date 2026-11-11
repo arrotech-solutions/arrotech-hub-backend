@@ -1,0 +1,11 @@
+meta {
+  name: check_feature_access
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/subscription/features/{feature_name}
+  body: none
+  auth: inherit
+}

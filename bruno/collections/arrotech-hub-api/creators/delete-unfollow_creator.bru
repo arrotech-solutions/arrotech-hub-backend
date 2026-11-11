@@ -1,0 +1,11 @@
+meta {
+  name: unfollow_creator
+  type: http
+  seq: 10
+}
+
+delete {
+  url: {{baseUrl}}/creators/{creator_id}/follow
+  body: none
+  auth: inherit
+}

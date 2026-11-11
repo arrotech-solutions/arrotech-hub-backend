@@ -1,0 +1,11 @@
+meta {
+  name: delete_data_source
+  type: http
+  seq: 10
+}
+
+delete {
+  url: {{baseUrl}}/api/rag/knowledge-bases/{kb_id}/data-sources/{source_id}
+  body: none
+  auth: inherit
+}

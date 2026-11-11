@@ -1,0 +1,11 @@
+meta {
+  name: list_departments
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/api/v1/organizations/{org_id}/departments
+  body: none
+  auth: inherit
+}

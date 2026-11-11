@@ -1,0 +1,11 @@
+meta {
+  name: get_2fa_status
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/v1/security/2fa/status
+  body: none
+  auth: inherit
+}

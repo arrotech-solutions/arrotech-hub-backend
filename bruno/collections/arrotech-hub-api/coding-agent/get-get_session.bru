@@ -1,0 +1,11 @@
+meta {
+  name: get_session
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/coding-agent/sessions/{session_id}
+  body: none
+  auth: inherit
+}

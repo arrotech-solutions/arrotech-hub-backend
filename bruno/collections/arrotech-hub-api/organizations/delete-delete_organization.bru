@@ -1,0 +1,11 @@
+meta {
+  name: delete_organization
+  type: http
+  seq: 7
+}
+
+delete {
+  url: {{baseUrl}}/api/v1/organizations/{org_id}
+  body: none
+  auth: inherit
+}

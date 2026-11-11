@@ -1,0 +1,11 @@
+meta {
+  name: rent_readiness
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/rent-collection/readiness
+  body: none
+  auth: inherit
+}

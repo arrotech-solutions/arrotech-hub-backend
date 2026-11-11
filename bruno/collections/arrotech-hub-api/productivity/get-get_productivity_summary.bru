@@ -1,0 +1,11 @@
+meta {
+  name: get_productivity_summary
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/productivity/summary
+  body: none
+  auth: inherit
+}

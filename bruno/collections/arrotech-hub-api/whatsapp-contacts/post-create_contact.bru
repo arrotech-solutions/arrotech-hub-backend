@@ -1,0 +1,15 @@
+meta {
+  name: create_contact
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/api/whatsapp/contacts
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

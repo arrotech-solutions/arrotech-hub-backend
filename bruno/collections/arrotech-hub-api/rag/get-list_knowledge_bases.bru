@@ -1,0 +1,11 @@
+meta {
+  name: list_knowledge_bases
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/rag/knowledge-bases
+  body: none
+  auth: inherit
+}

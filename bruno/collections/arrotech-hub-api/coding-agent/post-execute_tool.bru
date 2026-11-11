@@ -1,0 +1,15 @@
+meta {
+  name: execute_tool
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/coding-agent/sessions/{session_id}/tools
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

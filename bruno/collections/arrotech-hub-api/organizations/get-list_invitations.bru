@@ -1,0 +1,11 @@
+meta {
+  name: list_invitations
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/api/v1/organizations/{org_id}/invitations
+  body: none
+  auth: inherit
+}

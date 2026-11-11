@@ -1,0 +1,11 @@
+meta {
+  name: get_execution
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/workflows/executions/{execution_id}
+  body: none
+  auth: inherit
+}

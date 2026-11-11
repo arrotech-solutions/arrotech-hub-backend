@@ -1,0 +1,11 @@
+meta {
+  name: demote_employee
+  type: http
+  seq: 3
+}
+
+delete {
+  url: {{baseUrl}}/admin/employees/{user_id}/demote
+  body: none
+  auth: inherit
+}

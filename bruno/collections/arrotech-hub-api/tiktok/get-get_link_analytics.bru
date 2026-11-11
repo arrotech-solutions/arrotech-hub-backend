@@ -1,0 +1,11 @@
+meta {
+  name: get_link_analytics
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/api/tiktok/links/{link_id}/analytics
+  body: none
+  auth: inherit
+}

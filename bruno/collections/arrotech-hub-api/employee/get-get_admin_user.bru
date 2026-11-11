@@ -1,0 +1,11 @@
+meta {
+  name: get_admin_user
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/admin/users/{user_id}
+  body: none
+  auth: inherit
+}
