@@ -5,7 +5,7 @@ meta {
 }
 
 post {
-  url: {{baseUrl}}/api/tiktok/premium-links/{link_id}/verify-and-unlock
+  url: {{baseUrl}}/api/tiktok/premium-links/:link_id/verify-and-unlock
   body: json
   auth: inherit
 }

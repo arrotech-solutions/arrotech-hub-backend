@@ -5,7 +5,7 @@ meta {
 }
 
 patch {
-  url: {{baseUrl}}/api/whatsapp/contacts/{contact_id}/read
+  url: {{baseUrl}}/api/whatsapp/contacts/:contact_id/read
   body: json
   auth: inherit
 }

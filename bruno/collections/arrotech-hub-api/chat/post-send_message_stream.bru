@@ -5,7 +5,7 @@ meta {
 }
 
 post {
-  url: {{baseUrl}}/chat/conversations/{conversation_id}/messages/stream
+  url: {{baseUrl}}/chat/conversations/:conversation_id/messages/stream
   body: json
   auth: inherit
 }

@@ -5,7 +5,7 @@ meta {
 }
 
 post {
-  url: {{baseUrl}}/api/tiktok/premium-links/{link_id}/purchase
+  url: {{baseUrl}}/api/tiktok/premium-links/:link_id/purchase
   body: json
   auth: inherit
 }

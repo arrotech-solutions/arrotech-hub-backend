@@ -4,7 +4,23 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
+import time
 from pathlib import Path
+
+
+def _rmtree_retry(path: Path, attempts: int = 5) -> None:
+    """Remove a directory, retrying on Windows/OneDrive locks."""
+    if not path.exists():
+        return
+    last_err: Exception | None = None
+    for i in range(attempts):
+        try:
+            shutil.rmtree(path)
+            return
+        except PermissionError as exc:
+            last_err = exc
+            time.sleep(0.4 * (i + 1))
+    raise RuntimeError(f"Could not remove {path}: {last_err}")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -32,19 +48,36 @@ def run_bruno_import(
     Build a Bruno collection from OpenAPI into ``output_dir/<slug>``.
 
     Uses an in-repo OpenAPI→``.bru`` writer (Bruno CLI is optional/unreliable
-    across environments).
+    across environments). Writes via a staging directory so Windows/OneDrive
+    locks on the live collection folder do not block regeneration.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     collection_dir = output_dir / COLLECTION_DIRNAME
-    if collection_dir.exists():
-        shutil.rmtree(collection_dir)
-    collection_dir.mkdir(parents=True, exist_ok=True)
+    staging = output_dir / f"{COLLECTION_DIRNAME}.staging"
+    _rmtree_retry(staging)
+    staging.mkdir(parents=True, exist_ok=True)
     n = write_bru_collection_from_openapi(
-        openapi_path, collection_dir, collection_name=collection_name
+        openapi_path, staging, collection_name=collection_name
     )
     if n <= 0:
         raise RuntimeError(f"No requests generated from {openapi_path}")
+
+    # Promote staging → live collection
+    trash = output_dir / f"{COLLECTION_DIRNAME}.trash"
+    _rmtree_retry(trash)
+    if collection_dir.exists():
+        try:
+            collection_dir.rename(trash)
+        except OSError:
+            # Fall back to in-place clear when rename is locked
+            _rmtree_retry(collection_dir)
+    staging.rename(collection_dir)
+    try:
+        _rmtree_retry(trash)
+    except RuntimeError:
+        # OneDrive/Windows may keep locks; leave .trash for later cleanup
+        pass
 
 
 def generate(bruno_root: Path) -> None:

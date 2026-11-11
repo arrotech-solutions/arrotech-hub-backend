@@ -5,7 +5,7 @@ meta {
 }
 
 post {
-  url: {{baseUrl}}/chat/conversations/{conversation_id}/explain-intent
+  url: {{baseUrl}}/chat/conversations/:conversation_id/explain-intent
   body: json
   auth: inherit
 }

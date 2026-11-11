@@ -164,3 +164,49 @@ def test_build_openapi_from_source_includes_spot_checks():
     assert "/auth/me" in paths
     assert any("whatsapp" in p.lower() for p in paths)
     assert any("workflow" in p.lower() for p in paths)
+
+
+def test_build_openapi_skips_unmounted_developer_router():
+    from scripts.bruno_openapi import build_openapi_from_source
+
+    spec = build_openapi_from_source()
+    root = spec["paths"].get("/") or {}
+    get_op = root.get("get") or {}
+    # App root from main.py, not developer_router.list_apps
+    assert get_op.get("summary") != "list_apps"
+    assert "developer" not in (get_op.get("tags") or [])
+
+
+def test_build_openapi_kra_keeps_api_v1_prefix():
+    from scripts.bruno_openapi import build_openapi_from_source
+
+    paths = build_openapi_from_source()["paths"]
+    kra_paths = [p for p in paths if "/kra" in p]
+    assert kra_paths, "expected KRA routes"
+    assert all(p.startswith("/api/v1/") for p in kra_paths)
+
+
+def test_bru_writer_converts_path_params(tmp_path):
+    from scripts.bruno_from_openapi import write_bru_collection_from_openapi
+
+    openapi = tmp_path / "openapi.json"
+    openapi.write_text(
+        """
+        {
+          "openapi": "3.0.3",
+          "info": {"title": "t", "version": "1"},
+          "paths": {
+            "/workflows/{workflow_id}": {
+              "get": {"tags": ["workflows"], "summary": "Get workflow"}
+            }
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+    coll = tmp_path / "coll"
+    write_bru_collection_from_openapi(openapi, coll)
+    bru = next(p for p in coll.rglob("*.bru") if p.name.startswith("get-"))
+    text = bru.read_text(encoding="utf-8")
+    assert "{{baseUrl}}/workflows/:workflow_id" in text
+    assert "{workflow_id}" not in text

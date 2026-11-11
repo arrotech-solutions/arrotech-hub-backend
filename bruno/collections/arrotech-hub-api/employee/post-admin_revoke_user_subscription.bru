@@ -5,7 +5,7 @@ meta {
 }
 
 post {
-  url: {{baseUrl}}/admin/users/{user_id}/subscription/revoke
+  url: {{baseUrl}}/admin/users/:user_id/subscription/revoke
   body: json
   auth: inherit
 }

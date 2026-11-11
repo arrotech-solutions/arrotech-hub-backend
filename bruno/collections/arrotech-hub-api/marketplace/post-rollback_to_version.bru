@@ -5,7 +5,7 @@ meta {
 }
 
 post {
-  url: {{baseUrl}}/marketplace/workflow/{workflow_id}/rollback/{version_number}
+  url: {{baseUrl}}/marketplace/workflow/:workflow_id/rollback/:version_number
   body: json
   auth: inherit
 }

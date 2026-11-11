@@ -1,11 +1,11 @@
 meta {
-  name: check_id
+  name: check_pin
   type: http
-  seq: 1
+  seq: 3
 }
 
 post {
-  url: {{baseUrl}}/kra/check-id
+  url: {{baseUrl}}/api/v1/kra/check-pin
   body: json
   auth: inherit
 }

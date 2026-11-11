@@ -5,7 +5,7 @@ meta {
 }
 
 post {
-  url: {{baseUrl}}/workflows/{workflow_id}/execute
+  url: {{baseUrl}}/workflows/:workflow_id/execute
   body: json
   auth: inherit
 }

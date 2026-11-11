@@ -5,7 +5,7 @@ meta {
 }
 
 post {
-  url: {{baseUrl}}/chat/conversations/{conversation_id}/validate-tool
+  url: {{baseUrl}}/chat/conversations/:conversation_id/validate-tool
   body: json
   auth: inherit
 }

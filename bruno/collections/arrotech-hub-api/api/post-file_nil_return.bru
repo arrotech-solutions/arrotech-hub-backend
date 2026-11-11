@@ -1,11 +1,11 @@
 meta {
-  name: rotate_secret
+  name: file_nil_return
   type: http
-  seq: 6
+  seq: 4
 }
 
 post {
-  url: {{baseUrl}}/{app_id}/rotate-secret
+  url: {{baseUrl}}/api/v1/kra/file-nil-return
   body: json
   auth: inherit
 }

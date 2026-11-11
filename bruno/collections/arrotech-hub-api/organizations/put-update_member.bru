@@ -5,7 +5,7 @@ meta {
 }
 
 put {
-  url: {{baseUrl}}/api/v1/organizations/{org_id}/members/{user_id}
+  url: {{baseUrl}}/api/v1/organizations/:org_id/members/:user_id
   body: json
   auth: inherit
 }

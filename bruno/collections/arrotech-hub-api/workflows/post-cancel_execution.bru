@@ -5,7 +5,7 @@ meta {
 }
 
 post {
-  url: {{baseUrl}}/workflows/executions/{execution_id}/cancel
+  url: {{baseUrl}}/workflows/executions/:execution_id/cancel
   body: json
   auth: inherit
 }

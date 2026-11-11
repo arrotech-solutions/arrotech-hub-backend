@@ -5,7 +5,7 @@ meta {
 }
 
 post {
-  url: {{baseUrl}}/api/whatsapp/contacts/{contact_id}/messages
+  url: {{baseUrl}}/api/whatsapp/contacts/:contact_id/messages
   body: json
   auth: inherit
 }

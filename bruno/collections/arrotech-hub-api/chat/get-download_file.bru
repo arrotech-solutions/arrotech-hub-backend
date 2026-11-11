@@ -5,7 +5,7 @@ meta {
 }
 
 get {
-  url: {{baseUrl}}/chat/download/{conversation_id}/{message_id}/{filename}
+  url: {{baseUrl}}/chat/download/:conversation_id/:message_id/:filename
   body: none
   auth: inherit
 }

@@ -133,7 +133,10 @@ def write_bru_collection_from_openapi(
             seq_by_folder[folder] = seq_by_folder.get(folder, 0) + 1
             seq = seq_by_folder[folder]
             name = _request_name(method, api_path, op)
-            url = "{{baseUrl}}" + (api_path if api_path.startswith("/") else "/" + api_path)
+            raw_path = api_path if api_path.startswith("/") else "/" + api_path
+            # Bruno uses :param; OpenAPI uses {param}
+            bru_path = re.sub(r"\{([^{}/]+)\}", r":\1", raw_path)
+            url = "{{baseUrl}}" + bru_path
             body = None
             if method in {"post", "put", "patch"}:
                 body = _example_body(op)

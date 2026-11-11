@@ -190,6 +190,64 @@ def _parse_main_mounts(main_path: Path) -> list[dict[str, Any]]:
     return mounts
 
 
+def _parse_nested_includes(router_file: Path) -> list[tuple[str, str, list[str]]]:
+    """
+    Find ``router.include_router(child...)`` in a router module.
+
+    Returns list of (child_module_stem, extra_prefix_kw, tags_kw).
+    Child's own APIRouter(prefix=...) is applied later via file scan.
+    """
+    try:
+        tree = ast.parse(router_file.read_text(encoding="utf-8"), filename=str(router_file))
+    except Exception:
+        return []
+
+    # local name -> module stem
+    aliases: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                local = alias.asname or alias.name
+                if alias.name.endswith("_router") or alias.name == "router":
+                    if node.module and node.module.endswith(alias.name):
+                        aliases[local] = alias.name
+                    elif node.module == "." or (node.module or "").startswith("."):
+                        aliases[local] = alias.name if alias.name != "router" else (
+                            (node.module or "").rsplit(".", 1)[-1] or local
+                        )
+                    else:
+                        aliases[local] = alias.name
+                else:
+                    aliases[local] = alias.name
+
+    nested: list[tuple[str, str, list[str]]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Attribute) or node.func.attr != "include_router":
+            continue
+        if not node.args:
+            continue
+        arg0 = node.args[0]
+        child_stem = None
+        if isinstance(arg0, ast.Attribute) and isinstance(arg0.value, ast.Name):
+            child_stem = aliases.get(arg0.value.id, arg0.value.id)
+        elif isinstance(arg0, ast.Name):
+            child_stem = aliases.get(arg0.id, arg0.id)
+        if not child_stem:
+            continue
+        if child_stem == "router":
+            continue
+        nested.append(
+            (
+                child_stem,
+                _kw_str(node, "prefix") or "",
+                _kw_list_str(node, "tags"),
+            )
+        )
+    return nested
+
+
 def build_openapi_from_source(repo_root: Optional[Path] = None) -> dict[str, Any]:
     """
     Build a synthetic OpenAPI 3 document by AST-scanning routers + main.py.
@@ -206,6 +264,20 @@ def build_openapi_from_source(repo_root: Optional[Path] = None) -> dict[str, Any
     for m in mounts:
         mount_index.setdefault(m["module"], []).append((m["prefix"], m["tags"]))
 
+    # Expand one level of nested include_router (e.g. api_router → kra_router)
+    for parent_stem, entries in list(mount_index.items()):
+        parent_file = routers_dir / f"{parent_stem}.py"
+        if not parent_file.exists():
+            continue
+        for child_stem, extra_prefix, extra_tags in _parse_nested_includes(parent_file):
+            for parent_prefix, parent_tags in entries:
+                mount_index.setdefault(child_stem, []).append(
+                    (
+                        _join_paths(parent_prefix, extra_prefix),
+                        extra_tags or parent_tags,
+                    )
+                )
+
     paths: dict[str, dict[str, Any]] = {}
 
     def add_path(full: str, method: str, tags: list[str], summary: str) -> None:
@@ -219,22 +291,24 @@ def build_openapi_from_source(repo_root: Optional[Path] = None) -> dict[str, Any
             "responses": {"200": {"description": "OK"}},
         }
 
-    # App-level routes in main.py
-    for route in _extract_routes_from_file(main_path):
-        # Only app.* / main_router shouldn't double-count nested; include all top-level
-        add_path(route["path"], route["method"], route["tags"] or ["root"], route["name"])
-
     for py in sorted(routers_dir.glob("*.py")):
         if py.name == "__init__.py":
             continue
         stem = py.stem
+        # Only emit routers that are actually mounted (directly or nested)
+        if stem not in mount_index:
+            continue
         file_routes = _extract_routes_from_file(py)
-        mount_entries = mount_index.get(stem, [("", [])])
         for route in file_routes:
-            for mount_prefix, mount_tags in mount_entries:
+            for mount_prefix, mount_tags in mount_index[stem]:
                 full = _join_paths(mount_prefix, route["router_prefix"], route["path"])
                 tags = route["tags"] or mount_tags or [stem.replace("_router", "").replace("_", "-")]
                 add_path(full, route["method"], tags, route["name"])
+
+    # App-level routes last so they win collisions (e.g. GET /)
+    if main_path.exists():
+        for route in _extract_routes_from_file(main_path):
+            add_path(route["path"], route["method"], route["tags"] or ["root"], route["name"])
 
     return {
         "openapi": "3.0.3",
