@@ -87,3 +87,69 @@ def test_write_readme_if_missing_preserves_existing(tmp_path):
     (tmp_path / "README.md").write_text("KEEP\n", encoding="utf-8")
     write_readme_if_missing(tmp_path)
     assert (tmp_path / "README.md").read_text(encoding="utf-8") == "KEEP\n"
+
+
+def test_generate_invokes_import_and_patch(tmp_path, monkeypatch):
+    calls: dict = {}
+
+    def fake_dump(path):
+        Path(path).write_text("{}", encoding="utf-8")
+        return {"openapi": "3.0.0", "paths": {}}
+
+    def fake_import(openapi_path, output_dir, collection_name="Arrotech Hub API"):
+        calls["import"] = True
+        coll = Path(output_dir) / "arrotech-hub-api"
+        coll.mkdir(parents=True, exist_ok=True)
+        (coll / "opencollection.yml").write_text(
+            "opencollection: 1.0.0\ninfo:\n  name: Arrotech Hub API\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr("scripts.generate_bruno_workspace.dump_openapi", fake_dump)
+    monkeypatch.setattr("scripts.generate_bruno_workspace.run_bruno_import", fake_import)
+    monkeypatch.setattr(
+        "scripts.generate_bruno_workspace.patch_collection_base_url",
+        lambda d: calls.setdefault("patch", 1) or 1,
+    )
+    monkeypatch.setattr(
+        "scripts.generate_bruno_workspace.write_workspace_scaffold",
+        lambda r: calls.setdefault("scaffold", True),
+    )
+    monkeypatch.setattr(
+        "scripts.generate_bruno_workspace.write_readme_if_missing",
+        lambda r: calls.setdefault("readme", True),
+    )
+    from scripts.generate_bruno_workspace import generate
+
+    generate(tmp_path)
+    assert calls.get("import") and calls.get("patch") and calls.get("scaffold") and calls.get("readme")
+
+
+def test_run_bruno_import_builds_expected_argv(monkeypatch, tmp_path):
+    captured: dict = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = list(argv)
+
+        class R:
+            returncode = 0
+
+        return R()
+
+    monkeypatch.setattr("scripts.generate_bruno_workspace.shutil.which", lambda name: "bru" if name == "bru" else None)
+    monkeypatch.setattr("scripts.generate_bruno_workspace.subprocess.run", fake_run)
+    from scripts.generate_bruno_workspace import run_bruno_import
+
+    openapi = tmp_path / "openapi.json"
+    openapi.write_text("{}", encoding="utf-8")
+    out = tmp_path / "collections"
+    out.mkdir()
+    run_bruno_import(openapi, out, collection_name="Arrotech Hub API")
+    argv = captured["argv"]
+    assert "import" in argv and "openapi" in argv
+    assert "--source" in argv and str(openapi) in argv
+    assert "--output" in argv
+    assert "--collection-name" in argv
+    assert "Arrotech Hub API" in argv
+    assert "--collection-format" in argv
+    assert "opencollection" in argv
