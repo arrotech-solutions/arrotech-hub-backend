@@ -232,3 +232,179 @@ def test_build_search_text_includes_name_and_category():
     assert "snacks" in lowered
     assert "crispy maize" in lowered
     assert "simba" in lowered
+
+
+def _stored_product(user_id, *, name: str, sku: str, price: str) -> "CatalogProduct":
+    from src.models import CatalogProduct
+
+    return CatalogProduct(
+        user_id=user_id,
+        name=name,
+        price=Decimal(price),
+        description="",
+        category="",
+        sku=sku,
+        brand="",
+        unit="",
+        condition="",
+        image_url="",
+        availability="in_stock",
+        search_text=name.lower(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_bulk_upsert_parses_currency_and_rejects_prose_amounts(db_session):
+    """Currency amounts parse; prose amounts are errors and are not stored.
+
+    Fails if digits are concatenated (`2 for 100` → 2100, `120 (was 150)` → 120150).
+    """
+    from src.services.catalog_service import CatalogService
+
+    user = _user("catalog-money@test.com")
+    db_session.add(user)
+    await db_session.commit()
+    svc = CatalogService()
+
+    result = await svc.bulk_upsert_from_rows(
+        db_session,
+        user.id,
+        [
+            {"name": "Rice", "Price": "KES 1,250.50", "SKU": "RICE-1"},
+            {"name": "Offer", "Price": "2 for 100", "SKU": "OFFER-1"},
+            {"name": "Was", "Price": "120 (was 150)", "SKU": "WAS-1"},
+        ],
+    )
+
+    assert result["created"] == 1
+    assert result["updated"] == 0
+    assert result["errors"] == [
+        {"row": 1, "error": "price is invalid"},
+        {"row": 2, "error": "price is invalid"},
+    ]
+    listed = await svc.list_products(db_session, user.id)
+    assert [p.name for p in listed] == ["Rice"]
+    assert Decimal(listed[0].price) == Decimal("1250.50")
+
+    with pytest.raises(ValueError, match="price is invalid"):
+        await svc.create_product(
+            db_session,
+            user.id,
+            {"name": "Refund", "Price": Decimal("-1"), "SKU": "NEG-1"},
+        )
+    listed = await svc.list_products(db_session, user.id)
+    assert [p.name for p in listed] == ["Rice"]
+
+    free = await svc.create_product(
+        db_session,
+        user.id,
+        {"name": "Sample", "Price": Decimal("0"), "SKU": "FREE-1"},
+    )
+    assert Decimal(free.price) == Decimal("0.00")
+
+
+@pytest.mark.asyncio
+async def test_bulk_upsert_rejects_ambiguous_sku_and_name(db_session):
+    """More than one SKU or name match is an error and does not change either row.
+
+    Fails if upsert picks an arbitrary duplicate and writes a new price.
+    """
+    from src.services.catalog_service import CatalogService
+
+    user = _user("catalog-ambiguous@test.com")
+    db_session.add(user)
+    await db_session.commit()
+    db_session.add_all(
+        [
+            _stored_product(user.id, name="Cola A", sku="DUP-SKU", price="10.00"),
+            _stored_product(user.id, name="Cola B", sku="DUP-SKU", price="11.00"),
+            _stored_product(user.id, name="Chapati", sku="", price="20.00"),
+            _stored_product(user.id, name="Chapati", sku="", price="21.00"),
+        ]
+    )
+    await db_session.commit()
+    svc = CatalogService()
+
+    result = await svc.bulk_upsert_from_rows(
+        db_session,
+        user.id,
+        [
+            {"name": "Ignored", "Price": "999", "SKU": "DUP-SKU"},
+            {"name": "Chapati", "Price": "50"},
+        ],
+    )
+
+    assert result["created"] == 0
+    assert result["updated"] == 0
+    assert result["errors"] == [
+        {"row": 0, "error": "ambiguous sku"},
+        {"row": 1, "error": "ambiguous name"},
+    ]
+    listed = await svc.list_products(db_session, user.id)
+    prices = {p.name: Decimal(p.price) for p in listed}
+    assert prices["Cola A"] == Decimal("10.00")
+    assert prices["Cola B"] == Decimal("11.00")
+    chapati = [Decimal(p.price) for p in listed if p.name == "Chapati"]
+    assert sorted(chapati) == [Decimal("20.00"), Decimal("21.00")]
+
+
+@pytest.mark.asyncio
+async def test_create_and_update_reject_duplicate_sku(db_session):
+    """A non-empty SKU already used by this user is rejected and not saved.
+
+    Fails if a second product silently takes the same SKU.
+    """
+    from src.services.catalog_service import CatalogService
+
+    user = _user("catalog-sku@test.com")
+    other = _user("catalog-sku-other@test.com")
+    db_session.add_all([user, other])
+    await db_session.commit()
+    svc = CatalogService()
+
+    original = await svc.create_product(
+        db_session,
+        user.id,
+        {"name": "Coca-Cola 500ml", "Price": "80", "SKU": "COKE-500"},
+    )
+    with pytest.raises(ValueError):
+        await svc.create_product(
+            db_session,
+            user.id,
+            {"name": "Coke Copy", "Price": "81", "SKU": "coke-500"},
+        )
+    listed = await svc.list_products(db_session, user.id)
+    assert [p.name for p in listed] == ["Coca-Cola 500ml"]
+
+    other_product = await svc.create_product(
+        db_session,
+        other.id,
+        {"name": "Their Coke", "Price": "70", "SKU": "COKE-500"},
+    )
+    assert other_product.sku == "COKE-500"
+
+    second = await svc.create_product(
+        db_session,
+        user.id,
+        {"name": "Bread", "Price": "60", "SKU": "BREAD-1"},
+    )
+    with pytest.raises(ValueError):
+        await svc.update_product(
+            db_session,
+            user.id,
+            second.id,
+            {"SKU": "COKE-500", "Price": "61"},
+        )
+    listed = await svc.list_products(db_session, user.id)
+    bread = next(p for p in listed if p.id == second.id)
+    assert bread.sku == "BREAD-1"
+    assert Decimal(bread.price) == Decimal("60.00")
+
+    kept = await svc.update_product(
+        db_session,
+        user.id,
+        original.id,
+        {"SKU": "COKE-500", "Price": "85"},
+    )
+    assert kept.sku == "COKE-500"
+    assert Decimal(kept.price) == Decimal("85.00")

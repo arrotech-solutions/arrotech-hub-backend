@@ -37,6 +37,8 @@ _STRING_DEFAULTS = {
 }
 
 _SEARCH_FIELDS = ("name", "description", "category", "brand")
+_LEADING_CURRENCY = re.compile(r"^(?:kes|kshs|ksh|usd|\$)\s*", re.IGNORECASE)
+_PLAIN_DECIMAL = re.compile(r"^\d+(\.\d+)?$")
 
 
 class CatalogNotFound(LookupError):
@@ -73,26 +75,31 @@ def _text(fields: dict, key: str, default: str = "") -> str:
     return str(fields[key]).strip()
 
 
+def _money_error(required: bool) -> ValueError:
+    return ValueError("price is invalid" if required else "invalid number")
+
+
 def _money(value, *, required: bool) -> Decimal | None:
+    """Parse a non-negative decimal. Currency tokens and thousands separators are allowed."""
     if value is None or (isinstance(value, str) and not value.strip()):
         if required:
             raise ValueError("price is required")
         return None
     if isinstance(value, Decimal):
+        if not value.is_finite() or value < 0:
+            raise _money_error(required)
         return value.quantize(Decimal("0.01"))
-    cleaned = re.sub(r"[^0-9.\-]", "", str(value).replace(",", ""))
-    if cleaned in {"", ".", "-", "-."}:
-        if required:
-            raise ValueError("price is required")
-        if value is not None and str(value).strip():
-            raise ValueError("invalid number")
-        return None
+    text = _LEADING_CURRENCY.sub("", str(value).strip(), count=1)
+    text = text.replace(",", "").replace(" ", "")
+    if not _PLAIN_DECIMAL.fullmatch(text):
+        raise _money_error(required)
     try:
-        return Decimal(cleaned).quantize(Decimal("0.01"))
+        parsed = Decimal(text)
     except InvalidOperation:
-        if required:
-            raise ValueError("price is invalid")
-        raise ValueError("invalid number")
+        raise _money_error(required) from None
+    if parsed < 0:
+        raise _money_error(required)
+    return parsed.quantize(Decimal("0.01"))
 
 
 def build_search_text(product_fields: dict) -> str:
@@ -165,23 +172,46 @@ class CatalogService:
         sku = _text(fields, "sku") if "sku" in fields else ""
         if sku:
             result = await db.execute(
-                select(CatalogProduct).where(
+                select(CatalogProduct)
+                .where(
                     CatalogProduct.user_id == user_id,
                     func.lower(CatalogProduct.sku) == sku.lower(),
                 )
+                .limit(2)
             )
-            return result.scalars().first()
+            matches = result.scalars().all()
+            if len(matches) > 1:
+                raise ValueError("ambiguous sku")
+            return matches[0] if matches else None
 
         name = _text(fields, "name")
         if not name:
             return None
         result = await db.execute(
-            select(CatalogProduct).where(
+            select(CatalogProduct)
+            .where(
                 CatalogProduct.user_id == user_id,
                 func.lower(CatalogProduct.name) == name.lower(),
             )
+            .limit(2)
         )
-        return result.scalars().first()
+        matches = result.scalars().all()
+        if len(matches) > 1:
+            raise ValueError("ambiguous name")
+        return matches[0] if matches else None
+
+    async def _ensure_unique_sku(self, db, user_id, sku: str, *, exclude_id=None) -> None:
+        if not (sku or "").strip():
+            return
+        stmt = select(CatalogProduct.id).where(
+            CatalogProduct.user_id == _as_uuid(user_id),
+            func.lower(CatalogProduct.sku) == sku.strip().lower(),
+        )
+        if exclude_id is not None:
+            stmt = stmt.where(CatalogProduct.id != exclude_id)
+        result = await db.execute(stmt.limit(1))
+        if result.first() is not None:
+            raise ValueError("sku already exists")
 
     async def _get_owned(
         self,
@@ -202,8 +232,12 @@ class CatalogService:
         return product
 
     async def create_product(self, db, user_id, data: dict) -> CatalogProduct:
+        fields = normalize_product_fields(data)
+        await self._ensure_unique_sku(
+            db, user_id, _text(fields, "sku") if "sku" in fields else ""
+        )
         product = CatalogProduct(user_id=_as_uuid(user_id))
-        self._assign(product, normalize_product_fields(data), creating=True)
+        self._assign(product, fields, creating=True)
         db.add(product)
         await db.commit()
         await db.refresh(product)
@@ -211,7 +245,10 @@ class CatalogService:
 
     async def update_product(self, db, user_id, product_id, data: dict) -> CatalogProduct:
         product = await self._get_owned(db, user_id, product_id)
-        self._assign(product, normalize_product_fields(data), creating=False)
+        fields = normalize_product_fields(data)
+        sku = _text(fields, "sku") if "sku" in fields else (product.sku or "")
+        await self._ensure_unique_sku(db, user_id, sku, exclude_id=product.id)
+        self._assign(product, fields, creating=False)
         await db.commit()
         await db.refresh(product)
         return product
