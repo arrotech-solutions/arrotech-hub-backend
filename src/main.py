@@ -13,6 +13,7 @@ from typing import Any, Dict
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
@@ -446,6 +447,20 @@ async def health_check():
         "environment": settings.ENVIRONMENT,
         "checks": checks
     }
+
+
+@app.get("/api/public/catalog-images/{user_id}/{filename}")
+async def get_public_catalog_image(user_id: str, filename: str):
+    """Serve a catalog product photo without auth. Path-hardened (no '..')."""
+    from .services.catalog_image_service import resolve_catalog_image_path
+
+    try:
+        path = resolve_catalog_image_path(user_id, filename)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(path)
 
 
 async def run_mcp_server():
