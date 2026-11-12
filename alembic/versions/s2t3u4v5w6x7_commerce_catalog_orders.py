@@ -14,6 +14,27 @@ down_revision = "r1s2t3u4v5w6"
 branch_labels = None
 depends_on = None
 
+COMMERCE_TENANT_TABLES = (
+    "catalog_products",
+    "commerce_orders",
+    "commerce_reservations",
+)
+
+
+def _enable_tenant_rls(table: str) -> None:
+    op.execute(f'ALTER TABLE "{table}" ENABLE ROW LEVEL SECURITY;')
+    op.execute(f"""
+        CREATE POLICY tenant_isolation ON "{table}"
+            USING (
+                current_setting('app.bypass_rls', true) = 'true'
+                OR user_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+            )
+            WITH CHECK (
+                current_setting('app.bypass_rls', true) = 'true'
+                OR user_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+            );
+    """)
+
 
 def upgrade() -> None:
     op.create_table(
@@ -91,8 +112,13 @@ def upgrade() -> None:
     )
     op.create_index("ix_commerce_reservations_user_id", "commerce_reservations", ["user_id"])
 
+    for table in COMMERCE_TENANT_TABLES:
+        _enable_tenant_rls(table)
+
 
 def downgrade() -> None:
+    for table in reversed(COMMERCE_TENANT_TABLES):
+        op.execute(f'DROP POLICY IF EXISTS tenant_isolation ON "{table}";')
     op.drop_index("ix_commerce_reservations_user_id", table_name="commerce_reservations")
     op.drop_table("commerce_reservations")
     op.drop_index("ix_commerce_orders_user_id", table_name="commerce_orders")
