@@ -218,8 +218,12 @@ class CatalogSearchService:
             lexical = _lexical_score(query, product)
             if query_vec is not None and _is_vector(product.embedding):
                 cosine = max(_cosine(query_vec, product.embedding), 0.0)
-                score = _LEXICAL_WEIGHT * lexical + _EMBED_WEIGHT * cosine
-                if lexical <= 0.0 and cosine < _EMBED_MIN:
+                hybrid = _LEXICAL_WEIGHT * lexical + _EMBED_WEIGHT * cosine
+                # Cosine may boost a hit; a stored vector must not demote lexical.
+                score = max(lexical, hybrid)
+                if lexical > 0.0:
+                    score = max(score, lexical + _EMBED_WEIGHT * cosine)
+                elif cosine < _EMBED_MIN:
                     score = 0.0
             else:
                 score = lexical

@@ -185,6 +185,94 @@ async def test_search_cola_does_not_match_chocolate(db_session):
 
 
 @pytest.mark.asyncio
+async def test_search_products_is_scoped_to_user(db_session):
+    """search_products returns only the calling merchant's Simba Chips.
+
+    Fails if user B's row is mixed into A's chips hits, or if A's catalog
+    leaks into B's unmatched xyzzy-no-match query.
+    """
+    from src.services.catalog_search_service import CatalogSearchService
+
+    owner_a = await _seed_catalog(
+        db_session,
+        "search-tenant-a@test.com",
+        [
+            {
+                "name": "Simba Chips",
+                "Price": "120",
+                "Category": "Snacks",
+                "SKU": "A-CHIPS",
+            }
+        ],
+    )
+    owner_b = await _seed_catalog(
+        db_session,
+        "search-tenant-b@test.com",
+        [
+            {
+                "name": "Simba Chips",
+                "Price": "99",
+                "Category": "Snacks",
+                "SKU": "B-CHIPS",
+            }
+        ],
+    )
+    svc = CatalogSearchService()
+
+    a_hits = await svc.search_products(db_session, owner_a.id, "chips")
+    assert [r["sku"] for r in a_hits] == ["A-CHIPS"]
+    assert Decimal(a_hits[0]["price"]) == Decimal("120.00")
+
+    b_miss = await svc.search_products(db_session, owner_b.id, "xyzzy-no-match")
+    assert b_miss == []
+
+
+@pytest.mark.asyncio
+async def test_hybrid_rank_does_not_demote_lexical_hits(db_session, monkeypatch):
+    """Closer embedding ranks first; equal-name lexical-only is not sorted below.
+
+    Fails if 0.65*lex+0.35*cos pulls an embedded lexical hit under its
+    lexical-only twin, or if a farther vector outranks a closer one.
+    """
+    from sqlalchemy import select
+
+    from src.models import CatalogProduct
+    from src.services import catalog_search_service
+    from src.services.catalog_search_service import CatalogSearchService
+
+    async def fake_embed(query: str):
+        return [1.0, 0.0]
+
+    monkeypatch.setattr(catalog_search_service, "_query_embedding", fake_embed)
+
+    user = await _seed_catalog(
+        db_session,
+        "search-hybrid@test.com",
+        [
+            {"name": "Near Chips", "Price": "10", "Category": "Snacks", "SKU": "NEAR-1"},
+            {"name": "Far Chips", "Price": "20", "Category": "Snacks", "SKU": "FAR-EMB"},
+            {"name": "Far Chips", "Price": "30", "Category": "Snacks", "SKU": "FAR-LEX"},
+        ],
+    )
+    loaded = await db_session.execute(
+        select(CatalogProduct).where(CatalogProduct.user_id == user.id)
+    )
+    by_sku = {p.sku: p for p in loaded.scalars().all()}
+    by_sku["NEAR-1"].embedding = [1.0, 0.0]
+    by_sku["FAR-EMB"].embedding = [0.0, 1.0]
+    by_sku["FAR-LEX"].embedding = None
+    await db_session.commit()
+
+    results = await CatalogSearchService().search_products(
+        db_session, user.id, "chips"
+    )
+    assert results[0]["sku"] == "NEAR-1"
+    far = {r["sku"]: r for r in results if r["name"] == "Far Chips"}
+    assert set(far) == {"FAR-EMB", "FAR-LEX"}
+    assert far["FAR-LEX"]["score"] >= far["FAR-EMB"]["score"]
+
+
+@pytest.mark.asyncio
 async def test_search_empty_catalog_returns_empty(db_session):
     """Empty catalog search returns [] and does not throw.
 
