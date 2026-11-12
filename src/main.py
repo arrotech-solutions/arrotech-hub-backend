@@ -223,8 +223,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         path = request.url.path
 
-        # Health checks and WebSocket upgrades are never rate-limited
-        if path == "/health" or path.startswith("/ws/"):
+        # Health checks, catalog images (Meta fetch), and WebSocket upgrades are never rate-limited
+        if (
+            path == "/health"
+            or path.startswith("/ws/")
+            or path.startswith("/api/public/catalog-images/")
+        ):
             return await call_next(request)
 
         client_ip = request.client.host if request.client else "unknown"

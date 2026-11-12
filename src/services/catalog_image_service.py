@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Union
+from urllib.parse import quote
 from uuid import UUID
 
 import aiofiles
@@ -65,5 +66,6 @@ async def store_catalog_image(
     async with aiofiles.open(dest, "wb") as handle:
         await handle.write(content)
     return (
-        f"{public_api_base_url()}{PUBLIC_CATALOG_IMAGE_PATH}/{user_id}/{filename}"
+        f"{public_api_base_url()}{PUBLIC_CATALOG_IMAGE_PATH}/"
+        f"{quote(str(user_id), safe='')}/{quote(filename, safe='.')}"
     )
