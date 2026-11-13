@@ -14,6 +14,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -181,7 +182,7 @@ async def export_catalog(
         catalog_builder_service,
     )
     from ..services.catalog_service import bulk_upsert_from_rows
-    from .catalog_router import persist_product_image
+    from .catalog_router import normalize_builder_availability, persist_product_image
 
     dest = (destination or "arrotech_db").strip().lower()
     if dest not in ("arrotech_db", "google_sheets"):
@@ -239,7 +240,7 @@ async def export_catalog(
             "sku": str(product.get("sku", "")).strip(),
             "brand": str(product.get("brand", "")).strip(),
             "image_url": str(product.get("image_url", "")).strip(),
-            "availability": str(product.get("availability", "")).strip(),
+            "availability": normalize_builder_availability(product.get("availability", "")),
             "quantity": product.get("quantity", ""),
             "unit": str(product.get("unit", "")).strip(),
             "cost_price": product.get("cost_price", ""),
@@ -274,16 +275,23 @@ async def export_catalog(
         result = await bulk_upsert_from_rows(db, user.id, rows)
         created = int(result.get("created") or 0)
         updated = int(result.get("updated") or 0)
-        return {
-            "success": True,
-            "data": {
-                "destination": "arrotech_db",
-                "created": created,
-                "updated": updated,
-                "rows_written": created + updated,
-                "errors": result.get("errors") or [],
-            },
+        payload = {
+            "destination": "arrotech_db",
+            "created": created,
+            "updated": updated,
+            "rows_written": created + updated,
+            "errors": result.get("errors") or [],
         }
+        if created + updated == 0:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "message": "No products were saved",
+                    "data": payload,
+                },
+            )
+        return {"success": True, "data": payload}
 
     try:
         result = await catalog_builder_service.export_catalog(

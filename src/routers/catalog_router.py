@@ -28,6 +28,27 @@ from ..services.catalog_service import (
 
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
 
+_BUILDER_AVAILABILITY = {
+    "available": "in_stock",
+    "in stock": "in_stock",
+    "out of stock": "out_of_stock",
+    "outofstock": "out_of_stock",
+}
+
+
+def normalize_builder_availability(value: Any) -> str:
+    """Map Catalog Builder display labels onto catalog availability tokens."""
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return text
+    spaced = " ".join(text.lower().split())
+    compact = spaced.replace(" ", "")
+    return (
+        _BUILDER_AVAILABILITY.get(spaced)
+        or _BUILDER_AVAILABILITY.get(compact)
+        or text
+    )
+
 
 class FromBuilderBody(BaseModel):
     products: List[Dict[str, Any]] = Field(default_factory=list)
@@ -130,6 +151,10 @@ async def attach_stored_image(user_id, product: Dict[str, Any]) -> Dict[str, Any
                 blob.get("filename") or filename,
                 blob.get("mime_type") or content_type,
             )
+            if "availability" in fields:
+                fields["availability"] = normalize_builder_availability(
+                    fields.get("availability")
+                )
             return fields
 
     raw = (
@@ -142,6 +167,8 @@ async def attach_stored_image(user_id, product: Dict[str, Any]) -> Dict[str, Any
         fields["image_url"] = await persist_product_image(
             user_id, content, filename, content_type
         )
+    if "availability" in fields:
+        fields["availability"] = normalize_builder_availability(fields.get("availability"))
     return fields
 
 
