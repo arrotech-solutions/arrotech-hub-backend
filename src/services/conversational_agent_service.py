@@ -6805,6 +6805,16 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             # above (already returned True if matched). Be safe → deny.
             return False
         try:
+            if provider == "arrotech_db":
+                from .commerce_storage_service import CommerceStorageService
+
+                owned = await CommerceStorageService().get_order(
+                    db, user.id, str(order_id or "").strip()
+                )
+                return bool(
+                    owned and _phones_match(owned.customer_phone, customer_phone)
+                )
+
             from .tool_executor import ToolExecutor
             executor = ToolExecutor()
             orders = []
@@ -6812,8 +6822,6 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 orders = await self._get_orders_from_google_sheets(executor, customer_phone, storage_config, user, db)
             elif provider == "airtable":
                 orders = await self._get_orders_from_airtable(executor, customer_phone, storage_config, user, db)
-            elif provider == "arrotech_db":
-                orders = await self._get_orders_from_arrotech_db(customer_phone, user, db)
             for o in orders or []:
                 if str(o.get("Order ID", "")).strip().lower() == oid:
                     return True
@@ -7163,11 +7171,25 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
     async def _get_orders_from_arrotech_db(
         self, phone: str, user: User, db: AsyncSession
     ) -> List[Dict[str, Any]]:
-        from .commerce_storage_service import CommerceStorageService
+        from sqlalchemy import select
 
-        orders = await CommerceStorageService().list_orders(db, user.id)
+        from ..models import CommerceOrder
+
+        digits = re.sub(r"\D", "", str(phone or ""))
+        last9 = digits[-9:] if len(digits) >= 9 else digits
+        if not last9:
+            return []
+
+        result = await db.execute(
+            select(CommerceOrder)
+            .where(
+                CommerceOrder.user_id == user.id,
+                CommerceOrder.customer_phone.contains(last9),
+            )
+            .order_by(CommerceOrder.created_at.desc(), CommerceOrder.id.desc())
+        )
         found_orders = []
-        for order in orders:
+        for order in result.scalars().all():
             if not _phones_match(order.customer_phone, phone):
                 continue
             items = order.line_items

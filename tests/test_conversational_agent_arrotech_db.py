@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
@@ -173,3 +174,76 @@ async def test_persist_reservation_arrotech_db(db_session):
     assert row.customer_phone == "+254700111222"
     assert row.user_id == user.id
     assert row.party_size == 4
+
+
+def _order_payload(order_id: str, phone: str, name: str = "Customer") -> dict:
+    return {
+        "order_id": order_id,
+        "customer_name": name,
+        "customer_phone": phone,
+        "status": "pending",
+        "delivery_method": "pickup",
+        "total": "80.00",
+        "items": [{"name": "Coca-Cola 500ml", "qty": 1, "price": "80.00"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_arrotech_db_history_and_ownership_survive_fifty_newer_orders(
+    db_session,
+):
+    """Customer history and ownership still find an older order after 50 newer ones.
+
+    Fails if _get_orders_from_arrotech_db uses list_orders(limit=50) as a
+    customer index, so the owned order falls out of the newest-50 window.
+    """
+    from src.services.commerce_storage_service import CommerceStorageService
+
+    user = _user("agent-history-window@test.com")
+    db_session.add(user)
+    await db_session.commit()
+
+    svc = CommerceStorageService()
+    customer_phone = "+254712345678"
+    customer_order_id = "ORD-20261113-MINE"
+
+    mine = await svc.upsert_order(
+        db_session,
+        user.id,
+        _order_payload(customer_order_id, customer_phone, "Amina Wanjiku"),
+    )
+    mine.created_at = datetime.now(timezone.utc) - timedelta(days=2)
+    await db_session.commit()
+
+    for i in range(51):
+        await svc.upsert_order(
+            db_session,
+            user.id,
+            _order_payload(
+                f"ORD-20261113-NEW{i:02d}",
+                f"+2547000000{i:02d}",
+                f"Other {i}",
+            ),
+        )
+
+    agent = ConversationalAgentService()
+    storage_config = {"provider": "arrotech_db"}
+
+    history = await agent._sub_get_user_orders(
+        {"customer_phone": customer_phone},
+        storage_config,
+        user,
+        db_session,
+    )
+    assert history.get("success") is True
+    history_ids = [str(o.get("Order ID") or "") for o in (history.get("orders") or [])]
+    assert customer_order_id in history_ids
+
+    owns = await agent._customer_owns_order(
+        customer_order_id,
+        customer_phone,
+        storage_config,
+        user,
+        db_session,
+    )
+    assert owns is True
