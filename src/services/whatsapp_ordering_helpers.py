@@ -1123,6 +1123,9 @@ def normalize_agent_storage_settings(config: Dict[str, Any]) -> Dict[str, Any]:
         elif airtable_base:
             provider = "airtable"
             out["storage_provider"] = provider
+        else:
+            provider = "arrotech_db"
+            out["storage_provider"] = provider
 
     if provider == "google_sheets":
         for key, default in STORAGE_SHEET_DEFAULTS.items():
