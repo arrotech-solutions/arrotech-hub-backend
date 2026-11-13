@@ -5,9 +5,8 @@ Endpoints powering the Product Catalog Builder wizard:
   - GET  /api/catalog-builder/status   -> Google Workspace connection state
   - GET  /api/catalog-builder/sheets   -> existing spreadsheets (append targets)
   - POST /api/catalog-builder/extract  -> photos -> AI-extracted product draft
-  - POST /api/catalog-builder/export   -> photos + edited rows -> Google Sheet
-
-This feature stops at sheet generation; RAG ingestion is a separate workflow.
+  - POST /api/catalog-builder/export   -> photos + edited rows -> Arrotech DB
+    (default) or Google Sheet
 """
 
 import json
@@ -163,12 +162,16 @@ async def export_catalog(
     spreadsheet_id: Optional[str] = Form(None),
     folder_id: Optional[str] = Form(None),
     want_csv: bool = Form(False),
+    destination: str = Form("arrotech_db"),
     files: List[UploadFile] = File(default=[]),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Export edited product rows to a Google Sheet, hosting photos on Drive.
+    Export edited product rows to Arrotech DB (default) or a Google Sheet.
+
+    `destination` is `arrotech_db` or `google_sheets`. The DB path does not
+    require Google Workspace. Sheets keeps the current Google requirement.
 
     `products` is a JSON array. Each product may reference an uploaded image by
     index via an `image_index` field that maps into the `files` list.
@@ -177,6 +180,15 @@ async def export_catalog(
         CatalogBuilderError,
         catalog_builder_service,
     )
+    from ..services.catalog_service import bulk_upsert_from_rows
+    from .catalog_router import persist_product_image
+
+    dest = (destination or "arrotech_db").strip().lower()
+    if dest not in ("arrotech_db", "google_sheets"):
+        raise HTTPException(
+            status_code=400,
+            detail="destination must be arrotech_db or google_sheets",
+        )
 
     try:
         parsed_products: List[Dict[str, Any]] = json.loads(products)
@@ -190,7 +202,7 @@ async def export_catalog(
             status_code=400,
             detail=f"Up to {MAX_PRODUCTS_PER_EXPORT} products per export",
         )
-    if mode == "append" and not spreadsheet_id:
+    if dest == "google_sheets" and mode == "append" and not spreadsheet_id:
         raise HTTPException(
             status_code=400, detail="Select a spreadsheet to append to"
         )
@@ -247,6 +259,32 @@ async def export_catalog(
             status_code=400, detail="No valid products (each needs a name)"
         )
 
+    if dest == "arrotech_db":
+        rows: List[Dict[str, Any]] = []
+        for entry in normalized:
+            image = entry.pop("_image", None)
+            if image and image.get("content"):
+                entry["image_url"] = await persist_product_image(
+                    user.id,
+                    image["content"],
+                    image.get("filename"),
+                    image.get("mime_type"),
+                )
+            rows.append(entry)
+        result = await bulk_upsert_from_rows(db, user.id, rows)
+        created = int(result.get("created") or 0)
+        updated = int(result.get("updated") or 0)
+        return {
+            "success": True,
+            "data": {
+                "destination": "arrotech_db",
+                "created": created,
+                "updated": updated,
+                "rows_written": created + updated,
+                "errors": result.get("errors") or [],
+            },
+        }
+
     try:
         result = await catalog_builder_service.export_catalog(
             user_id=user.id,
@@ -260,6 +298,7 @@ async def export_catalog(
             },
             want_csv=bool(want_csv),
         )
+        result["destination"] = "google_sheets"
         return {"success": True, "data": result}
     except CatalogBuilderError as e:
         raise HTTPException(status_code=400, detail=str(e))
