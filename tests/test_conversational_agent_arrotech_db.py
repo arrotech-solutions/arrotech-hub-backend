@@ -84,6 +84,45 @@ async def test_search_products_uses_catalog_when_kb_id_empty(db_session):
 
 
 @pytest.mark.asyncio
+async def test_sub_search_products_normalizes_chiken_typo_when_kb_id_empty(
+    db_session,
+):
+    """Blank kb_id catalog search returns Chicken for the Kenyan typo 'chiken'.
+
+    Fails if _search_arrotech_catalog_products skips normalize_search_query:
+    'chiken' does not prefix-match 'chicken' and is not a synonym group.
+    Uses the real catalog and real normalizer; CatalogSearchService is not mocked.
+    """
+    from src.services.whatsapp_ordering_helpers import normalize_search_query
+
+    assert "chicken" in normalize_search_query("chiken").lower()
+
+    user = _user("agent-typo-chiken@test.com")
+    db_session.add(user)
+    await db_session.commit()
+
+    await CatalogService().create_product(
+        db_session,
+        user.id,
+        {
+            "name": "Chicken",
+            "Price": "350",
+            "Description": "Grilled chicken",
+            "Category": "Mains",
+            "SKU": "CHK-1",
+            "Availability": "in_stock",
+        },
+    )
+
+    agent = ConversationalAgentService()
+    result = await agent._sub_search_products("chiken", "", user, db_session)
+
+    assert result.get("success") is True
+    products = _products_from_search(result)
+    assert any(p.get("name") == "Chicken" for p in products)
+
+
+@pytest.mark.asyncio
 async def test_persist_order_arrotech_db(db_session):
     """Persist order with provider arrotech_db writes a commerce_orders row.
 

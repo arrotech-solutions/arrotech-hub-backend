@@ -5448,10 +5448,16 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         """Search this merchant's Arrotech catalog when no knowledge base is set."""
         try:
             from .catalog_search_service import CatalogSearchService
+            from .whatsapp_ordering_helpers import normalize_search_query
 
+            search_query = normalize_search_query(query)
             hits = await CatalogSearchService().search_products(
-                db, user.id, query, top_k=10
+                db, user.id, search_query, top_k=10
             )
+            if not hits and search_query != query:
+                hits = await CatalogSearchService().search_products(
+                    db, user.id, query, top_k=10
+                )
         except Exception as e:
             logger.error(f"[CONV_AGENT] Catalog search error: {e}")
             return {"success": False, "result": f"Search error: {str(e)}"}
