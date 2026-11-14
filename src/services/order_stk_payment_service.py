@@ -293,6 +293,27 @@ async def finalize_order_stk_payment(
         logger.warning("[STK_PAY] Business alert failed for %s: %s", order_id, alert_err)
 
 
+async def _already_paid_for_poll(owner_user_id: str, order_id: str, registry: Dict[str, Any]) -> bool:
+    """True when the registry or Hub row already records a successful STK."""
+    if _registry_payment_settled(registry):
+        return True
+    try:
+        uuid.UUID(str(owner_user_id))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    from ..database import get_session_maker
+    from .commerce_storage_service import CommerceStorageService
+
+    try:
+        session_maker = get_session_maker()
+        async with session_maker() as db:
+            row = await CommerceStorageService().get_order(db, owner_user_id, order_id)
+    except Exception as exc:
+        logger.warning("[STK_PAY] Hub paid lookup failed for %s: %s", order_id, exc)
+        return False
+    return row is not None and str(getattr(row, "payment_status", "") or "").lower() == "paid"
+
+
 async def _retry_paid_receipt(
     *,
     owner_user_id: str,
@@ -646,6 +667,25 @@ async def poll_stk_and_finalize_order_payment(
             return
 
         await asyncio.sleep(interval)
+
+    registry = order_tracking_service.get_registered_order(owner_user_id, order_id) or {}
+    if await _already_paid_for_poll(owner_user_id, order_id, registry):
+        logger.info(
+            "[STK_PAY] Poll timeout skipped inconclusive — order %s already paid",
+            order_id,
+        )
+        if not registry.get("payment_notified"):
+            await _retry_paid_receipt(
+                owner_user_id=owner_user_id,
+                order_id=order_id,
+                registry=registry,
+                whatsapp_sender=str(
+                    registry.get("whatsapp_sender") or registry.get("customer_phone") or ""
+                ),
+                amount_paid=float(registry.get("amount_paid") or registry.get("amount") or 0),
+                currency=str(registry.get("currency") or "KES"),
+            )
+        return
 
     logger.warning(
         "[STK_PAY] Poll timed out for order %s checkout=%s — verify Daraja callback URL",
