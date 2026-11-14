@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from copy import deepcopy
 from decimal import Decimal
 from typing import Any, Optional, Protocol
 
@@ -22,6 +21,7 @@ _CART_COMMANDS = frozenset(
     }
 )
 _TERMINAL_STATUSES = frozenset({"cancelled", "refunded"})
+_MAX_STATUS_CAS_ATTEMPTS = 32
 
 
 class OrderPort(Protocol):
@@ -30,6 +30,15 @@ class OrderPort(Protocol):
 
     async def get_order(self, order_id: str) -> Optional[dict]:
         """Return the stored order, or None."""
+
+    async def compare_and_set_status(
+        self, order_id: str, expected_status: str, new_status: str
+    ) -> bool:
+        """Set status only when it is still ``expected_status``.
+
+        The check and the write are one atomic step. Exactly one caller
+        wins when two cancels race the same status.
+        """
 
 
 def _ok(state: CommerceState, effects: Optional[list] = None) -> tuple[CommerceState, dict]:
@@ -282,17 +291,22 @@ class CommerceRuntime:
         del command
         if not state.order_id:
             return _fail(state, "no_order")
-        order = await self.order_port.get_order(state.order_id)
-        if not order:
-            return _fail(state, "no_order")
         cutoff = self.policy.get("cancel_until_status") or DEFAULT_COMMERCE_POLICY[
             "cancel_until_status"
         ]
-        if not _cancel_allowed(order.get("status"), cutoff):
-            return _fail(state, "cancel_not_allowed")
+        claimed = await self._claim_cancel(state.order_id, cutoff)
+        if isinstance(claimed, str):
+            return _fail(state, claimed)
 
+        order, previous_status = claimed
         line_items = list(order.get("line_items") or [])
-        effects: list[dict] = []
+        effects: list[dict] = [
+            {
+                "type": "persist_order",
+                "order_id": state.order_id,
+                "status": "cancelled",
+            }
+        ]
         restocked: list[dict] = []
         try:
             for line in line_items:
@@ -300,26 +314,41 @@ class CommerceRuntime:
                 restocked.append(line)
                 if effect:
                     effects.append(effect)
-            updated_order = deepcopy(order)
-            updated_order["status"] = "cancelled"
-            await self.order_port.save_order(updated_order)
         except InventoryError as exc:
             await self._undo_restock(restocked)
+            await self.order_port.compare_and_set_status(
+                state.order_id, "cancelled", previous_status
+            )
             return _fail(state, exc.code)
         except Exception:
             await self._undo_restock(restocked)
+            await self.order_port.compare_and_set_status(
+                state.order_id, "cancelled", previous_status
+            )
             return _fail(state, "persist_failed")
 
-        effects.append(
-            {
-                "type": "persist_order",
-                "order_id": state.order_id,
-                "status": "cancelled",
-            }
-        )
         updated = state.copy()
         updated.phase = "cancelled"
         return _ok(updated, effects)
+
+    async def _claim_cancel(self, order_id: str, cutoff: Any):
+        """Move the order to cancelled once. Returns (order, previous) or an error code.
+
+        Restock runs only after this wins, so a second cancel cannot add stock.
+        """
+        for _ in range(_MAX_STATUS_CAS_ATTEMPTS):
+            order = await self.order_port.get_order(order_id)
+            if not order:
+                return "no_order"
+            status = str(order.get("status") or "")
+            if not _cancel_allowed(status, cutoff):
+                return "cancel_not_allowed"
+            won = await self.order_port.compare_and_set_status(
+                order_id, status, "cancelled"
+            )
+            if won:
+                return order, status
+        return "cancel_not_allowed"
 
     async def _undo_restock(self, lines: list[dict]) -> None:
         for line in reversed(lines):

@@ -23,11 +23,19 @@ class CatalogPort(Protocol):
     async def get_product(self, product_id: str) -> Optional[dict]:
         """Return the product dict, or None when it does not exist."""
 
-    async def update_quantity(self, product_id: str, quantity: Any) -> None:
-        """Persist a tracked quantity. Not called when quantity is null."""
+    async def compare_and_set_quantity(
+        self, product_id: str, expected: Any, new: Any
+    ) -> bool:
+        """Set quantity only when it is still ``expected``.
+
+        The check and the write are one atomic step relative to other
+        compare-and-set calls on this port. Return False when the product
+        is missing or the stored quantity changed. Do not write on False.
+        """
 
 
 _SELLABLE_AVAILABILITY = frozenset({"in_stock"})
+_MAX_CAS_ATTEMPTS = 32
 
 
 def _positive_qty(qty: Any) -> Decimal:
@@ -94,21 +102,25 @@ class Inventory:
     async def adjust_tracked(self, product_id: str, delta: Any) -> Optional[int | float]:
         """Add ``delta`` to a tracked quantity without an availability check.
 
-        Used for restock and for rolling back a reserve/restock when persist
-        fails. Returns the new quantity, or None when quantity is null.
+        The write is a compare-and-set on the catalog port, so two overlapping
+        reserves cannot both store ``quantity - qty`` from the same read.
+        Returns the new quantity, or None when quantity is null.
         """
-        product = await self.catalog.get_product(str(product_id))
-        if product is None:
-            raise InventoryError("unknown_product")
-        available = product.get("quantity")
-        if available is None:
-            return None
         change = Decimal(str(delta))
         if not change.is_finite():
             raise InventoryError("invalid_quantity")
-        remaining = Decimal(str(available)) + change
-        if remaining < 0:
-            raise InventoryError("insufficient_quantity")
-        emitted = _emit(remaining)
-        await self.catalog.update_quantity(str(product_id), emitted)
-        return emitted
+        key = str(product_id)
+        for _ in range(_MAX_CAS_ATTEMPTS):
+            product = await self.catalog.get_product(key)
+            if product is None:
+                raise InventoryError("unknown_product")
+            available = product.get("quantity")
+            if available is None:
+                return None
+            remaining = Decimal(str(available)) + change
+            if remaining < 0:
+                raise InventoryError("insufficient_quantity")
+            emitted = _emit(remaining)
+            if await self.catalog.compare_and_set_quantity(key, available, emitted):
+                return emitted
+        raise InventoryError("insufficient_quantity")

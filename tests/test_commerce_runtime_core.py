@@ -3,6 +3,7 @@
 In-memory catalog and order ports. No database.
 """
 
+import asyncio
 from copy import deepcopy
 
 import pytest
@@ -15,6 +16,7 @@ class MemoryCatalog:
     def __init__(self, products: dict):
         self.products = deepcopy(products)
         self.quantity_writes: list[tuple[str, object]] = []
+        self._lock = asyncio.Lock()
 
     async def get_product(self, product_id: str):
         row = self.products.get(str(product_id))
@@ -24,11 +26,22 @@ class MemoryCatalog:
         self.products[str(product_id)]["quantity"] = quantity
         self.quantity_writes.append((str(product_id), quantity))
 
+    async def compare_and_set_quantity(self, product_id: str, expected, new) -> bool:
+        async with self._lock:
+            row = self.products.get(str(product_id))
+            if row is None or row.get("quantity") != expected:
+                return False
+            row["quantity"] = new
+            self.quantity_writes.append((str(product_id), new))
+            return True
+
 
 class MemoryOrders:
     def __init__(self):
         self.orders: dict = {}
         self.saves: list[dict] = []
+        self.race = False
+        self._lock = asyncio.Lock()
 
     async def save_order(self, order: dict) -> dict:
         stored = deepcopy(order)
@@ -37,8 +50,71 @@ class MemoryOrders:
         return deepcopy(stored)
 
     async def get_order(self, order_id: str):
+        if self.race:
+            await asyncio.sleep(0)
         row = self.orders.get(order_id)
         return deepcopy(row) if row else None
+
+    async def compare_and_set_status(
+        self, order_id: str, expected_status: str, new_status: str
+    ) -> bool:
+        if self.race:
+            await asyncio.sleep(0)
+        async with self._lock:
+            row = self.orders.get(order_id)
+            if row is None or row.get("status") != expected_status:
+                return False
+            row["status"] = new_status
+            self.saves.append(deepcopy(row))
+            return True
+
+
+class _ArriveBarrier:
+    """Release once `parties` callers are inside `arrive`, before any of them continues."""
+
+    def __init__(self, parties: int):
+        self._parties = parties
+        self._arrived = 0
+        self._event = asyncio.Event()
+
+    async def arrive(self):
+        self._arrived += 1
+        if self._arrived >= self._parties:
+            self._event.set()
+        await self._event.wait()
+
+
+class RacingCatalog(MemoryCatalog):
+    """Overlapping reads, plus a barrier on the non-atomic quantity write.
+
+    Compare-and-set sleeps before taking the lock so both places compute
+    ``quantity - qty`` from the same snapshot. A plain ``update_quantity``
+    waits until every racer has entered, which is the lost-update shape.
+    """
+
+    def __init__(self, products: dict):
+        super().__init__(products)
+        self.race = False
+        self._quantity_write_barrier: _ArriveBarrier | None = None
+
+    def arm_quantity_writers(self, parties: int):
+        self._quantity_write_barrier = _ArriveBarrier(parties)
+
+    async def get_product(self, product_id: str):
+        if self.race:
+            await asyncio.sleep(0)
+        return await super().get_product(product_id)
+
+    async def update_quantity(self, product_id: str, quantity):
+        barrier = self._quantity_write_barrier
+        if barrier is not None:
+            await barrier.arrive()
+        await super().update_quantity(product_id, quantity)
+
+    async def compare_and_set_quantity(self, product_id: str, expected, new) -> bool:
+        if self.race:
+            await asyncio.sleep(0)
+        return await super().compare_and_set_quantity(product_id, expected, new)
 
 
 def _policy(**overrides):
@@ -347,12 +423,12 @@ async def test_place_decrements_tracked_quantity_and_cancel_restocks():
 
     assert cancelled["ok"] is True
     assert cancelled["effects"] == [
-        {"type": "restock_inventory", "product_id": "sku-1", "qty": 2},
         {
             "type": "persist_order",
             "order_id": state.order_id,
             "status": "cancelled",
         },
+        {"type": "restock_inventory", "product_id": "sku-1", "qty": 2},
     ]
     assert state.phase == "cancelled"
     assert catalog.products["sku-1"]["quantity"] == 5
@@ -491,3 +567,63 @@ async def test_request_return_is_not_a_core_command():
     assert result["ok"] is False
     assert result["error_code"] == "unknown_command"
     assert state.phase == "cart"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_place_cannot_oversell_tracked_stock():
+    """Two places that both read the same quantity must not both commit quantity - qty."""
+    catalog = RacingCatalog({"sku-1": _product(quantity=5)})
+    orders = MemoryOrders()
+    runtime_a = _runtime(catalog, orders)
+    runtime_b = _runtime(catalog, orders)
+    state_a = await _ready_to_place(runtime_a, qty=3)
+    state_b = await _ready_to_place(runtime_b, qty=3)
+    catalog.arm_quantity_writers(2)
+    catalog.race = True
+
+    (state_a, result_a), (state_b, result_b) = await asyncio.gather(
+        runtime_a.apply(state_a, {"type": "place_order"}),
+        runtime_b.apply(state_b, {"type": "place_order"}),
+    )
+
+    results = (result_a, result_b)
+    successes = [result for result in results if result["ok"]]
+    assert len(successes) == 1
+    assert [result["error_code"] for result in results if not result["ok"]] == [
+        "insufficient_quantity"
+    ]
+    assert catalog.products["sku-1"]["quantity"] == 2
+    assert len(orders.orders) == 1
+    assert sum(1 for state in (state_a, state_b) if state.order_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cancel_restocks_once():
+    """Two cancels that both read pending must not both add the line quantity back."""
+    catalog = RacingCatalog({"sku-1": _product(quantity=5)})
+    orders = MemoryOrders()
+    runtime_a = _runtime(catalog, orders)
+    state = await _ready_to_place(runtime_a, qty=2)
+    state, placed = await runtime_a.apply(state, {"type": "place_order"})
+    assert placed["ok"] is True
+    assert catalog.products["sku-1"]["quantity"] == 3
+
+    runtime_b = _runtime(catalog, orders)
+    other = state.copy()
+    catalog.arm_quantity_writers(2)
+    catalog.race = True
+    orders.race = True
+    (state, result_a), (other, result_b) = await asyncio.gather(
+        runtime_a.apply(state, {"type": "cancel_order"}),
+        runtime_b.apply(other, {"type": "cancel_order"}),
+    )
+
+    results = (result_a, result_b)
+    assert sum(1 for result in results if result["ok"]) == 1
+    assert [result["error_code"] for result in results if not result["ok"]] == [
+        "cancel_not_allowed"
+    ]
+    assert catalog.products["sku-1"]["quantity"] == 5
+    assert orders.orders[state.order_id]["status"] == "cancelled"
+    phases = sorted(state.phase for state in (state, other))
+    assert phases == ["cancelled", "placed"]
