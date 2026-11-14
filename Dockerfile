@@ -1,5 +1,5 @@
-# Use Python 3.11 slim image with security updates
-FROM python:3.11-slim-bullseye
+# Debian 12 (bookworm). Bullseye security packages 404 after Debian 11 LTS ended.
+FROM python:3.11-slim-bookworm
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
