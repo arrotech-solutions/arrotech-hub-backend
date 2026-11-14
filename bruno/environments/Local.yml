@@ -2,7 +2,10 @@ name: Local
 variables:
   - name: baseUrl
     value: http://localhost:8000
+    description: ""
   - name: email
-    value: ""
+    value: your-email@example.com
+    description: "Local Hub login email — do not commit real credentials"
   - name: password
-    value: ""
+    value: replace-me
+    description: "Local Hub password — do not commit real credentials"
