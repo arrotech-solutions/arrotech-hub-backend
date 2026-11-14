@@ -104,6 +104,7 @@ class OrderTrackingService:
             "placement_notified": existing.get("placement_notified", False),
             "placement_receipt_sent": existing.get("placement_receipt_sent", False),
             "payment_notified": existing.get("payment_notified", False),
+            "receipt_send_status": existing.get("receipt_send_status", ""),
             "stk_initiated": existing.get("stk_initiated", False),
             "whatsapp_sender": existing.get("whatsapp_sender") or customer_phone,
             "payment_attempt_count": existing.get("payment_attempt_count", 0),
@@ -553,6 +554,20 @@ class OrderTrackingService:
     ) -> Optional[Dict[str, Any]]:
         return cache_service.get(self._tracking_key(owner_user_id, order_id))
 
+    def should_expire_unpaid(self, registry: Optional[Dict[str, Any]]) -> bool:
+        """Unpaid-expiry may cancel only orders that were never paid.
+
+        A paid order with a failed receipt stays open so the receipt can be retried.
+        """
+        registry = registry or {}
+        if registry.get("payment_notified"):
+            return False
+        if str(registry.get("status") or "") == "paid":
+            return False
+        if registry.get("receipt_send_status") == "failed":
+            return False
+        return True
+
     def _order_amount(self, order: Dict[str, Any]) -> float:
         for key in ("grand_total", "total_amount", "total", "subtotal"):
             val = order.get(key)
@@ -721,6 +736,66 @@ class OrderTrackingService:
                     r.get("error"),
                 )
         return sent
+
+    @staticmethod
+    def _send_succeeded(result: Any) -> bool:
+        return isinstance(result, dict) and bool(result.get("success"))
+
+    async def _send_paid_text_receipt(
+        self,
+        wa: Any,
+        *,
+        order: Dict[str, Any],
+        customer_phone: str,
+        business_phone: str,
+        business_name: str,
+        currency: str,
+        mpesa_receipt: str,
+        wa_config: Dict[str, Any],
+    ) -> List[str]:
+        sent: List[str] = []
+        text_receipt = await self.order_service.format_order_receipt(
+            order_data=order,
+            format_type="whatsapp",
+            business_name=business_name,
+            business_phone=business_phone,
+            currency=currency,
+        )
+        body = ""
+        if isinstance(text_receipt, dict) and text_receipt.get("success"):
+            body = text_receipt.get("message", "") or ""
+        paid_line = f"\n✅ *PAID* via M-Pesa{(' · ' + mpesa_receipt) if mpesa_receipt else ''}"
+        if customer_phone and body:
+            result = await wa.send_message(customer_phone, body + paid_line, config=wa_config)
+            sent.append(
+                "customer_text_receipt" if self._send_succeeded(result) else "customer_text_receipt_failed"
+            )
+        if business_phone and body:
+            result = await wa.send_message(business_phone, body + paid_line, config=wa_config)
+            sent.append(
+                "business_text_receipt" if self._send_succeeded(result) else "business_text_receipt_failed"
+            )
+        return sent
+
+    def _record_receipt_delivery(
+        self,
+        owner_user_id: str,
+        order_id: str,
+        registry: Dict[str, Any],
+        *,
+        delivered: bool,
+        sent: List[str],
+        mpesa_receipt: str,
+        amount_paid: float,
+    ) -> None:
+        saved = dict(registry or {})
+        saved["order_id"] = order_id
+        saved["status"] = "paid"
+        saved["payment_notified"] = bool(delivered)
+        saved["receipt_send_status"] = "sent" if delivered else "failed"
+        saved["mpesa_receipt"] = mpesa_receipt
+        saved["amount_paid"] = amount_paid
+        self._save_registry(owner_user_id, order_id, saved)
 
     async def notify_order_placed(
         self,
@@ -1148,8 +1223,35 @@ class OrderTrackingService:
         )
 
         wa_config = await self._get_whatsapp_config(user, db)
+        if not registry:
+            registry = {
+                "order_id": order_id,
+                "customer_phone": customer_phone,
+                "business_name": business_name,
+                "business_phone": business_phone,
+                "currency": currency,
+                "order": order,
+            }
+        if customer_phone:
+            registry.setdefault("customer_phone", customer_phone)
+            registry.setdefault("whatsapp_sender", customer_phone)
+
         if not wa_config:
-            return {"success": False, "error": "WhatsApp not connected"}
+            self._record_receipt_delivery(
+                str(user.id),
+                order_id,
+                registry,
+                delivered=False,
+                sent=[],
+                mpesa_receipt=mpesa_receipt,
+                amount_paid=amount_paid,
+            )
+            return {
+                "success": False,
+                "error": "WhatsApp not connected",
+                "order_id": order_id,
+                "retryable": True,
+            }
 
         from .whatsapp_service import WhatsAppService
 
@@ -1168,46 +1270,40 @@ class OrderTrackingService:
                 business_caption=f"💰 Payment received for order {order_id} ({currency} {amount_paid:,.0f}).",
                 wa_config=wa_config,
             )
-        else:
-            text_receipt = await self.order_service.format_order_receipt(
-                order_data=order,
-                format_type="whatsapp",
-                business_name=business_name,
-                business_phone=business_phone,
-                currency=currency,
+        if "customer_receipt" not in sent:
+            sent.extend(
+                await self._send_paid_text_receipt(
+                    wa,
+                    order=order,
+                    customer_phone=customer_phone,
+                    business_phone=business_phone,
+                    business_name=business_name,
+                    currency=currency,
+                    mpesa_receipt=mpesa_receipt,
+                    wa_config=wa_config,
+                )
             )
-            body = text_receipt.get("message", "") if text_receipt.get("success") else ""
-            paid_line = f"\n✅ *PAID* via M-Pesa{(' · ' + mpesa_receipt) if mpesa_receipt else ''}"
-            if customer_phone and body:
-                await wa.send_message(customer_phone, body + paid_line, config=wa_config)
-                sent.append("customer_text_receipt")
-            if business_phone and body:
-                await wa.send_message(business_phone, body + paid_line, config=wa_config)
-                sent.append("business_text_receipt")
-            if not sent:
-                sent.append("pdf_generation_failed")
 
-        if not registry:
-            registry = {
-                "order_id": order_id,
-                "customer_phone": customer_phone,
-                "business_name": business_name,
-                "business_phone": business_phone,
-                "currency": currency,
-                "order": order,
-            }
-
-        registry["status"] = "paid"
-        registry["payment_notified"] = True
-        registry["mpesa_receipt"] = mpesa_receipt
-        registry["amount_paid"] = amount_paid
-        cache_service.set(
-            self._tracking_key(str(user.id), order_id),
+        delivered = "customer_receipt" in sent or "customer_text_receipt" in sent
+        self._record_receipt_delivery(
+            str(user.id),
+            order_id,
             registry,
-            expire_seconds=TRACKING_TTL_SECONDS,
+            delivered=delivered,
+            sent=sent,
+            mpesa_receipt=mpesa_receipt,
+            amount_paid=amount_paid,
         )
 
         logger.info("[ORDER_TRACK] notify_payment_received order=%s sent=%s", order_id, sent)
+        if not delivered:
+            return {
+                "success": False,
+                "order_id": order_id,
+                "sent": sent,
+                "error": "receipt_send_failed",
+                "retryable": True,
+            }
         return {"success": True, "order_id": order_id, "sent": sent}
 
     @staticmethod

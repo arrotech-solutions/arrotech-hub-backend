@@ -48,6 +48,13 @@ async def finalize_order_stk_payment(
     session_key: str = "",
 ) -> None:
     """Send payment confirmation or failure notice (idempotent per checkout attempt)."""
+    order_id = await _resolve_hub_order_id(
+        db,
+        owner_user_id,
+        order_id,
+        checkout_request_id=checkout_request_id,
+        merchant_request_id=merchant_request_id,
+    )
     if not order_id:
         return
 
@@ -275,6 +282,77 @@ async def finalize_order_stk_payment(
         logger.warning("[STK_PAY] Business alert failed for %s: %s", order_id, alert_err)
 
 
+async def _resolve_hub_order_id(
+    db: AsyncSession,
+    owner_user_id: str,
+    order_id: str,
+    *,
+    checkout_request_id: str = "",
+    merchant_request_id: str = "",
+) -> str:
+    """Pick the commerce order id from the callback, Redis, STK mapping, or registry."""
+    given = str(order_id or "").strip()
+    try:
+        uuid.UUID(str(owner_user_id))
+    except (ValueError, TypeError, AttributeError):
+        return given
+    try:
+        if given:
+            from .commerce_storage_service import CommerceStorageService
+
+            existing = await CommerceStorageService().get_order(db, owner_user_id, given)
+            registry = order_tracking_service.get_registered_order(owner_user_id, given) or {}
+            if existing is not None or registry.get("order") or registry.get("order_id") == given:
+                return given
+
+        ctx = order_tracking_service.resolve_stk_notify_context(
+            owner_user_id,
+            checkout_request_id or "",
+            merchant_request_id or "",
+        )
+        if not ctx:
+            ctx = await order_tracking_service.resolve_stk_notify_context_from_db(
+                db,
+                owner_user_id,
+                checkout_request_id or "",
+                merchant_request_id or "",
+            )
+        resolved = str((ctx or {}).get("order_id") or "").strip()
+        if resolved:
+            return resolved
+    except Exception as exc:
+        logger.warning("[STK_PAY] order resolve failed for %s: %s", given or checkout_request_id, exc)
+    return given
+
+
+def _hub_order_payload(order_id: str, registry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Build a commerce_orders upsert from the tracking registry, when it has enough fields."""
+    order = registry.get("order") if isinstance(registry.get("order"), dict) else {}
+    phone = (
+        order.get("customer_phone")
+        or registry.get("whatsapp_sender")
+        or registry.get("customer_phone")
+        or ""
+    )
+    phone = str(phone or "").strip()
+    if not phone:
+        return None
+    total = order.get("total", order.get("subtotal", registry.get("amount")))
+    if total in (None, ""):
+        return None
+    items = order.get("items") if isinstance(order.get("items"), list) else []
+    return {
+        "order_id": order_id,
+        "customer_name": order.get("customer_name") or "Customer",
+        "customer_phone": phone,
+        "delivery_method": order.get("delivery_method") or "pickup",
+        "total": total,
+        "items": items,
+        "status": order.get("status") or "pending",
+        "currency": registry.get("currency") or order.get("currency") or "KES",
+    }
+
+
 async def _sync_rails_payment_status(session_key: str, status: str) -> None:
     if not session_key:
         return
@@ -314,6 +392,12 @@ async def _reconcile_commerce_payment(
 
         storage = CommerceStorageService()
         existing = await storage.get_order(db, owner_user_id, order_id)
+        if existing is None and is_paid:
+            registry = order_tracking_service.get_registered_order(owner_user_id, order_id) or {}
+            payload = _hub_order_payload(order_id, registry)
+            if payload:
+                await storage.upsert_order(db, owner_user_id, payload)
+                existing = await storage.get_order(db, owner_user_id, order_id)
         if existing is None:
             return
         if is_paid:
