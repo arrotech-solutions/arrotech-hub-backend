@@ -157,6 +157,8 @@ def _payable_snapshot(state, stored: Optional[dict], currency: str) -> dict:
             }
         )
     fields = state.checkout_fields if state is not None else {}
+    customer_name = stored.get("customer_name") or fields.get("customer_name") or ""
+    customer_phone = stored.get("customer_phone") or fields.get("customer_phone") or ""
     return {
         "order_id": state.order_id,
         "status": stored.get("status") or "pending",
@@ -166,8 +168,9 @@ def _payable_snapshot(state, stored: Optional[dict], currency: str) -> dict:
         "total_amount": total,
         "currency": currency or "KES",
         "items": items,
-        "customer_phone": stored.get("customer_phone") or fields.get("customer_phone") or "",
-        "customer_name": stored.get("customer_name") or fields.get("customer_name") or "",
+        "customer_phone": customer_phone,
+        "customer_name": customer_name,
+        "customer": {"name": customer_name, "phone": customer_phone},
         "delivery_method": stored.get("fulfillment_method") or state.fulfillment_method or "",
     }
 

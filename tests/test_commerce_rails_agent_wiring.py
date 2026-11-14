@@ -425,6 +425,11 @@ async def test_yes_checkout_returns_payable_total_for_payment(db_session, test_u
 
     assert (result.get("response_text") or "").strip()
     assert "100" in result["response_text"]
+    alert = result.get("order_notification") or ""
+    assert "Asha" in alert
+    assert phone in alert
+    assert "Unknown" not in alert
+    assert "N/A" not in alert
     order_data = result.get("order_data") or {}
     assert order_tracking_service._order_amount(order_data) == 100.0
     register.assert_called()
@@ -485,3 +490,23 @@ async def test_request_return_uses_whatsapp_sender_not_llm_phone(db_session, tes
     row = stored.scalar_one()
     assert row.customer_phone == sender
     assert row.customer_phone != "254799999999"
+
+
+def test_business_alert_reads_flat_customer_fields():
+    agent = ConversationalAgentService()
+    alert = agent._format_business_notification(
+        {
+            "order_id": "ORD-1",
+            "customer_name": "Asha",
+            "customer_phone": "254700000001",
+            "delivery_method": "pickup",
+            "subtotal": 100,
+            "items": [],
+        },
+        "Shop",
+        "KES",
+    )
+    assert "Asha" in alert
+    assert "254700000001" in alert
+    assert "Unknown" not in alert
+    assert "N/A" not in alert

@@ -10566,6 +10566,17 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
     # NOTIFICATION FORMATTING
     # ═══════════════════════════════════════════════════════════
 
+    @staticmethod
+    def _alert_customer_name_phone(actual_order: Dict[str, Any]) -> tuple:
+        """Name and phone from nested customer or the flat rails fields."""
+        customer_block = actual_order.get("customer") if isinstance(actual_order, dict) else None
+        if not isinstance(customer_block, dict):
+            customer_block = {}
+        source = actual_order if isinstance(actual_order, dict) else {}
+        name = customer_block.get("name") or source.get("customer_name") or "Unknown"
+        phone = customer_block.get("phone") or source.get("customer_phone") or "N/A"
+        return name, phone
+
     def _format_business_notification(
         self,
         order_data: Dict[str, Any],
@@ -10576,8 +10587,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         actual_order = order_data.get("order", order_data)
         
         order_id = actual_order.get("order_id", order_data.get("order_id", "N/A"))
-        customer = actual_order.get("customer", {}).get("name", "Unknown")
-        phone = actual_order.get("customer", {}).get("phone", "N/A")
+        customer, phone = self._alert_customer_name_phone(actual_order)
         delivery = actual_order.get("delivery_method", "N/A")
         address = actual_order.get("delivery_address", "")
         table_number = actual_order.get("table_number", "")
@@ -10629,8 +10639,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         actual_order = order_data.get("order", order_data)
         
         order_id = actual_order.get("order_id", order_data.get("order_id", "N/A"))
-        customer = actual_order.get("customer", {}).get("name", "Unknown")
-        phone = actual_order.get("customer", {}).get("phone", "N/A")
+        customer, phone = self._alert_customer_name_phone(actual_order)
         total = actual_order.get("subtotal", actual_order.get("total", 0))
 
         subject = f"New Order {order_id} — {customer} ({currency} {total:,.0f})"
