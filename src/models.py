@@ -2279,3 +2279,139 @@ class CommerceReservation(Base):
 
     user = relationship("User", foreign_keys=[user_id], backref="commerce_reservations")
 
+
+class CommerceReturnStatus(str, Enum):
+    """Return request lifecycle status."""
+    REQUESTED = "requested"
+    PENDING_APPROVAL = "pending_approval"
+    APPROVED = "approved"
+    DENIED = "denied"
+    REFUND_PENDING = "refund_pending"
+    REFUNDED = "refunded"
+    SETTLED_OFFLINE = "settled_offline"
+    FAILED = "failed"
+
+
+class CommerceComplaintStatus(str, Enum):
+    """Customer complaint lifecycle status."""
+    OPEN = "open"
+    RESOLVED_SELF_SERVE = "resolved_self_serve"
+    HANDED_OFF = "handed_off"
+    CLOSED = "closed"
+
+
+class CommerceRefundMethod(str, Enum):
+    """Refund payout method."""
+    MPESA_B2C = "mpesa_b2c"
+    OFFLINE = "offline"
+
+
+class CommerceRefundAttemptStatus(str, Enum):
+    """Refund attempt outcome status."""
+    PENDING = "pending"
+    SUCCESS = "success"
+    FAILED = "failed"
+
+
+class CommercePolicy(Base):
+    """Per-merchant commerce rails policy (returns, handoff, sell modes)."""
+    __tablename__ = "commerce_policies"
+
+    user_id = Column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id"),
+        primary_key=True,
+    )
+    config = Column(JSON, nullable=False, default=dict, server_default="{}")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    user = relationship("User", foreign_keys=[user_id], backref="commerce_policy", uselist=False)
+
+
+class CommerceReturn(Base):
+    """Return request from WhatsApp commerce flows."""
+    __tablename__ = "commerce_returns"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    external_return_id = Column(String, nullable=False)
+    order_external_id = Column(String, nullable=False)
+    customer_phone = Column(String, nullable=False)
+    reason_code = Column(String, nullable=False)
+    amount = Column(Numeric(12, 2), nullable=False)
+    currency = Column(String(8), nullable=False, default="KES", server_default="KES")
+    status = Column(String, nullable=False)
+    auto_approved = Column(Boolean, nullable=False, default=False, server_default="false")
+    raw_snapshot = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "external_return_id",
+            name="uq_commerce_returns_user_external_return_id",
+        ),
+        Index("ix_commerce_returns_user_status", "user_id", "status"),
+    )
+
+    user = relationship("User", foreign_keys=[user_id], backref="commerce_returns")
+    refund_attempts = relationship(
+        "CommerceRefundAttempt",
+        back_populates="commerce_return",
+        foreign_keys="CommerceRefundAttempt.return_id",
+    )
+
+
+class CommerceComplaint(Base):
+    """Customer complaint from WhatsApp commerce flows."""
+    __tablename__ = "commerce_complaints"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    external_complaint_id = Column(String, nullable=False)
+    order_external_id = Column(String, nullable=True)
+    customer_phone = Column(String, nullable=False)
+    category = Column(String, nullable=False)
+    status = Column(String, nullable=False)
+    raw_snapshot = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "external_complaint_id",
+            name="uq_commerce_complaints_user_external_complaint_id",
+        ),
+        Index("ix_commerce_complaints_user_status", "user_id", "status"),
+    )
+
+    user = relationship("User", foreign_keys=[user_id], backref="commerce_complaints")
+
+
+class CommerceRefundAttempt(Base):
+    """M-Pesa or offline refund attempt tied to a return."""
+    __tablename__ = "commerce_refund_attempts"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    return_id = Column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("commerce_returns.id"),
+        nullable=False,
+        index=True,
+    )
+    method = Column(String, nullable=False)
+    status = Column(String, nullable=False)
+    amount = Column(Numeric(12, 2), nullable=False)
+    mpesa_receipt = Column(String, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    commerce_return = relationship(
+        "CommerceReturn",
+        back_populates="refund_attempts",
+        foreign_keys=[return_id],
+    )
+
