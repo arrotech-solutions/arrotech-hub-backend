@@ -37,6 +37,25 @@ class TestPhoneNeedsRegistration:
         assert phone_registration_is_primary_action("BANNED") is False
 
 
+class TestReverificationNeededError:
+    def test_detects_133006(self):
+        from src.utils.whatsapp_phone_status import is_reverification_needed_error
+
+        payload = {
+            "error": {
+                "message": "(#133006) Phone number re-verification needed",
+                "code": 133006,
+            }
+        }
+        assert is_reverification_needed_error(400, payload) is True
+
+    def test_other_register_errors_are_not_reverification(self):
+        from src.utils.whatsapp_phone_status import is_reverification_needed_error
+
+        payload = {"error": {"message": "(#133005) Two-step verification PIN incorrect", "code": 133005}}
+        assert is_reverification_needed_error(400, payload) is False
+
+
 class TestAlreadyDeregisteredError:
     def test_detects_invalid_parameter_when_offline(self):
         from src.utils.whatsapp_phone_status import is_already_deregistered_error

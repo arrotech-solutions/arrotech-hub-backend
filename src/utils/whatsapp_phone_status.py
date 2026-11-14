@@ -48,15 +48,26 @@ def phone_registration_is_primary_action(phone_status: Optional[str]) -> bool:
     )
 
 
+def _meta_error_parts(data: Any) -> tuple[Optional[int], str]:
+    error = data.get("error") if isinstance(data, dict) else None
+    if not isinstance(error, dict):
+        return None, ""
+    return error.get("code"), str(error.get("message") or "").lower()
+
+
+def is_reverification_needed_error(status_code: int, data: Any) -> bool:
+    """Meta (#133006): ownership OTP must be completed before /register."""
+    if status_code not in (400, 403):
+        return False
+    code, message = _meta_error_parts(data)
+    return code == 133006 or "re-verification needed" in message
+
+
 def is_already_deregistered_error(status_code: int, data: Any) -> bool:
     """Meta returns #100 when deregister is called on an already-offline number."""
     if status_code not in (400, 404):
         return False
-    error = data.get("error") if isinstance(data, dict) else None
-    if not isinstance(error, dict):
-        return False
-    code = error.get("code")
-    message = str(error.get("message") or "").lower()
+    code, message = _meta_error_parts(data)
     return code == 100 or "invalid parameter" in message
 
 
