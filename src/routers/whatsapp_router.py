@@ -19,11 +19,12 @@ from ..utils.oauth_frontend import (
 from ..services import WhatsAppService
 from ..utils.whatsapp_phone_status import (
     is_already_deregistered_error,
+    is_reverification_needed_error,
     phone_needs_cloud_registration,
     phone_registration_is_primary_action,
     resolve_phone_status_from_meta_list,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 class WhatsAppOauthRequest(BaseModel):
     code: str
@@ -36,6 +37,15 @@ class WhatsAppRegisterRequest(BaseModel):
 
 class WhatsAppDeregisterRequest(BaseModel):
     phone_number_id: str
+
+class WhatsAppRequestCodeRequest(BaseModel):
+    phone_number_id: str
+    code_method: str = Field(default="SMS", pattern="^(SMS|VOICE)$")
+    language: str = "en_US"
+
+class WhatsAppVerifyCodeRequest(BaseModel):
+    phone_number_id: str
+    code: str
 
 router = APIRouter(
     prefix="/api/whatsapp",
@@ -240,6 +250,24 @@ async def _persist_phone_status(connection: Connection, phone_status: str, db: A
     connection.config = config_data
     flag_modified(connection, "config")
     await db.commit()
+
+
+async def _get_user_whatsapp_connection(db: AsyncSession, user_id) -> Connection:
+    result = await db.execute(
+        select(Connection).filter(
+            Connection.user_id == user_id,
+            Connection.platform == "whatsapp"
+        )
+    )
+    connection = result.scalar_one_or_none()
+    if not connection or not connection.config.get("access_token"):
+        raise HTTPException(status_code=400, detail="WhatsApp connection not found or incomplete.")
+    return connection
+
+
+def _decrypt_wa_token(connection: Connection) -> str:
+    from ..utils.secret_encryption import decrypt_value
+    return decrypt_value(connection.config.get("access_token"))
 
 
 async def _exchange_code_and_discover(
@@ -612,6 +640,76 @@ async def manual_connect(
     except Exception as e:
         logger.error(f"Manual connect error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+@router.post("/request-code")
+async def request_whatsapp_verification_code(
+    request: WhatsAppRequestCodeRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send SMS/VOICE ownership OTP to the business phone (Meta request_code)."""
+    connection = await _get_user_whatsapp_connection(db, user.id)
+    access_token = _decrypt_wa_token(connection)
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        url = f"{FACEBOOK_GRAPH_URL}/{request.phone_number_id}/request_code"
+        response = await client.post(
+            url,
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={
+                "code_method": request.code_method,
+                "language": request.language,
+            },
+        )
+        data = response.json() if response.content else {}
+        if response.status_code != 200:
+            logger.error(f"Failed to request WhatsApp verification code: {data}")
+            error_msg = data.get("error", {}).get("message", "") if isinstance(data.get("error"), dict) else str(data)
+            # Already verified — tenant can proceed to PIN register.
+            err_code = data.get("error", {}).get("code") if isinstance(data.get("error"), dict) else None
+            if err_code == 136024 or "already verified" in str(error_msg).lower():
+                return {
+                    "success": True,
+                    "already_verified": True,
+                    "message": "Phone number is already verified. Continue with registration PIN.",
+                }
+            raise HTTPException(status_code=400, detail=f"Failed to request verification code: {error_msg}")
+
+    return {
+        "success": True,
+        "message": f"Verification code sent via {request.code_method}.",
+        "code_method": request.code_method,
+    }
+
+
+@router.post("/verify-code")
+async def verify_whatsapp_verification_code(
+    request: WhatsAppVerifyCodeRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Confirm ownership OTP (Meta verify_code) before Cloud API register."""
+    connection = await _get_user_whatsapp_connection(db, user.id)
+    access_token = _decrypt_wa_token(connection)
+    code = "".join(ch for ch in (request.code or "") if ch.isdigit())
+    if len(code) < 4:
+        raise HTTPException(status_code=400, detail="Enter the verification code from SMS or call.")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        url = f"{FACEBOOK_GRAPH_URL}/{request.phone_number_id}/verify_code"
+        response = await client.post(
+            url,
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"code": code},
+        )
+        data = response.json() if response.content else {}
+        if response.status_code != 200:
+            logger.error(f"Failed to verify WhatsApp code: {data}")
+            error_msg = data.get("error", {}).get("message", "") if isinstance(data.get("error"), dict) else str(data)
+            raise HTTPException(status_code=400, detail=f"Failed to verify code: {error_msg}")
+
+    return {"success": True, "message": "Phone number verified. Continue with registration PIN."}
+
+
 @router.post("/register-phone")
 async def register_whatsapp_phone(
     request: WhatsAppRegisterRequest,
@@ -619,20 +717,8 @@ async def register_whatsapp_phone(
     db: AsyncSession = Depends(get_db)
 ):
     """Register the phone number with Meta Cloud API using the provided PIN."""
-    result = await db.execute(
-        select(Connection).filter(
-            Connection.user_id == user.id,
-            Connection.platform == "whatsapp"
-        )
-    )
-    connection = result.scalar_one_or_none()
-    
-    if not connection or not connection.config.get("access_token"):
-        raise HTTPException(status_code=400, detail="WhatsApp connection not found or incomplete.")
-        
-    from ..utils.secret_encryption import decrypt_value
-
-    access_token = decrypt_value(connection.config.get("access_token"))
+    connection = await _get_user_whatsapp_connection(db, user.id)
+    access_token = _decrypt_wa_token(connection)
     
     # Send registration request to Meta
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -654,6 +740,15 @@ async def register_whatsapp_phone(
         if response.status_code != 200:
             logger.error(f"Failed to register WhatsApp phone: {data}")
             error_msg = data.get('error', {}).get('message', '') if isinstance(data.get('error'), dict) else str(data)
+            if is_reverification_needed_error(response.status_code, data):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": f"Failed to register phone number: {error_msg}",
+                        "error_code": 133006,
+                        "needs_verification": True,
+                    },
+                )
             raise HTTPException(status_code=400, detail=f"Failed to register phone number: {error_msg}")
             
         await _persist_phone_status(connection, "CONNECTED", db)
@@ -667,20 +762,8 @@ async def deregister_whatsapp_phone(
     db: AsyncSession = Depends(get_db)
 ):
     """Deregister the phone number with Meta Cloud API."""
-    result = await db.execute(
-        select(Connection).filter(
-            Connection.user_id == user.id,
-            Connection.platform == "whatsapp"
-        )
-    )
-    connection = result.scalar_one_or_none()
-    
-    if not connection or not connection.config.get("access_token"):
-        raise HTTPException(status_code=400, detail="WhatsApp connection not found or incomplete.")
-        
-    from ..utils.secret_encryption import decrypt_value
-
-    access_token = decrypt_value(connection.config.get("access_token"))
+    connection = await _get_user_whatsapp_connection(db, user.id)
+    access_token = _decrypt_wa_token(connection)
     
     # Send deregistration request to Meta
     async with httpx.AsyncClient(timeout=30.0) as client:
