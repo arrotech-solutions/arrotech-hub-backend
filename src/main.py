@@ -381,10 +381,12 @@ from .routers.catalog_builder_router import router as catalog_builder_router
 from .routers.catalog_router import router as catalog_router
 from .routers.commerce_orders_router import router as commerce_orders_router
 from .routers.commerce_policy_router import router as commerce_policy_router
+from .routers.commerce_returns_router import router as commerce_returns_router
 main_router.include_router(catalog_builder_router)
 main_router.include_router(catalog_router)
 main_router.include_router(commerce_orders_router)
 main_router.include_router(commerce_policy_router)
+main_router.include_router(commerce_returns_router)
 from .routers.rent_collection_router import router as rent_collection_router
 main_router.include_router(rent_collection_router)
 
