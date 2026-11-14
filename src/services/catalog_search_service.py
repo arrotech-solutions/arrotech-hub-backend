@@ -71,6 +71,20 @@ def is_browse_all_catalog_query(query: str) -> bool:
         return False
     return bool(_BROWSE_ALL_RE.search(q))
 
+
+def _is_sellable_catalog_product(product: CatalogProduct) -> bool:
+    """In stock (or an equivalent label) with unknown quantity or quantity above zero."""
+    token = " ".join(
+        (product.availability or "").strip().lower().replace("_", " ").split()
+    )
+    compact = token.replace(" ", "")
+    if token not in {"in stock", "available"} and compact not in {"instock", "available"}:
+        return False
+    quantity = product.quantity
+    if quantity is None:
+        return True
+    return quantity > 0
+
 _SYNONYM_MAP: dict[str, frozenset[str]] = {}
 for _group in _SYNONYM_GROUPS:
     for _token in _group:
@@ -245,10 +259,10 @@ class CatalogSearchService:
         if not products:
             return []
 
-        # Browse Catalog / "show me what you have" → list inventory.
+        # Browse Catalog / "show me what you have" → list sellable inventory.
         if is_browse_all_catalog_query(query):
             listed = sorted(
-                products,
+                (product for product in products if _is_sellable_catalog_product(product)),
                 key=lambda p: ((p.name or "").lower(), str(p.id)),
             )
             return [_result(product, 1.0) for product in listed[:top_k]]

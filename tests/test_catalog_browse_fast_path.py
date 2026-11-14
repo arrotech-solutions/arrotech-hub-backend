@@ -87,6 +87,188 @@ async def test_browse_catalog_fast_path_empty_catalog_is_honest(db_session):
 
 
 @pytest.mark.asyncio
+async def test_browse_fast_path_cards_skip_unsellable(db_session):
+    """Browse cards include in-stock qty and omit qty 0 and out-of-stock."""
+    from src.services.catalog_service import CatalogService
+    from src.services.conversational_agent_service import ConversationalAgentService
+
+    user = _user("browse-sellable@test.com")
+    db_session.add(user)
+    await db_session.commit()
+    svc = CatalogService()
+    await svc.create_product(
+        db_session,
+        user.id,
+        {
+            "name": "Nike Air Max",
+            "Price": "8500",
+            "Category": "Footwear",
+            "SKU": "SELL-1",
+            "Availability": "in_stock",
+            "quantity": "3",
+        },
+    )
+    await svc.create_product(
+        db_session,
+        user.id,
+        {
+            "name": "Zero Stock Samba",
+            "Price": "7200",
+            "Category": "Footwear",
+            "SKU": "ZERO-1",
+            "Availability": "in_stock",
+            "quantity": "0",
+        },
+    )
+    await svc.create_product(
+        db_session,
+        user.id,
+        {
+            "name": "Sold Out Puma",
+            "Price": "6000",
+            "Category": "Footwear",
+            "SKU": "OOS-1",
+            "Availability": "out_of_stock",
+            "quantity": "4",
+        },
+    )
+
+    agent = ConversationalAgentService()
+    agent._save_to_ccm = AsyncMock()
+
+    async def _display(*, products, **_kwargs):
+        return {
+            "success": True,
+            "cards": [{"id": product["id"]} for product in products],
+            "cards_sent": len(products),
+        }
+
+    agent._sub_display_product_cards = _display
+
+    result = await agent._browse_catalog_fast_path(
+        session_key=f"ccm:whatsapp:{user.id}:254700000002",
+        user_message="I'd like to browse your catalog/products. Please show me what you have.",
+        catalog_word="catalog",
+        currency="KES",
+        business_name="Arrotech Shop",
+        order_type="ecommerce",
+        user=user,
+        db=db_session,
+    )
+
+    assert [card["id"] for card in result["cards"]] == ["SELL-1"]
+    assert "empty" not in result["response_text"].lower()
+
+
+@pytest.mark.asyncio
+async def test_browse_fast_path_unsellable_only_is_empty(db_session):
+    """A successful browse of only unsellable rows says the catalog is empty."""
+    from src.services.catalog_service import CatalogService
+    from src.services.conversational_agent_service import ConversationalAgentService
+
+    user = _user("browse-unsellable-only@test.com")
+    db_session.add(user)
+    await db_session.commit()
+    await CatalogService().create_product(
+        db_session,
+        user.id,
+        {
+            "name": "Sold Out Puma",
+            "Price": "6000",
+            "Category": "Footwear",
+            "SKU": "OOS-1",
+            "Availability": "out_of_stock",
+            "quantity": "4",
+        },
+    )
+
+    agent = ConversationalAgentService()
+    agent._save_to_ccm = AsyncMock()
+    agent._sub_display_product_cards = AsyncMock(
+        return_value={"success": True, "cards": [{"id": "OOS-1"}], "cards_sent": 1}
+    )
+
+    result = await agent._browse_catalog_fast_path(
+        session_key=f"ccm:whatsapp:{user.id}:254700000003",
+        user_message="browse catalog",
+        catalog_word="catalog",
+        currency="KES",
+        business_name="Arrotech Shop",
+        order_type="ecommerce",
+        user=user,
+        db=db_session,
+    )
+
+    assert "empty" in result["response_text"].lower()
+    assert result["cards"] == []
+    agent._sub_display_product_cards.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_browse_fast_path_search_error_is_not_empty_catalog(db_session):
+    """A failed browse search must not claim the catalog is empty."""
+    from src.services.conversational_agent_service import ConversationalAgentService
+
+    user = _user("browse-error@test.com")
+    agent = ConversationalAgentService()
+    agent._save_to_ccm = AsyncMock()
+    agent._search_arrotech_catalog_products = AsyncMock(
+        return_value={"success": False, "result": "Search error: db down"}
+    )
+
+    result = await agent._browse_catalog_fast_path(
+        session_key=f"ccm:whatsapp:{user.id}:254700000004",
+        user_message="browse catalog",
+        catalog_word="catalog",
+        currency="KES",
+        business_name="Arrotech Shop",
+        order_type="ecommerce",
+        user=user,
+        db=db_session,
+    )
+
+    text = result["response_text"].lower()
+    assert "empty" not in text
+    assert "nothing is listed" not in text
+    assert "try again" in text
+    assert result["cards"] == []
+    assert result["human_handoff"] is False
+    assert result["actions_taken"] == [
+        {"tool": "search_products", "result_summary": "browse_error"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_browse_fast_path_search_exception_is_not_empty_catalog(db_session):
+    """An exception from browse search uses the error reply, not the empty reply."""
+    from src.services.conversational_agent_service import ConversationalAgentService
+
+    user = _user("browse-raise@test.com")
+    agent = ConversationalAgentService()
+    agent._save_to_ccm = AsyncMock()
+    agent._search_arrotech_catalog_products = AsyncMock(
+        side_effect=RuntimeError("catalog db unavailable")
+    )
+
+    result = await agent._browse_catalog_fast_path(
+        session_key=f"ccm:whatsapp:{user.id}:254700000005",
+        user_message="browse catalog",
+        catalog_word="catalog",
+        currency="KES",
+        business_name="Arrotech Shop",
+        order_type="ecommerce",
+        user=user,
+        db=db_session,
+    )
+
+    text = result["response_text"].lower()
+    assert "empty" not in text
+    assert "try again" in text
+    assert result["cards"] == []
+    assert result["actions_taken"][0]["result_summary"] == "browse_error"
+
+
+@pytest.mark.asyncio
 async def test_search_arrotech_catalog_no_match_forbids_escalation(db_session, monkeypatch):
     from src.services.catalog_service import CatalogService
     from src.services.conversational_agent_service import ConversationalAgentService

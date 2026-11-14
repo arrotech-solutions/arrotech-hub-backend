@@ -4856,6 +4856,24 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             "send_rent_buttons": send_rent_buttons,
         }
 
+    async def _browse_catalog_error_result(
+        self,
+        session_key: str,
+        catalog_word: str,
+        business_name: str,
+    ) -> Dict[str, Any]:
+        """Search failed. Do not claim the catalog is empty."""
+        reply = (
+            f"I couldn't load our {catalog_word} just now. "
+            f"Please try again in a moment, or message {business_name} if you still need help."
+        )
+        return await self._cart_fast_path_result(
+            session_key,
+            reply,
+            actions_taken=[{"tool": "search_products", "result_summary": "browse_error"}],
+            send_cart_buttons=True,
+        )
+
     async def _browse_catalog_fast_path(
         self,
         *,
@@ -4869,7 +4887,17 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         db: AsyncSession,
     ) -> Dict[str, Any]:
         """Deterministic Browse Catalog: search + send cards without LLM tool loops."""
-        search = await self._search_arrotech_catalog_products(user_message, user, db)
+        try:
+            search = await self._search_arrotech_catalog_products(user_message, user, db)
+        except Exception as exc:
+            logger.error("[CONV_AGENT] Browse catalog search failed: %s", exc)
+            return await self._browse_catalog_error_result(session_key, catalog_word, business_name)
+        if not search.get("success"):
+            logger.error(
+                "[CONV_AGENT] Browse catalog search failed: %s",
+                search.get("result"),
+            )
+            return await self._browse_catalog_error_result(session_key, catalog_word, business_name)
         products = (search.get("data") or {}).get("products") or []
         if not products:
             reply = (
