@@ -17,6 +17,12 @@ from ..utils.oauth_frontend import (
     with_frontend_origin,
 )
 from ..services import WhatsAppService
+from ..utils.whatsapp_phone_status import (
+    is_already_deregistered_error,
+    phone_needs_cloud_registration,
+    phone_registration_is_primary_action,
+    resolve_phone_status_from_meta_list,
+)
 from pydantic import BaseModel
 
 class WhatsAppOauthRequest(BaseModel):
@@ -205,8 +211,17 @@ async def embedded_oauth_callback(
             phone_status=phone_status,
             auth_type="embedded_signup"
         )
-        
-        return {"success": True, "message": "WhatsApp Business connected successfully"}
+
+        # Embedded Signup verifies ownership + links WABA; it does NOT register
+        # the number for Cloud API messaging. Tenants still need /register-phone.
+        # Meta statuses include DISCONNECTED (Manager: Offline), PENDING, etc.
+        return {
+            "success": True,
+            "message": "WhatsApp Business connected successfully",
+            "phone_status": phone_status,
+            "needs_registration": phone_registration_is_primary_action(phone_status),
+            "messaging_ready": not phone_needs_cloud_registration(phone_status),
+        }
 
     except HTTPException:
         raise
@@ -216,6 +231,16 @@ async def embedded_oauth_callback(
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
+
+async def _persist_phone_status(connection: Connection, phone_status: str, db: AsyncSession) -> None:
+    from sqlalchemy.orm.attributes import flag_modified
+
+    config_data = dict(connection.config or {})
+    config_data["phone_status"] = phone_status
+    connection.config = config_data
+    flag_modified(connection, "config")
+    await db.commit()
+
 
 async def _exchange_code_and_discover(
     code: str,
@@ -465,7 +490,8 @@ async def _upsert_whatsapp_connection(
 @router.get("/phone-numbers")
 async def get_whatsapp_phone_numbers(
     user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    persist_status: bool = False,
 ):
     """Fetch phone numbers registered to the user's WABA ID."""
     result = await db.execute(
@@ -496,7 +522,20 @@ async def get_whatsapp_phone_numbers(
             )
             data = resp.json()
             if resp.status_code == 200:
-                return {"success": True, "data": data.get("data", [])}
+                phones = data.get("data", [])
+                live_status = resolve_phone_status_from_meta_list(
+                    phones, connection.config.get("phone_number_id")
+                )
+                if persist_status and connection.config.get("phone_status") != live_status:
+                    await _persist_phone_status(connection, live_status, db)
+                effective_status = connection.config.get("phone_status") or live_status
+                return {
+                    "success": True,
+                    "data": phones,
+                    "phone_status": effective_status,
+                    "needs_registration": phone_registration_is_primary_action(effective_status),
+                    "messaging_ready": not phone_needs_cloud_registration(effective_status),
+                }
             else:
                 logger.error(f"Failed to fetch phone numbers: {data}")
                 return {"success": False, "data": []}
@@ -509,8 +548,8 @@ async def sync_whatsapp_phone_numbers(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Force re-fetch of phone numbers for the WA connection."""
-    result = await get_whatsapp_phone_numbers(user, db)
+    """Force re-fetch of phone numbers and persist Meta phone_status on the connection."""
+    result = await get_whatsapp_phone_numbers(user, db, persist_status=True)
     return result
 
 
@@ -617,11 +656,7 @@ async def register_whatsapp_phone(
             error_msg = data.get('error', {}).get('message', '') if isinstance(data.get('error'), dict) else str(data)
             raise HTTPException(status_code=400, detail=f"Failed to register phone number: {error_msg}")
             
-        # Update connection config to mark phone as connected
-        config_data = connection.config.copy()
-        config_data["phone_status"] = "CONNECTED"
-        connection.config = config_data
-        await db.commit()
+        await _persist_phone_status(connection, "CONNECTED", db)
         
         return {"success": True, "message": "Phone number successfully registered"}
 
@@ -661,14 +696,31 @@ async def deregister_whatsapp_phone(
         data = response.json() if response.content else {}
         
         if response.status_code != 200:
+            # Already offline on Meta: treat as success so Hub flips to Register.
+            if is_already_deregistered_error(response.status_code, data):
+                logger.info(
+                    "WhatsApp deregister no-op (already offline) for phone_number_id=%s: %s",
+                    request.phone_number_id,
+                    data,
+                )
+                await _persist_phone_status(connection, "PENDING", db)
+                return {
+                    "success": True,
+                    "message": "Phone number is already offline. Complete registration to go live again.",
+                    "phone_status": "PENDING",
+                    "needs_registration": True,
+                    "already_offline": True,
+                }
+
             logger.error(f"Failed to deregister WhatsApp phone: {data}")
             error_msg = data.get('error', {}).get('message', '') if isinstance(data.get('error'), dict) else str(data)
             raise HTTPException(status_code=400, detail=f"Failed to deregister phone number: {error_msg}")
             
-        # Update connection config to mark phone as PENDING
-        config_data = connection.config.copy()
-        config_data["phone_status"] = "PENDING"
-        connection.config = config_data
-        await db.commit()
+        await _persist_phone_status(connection, "PENDING", db)
         
-        return {"success": True, "message": "Phone number successfully deregistered"}
+        return {
+            "success": True,
+            "message": "Phone number successfully deregistered",
+            "phone_status": "PENDING",
+            "needs_registration": True,
+        }
