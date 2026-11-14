@@ -349,3 +349,139 @@ async def test_catalog_and_order_cas_are_single_conditional_updates(db_session, 
     await db_session.refresh(order)
     assert int(product.quantity) == 4
     assert order.status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_yes_checkout_returns_payable_total_for_payment(db_session, test_user):
+    """YES places the rails order, tells the customer the total, and registers it for STK."""
+    from src.services.order_tracking_service import order_tracking_service
+
+    product = CatalogProduct(
+        user_id=test_user.id,
+        name="Tea",
+        price=Decimal("100.00"),
+        description="Tea",
+        category="drinks",
+        sku="TEA-YES",
+        brand="Shop",
+        quantity=Decimal("5"),
+        unit="pcs",
+        condition="new",
+        image_url="",
+        availability="in_stock",
+        search_text="tea",
+    )
+    db_session.add(product)
+    await db_session.commit()
+    await db_session.refresh(product)
+
+    phone = "254700000001"
+    session_key = f"ccm:whatsapp:{test_user.id}:{phone}"
+    session = _session(session_key, str(test_user.id), phone)
+    session.metadata = {
+        "welcome_sent": True,
+        "preferred_language": "en",
+        "awaiting_order_confirmation": True,
+        "order_confirmed": True,
+        "checkout_customer": {
+            "name": "Asha",
+            "phone": phone,
+            "delivery_method": "pickup",
+        },
+        "pending_confirmation": {
+            "items": [
+                {
+                    "id": str(product.id),
+                    "name": "Tea",
+                    "quantity": 1,
+                    "unit_price": 1,
+                }
+            ]
+        },
+        "commerce_rails_state": {
+            "cart_lines": [{"product_id": str(product.id), "qty": 1}],
+            "fulfillment_method": "pickup",
+            "checkout_fields": {"customer_name": "Asha", "customer_phone": phone},
+            "phase": "checkout",
+        },
+    }
+    agent = ConversationalAgentService()
+    patches = _bind_session(session)
+
+    with patches[0], patches[1], patches[2], patch.object(
+        order_tracking_service, "register_order", wraps=order_tracking_service.register_order
+    ) as register:
+        result = await agent.execute(
+            user_message="YES",
+            session_key=session_key,
+            business_config={
+                "order_type": "retail",
+                "commerce_rails_enabled": True,
+                "business_name": "Shop",
+            },
+            user=test_user,
+            db=db_session,
+        )
+
+    assert (result.get("response_text") or "").strip()
+    assert "100" in result["response_text"]
+    order_data = result.get("order_data") or {}
+    assert order_tracking_service._order_amount(order_data) == 100.0
+    register.assert_called()
+    snapshot = register.call_args.args[3]
+    assert order_tracking_service._order_amount(snapshot) == 100.0
+    assert register.call_args.args[2] == phone
+
+    await db_session.refresh(product)
+    assert int(product.quantity) == 4
+    stored = await db_session.execute(
+        select(CommerceOrder).where(CommerceOrder.user_id == test_user.id)
+    )
+    saved = stored.scalar_one()
+    assert saved.total == Decimal("100.00")
+
+
+@pytest.mark.asyncio
+async def test_request_return_uses_whatsapp_sender_not_llm_phone(db_session, test_user):
+    now = datetime.now(timezone.utc)
+    order = CommerceOrder(
+        user_id=test_user.id,
+        external_order_id="ORD-PHONE-1",
+        customer_name="Asha",
+        customer_phone="254700000001",
+        status="delivered",
+        payment_status="paid",
+        currency="KES",
+        total=Decimal("500.00"),
+        line_items=[{"product_id": "tea", "qty": 1, "name": "Tea", "unit_price": "500.00"}],
+        delivery_method="pickup",
+        created_at=now,
+    )
+    db_session.add(order)
+    await db_session.commit()
+
+    agent = ConversationalAgentService()
+    sender = "254700000001"
+    session_key = f"ccm:whatsapp:{test_user.id}:{sender}"
+    result = await _tool(
+        agent,
+        test_user,
+        db_session,
+        session_key,
+        "request_return",
+        {
+            "order_external_id": "ORD-PHONE-1",
+            "phone": "254799999999",
+            "customer_phone": "254799999999",
+            "reason_code": "damaged",
+            "amount": "100.00",
+        },
+    )
+
+    assert result.get("success") is True
+    stored = await db_session.execute(
+        select(CommerceReturn).where(CommerceReturn.user_id == test_user.id)
+    )
+    row = stored.scalar_one()
+    assert row.customer_phone == sender
+    assert row.customer_phone != "254799999999"

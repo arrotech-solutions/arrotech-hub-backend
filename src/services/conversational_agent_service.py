@@ -2211,8 +2211,23 @@ class ConversationalAgentService:
                             # BUT save a hidden context to the CCM so the LLM knows the order ID for M-Pesa payments!
                             hidden_context = f"[SYSTEM: Order {order_data.get('order_id')} was successfully created. Do not mention this to the user.]"
                             await self._save_to_ccm(session_key, "assistant", hidden_context)
-                            
-                            final_text = ""
+
+                            confirmation = (
+                                tool_result.get("verbatim_customer_message")
+                                or tool_result.get("result")
+                                or ""
+                            )
+                            if not str(confirmation).strip():
+                                payable = (
+                                    order_data.get("total")
+                                    or order_data.get("subtotal")
+                                    or 0
+                                )
+                                confirmation = (
+                                    f"Order {order_data.get('order_id')} is placed. "
+                                    f"Total {currency} {payable}. Payment is still pending."
+                                )
+                            final_text = str(confirmation).strip()
                             return {
                                 "response_text": final_text,
                                 "image_urls": [],
@@ -2926,7 +2941,12 @@ class ConversationalAgentService:
 
             final_text = self._format_for_channel(final_text, platform)
 
-            if order_created and getattr(settings, "ORDER_TRACKING_ENABLED", True):
+            if forced_manual_message:
+                # Rails place and manual payment copy must reach the customer.
+                # Tracking still has the payable total for a later STK lookup.
+                final_text = forced_manual_message
+                await self._save_to_ccm(session_key, "assistant", final_text)
+            elif order_created and getattr(settings, "ORDER_TRACKING_ENABLED", True):
                 # Let the order tracking service handle all confirmations and payment buttons.
                 # Suppress the LLM's response to prevent double-prompting.
                 # BUT save a hidden context to the CCM so the LLM knows the order ID for M-Pesa payments!
@@ -2934,11 +2954,6 @@ class ConversationalAgentService:
                 hidden_context = f"[SYSTEM: Order {oid} was successfully created. Do not mention this to the user.]"
                 await self._save_to_ccm(session_key, "assistant", hidden_context)
                 final_text = ""
-            elif forced_manual_message:
-                # Deliver manual M-Pesa payment instructions verbatim (no STK).
-                # (Skip when an order was just created — the tracking service prompts instead.)
-                final_text = forced_manual_message
-                await self._save_to_ccm(session_key, "assistant", final_text)
             else:
                 await self._save_to_ccm(session_key, "assistant", final_text)
 
@@ -5217,13 +5232,23 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             # another person's orders (and trigger their payment) simply by
             # entering a different number (IDOR / data leak). ──
             if default_customer_phone:
-                if tool_name in ("create_order", "validate_order", "cancel_order", "get_user_orders", "create_reservation"):
-                    if arguments.get("customer_phone") and arguments.get("customer_phone") != default_customer_phone:
+                if tool_name in (
+                    "create_order",
+                    "validate_order",
+                    "cancel_order",
+                    "get_user_orders",
+                    "create_reservation",
+                    "request_return",
+                    "request_complaint",
+                ):
+                    supplied = arguments.get("phone") or arguments.get("customer_phone")
+                    if supplied and supplied != default_customer_phone:
                         logger.warning(
                             "[CONV_AGENT] 🔒 Overriding %s customer_phone %r → sender %r",
-                            tool_name, arguments.get("customer_phone"), default_customer_phone,
+                            tool_name, supplied, default_customer_phone,
                         )
                     arguments["customer_phone"] = default_customer_phone
+                    arguments["phone"] = default_customer_phone
                 elif tool_name == "initiate_mpesa_payment":
                     order_id = str(arguments.get("order_id") or "").strip()
                     requested = arguments.get("phone_number") or ""
@@ -6566,6 +6591,52 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 "error": "RESERVATION_ERROR",
             }
 
+    async def _register_rails_order_for_payment(
+        self,
+        *,
+        order_data: Any,
+        arguments: Dict[str, Any],
+        user: User,
+        session_key: str,
+        business_name: str,
+        business_phone: str,
+        currency: str,
+    ) -> None:
+        """Put the payable total where the existing STK lookup already reads it."""
+        if not isinstance(order_data, dict) or not order_data.get("order_id"):
+            return
+        notify_phone = (
+            arguments.get("customer_phone")
+            or order_data.get("customer_phone")
+            or ""
+        )
+        if notify_phone and user:
+            from .order_tracking_service import order_tracking_service
+
+            order_tracking_service.register_order(
+                str(user.id),
+                order_data["order_id"],
+                notify_phone,
+                order_data,
+                business_name=business_name,
+                business_phone=business_phone,
+                currency=currency,
+            )
+        if not session_key:
+            return
+        try:
+            session = await context_manager.get_session_by_key(session_key)
+            if session:
+                by_id = dict(session.metadata.get("orders_by_id") or {})
+                by_id[order_data["order_id"]] = order_data
+                await context_manager.update_session_metadata(
+                    session_key, {"orders_by_id": by_id}
+                )
+        except Exception as sess_err:
+            logger.warning(
+                "[CONV_AGENT] Failed to cache rails order in session: %s", sess_err
+            )
+
     async def _sub_create_order(
         self,
         arguments: Dict[str, Any],
@@ -6596,6 +6667,16 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 currency=currency,
             )
             if routed is not None:
+                if routed.get("success"):
+                    await self._register_rails_order_for_payment(
+                        order_data=routed.get("order_data"),
+                        arguments=arguments,
+                        user=user,
+                        session_key=session_key,
+                        business_name=business_name,
+                        business_phone=business_phone,
+                        currency=currency,
+                    )
                 return routed
 
             from .whatsapp_ordering_helpers import is_order_confirmation_message

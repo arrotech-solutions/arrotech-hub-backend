@@ -111,6 +111,74 @@ def _message_for(code: str) -> str:
     return text.strip() or SAFE_FAILURE
 
 
+def whatsapp_sender_phone(session_key: str) -> str:
+    """Phone from a WhatsApp session key. Empty when the key is not that shape."""
+    parts = str(session_key or "").split(":")
+    if len(parts) >= 4 and parts[0] == "ccm" and parts[1] == "whatsapp":
+        return str(parts[3] or "").strip()
+    return ""
+
+
+def _money_float(value: Any) -> float:
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if amount < 0:
+        return 0.0
+    return round(amount, 2)
+
+
+def _format_amount(value: Any) -> str:
+    amount = _money_float(value)
+    if amount == int(amount):
+        return str(int(amount))
+    return f"{amount:.2f}"
+
+
+def _payable_snapshot(state, stored: Optional[dict], currency: str) -> dict:
+    """Order dict the existing STK and tracking lookups already understand."""
+    stored = stored or {}
+    total = _money_float(stored.get("total"))
+    items = []
+    for line in stored.get("line_items") or []:
+        if not isinstance(line, dict):
+            continue
+        qty = line.get("quantity", line.get("qty", 1))
+        unit = _money_float(line.get("unit_price") if line.get("unit_price") is not None else line.get("price"))
+        items.append(
+            {
+                "name": line.get("name") or "",
+                "product_id": line.get("product_id"),
+                "quantity": qty,
+                "qty": qty,
+                "unit_price": unit,
+                "price": unit,
+            }
+        )
+    fields = state.checkout_fields if state is not None else {}
+    return {
+        "order_id": state.order_id,
+        "status": stored.get("status") or "pending",
+        "payment_status": stored.get("payment_status") or state.payment_status or "pending",
+        "total": total,
+        "subtotal": total,
+        "total_amount": total,
+        "currency": currency or "KES",
+        "items": items,
+        "customer_phone": stored.get("customer_phone") or fields.get("customer_phone") or "",
+        "customer_name": stored.get("customer_name") or fields.get("customer_name") or "",
+        "delivery_method": stored.get("fulfillment_method") or state.fulfillment_method or "",
+    }
+
+
+def _customer_phone(session_key: str, arguments: dict) -> str:
+    sender = whatsapp_sender_phone(session_key)
+    if sender:
+        return sender
+    return str(arguments.get("phone") or arguments.get("customer_phone") or "").strip()
+
+
 def _tool_result(ok: bool, message: str, **extra: Any) -> dict:
     text = (message or "").strip() or SAFE_FAILURE
     payload = {
@@ -337,16 +405,15 @@ async def _dispatch(
         return _fail(str(result.get("error_code") or "persist_failed"))
 
     effects = list(result.get("effects") or [])
-    message = _success_text(tool_name, state, arguments, currency, effects)
     extra: dict[str, Any] = {"effects": effects, "rails": True}
+    payable = None
     if state.order_id and tool_name == "create_order":
-        extra["order_data"] = {
-            "order_id": state.order_id,
-            "status": "pending",
-            "payment_status": state.payment_status or "pending",
-        }
+        stored = await orders.get_order(state.order_id)
+        extra["order_data"] = _payable_snapshot(state, stored, currency)
+        payable = extra["order_data"].get("total")
     if tool_name == "cancel_order":
         extra["cancellation_data"] = {"order_id": state.order_id, "status": "cancelled"}
+    message = _success_text(tool_name, state, arguments, currency, effects, payable=payable)
     return _tool_result(True, message, **extra)
 
 
@@ -468,7 +535,7 @@ async def _return_tool(db, user_id, session_key, arguments) -> dict:
         {
             "type": "request_return",
             "order_external_id": arguments.get("order_external_id") or arguments.get("order_id"),
-            "phone": arguments.get("phone") or arguments.get("customer_phone"),
+            "phone": _customer_phone(session_key, arguments),
             "reason_code": arguments.get("reason_code"),
             "amount": arguments.get("amount"),
         },
@@ -524,7 +591,7 @@ async def _complaint_tool(db, user_id, session_key, arguments) -> dict:
         state,
         {
             "type": "request_complaint",
-            "phone": arguments.get("phone") or arguments.get("customer_phone"),
+            "phone": _customer_phone(session_key, arguments),
             "category": arguments.get("category"),
             "order_external_id": arguments.get("order_external_id"),
             "detail": arguments.get("detail"),
@@ -568,10 +635,12 @@ async def _handoff_tool(session_key, escalate) -> dict:
     return result
 
 
-def _success_text(tool_name, state, arguments, currency, effects) -> str:
+def _success_text(tool_name, state, arguments, currency, effects, payable=None) -> str:
     if tool_name == "create_order":
+        amount = _format_amount(payable)
         return (
-            f"Order {state.order_id} is placed. Payment is still pending."
+            f"Order {state.order_id} is placed. "
+            f"Total {currency} {amount}. Payment is still pending."
         )
     if tool_name == "cancel_order":
         return f"Order {state.order_id} is cancelled."
