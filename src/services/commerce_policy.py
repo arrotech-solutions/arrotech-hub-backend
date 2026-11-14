@@ -231,6 +231,61 @@ async def _load_stored_config(
     return dict(config) if isinstance(config, dict) else {}
 
 
+def _clock_minutes(value: Any) -> Optional[int]:
+    parts = str(value or "").strip().split(":")
+    if len(parts) < 2:
+        return None
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError:
+        return None
+    if hour == 24 and minute == 0:
+        return 24 * 60
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return hour * 60 + minute
+
+
+def _shop_open_now(hours: Dict[str, Any], now) -> bool:
+    day = now.strftime("%A").lower()
+    window = hours.get(day)
+    if not isinstance(window, dict):
+        return False
+    opening = _clock_minutes(window.get("open"))
+    closing = _clock_minutes(window.get("close"))
+    if opening is None or closing is None:
+        return False
+    current = now.hour * 60 + now.minute
+    if closing < opening:
+        return current >= opening or current <= closing
+    return opening <= current <= closing
+
+
+def away_message_if_closed(policy: Dict[str, Any], now=None) -> Optional[str]:
+    """Customer text when commerce hours say the shop is closed.
+
+    An empty ``business_hours`` object means hours are not configured, so the
+    shop stays open. Nairobi is the ordering clock.
+    """
+    if not isinstance(policy, dict):
+        return None
+    hours = policy.get("business_hours") or {}
+    if not isinstance(hours, dict) or not hours:
+        return None
+    if now is None:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        now = datetime.now(ZoneInfo("Africa/Nairobi"))
+    if _shop_open_now(hours, now):
+        return None
+    message = str(policy.get("away_message") or "").strip()
+    if not message:
+        message = "The shop is closed right now. Please message again during opening hours."
+    return message
+
+
 async def get_policy(db: AsyncSession, user_id: UUID) -> Dict[str, Any]:
     """Return effective policy (defaults merged with stored overrides)."""
     stored = await _load_stored_config(db, user_id)

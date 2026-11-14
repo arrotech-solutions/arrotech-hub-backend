@@ -1007,6 +1007,25 @@ class ConversationalAgentService:
                     "actions_taken": [{"tool": "guard", "result_summary": "injection_blocked"}],
                 }
 
+            if rails_on:
+                from .commerce_runtime.agent_wiring import away_reply_for_turn
+
+                away = await away_reply_for_turn(db, getattr(user, "id", None))
+                if away:
+                    return {
+                        "response_text": away,
+                        "image_urls": [],
+                        "cards": [],
+                        "order_created": False,
+                        "order_cancelled": False,
+                        "order_data": None,
+                        "order_notification": "",
+                        "escalation_triggered": False,
+                        "escalation_notification": "",
+                        "human_handoff": False,
+                        "actions_taken": [{"tool": "hours", "result_summary": "away"}],
+                    }
+
             supported_languages = self._parse_supported_languages(
                 business_config.get("supported_languages")
             )
@@ -5304,6 +5323,16 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                     escalate=_rails_escalate if tool_name == "escalate_to_human" else None,
                 )
                 if routed is not None:
+                    if tool_name == "create_order" and routed.get("success"):
+                        await self._register_rails_order_for_payment(
+                            order_data=routed.get("order_data"),
+                            arguments=arguments,
+                            user=user,
+                            session_key=session_key,
+                            business_name=business_name,
+                            business_phone=business_phone,
+                            currency=currency,
+                        )
                     return routed
 
             if tool_name == "escalate_to_human":
@@ -6621,6 +6650,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 business_name=business_name,
                 business_phone=business_phone,
                 currency=currency,
+                session_key=session_key,
             )
         if not session_key:
             return

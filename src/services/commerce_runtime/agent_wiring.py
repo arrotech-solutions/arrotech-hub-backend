@@ -14,7 +14,7 @@ from typing import Any, Awaitable, Callable, Optional
 from sqlalchemy import select
 
 from ...models import CommerceReturn
-from ..commerce_policy import DEFAULT_COMMERCE_POLICY, get_policy
+from ..commerce_policy import DEFAULT_COMMERCE_POLICY, away_message_if_closed, get_policy
 from ..commerce_returns_service import apply_aftersale_command
 from ..conversation_context_manager import context_manager
 from ..whatsapp_ordering_helpers import normalize_commerce_rails_enabled
@@ -242,6 +242,18 @@ def _project_cart(state: CommerceState, names: dict) -> list:
             }
         )
     return projected
+
+
+async def away_reply_for_turn(db, user_id) -> str:
+    """Away copy when rails are on and policy hours say the shop is closed."""
+    if db is None or user_id is None:
+        return ""
+    try:
+        policy = await get_policy(db, user_id)
+    except Exception as exc:
+        logger.warning("[COMMERCE_RAILS] hours check failed, shop stays open: %s", exc)
+        return ""
+    return away_message_if_closed(policy) or ""
 
 
 async def rails_enabled_for_turn(
