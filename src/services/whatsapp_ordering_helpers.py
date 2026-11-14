@@ -1216,6 +1216,73 @@ def check_whatsapp_rate_limit(
         return True, 0
 
 
+_NON_RAILS_ORDER_TYPES = frozenset(
+    {
+        "rent_collection",
+        "rent",
+        "rental",
+        "rentals",
+        "support",
+        "real_estate",
+        "realestate",
+        "property",
+        "properties",
+        "lease",
+        "housing",
+        "services",
+    }
+)
+
+_LIBRARY_ORDERING_TYPES = frozenset(
+    {
+        "food",
+        "restaurant",
+        "restaurants",
+        "clothing",
+        "apparel",
+        "retail",
+        "grocery",
+        "pharmacy",
+        "general",
+        "custom",
+    }
+)
+
+
+def _coerce_rails_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "on"}
+    return False
+
+
+def normalize_commerce_rails_enabled(
+    business_config: Optional[Dict[str, Any]],
+    policy: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """True only for the library ordering path when the rails flag is on.
+
+    Rent, support, real-estate, and other non-ordering templates stay on
+    their existing agent path even if a policy row says rails are enabled.
+    An explicit config flag wins over the policy value.
+    """
+    config = business_config if isinstance(business_config, dict) else {}
+    order_type = str(config.get("order_type") or "").strip().lower()
+    agent_mode = str(config.get("agent_mode") or "").strip().lower()
+    if agent_mode == "support" or order_type in _NON_RAILS_ORDER_TYPES:
+        return False
+    if order_type and order_type not in _LIBRARY_ORDERING_TYPES:
+        return False
+    if isinstance(config, dict) and "commerce_rails_enabled" in config:
+        return _coerce_rails_flag(config.get("commerce_rails_enabled"))
+    if isinstance(policy, dict) and "commerce_rails_enabled" in policy:
+        return _coerce_rails_flag(policy.get("commerce_rails_enabled"))
+    return False
+
+
 def rate_limit_message(business_phone: str = "") -> str:
     phone_hint = f" Call {business_phone}." if business_phone else ""
     return (

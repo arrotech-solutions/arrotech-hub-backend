@@ -220,8 +220,48 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
             existing_row = existing_msg.scalar_one_or_none()
             if existing_row:
                 logger.info(
-                    f"[WHATSAPP WEBHOOK] Duplicate message {msg_id} — already saved, skipping"
+                    f"[WHATSAPP WEBHOOK] Duplicate message {msg_id} — already saved"
                 )
+                if msg_id and existing_row.user_id:
+                    try:
+                        from ..services.idempotency_service import idempotency_service
+
+                        action = await idempotency_service.duplicate_delivery_action(
+                            db, existing_row.user_id, msg_id
+                        )
+                    except Exception as dup_err:
+                        logger.warning(
+                            "[WHATSAPP WEBHOOK] Duplicate claim failed for %s: %s",
+                            msg_id,
+                            dup_err,
+                        )
+                        action = "skip"
+                    if action == "reprocess" and existing_row.contact_id:
+                        logger.info(
+                            "[WHATSAPP WEBHOOK] Reprocessing failed wamid %s",
+                            msg_id,
+                        )
+                        if background_tasks:
+                            background_tasks.add_task(
+                                background_process_message,
+                                existing_row.user_id,
+                                existing_row.contact_id,
+                                existing_row.id,
+                                True,
+                            )
+                        else:
+                            await background_process_message(
+                                existing_row.user_id,
+                                existing_row.contact_id,
+                                existing_row.id,
+                                True,
+                            )
+                    else:
+                        logger.info(
+                            "[WHATSAPP WEBHOOK] Duplicate wamid %s is a no-op (%s)",
+                            msg_id,
+                            action,
+                        )
                 continue
 
             from_number = msg.get("from")  # Sender's phone number
@@ -732,7 +772,12 @@ async def process_incoming_messages(value: dict, db: AsyncSession, background_ta
             logger.error(f"[WHATSAPP WEBHOOK] Error processing message: {e}")
             continue
 
-async def background_process_message(user_id: uuid.UUID, contact_id: uuid.UUID, message_id: uuid.UUID):
+async def background_process_message(
+    user_id: uuid.UUID,
+    contact_id: uuid.UUID,
+    message_id: uuid.UUID,
+    already_claimed: bool = False,
+):
     """Process auto-reply and workflow triggers in the background with a fresh DB session."""
     session_maker = get_session_maker()
     meta_message_id = ""  # Meta's wam.xxx message ID, threaded to downstream ops
@@ -760,7 +805,10 @@ async def background_process_message(user_id: uuid.UUID, contact_id: uuid.UUID, 
             # guarantees only one worker can claim a message, even under race.
             # Phase 2: After all side effects finish, mark_completed() transitions
             # the status to 'completed'. On error, mark_failed() allows retry.
-            if meta_message_id:
+            # Callers that already claimed (duplicate redelivery of a failed
+            # wamid) must not claim again or the second claim looks in-progress
+            # and this turn would no-op.
+            if meta_message_id and not already_claimed:
                 try:
                     from ..services.idempotency_service import idempotency_service, ClaimResult
                     claim = await idempotency_service.claim_message(
@@ -914,6 +962,20 @@ async def background_process_message(user_id: uuid.UUID, contact_id: uuid.UUID, 
                             rate_limit_message(biz_phone),
                             config=wa_config,
                         )
+                    if meta_message_id:
+                        try:
+                            from ..services.idempotency_service import idempotency_service
+                            await idempotency_service.mark_completed(
+                                db,
+                                user_id,
+                                meta_message_id,
+                                processing_result="rate_limited",
+                            )
+                        except Exception as rate_done_err:
+                            logger.warning(
+                                "[WHATSAPP WEBHOOK BG] rate-limit finalize failed: %s",
+                                rate_done_err,
+                            )
                     return
             except Exception as e:
                 logger.error(f"[WHATSAPP WEBHOOK BG] Rate limit check error: {e}")

@@ -882,6 +882,15 @@ class ConversationalAgentService:
             delivery_methods, reservations_enabled = apply_food_only_fulfillment(
                 order_type, delivery_methods, reservations_enabled
             )
+            try:
+                from .commerce_runtime.agent_wiring import rails_enabled_for_turn
+
+                rails_on = await rails_enabled_for_turn(
+                    business_config, db, getattr(user, "id", None), order_type
+                )
+            except Exception as rails_err:
+                logger.warning("[CONV_AGENT] commerce rails check failed: %s", rails_err)
+                rails_on = False
             custom_system_prompt = business_config.get("system_prompt", "")
 
             if order_type == "food":
@@ -1154,6 +1163,37 @@ class ConversationalAgentService:
                             cart_cmd = None
                     except Exception:
                         pass
+                if cart_cmd in ("clear", "remove", "set_quantity"):
+                    try:
+                        from .commerce_runtime.agent_wiring import try_rails_fast_cart
+
+                        rails_reply = await try_rails_fast_cart(
+                            command=cart_cmd,
+                            user_message=user_message,
+                            business_config=business_config,
+                            order_type=order_type,
+                            session_key=session_key,
+                            user=user,
+                            db=db,
+                            currency=currency,
+                        )
+                    except Exception as rails_cart_err:
+                        logger.error(
+                            "[CONV_AGENT] rails cart fast-path failed: %s",
+                            rails_cart_err,
+                            exc_info=True,
+                        )
+                        rails_reply = (
+                            "I couldn't update the cart just now. "
+                            "A person from the shop will follow up."
+                        )
+                    if rails_reply is not None:
+                        return await self._cart_fast_path_result(
+                            session_key,
+                            rails_reply,
+                            actions_taken=[{"tool": "manage_cart", "result_summary": cart_cmd}],
+                            send_cart_buttons=True,
+                        )
                 if cart_cmd == "reset":
                     try:
                         session = await context_manager.get_session_by_key(session_key)
@@ -1965,6 +2005,7 @@ class ConversationalAgentService:
                     session_key=session_key,
                     user_message="yes",
                     business_phone=business_phone,
+                    business_config=business_config,
                 )
 
                 if not tool_result.get("success"):
@@ -2145,6 +2186,7 @@ class ConversationalAgentService:
                             session_key=session_key,
                             user_message=user_message,
                             business_phone=business_phone,
+                            business_config=business_config,
                         )
                         if tool_result.get("success"):
                             order_data = tool_result.get("order_data", tool_result)
@@ -2441,6 +2483,10 @@ class ConversationalAgentService:
                     t for t in AGENT_SUB_TOOLS
                     if t.get("function", {}).get("name") != "create_reservation"
                 ]
+                if rails_on:
+                    from .commerce_runtime.agent_wiring import RAILS_EXTRA_TOOLS
+
+                    dynamic_tools.extend(RAILS_EXTRA_TOOLS)
             for t_name in enabled_mcp_tool_names:
                 schema = dynamic_tool_registry.get_tool(t_name)
                 if schema:
@@ -2493,7 +2539,7 @@ class ConversationalAgentService:
                     final_text = self._format_for_channel(final_text, platform)
 
                     # Harness: post-execution quality gate
-                    if self._harness_enabled:
+                    if self._harness_enabled and not forced_manual_message:
                         try:
                             quality = await self._harness_evaluate_response(
                                 final_text, user_message, iterations=iteration + 1
@@ -2504,6 +2550,9 @@ class ConversationalAgentService:
                                 final_text = self._harness_get_safe_fallback(business_name)
                         except Exception as e:
                             logger.warning(f"[CONV_AGENT] Quality gate failed: {e}")
+
+                    if forced_manual_message:
+                        final_text = self._format_for_channel(forced_manual_message, platform)
 
                     # Save assistant response to CCM
                     await self._save_to_ccm(session_key, "assistant", final_text)
@@ -2667,6 +2716,13 @@ class ConversationalAgentService:
                         business_phone=business_phone,
                         business_config=business_config,
                     )
+
+                    verbatim = tool_result.get("verbatim_customer_message")
+                    if isinstance(verbatim, str) and verbatim.strip():
+                        forced_manual_message = verbatim.strip()
+                    if tool_result.get("human_handoff"):
+                        human_handoff = True
+                        escalation_triggered = True
 
                     if tool_name == "escalate_to_human" and tool_result.get("success"):
                         escalation_triggered = True
@@ -5192,6 +5248,39 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                             )
                         arguments["phone_number"] = sender_normalized
 
+            from .commerce_runtime.agent_wiring import (
+                RAILS_MUTATION_TOOLS,
+                dispatch_rails_tool,
+            )
+
+            if tool_name in RAILS_MUTATION_TOOLS:
+                async def _rails_escalate():
+                    return await self._sub_escalate_to_human(
+                        arguments=arguments,
+                        session_key=session_key,
+                        business_name=business_name,
+                        customer_phone=default_customer_phone,
+                        customer_name=default_customer_name,
+                        preferred_language=preferred_language,
+                        user_message=user_message,
+                        user=user,
+                        db=db,
+                    )
+
+                routed = await dispatch_rails_tool(
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    business_config=business_config,
+                    order_type=order_type,
+                    session_key=session_key,
+                    user=user,
+                    db=db,
+                    currency=currency,
+                    escalate=_rails_escalate if tool_name == "escalate_to_human" else None,
+                )
+                if routed is not None:
+                    return routed
+
             if tool_name == "escalate_to_human":
                 return await self._sub_escalate_to_human(
                     arguments=arguments,
@@ -5231,6 +5320,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                     session_key=session_key,
                     user_message=user_message,
                     business_phone=business_phone,
+                    business_config=business_config,
                 )
 
             elif tool_name == "create_reservation":
@@ -6489,9 +6579,25 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         session_key: str = "",
         user_message: str = "",
         business_phone: str = "",
+        business_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Create an order via OrderService, then persist to connected storage."""
         try:
+            from .commerce_runtime.agent_wiring import dispatch_rails_tool
+
+            routed = await dispatch_rails_tool(
+                tool_name="create_order",
+                arguments=arguments,
+                business_config=business_config,
+                order_type=order_type,
+                session_key=session_key,
+                user=user,
+                db=db,
+                currency=currency,
+            )
+            if routed is not None:
+                return routed
+
             from .whatsapp_ordering_helpers import is_order_confirmation_message
 
             arguments = await self._apply_saved_delivery_address(arguments, session_key)
