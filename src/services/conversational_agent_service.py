@@ -882,6 +882,15 @@ class ConversationalAgentService:
             delivery_methods, reservations_enabled = apply_food_only_fulfillment(
                 order_type, delivery_methods, reservations_enabled
             )
+            try:
+                from .commerce_runtime.agent_wiring import rails_enabled_for_turn
+
+                rails_on = await rails_enabled_for_turn(
+                    business_config, db, getattr(user, "id", None), order_type
+                )
+            except Exception as rails_err:
+                logger.warning("[CONV_AGENT] commerce rails check failed: %s", rails_err)
+                rails_on = False
             custom_system_prompt = business_config.get("system_prompt", "")
 
             if order_type == "food":
@@ -997,6 +1006,25 @@ class ConversationalAgentService:
                     "human_handoff": False,
                     "actions_taken": [{"tool": "guard", "result_summary": "injection_blocked"}],
                 }
+
+            if rails_on:
+                from .commerce_runtime.agent_wiring import away_reply_for_turn
+
+                away = await away_reply_for_turn(db, getattr(user, "id", None))
+                if away:
+                    return {
+                        "response_text": away,
+                        "image_urls": [],
+                        "cards": [],
+                        "order_created": False,
+                        "order_cancelled": False,
+                        "order_data": None,
+                        "order_notification": "",
+                        "escalation_triggered": False,
+                        "escalation_notification": "",
+                        "human_handoff": False,
+                        "actions_taken": [{"tool": "hours", "result_summary": "away"}],
+                    }
 
             supported_languages = self._parse_supported_languages(
                 business_config.get("supported_languages")
@@ -1154,6 +1182,37 @@ class ConversationalAgentService:
                             cart_cmd = None
                     except Exception:
                         pass
+                if cart_cmd in ("clear", "remove", "set_quantity"):
+                    try:
+                        from .commerce_runtime.agent_wiring import try_rails_fast_cart
+
+                        rails_reply = await try_rails_fast_cart(
+                            command=cart_cmd,
+                            user_message=user_message,
+                            business_config=business_config,
+                            order_type=order_type,
+                            session_key=session_key,
+                            user=user,
+                            db=db,
+                            currency=currency,
+                        )
+                    except Exception as rails_cart_err:
+                        logger.error(
+                            "[CONV_AGENT] rails cart fast-path failed: %s",
+                            rails_cart_err,
+                            exc_info=True,
+                        )
+                        rails_reply = (
+                            "I couldn't update the cart just now. "
+                            "A person from the shop will follow up."
+                        )
+                    if rails_reply is not None:
+                        return await self._cart_fast_path_result(
+                            session_key,
+                            rails_reply,
+                            actions_taken=[{"tool": "manage_cart", "result_summary": cart_cmd}],
+                            send_cart_buttons=True,
+                        )
                 if cart_cmd == "reset":
                     try:
                         session = await context_manager.get_session_by_key(session_key)
@@ -1965,6 +2024,7 @@ class ConversationalAgentService:
                     session_key=session_key,
                     user_message="yes",
                     business_phone=business_phone,
+                    business_config=business_config,
                 )
 
                 if not tool_result.get("success"):
@@ -2145,6 +2205,7 @@ class ConversationalAgentService:
                             session_key=session_key,
                             user_message=user_message,
                             business_phone=business_phone,
+                            business_config=business_config,
                         )
                         if tool_result.get("success"):
                             order_data = tool_result.get("order_data", tool_result)
@@ -2169,8 +2230,23 @@ class ConversationalAgentService:
                             # BUT save a hidden context to the CCM so the LLM knows the order ID for M-Pesa payments!
                             hidden_context = f"[SYSTEM: Order {order_data.get('order_id')} was successfully created. Do not mention this to the user.]"
                             await self._save_to_ccm(session_key, "assistant", hidden_context)
-                            
-                            final_text = ""
+
+                            confirmation = (
+                                tool_result.get("verbatim_customer_message")
+                                or tool_result.get("result")
+                                or ""
+                            )
+                            if not str(confirmation).strip():
+                                payable = (
+                                    order_data.get("total")
+                                    or order_data.get("subtotal")
+                                    or 0
+                                )
+                                confirmation = (
+                                    f"Order {order_data.get('order_id')} is placed. "
+                                    f"Total {currency} {payable}. Payment is still pending."
+                                )
+                            final_text = str(confirmation).strip()
                             return {
                                 "response_text": final_text,
                                 "image_urls": [],
@@ -2441,6 +2517,10 @@ class ConversationalAgentService:
                     t for t in AGENT_SUB_TOOLS
                     if t.get("function", {}).get("name") != "create_reservation"
                 ]
+                if rails_on:
+                    from .commerce_runtime.agent_wiring import RAILS_EXTRA_TOOLS
+
+                    dynamic_tools.extend(RAILS_EXTRA_TOOLS)
             for t_name in enabled_mcp_tool_names:
                 schema = dynamic_tool_registry.get_tool(t_name)
                 if schema:
@@ -2493,7 +2573,7 @@ class ConversationalAgentService:
                     final_text = self._format_for_channel(final_text, platform)
 
                     # Harness: post-execution quality gate
-                    if self._harness_enabled:
+                    if self._harness_enabled and not forced_manual_message:
                         try:
                             quality = await self._harness_evaluate_response(
                                 final_text, user_message, iterations=iteration + 1
@@ -2504,6 +2584,9 @@ class ConversationalAgentService:
                                 final_text = self._harness_get_safe_fallback(business_name)
                         except Exception as e:
                             logger.warning(f"[CONV_AGENT] Quality gate failed: {e}")
+
+                    if forced_manual_message:
+                        final_text = self._format_for_channel(forced_manual_message, platform)
 
                     # Save assistant response to CCM
                     await self._save_to_ccm(session_key, "assistant", final_text)
@@ -2667,6 +2750,13 @@ class ConversationalAgentService:
                         business_phone=business_phone,
                         business_config=business_config,
                     )
+
+                    verbatim = tool_result.get("verbatim_customer_message")
+                    if isinstance(verbatim, str) and verbatim.strip():
+                        forced_manual_message = verbatim.strip()
+                    if tool_result.get("human_handoff"):
+                        human_handoff = True
+                        escalation_triggered = True
 
                     if tool_name == "escalate_to_human" and tool_result.get("success"):
                         escalation_triggered = True
@@ -2870,7 +2960,12 @@ class ConversationalAgentService:
 
             final_text = self._format_for_channel(final_text, platform)
 
-            if order_created and getattr(settings, "ORDER_TRACKING_ENABLED", True):
+            if forced_manual_message:
+                # Rails place and manual payment copy must reach the customer.
+                # Tracking still has the payable total for a later STK lookup.
+                final_text = forced_manual_message
+                await self._save_to_ccm(session_key, "assistant", final_text)
+            elif order_created and getattr(settings, "ORDER_TRACKING_ENABLED", True):
                 # Let the order tracking service handle all confirmations and payment buttons.
                 # Suppress the LLM's response to prevent double-prompting.
                 # BUT save a hidden context to the CCM so the LLM knows the order ID for M-Pesa payments!
@@ -2878,11 +2973,6 @@ class ConversationalAgentService:
                 hidden_context = f"[SYSTEM: Order {oid} was successfully created. Do not mention this to the user.]"
                 await self._save_to_ccm(session_key, "assistant", hidden_context)
                 final_text = ""
-            elif forced_manual_message:
-                # Deliver manual M-Pesa payment instructions verbatim (no STK).
-                # (Skip when an order was just created — the tracking service prompts instead.)
-                final_text = forced_manual_message
-                await self._save_to_ccm(session_key, "assistant", final_text)
             else:
                 await self._save_to_ccm(session_key, "assistant", final_text)
 
@@ -5161,13 +5251,23 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             # another person's orders (and trigger their payment) simply by
             # entering a different number (IDOR / data leak). ──
             if default_customer_phone:
-                if tool_name in ("create_order", "validate_order", "cancel_order", "get_user_orders", "create_reservation"):
-                    if arguments.get("customer_phone") and arguments.get("customer_phone") != default_customer_phone:
+                if tool_name in (
+                    "create_order",
+                    "validate_order",
+                    "cancel_order",
+                    "get_user_orders",
+                    "create_reservation",
+                    "request_return",
+                    "request_complaint",
+                ):
+                    supplied = arguments.get("phone") or arguments.get("customer_phone")
+                    if supplied and supplied != default_customer_phone:
                         logger.warning(
                             "[CONV_AGENT] 🔒 Overriding %s customer_phone %r → sender %r",
-                            tool_name, arguments.get("customer_phone"), default_customer_phone,
+                            tool_name, supplied, default_customer_phone,
                         )
                     arguments["customer_phone"] = default_customer_phone
+                    arguments["phone"] = default_customer_phone
                 elif tool_name == "initiate_mpesa_payment":
                     order_id = str(arguments.get("order_id") or "").strip()
                     requested = arguments.get("phone_number") or ""
@@ -5191,6 +5291,49 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                                 default_customer_phone,
                             )
                         arguments["phone_number"] = sender_normalized
+
+            from .commerce_runtime.agent_wiring import (
+                RAILS_MUTATION_TOOLS,
+                dispatch_rails_tool,
+            )
+
+            if tool_name in RAILS_MUTATION_TOOLS:
+                async def _rails_escalate():
+                    return await self._sub_escalate_to_human(
+                        arguments=arguments,
+                        session_key=session_key,
+                        business_name=business_name,
+                        customer_phone=default_customer_phone,
+                        customer_name=default_customer_name,
+                        preferred_language=preferred_language,
+                        user_message=user_message,
+                        user=user,
+                        db=db,
+                    )
+
+                routed = await dispatch_rails_tool(
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    business_config=business_config,
+                    order_type=order_type,
+                    session_key=session_key,
+                    user=user,
+                    db=db,
+                    currency=currency,
+                    escalate=_rails_escalate if tool_name == "escalate_to_human" else None,
+                )
+                if routed is not None:
+                    if tool_name == "create_order" and routed.get("success"):
+                        await self._register_rails_order_for_payment(
+                            order_data=routed.get("order_data"),
+                            arguments=arguments,
+                            user=user,
+                            session_key=session_key,
+                            business_name=business_name,
+                            business_phone=business_phone,
+                            currency=currency,
+                        )
+                    return routed
 
             if tool_name == "escalate_to_human":
                 return await self._sub_escalate_to_human(
@@ -5231,6 +5374,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                     session_key=session_key,
                     user_message=user_message,
                     business_phone=business_phone,
+                    business_config=business_config,
                 )
 
             elif tool_name == "create_reservation":
@@ -6476,6 +6620,53 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 "error": "RESERVATION_ERROR",
             }
 
+    async def _register_rails_order_for_payment(
+        self,
+        *,
+        order_data: Any,
+        arguments: Dict[str, Any],
+        user: User,
+        session_key: str,
+        business_name: str,
+        business_phone: str,
+        currency: str,
+    ) -> None:
+        """Put the payable total where the existing STK lookup already reads it."""
+        if not isinstance(order_data, dict) or not order_data.get("order_id"):
+            return
+        notify_phone = (
+            arguments.get("customer_phone")
+            or order_data.get("customer_phone")
+            or ""
+        )
+        if notify_phone and user:
+            from .order_tracking_service import order_tracking_service
+
+            order_tracking_service.register_order(
+                str(user.id),
+                order_data["order_id"],
+                notify_phone,
+                order_data,
+                business_name=business_name,
+                business_phone=business_phone,
+                currency=currency,
+                session_key=session_key,
+            )
+        if not session_key:
+            return
+        try:
+            session = await context_manager.get_session_by_key(session_key)
+            if session:
+                by_id = dict(session.metadata.get("orders_by_id") or {})
+                by_id[order_data["order_id"]] = order_data
+                await context_manager.update_session_metadata(
+                    session_key, {"orders_by_id": by_id}
+                )
+        except Exception as sess_err:
+            logger.warning(
+                "[CONV_AGENT] Failed to cache rails order in session: %s", sess_err
+            )
+
     async def _sub_create_order(
         self,
         arguments: Dict[str, Any],
@@ -6489,9 +6680,35 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         session_key: str = "",
         user_message: str = "",
         business_phone: str = "",
+        business_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Create an order via OrderService, then persist to connected storage."""
         try:
+            from .commerce_runtime.agent_wiring import dispatch_rails_tool
+
+            routed = await dispatch_rails_tool(
+                tool_name="create_order",
+                arguments=arguments,
+                business_config=business_config,
+                order_type=order_type,
+                session_key=session_key,
+                user=user,
+                db=db,
+                currency=currency,
+            )
+            if routed is not None:
+                if routed.get("success"):
+                    await self._register_rails_order_for_payment(
+                        order_data=routed.get("order_data"),
+                        arguments=arguments,
+                        user=user,
+                        session_key=session_key,
+                        business_name=business_name,
+                        business_phone=business_phone,
+                        currency=currency,
+                    )
+                return routed
+
             from .whatsapp_ordering_helpers import is_order_confirmation_message
 
             arguments = await self._apply_saved_delivery_address(arguments, session_key)
@@ -10379,6 +10596,17 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
     # NOTIFICATION FORMATTING
     # ═══════════════════════════════════════════════════════════
 
+    @staticmethod
+    def _alert_customer_name_phone(actual_order: Dict[str, Any]) -> tuple:
+        """Name and phone from nested customer or the flat rails fields."""
+        customer_block = actual_order.get("customer") if isinstance(actual_order, dict) else None
+        if not isinstance(customer_block, dict):
+            customer_block = {}
+        source = actual_order if isinstance(actual_order, dict) else {}
+        name = customer_block.get("name") or source.get("customer_name") or "Unknown"
+        phone = customer_block.get("phone") or source.get("customer_phone") or "N/A"
+        return name, phone
+
     def _format_business_notification(
         self,
         order_data: Dict[str, Any],
@@ -10389,8 +10617,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         actual_order = order_data.get("order", order_data)
         
         order_id = actual_order.get("order_id", order_data.get("order_id", "N/A"))
-        customer = actual_order.get("customer", {}).get("name", "Unknown")
-        phone = actual_order.get("customer", {}).get("phone", "N/A")
+        customer, phone = self._alert_customer_name_phone(actual_order)
         delivery = actual_order.get("delivery_method", "N/A")
         address = actual_order.get("delivery_address", "")
         table_number = actual_order.get("table_number", "")
@@ -10442,8 +10669,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         actual_order = order_data.get("order", order_data)
         
         order_id = actual_order.get("order_id", order_data.get("order_id", "N/A"))
-        customer = actual_order.get("customer", {}).get("name", "Unknown")
-        phone = actual_order.get("customer", {}).get("phone", "N/A")
+        customer, phone = self._alert_customer_name_phone(actual_order)
         total = actual_order.get("subtotal", actual_order.get("total", 0))
 
         subject = f"New Order {order_id} — {customer} ({currency} {total:,.0f})"

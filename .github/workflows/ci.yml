@@ -86,6 +86,47 @@ jobs:
       upload-coverage: true
       parallel-tests: true
 
+  # Mocked-LLM ordering journeys. The full suite still collects this file;
+  # this job is the explicit release gate on commerce and agent changes.
+  commerce-rails-gate:
+    name: Commerce rails journey gate
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect commerce or agent changes
+        id: gate
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch origin "${{ github.base_ref }}" --depth=1
+            files=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" || true)
+          else
+            files=$(git diff --name-only HEAD^ HEAD || true)
+          fi
+          printf '%s\n' "$files"
+          run=false
+          if printf '%s\n' "$files" | grep -Eq '^(src/services/(commerce_|conversational_agent_service\.py|order_stk_payment_service\.py|order_tracking_service\.py|catalog_search_service\.py|whatsapp_ordering_helpers\.py)|src/services/commerce_runtime/|src/routers/(commerce_|mpesa_agent_router\.py)|tests/(test_commerce_rails_journeys\.py|commerce_rails_journey_harness\.py)|pytest\.ini|\.github/workflows/ci\.yml)'; then
+            run=true
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.run == 'true'
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: pip install -r requirements.txt
+
+      - name: Mocked-LLM commerce rails journeys
+        if: steps.gate.outputs.run == 'true'
+        run: pytest tests/test_commerce_rails_journeys.py -m commerce_rails_gate -q --no-cov
+
   # ===========================================================================
   # Stage 2.5: Change Impact Analysis (PR only)
   # ===========================================================================

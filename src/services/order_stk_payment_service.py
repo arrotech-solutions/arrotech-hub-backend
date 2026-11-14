@@ -45,12 +45,14 @@ async def finalize_order_stk_payment(
     merchant_request_id: str = "",
     payment_record: Any = None,
     lang: str = "en",
+    session_key: str = "",
 ) -> None:
     """Send payment confirmation or failure notice (idempotent per checkout attempt)."""
     if not order_id:
         return
 
     registry = order_tracking_service.get_registered_order(owner_user_id, order_id) or {}
+    resolved_session = session_key or str(registry.get("session_key") or "")
 
     if is_paid and registry.get("payment_notified"):
         logger.info("[STK_PAY] Order %s already has payment_notified — skip", order_id)
@@ -76,6 +78,14 @@ async def finalize_order_stk_payment(
         return
 
     if is_paid:
+        await _reconcile_commerce_payment(
+            db,
+            owner_user_id,
+            order_id,
+            is_paid=True,
+            mpesa_receipt=mpesa_receipt,
+            session_key=resolved_session,
+        )
         msg_ok = (
             f"✅ Payment received for order {order_id}. "
             f"Receipt: {mpesa_receipt or 'pending'}"
@@ -166,6 +176,13 @@ async def finalize_order_stk_payment(
         return
 
     # ── Failure path ──
+    await _reconcile_commerce_payment(
+        db,
+        owner_user_id,
+        order_id,
+        is_paid=False,
+        session_key=resolved_session,
+    )
     customer_msg = stk_customer_message(result_code, lang=lang, result_desc=result_desc)
     body = f"⚠️ Payment for order *{order_id}* was not completed.\n\n{customer_msg}"
 
@@ -256,6 +273,71 @@ async def finalize_order_stk_payment(
         )
     except Exception as alert_err:
         logger.warning("[STK_PAY] Business alert failed for %s: %s", order_id, alert_err)
+
+
+async def _sync_rails_payment_status(session_key: str, status: str) -> None:
+    if not session_key:
+        return
+    from .conversation_context_manager import context_manager
+
+    session = await context_manager.get_session_by_key(session_key)
+    if session is None:
+        return
+    raw = session.metadata.get("commerce_rails_state") if session.metadata else None
+    if not isinstance(raw, dict):
+        return
+    updated = dict(raw)
+    updated["payment_status"] = status
+    if status == "paid":
+        updated["phase"] = "paid"
+    elif status == "failed":
+        updated["phase"] = "payment_failed"
+    await context_manager.update_session_metadata(
+        session_key, {"commerce_rails_state": updated}
+    )
+
+
+async def _reconcile_commerce_payment(
+    db: AsyncSession,
+    owner_user_id: str,
+    order_id: str,
+    *,
+    is_paid: bool,
+    mpesa_receipt: str = "",
+    session_key: str = "",
+) -> None:
+    """Write STK success or failure onto the rails order, not only the sheet."""
+    if not order_id or not owner_user_id:
+        return
+    try:
+        from .commerce_storage_service import CommerceStorageService
+
+        storage = CommerceStorageService()
+        existing = await storage.get_order(db, owner_user_id, order_id)
+        if existing is None:
+            return
+        if is_paid:
+            await storage.mark_order_paid(
+                db,
+                owner_user_id,
+                order_id,
+                mpesa_receipt=mpesa_receipt or None,
+            )
+            status = "paid"
+        elif str(existing.payment_status or "") != "paid":
+            existing.payment_status = "failed"
+            await db.commit()
+            await db.refresh(existing)
+            status = "failed"
+        else:
+            status = "paid"
+        await _sync_rails_payment_status(session_key, status)
+    except Exception as exc:
+        logger.warning(
+            "[STK_PAY] commerce payment reconcile failed for %s: %s",
+            order_id,
+            exc,
+        )
 
 
 def _notify_context_from_registry(registry: Dict[str, Any]) -> Dict[str, Any]:

@@ -390,5 +390,23 @@ class IdempotencyService:
             return True
 
 
+    async def duplicate_delivery_action(
+        self,
+        db: AsyncSession,
+        user_id,
+        wa_message_id: str,
+    ) -> str:
+        """What a second delivery of the same wamid should do.
+
+        ``skip`` after a successful finalize or while another worker holds
+        the claim. ``reprocess`` when this delivery now owns a failed or
+        missing claim. The claim is taken before ``reprocess`` is returned.
+        """
+        claim = await self.claim_message(db, user_id, wa_message_id)
+        if claim in (ClaimResult.ALREADY_COMPLETED, ClaimResult.ALREADY_IN_PROGRESS):
+            return "skip"
+        return "reprocess"
+
+
 # Module-level singleton
 idempotency_service = IdempotencyService()
