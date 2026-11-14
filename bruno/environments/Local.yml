@@ -4,8 +4,8 @@ variables:
     value: http://localhost:8000
     description: ""
   - name: email
-    value: arrotechdesign@gmail.com
-    description: ""
+    value: your-email@example.com
+    description: "Local Hub login email — do not commit real credentials"
   - name: password
-    value: Harun20930988!
-    description: ""
+    value: replace-me
+    description: "Local Hub password — do not commit real credentials"
