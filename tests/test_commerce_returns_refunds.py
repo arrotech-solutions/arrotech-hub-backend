@@ -664,3 +664,451 @@ async def test_returns_router_lists_approves_denies_and_settles(
     assert settled_data["status"] == "settled_offline"
     assert settled_data["status"] != "refunded"
     assert "refunded" not in settled_data["customer_message"].lower()
+
+
+def _b2c_result(code: int, *, originator: str, conversation: str, receipt: str | None = None, desc: str = "ok") -> dict:
+    result = {
+        "ResultCode": code,
+        "ResultDesc": desc,
+        "OriginatorConversationID": originator,
+        "ConversationID": conversation,
+    }
+    if receipt:
+        result["TransactionID"] = receipt
+        result["ResultParameters"] = {
+            "ResultParameter": [{"Key": "TransactionReceipt", "Value": receipt}]
+        }
+    return {"Result": result}
+
+
+@pytest.mark.asyncio
+async def test_b2c_pending_row_is_committed_before_http_and_timeout_is_not_retried(
+    db_session: AsyncSession,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A pending attempt exists before Daraja is called. Timeout leaves it pending."""
+    await _make_order(db_session, test_user, external_id="ORD-TIMEOUT", total="80.00")
+    row = await request_return(
+        db_session,
+        test_user.id,
+        order_external_id="ORD-TIMEOUT",
+        phone="0712345678",
+        reason_code="damaged",
+        amount=Decimal("80.00"),
+    )
+    seen: dict = {}
+
+    async def timeout_after_pending(**kwargs):
+        attempts = await _attempts(db_session, row.id)
+        seen["count_during_call"] = len(attempts)
+        seen["status_during_call"] = attempts[0].status if attempts else None
+        raise TimeoutError("daraja timeout")
+
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.payout_credentials_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.send_b2c_payout",
+        timeout_after_pending,
+    )
+
+    approved = await approve_return(
+        db_session, test_user.id, row.id, actor_user_id=test_user.id
+    )
+
+    assert seen["count_during_call"] == 1
+    assert seen["status_during_call"] == "pending"
+    assert approved.status == "refund_pending"
+    assert "refunded" not in _message(approved).lower()
+    attempts = await _attempts(db_session, approved.id)
+    assert len(attempts) == 1
+    assert attempts[0].status == "pending"
+    assert attempts[0].method == "mpesa_b2c"
+
+    again = await execute_refund(db_session, approved)
+    assert again.id == attempts[0].id
+    assert again.status == "pending"
+    approved_again = await approve_return(
+        db_session, test_user.id, approved.id, actor_user_id=test_user.id
+    )
+    assert approved_again.status == "refund_pending"
+    assert len(await _attempts(db_session, approved.id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_b2c_is_not_auto_retried(
+    db_session: AsyncSession,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    await _make_order(db_session, test_user, external_id="ORD-NORETRY", total="70.00")
+    row = await request_return(
+        db_session,
+        test_user.id,
+        order_external_id="ORD-NORETRY",
+        phone="0712345678",
+        reason_code="damaged",
+        amount=Decimal("70.00"),
+    )
+    calls = {"n": 0}
+
+    async def reject(**kwargs):
+        calls["n"] += 1
+        return {"success": False, "error": "Daraja rejected"}
+
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.payout_credentials_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.send_b2c_payout",
+        reject,
+    )
+
+    failed = await approve_return(
+        db_session, test_user.id, row.id, actor_user_id=test_user.id
+    )
+    assert failed.status == "failed"
+    assert calls["n"] == 1
+
+    again = await approve_return(
+        db_session, test_user.id, failed.id, actor_user_id=test_user.id
+    )
+    assert again.status == "failed"
+    assert calls["n"] == 1
+    assert len(await _attempts(db_session, failed.id)) == 1
+
+    same = await execute_refund(db_session, again)
+    assert same.status == "failed"
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_refund_creates_a_new_pending_only_after_failure(
+    db_session: AsyncSession,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from src.services.commerce_refund_service import retry_refund
+
+    await _make_order(db_session, test_user, external_id="ORD-RETRY", total="55.00")
+    row = await request_return(
+        db_session,
+        test_user.id,
+        order_external_id="ORD-RETRY",
+        phone="0712345678",
+        reason_code="damaged",
+        amount=Decimal("55.00"),
+    )
+    calls = {"n": 0}
+
+    async def payout(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"success": False, "error": "Daraja rejected"}
+        attempts = await _attempts(db_session, row.id)
+        pending = [item for item in attempts if item.status == "pending"]
+        failed = [item for item in attempts if item.status == "failed"]
+        assert len(failed) == 1
+        assert len(pending) == 1
+        return {
+            "success": True,
+            "receipt": "RFDRETRY",
+            "conversation_id": "AG_RETRY",
+            "originator_conversation_id": "orig-retry",
+        }
+
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.payout_credentials_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.send_b2c_payout",
+        payout,
+    )
+
+    failed = await approve_return(
+        db_session, test_user.id, row.id, actor_user_id=test_user.id
+    )
+    assert failed.status == "failed"
+    assert calls["n"] == 1
+
+    retried = await retry_refund(
+        db_session, test_user.id, failed.id, actor_user_id=test_user.id
+    )
+    assert retried.status == "refunded"
+    assert calls["n"] == 2
+    attempts = await _attempts(db_session, failed.id)
+    assert [item.status for item in attempts] == ["failed", "success"]
+    assert attempts[1].mpesa_receipt == "RFDRETRY"
+
+
+@pytest.mark.asyncio
+async def test_b2c_result_callback_receipt_marks_refunded_and_failure_allows_settle(
+    db_session: AsyncSession,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from src.services.commerce_refund_service import apply_b2c_result
+
+    await _make_order(db_session, test_user, external_id="ORD-CB-OK", total="40.00")
+    ok_row = await request_return(
+        db_session,
+        test_user.id,
+        order_external_id="ORD-CB-OK",
+        phone="0712345678",
+        reason_code="damaged",
+        amount=Decimal("40.00"),
+    )
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.payout_credentials_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.send_b2c_payout",
+        AsyncMock(
+            return_value={
+                "success": True,
+                "accepted": True,
+                "receipt": None,
+                "conversation_id": "AG_OK",
+                "originator_conversation_id": "orig-ok",
+            }
+        ),
+    )
+    pending = await approve_return(
+        db_session, test_user.id, ok_row.id, actor_user_id=test_user.id
+    )
+    assert pending.status == "refund_pending"
+
+    completed = await apply_b2c_result(
+        db_session,
+        _b2c_result(0, originator="orig-ok", conversation="AG_OK", receipt="RCPT-OK"),
+        user_id=test_user.id,
+    )
+    assert completed is not None
+    assert completed.status == "refunded"
+    assert "RCPT-OK" in _message(completed)
+    ok_attempts = await _attempts(db_session, completed.id)
+    assert ok_attempts[0].status == "success"
+    assert ok_attempts[0].mpesa_receipt == "RCPT-OK"
+
+    again = await apply_b2c_result(
+        db_session,
+        _b2c_result(0, originator="orig-ok", conversation="AG_OK", receipt="RCPT-OK"),
+        user_id=test_user.id,
+    )
+    assert again.status == "refunded"
+    assert len(await _attempts(db_session, completed.id)) == 1
+
+    await _make_order(db_session, test_user, external_id="ORD-CB-BAD", total="30.00")
+    bad_row = await request_return(
+        db_session,
+        test_user.id,
+        order_external_id="ORD-CB-BAD",
+        phone="0712345678",
+        reason_code="damaged",
+        amount=Decimal("30.00"),
+    )
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.send_b2c_payout",
+        AsyncMock(
+            return_value={
+                "success": True,
+                "accepted": True,
+                "receipt": None,
+                "conversation_id": "AG_BAD",
+                "originator_conversation_id": "orig-bad",
+            }
+        ),
+    )
+    waiting = await approve_return(
+        db_session, test_user.id, bad_row.id, actor_user_id=test_user.id
+    )
+    failed = await apply_b2c_result(
+        db_session,
+        _b2c_result(2001, originator="orig-bad", conversation="AG_BAD", desc="Rejected"),
+        user_id=test_user.id,
+    )
+    assert failed.status == "failed"
+    assert (await _attempts(db_session, waiting.id))[0].status == "failed"
+    settled = await mark_settled_offline(
+        db_session, test_user.id, waiting.id, actor_user_id=test_user.id, note="Cash"
+    )
+    assert settled.status == "settled_offline"
+    assert "refunded" not in _message(settled).lower()
+
+
+@pytest.mark.asyncio
+async def test_explicit_settle_offline_while_b2c_pending_does_not_claim_refunded(
+    db_session: AsyncSession,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    await _make_order(db_session, test_user, external_id="ORD-SETTLE-PENDING", total="25.00")
+    row = await request_return(
+        db_session,
+        test_user.id,
+        order_external_id="ORD-SETTLE-PENDING",
+        phone="0712345678",
+        reason_code="damaged",
+        amount=Decimal("25.00"),
+    )
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.payout_credentials_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.send_b2c_payout",
+        AsyncMock(
+            return_value={
+                "success": True,
+                "accepted": True,
+                "receipt": None,
+                "conversation_id": "AG_WAIT",
+                "originator_conversation_id": "orig-wait",
+            }
+        ),
+    )
+    pending = await approve_return(
+        db_session, test_user.id, row.id, actor_user_id=test_user.id
+    )
+    assert pending.status == "refund_pending"
+
+    settled = await mark_settled_offline(
+        db_session,
+        test_user.id,
+        pending.id,
+        actor_user_id=test_user.id,
+        note="Paid cash while M-Pesa is still pending",
+    )
+    assert settled.status == "settled_offline"
+    assert "refunded" not in _message(settled).lower()
+
+
+@pytest.mark.asyncio
+async def test_second_full_return_is_rejected_when_money_is_reserved(
+    db_session: AsyncSession,
+    test_user: User,
+):
+    from src.services.commerce_returns_service import CommerceReturnError
+
+    await _make_order(db_session, test_user, external_id="ORD-CAP", total="1000.00")
+    first = await request_return(
+        db_session,
+        test_user.id,
+        order_external_id="ORD-CAP",
+        phone="0712345678",
+        reason_code="damaged",
+        amount=Decimal("1000.00"),
+    )
+    assert first.status == "pending_approval"
+
+    same = await request_return(
+        db_session,
+        test_user.id,
+        order_external_id="ORD-CAP",
+        phone="0712345678",
+        reason_code="damaged",
+        amount=Decimal("1000.00"),
+    )
+    assert same.id == first.id
+
+    with pytest.raises(CommerceReturnError) as exc:
+        await request_return(
+            db_session,
+            test_user.id,
+            order_external_id="ORD-CAP",
+            phone="0712345678",
+            reason_code="wrong_item",
+            amount=Decimal("1000.00"),
+        )
+    assert exc.value.code == "amount_exceeds_order"
+
+    await _make_order(db_session, test_user, external_id="ORD-PART", total="1000.00")
+    await request_return(
+        db_session,
+        test_user.id,
+        order_external_id="ORD-PART",
+        phone="0712345678",
+        reason_code="damaged",
+        amount=Decimal("600.00"),
+    )
+    with pytest.raises(CommerceReturnError):
+        await request_return(
+            db_session,
+            test_user.id,
+            order_external_id="ORD-PART",
+            phone="0712345678",
+            reason_code="wrong_item",
+            amount=Decimal("500.00"),
+        )
+    second = await request_return(
+        db_session,
+        test_user.id,
+        order_external_id="ORD-PART",
+        phone="0712345678",
+        reason_code="changed_mind",
+        amount=Decimal("400.00"),
+    )
+    assert second.amount == Decimal("400.00")
+    assert second.id != first.id
+
+
+@pytest.mark.asyncio
+async def test_overlapping_execute_refund_sends_b2c_once(
+    async_engine,
+    db_session: AsyncSession,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    await _make_order(db_session, test_user, external_id="ORD-RACE", total="15.00")
+    row = await request_return(
+        db_session,
+        test_user.id,
+        order_external_id="ORD-RACE",
+        phone="0712345678",
+        reason_code="damaged",
+        amount=Decimal("15.00"),
+    )
+    calls = {"n": 0}
+
+    async def slow_success(**kwargs):
+        calls["n"] += 1
+        await asyncio.sleep(0.05)
+        return {
+            "success": True,
+            "receipt": "RACE1",
+            "conversation_id": "AG_RACE",
+            "originator_conversation_id": "orig-race",
+        }
+
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.payout_credentials_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.send_b2c_payout",
+        slow_success,
+    )
+
+    maker = async_sessionmaker(async_engine, expire_on_commit=False)
+    async with maker() as left, maker() as right:
+        left_row = await left.get(CommerceReturn, row.id)
+        right_row = await right.get(CommerceReturn, row.id)
+        await asyncio.gather(
+            execute_refund(left, left_row),
+            execute_refund(right, right_row),
+        )
+
+    assert calls["n"] == 1
+    attempts = await _attempts(db_session, row.id)
+    assert len(attempts) == 1
+    assert attempts[0].status == "success"
+    assert attempts[0].mpesa_receipt == "RACE1"

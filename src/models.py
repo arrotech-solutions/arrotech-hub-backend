@@ -2407,6 +2407,8 @@ class CommerceRefundAttempt(Base):
     amount = Column(Numeric(12, 2), nullable=False)
     mpesa_receipt = Column(String, nullable=True)
     error = Column(Text, nullable=True)
+    conversation_id = Column(String, nullable=True, index=True)
+    originator_conversation_id = Column(String, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     commerce_return = relationship(

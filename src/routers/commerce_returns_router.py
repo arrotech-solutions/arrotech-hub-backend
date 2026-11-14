@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
 from ..models import User
-from ..services.commerce_refund_service import list_refund_attempts
+from ..services.commerce_refund_service import list_refund_attempts, retry_refund
 from ..services.commerce_returns_service import (
     CommerceReturnError,
     approve_return,
@@ -169,6 +169,20 @@ async def settle_commerce_return_offline(
             actor_user_id=user.id,
             note=note,
         )
+    except CommerceReturnError as exc:
+        raise _http_error(exc) from exc
+    return {"success": True, "data": await _payload(db, row)}
+
+
+@router.post("/returns/{return_id}/retry-refund")
+async def retry_commerce_refund(
+    return_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retry a failed M-Pesa payout. Does not start one while another is pending."""
+    try:
+        row = await retry_refund(db, user.id, return_id, actor_user_id=user.id)
     except CommerceReturnError as exc:
         raise _http_error(exc) from exc
     return {"success": True, "data": await _payload(db, row)}

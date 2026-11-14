@@ -261,12 +261,15 @@ class DarajaService:
                     if resp.status != 200:
                         return {
                             "success": False,
+                            "uncertain": True,
                             "error": f"Daraja B2C error {resp.status}: {data}",
                             "raw": data,
                         }
+        except (TimeoutError, aiohttp.ClientError):
+            raise
         except Exception as exc:
             logger.error("Daraja B2C payment failed: %s", exc)
-            return {"success": False, "error": str(exc)}
+            return {"success": False, "uncertain": True, "error": str(exc)}
 
         if str(data.get("ResponseCode")) == "0":
             receipt = data.get("TransactionReceipt") or data.get("MpesaReceiptNumber")

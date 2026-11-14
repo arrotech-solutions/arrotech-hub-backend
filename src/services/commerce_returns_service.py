@@ -28,6 +28,7 @@ from .commerce_refund_service import (
     CommerceReturnError,
     execute_refund,
     mark_settled_offline,
+    reserved_refund_amount,
 )
 from .commerce_runtime.state import CommerceState
 
@@ -148,19 +149,28 @@ async def _load_order(
     return result.scalar_one_or_none()
 
 
-async def _open_return(
+async def _matching_open_return(
     db: AsyncSession,
     user_id: UUID,
     order_external_id: str,
+    *,
+    amount: Decimal,
+    reason_code: str,
+    phone: str,
 ) -> Optional[CommerceReturn]:
     result = await db.execute(
         select(CommerceReturn).where(
             CommerceReturn.user_id == user_id,
             CommerceReturn.order_external_id == order_external_id,
+            CommerceReturn.reason_code == reason_code,
+            CommerceReturn.customer_phone == phone,
             CommerceReturn.status.in_(_OPEN_RETURN_STATUSES),
         )
     )
-    return result.scalars().first()
+    for row in result.scalars().all():
+        if _money(row.amount) == amount:
+            return row
+    return None
 
 
 async def get_return(
@@ -245,9 +255,24 @@ async def request_return(
     if not phone_text:
         raise CommerceReturnError("invalid_phone", "Customer phone is required")
 
-    existing = await _open_return(db, user_id, external_id)
+    existing = await _matching_open_return(
+        db,
+        user_id,
+        external_id,
+        amount=money,
+        reason_code=code,
+        phone=phone_text,
+    )
     if existing is not None:
         return existing
+
+    reserved = await reserved_refund_amount(db, user_id, external_id)
+    remaining = _money(order.total) - reserved
+    if money > remaining:
+        raise CommerceReturnError(
+            "amount_exceeds_order",
+            "Return amount exceeds the remaining refundable total",
+        )
 
     created = _as_utc(order.created_at)
     row = CommerceReturn(
@@ -290,6 +315,8 @@ async def approve_return(
     """Hub approve. Creates one refund attempt via ``execute_refund``."""
     row = await _require_return(db, user_id, return_id)
     if row.status in _TERMINAL_APPROVAL:
+        return row
+    if row.status == CommerceReturnStatus.FAILED.value:
         return row
     if row.status == CommerceReturnStatus.DENIED.value:
         raise CommerceReturnError("already_denied", "This return was denied")

@@ -851,6 +851,27 @@ async def _handle_mpesa_callback_background(webhook_secret: str, body: bytes):
                 logger.info(f"Successfully processed STK callback for user {config.user_id}")
                 return
 
+            # 3a2. B2C result callbacks (refund payouts) — map via conversation id
+            result_body = payload.get("Result") if isinstance(payload, dict) else None
+            if isinstance(result_body, dict) and (
+                result_body.get("OriginatorConversationID") or result_body.get("ConversationID")
+            ):
+                from ..services.commerce_refund_service import apply_b2c_result
+
+                applied = await apply_b2c_result(db, payload, user_id=config.user_id)
+                if applied is not None:
+                    logger.info(
+                        "Processed B2C refund callback for return %s user %s",
+                        applied.id,
+                        config.user_id,
+                    )
+                else:
+                    logger.info(
+                        "Daraja B2C result did not match a refund attempt (user=%s)",
+                        config.user_id,
+                    )
+                return
+
             # 3b. C2B confirmation callbacks (reconciliation)
             await service.process_payment_notification(config.user_id, payload, db)
 
