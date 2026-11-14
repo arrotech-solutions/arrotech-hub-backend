@@ -127,6 +127,7 @@ class DbOrderPort:
             "fulfillment_method": row.delivery_method,
             "customer_phone": row.customer_phone,
             "customer_name": row.customer_name,
+            "mpesa_receipt": row.mpesa_receipt,
         }
 
     async def compare_and_set_status(

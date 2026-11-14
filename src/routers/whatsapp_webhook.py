@@ -1003,7 +1003,9 @@ async def background_process_message(
                     "[WHATSAPP WEBHOOK BG] Skipping auto-reply — conversational agent workflow active"
                 )
 
-            # Trigger workflow automation (always — cart commands handled inside agent)
+            # Trigger workflow automation (always — cart commands handled inside agent).
+            # A failed turn stays reprocessable. Do not mark the wamid completed.
+            workflow_failed = False
             try:
                 from ..services.whatsapp_workflow_trigger import WhatsAppWorkflowTrigger
                 await WhatsAppWorkflowTrigger.on_message_received(
@@ -1011,17 +1013,23 @@ async def background_process_message(
                 )
             except Exception as e:
                 logger.error(f"[WHATSAPP WEBHOOK BG] Workflow trigger error: {e}")
+                workflow_failed = True
 
-            # ── Idempotency Phase 2: mark processing as completed ──
+            # ── Idempotency Phase 2: completed only when the turn finished ──
             if meta_message_id:
                 try:
                     from ..services.idempotency_service import idempotency_service
-                    await idempotency_service.mark_completed(
-                        db, user_id, meta_message_id
-                    )
+                    if workflow_failed:
+                        await idempotency_service.mark_failed(
+                            db, user_id, meta_message_id
+                        )
+                    else:
+                        await idempotency_service.mark_completed(
+                            db, user_id, meta_message_id
+                        )
                 except Exception as mc_err:
                     logger.warning(
-                        "[WHATSAPP WEBHOOK BG] mark_completed failed (non-fatal): %s",
+                        "[WHATSAPP WEBHOOK BG] idempotency finalize failed (non-fatal): %s",
                         mc_err,
                     )
 

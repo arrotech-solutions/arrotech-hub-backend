@@ -28,6 +28,7 @@ from ..models import (
     CommerceReturnStatus,
     MpesaAgentConfig,
 )
+from .commerce_status_notify import notify_customer_text, phones_match
 from .daraja_service import daraja_service
 
 logger = logging.getLogger(__name__)
@@ -317,6 +318,13 @@ async def _execute_refund_locked(
         _mirror(return_row, locked)
         return pending
 
+    order = await _load_order(db, locked.user_id, locked.order_external_id)
+    if order is None or not phones_match(order.customer_phone, locked.customer_phone):
+        raise CommerceReturnError(
+            "phone_mismatch",
+            "Refund phone does not match the buyer on the order",
+        )
+
     failed = [item for item in attempts if item.status == CommerceRefundAttemptStatus.FAILED.value]
     if failed and not allow_retry:
         if locked.status != CommerceReturnStatus.FAILED.value:
@@ -520,6 +528,7 @@ async def apply_b2c_result(
         locked = await _lock_return_row(db, matched.return_id)
         if user_id is not None and str(locked.user_id) != str(user_id):
             return None
+        previous_message = str(_snapshot(locked).get("customer_message") or "")
         attempt = await db.get(CommerceRefundAttempt, matched.id)
         if attempt is None:
             return None
@@ -574,6 +583,15 @@ async def apply_b2c_result(
 
         await db.commit()
         await db.refresh(locked)
+        current_message = str(_snapshot(locked).get("customer_message") or "")
+        if current_message and current_message != previous_message:
+            await notify_customer_text(
+                db,
+                locked.user_id,
+                locked.customer_phone,
+                current_message,
+                context=f"b2c return={locked.external_return_id} status={locked.status}",
+            )
         return locked
 
 
@@ -600,6 +618,13 @@ async def retry_refund(
     _remember(return_row, retried_by=str(actor_user_id))
     await execute_refund(db, return_row, allow_retry=True)
     await db.refresh(return_row)
+    await notify_customer_text(
+        db,
+        return_row.user_id,
+        return_row.customer_phone,
+        str(_snapshot(return_row).get("customer_message") or ""),
+        context=f"retry return={return_row.external_return_id}",
+    )
     return return_row
 
 
@@ -707,4 +732,11 @@ async def mark_settled_offline(
 
     await db.commit()
     await db.refresh(return_row)
+    await notify_customer_text(
+        db,
+        return_row.user_id,
+        return_row.customer_phone,
+        str(_snapshot(return_row).get("customer_message") or ""),
+        context=f"settle return={return_row.external_return_id}",
+    )
     return return_row

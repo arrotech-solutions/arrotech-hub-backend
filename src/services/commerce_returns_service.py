@@ -7,13 +7,14 @@ is the thin wrapper the agent can call later.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
@@ -23,7 +24,7 @@ from ..models import (
     CommerceReturn,
     CommerceReturnStatus,
 )
-from .commerce_policy import get_policy
+from .commerce_policy import away_message_if_closed, get_policy
 from .commerce_refund_service import (
     CommerceReturnError,
     execute_refund,
@@ -31,6 +32,20 @@ from .commerce_refund_service import (
     reserved_refund_amount,
 )
 from .commerce_runtime.state import CommerceState
+from .commerce_status_notify import notify_customer_text, phones_match
+
+logger = logging.getLogger(__name__)
+
+_COLLECTED_PAYMENT_STATUSES = frozenset({"paid", "collected", "settled"})
+_WEEKDAYS = (
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+)
 
 SELF_SERVE_CATEGORIES = frozenset(
     {
@@ -84,6 +99,45 @@ def _as_uuid(value: Any) -> UUID:
 
 def _new_external_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12].upper()}"
+
+
+def payment_already_collected(order: Any) -> bool:
+    """True when the buyer has already paid this order."""
+    status = str(_get(order, "payment_status") or "").strip().lower()
+    if status in _COLLECTED_PAYMENT_STATUSES:
+        return True
+    receipt = str(_get(order, "mpesa_receipt") or "").strip()
+    if not receipt:
+        return False
+    return status not in {"failed", "pending", "refunded", "refund_pending"}
+
+
+def _pending_return_message(row: CommerceReturn) -> str:
+    return (
+        f"Your return {row.external_return_id} for KES {_money(row.amount)} "
+        "is waiting for the shop to approve it. This payment is not complete."
+    )
+
+
+def _restock_qty(line_qty: Any, return_amount: Decimal, order_total: Decimal) -> Decimal:
+    try:
+        qty = Decimal(str(line_qty))
+    except Exception:
+        return Decimal("0")
+    if not qty.is_finite() or qty <= 0:
+        return Decimal("0")
+    if order_total <= 0 or return_amount >= order_total:
+        return qty
+    share = qty * return_amount / order_total
+    if qty == qty.to_integral_value():
+        whole = share.to_integral_value(rounding=ROUND_HALF_UP)
+        if whole < 1:
+            return Decimal("0")
+        return min(whole, qty)
+    quantized = share.quantize(Decimal("0.01"))
+    if quantized <= 0:
+        return Decimal("0")
+    return min(quantized, qty)
 
 
 def _as_utc(value: Any) -> Optional[datetime]:
@@ -215,6 +269,191 @@ async def _require_return(
     return row
 
 
+def _require_buyer_phone(order: CommerceOrder, phone: str) -> None:
+    if phones_match(order.customer_phone, phone):
+        return
+    raise CommerceReturnError(
+        "phone_mismatch",
+        "I couldn't find that order on your number.",
+    )
+
+
+async def _orders_for_user(db: AsyncSession, user_id: UUID) -> list[CommerceOrder]:
+    result = await db.execute(
+        select(CommerceOrder)
+        .where(CommerceOrder.user_id == user_id)
+        .order_by(CommerceOrder.created_at.desc(), CommerceOrder.id.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def find_buyer_order(
+    db: AsyncSession,
+    user_id: UUID,
+    phone: str,
+    order_external_id: Optional[str] = None,
+) -> Optional[CommerceOrder]:
+    """Order on this number. A supplied id still has to match the buyer phone."""
+    external_id = str(order_external_id or "").strip()
+    if external_id:
+        order = await _load_order(db, user_id, external_id)
+        if order is None or not phones_match(order.customer_phone, phone):
+            return None
+        return order
+    for order in await _orders_for_user(db, user_id):
+        if phones_match(order.customer_phone, phone):
+            return order
+    return None
+
+
+async def _notify_return_message(db: AsyncSession, row: CommerceReturn) -> None:
+    snapshot = _snapshot(row)
+    await notify_customer_text(
+        db,
+        row.user_id,
+        row.customer_phone,
+        str(snapshot.get("customer_message") or ""),
+        context=f"return={row.external_return_id} status={row.status}",
+    )
+
+
+async def _restock_return_lines(db: AsyncSession, user_id: UUID, row: CommerceReturn) -> None:
+    """Put tracked units back once. Unknown or untracked lines are skipped."""
+    from .commerce_runtime.db_ports import DbCatalogPort
+    from .commerce_runtime.inventory import Inventory, InventoryError
+
+    order = await _load_order(db, user_id, row.order_external_id)
+    if order is None:
+        logger.warning(
+            "return restock skipped; order missing return=%s",
+            row.external_return_id,
+        )
+        return
+    catalog = DbCatalogPort(db, user_id)
+    inventory = Inventory(catalog)
+    order_total = _money(order.total)
+    return_amount = _money(row.amount)
+    for line in list(order.line_items or []):
+        if not isinstance(line, dict):
+            continue
+        product_id = str(line.get("product_id") or "").strip()
+        if not product_id:
+            continue
+        qty = _restock_qty(line.get("qty", line.get("quantity")), return_amount, order_total)
+        if qty <= 0:
+            continue
+        try:
+            await inventory.restock(product_id, qty)
+        except InventoryError as exc:
+            logger.warning(
+                "return restock skipped product=%s return=%s code=%s",
+                product_id,
+                row.external_return_id,
+                exc.code,
+            )
+
+
+def _policy_reason(policy: dict) -> str:
+    codes = [str(code).strip() for code in (policy.get("return_reason_codes") or []) if str(code).strip()]
+    if "changed_mind" in codes:
+        return "changed_mind"
+    if codes:
+        return codes[0]
+    return ""
+
+
+def _hours_answer(policy: dict) -> str:
+    closed = away_message_if_closed(policy)
+    if closed:
+        return closed
+    hours = policy.get("business_hours") or {}
+    parts = []
+    if isinstance(hours, dict):
+        for day in _WEEKDAYS:
+            window = hours.get(day)
+            if not isinstance(window, dict):
+                continue
+            opening = str(window.get("open") or "").strip()
+            closing = str(window.get("close") or "").strip()
+            if opening and closing:
+                parts.append(f"{day.capitalize()} {opening}-{closing}")
+    if parts:
+        return "The shop is open now. Hours: " + ", ".join(parts) + "."
+    return "The shop is open. Send your order here and we will help."
+
+
+def _payment_recovery_answer(order: CommerceOrder) -> str:
+    status = str(order.payment_status or "pending").strip().lower()
+    order_id = order.external_order_id
+    amount = _money(order.total)
+    if status in _COLLECTED_PAYMENT_STATUSES:
+        receipt = str(order.mpesa_receipt or "").strip()
+        paid = f"Order {order_id} is already paid."
+        if receipt:
+            paid = f"{paid} Receipt: {receipt}."
+        return f"{paid} There is nothing to pay again."
+    if status == "failed":
+        return (
+            f"Order {order_id} payment failed. I can send the M-Pesa prompt again "
+            f"for the same order. The amount is KES {amount}. Reply YES to pay."
+        )
+    return (
+        f"Order {order_id} payment is {status}. "
+        f"I can send the M-Pesa prompt for KES {amount}. Reply YES to pay."
+    )
+
+
+async def _self_serve_answer(
+    db: AsyncSession,
+    user_id: UUID,
+    *,
+    phone: str,
+    category: str,
+    order_external_id: Optional[str],
+) -> str:
+    """A real answer for categories the shop can close in chat."""
+    if category in {"hours", "away"}:
+        try:
+            policy = await get_policy(db, user_id)
+        except Exception as exc:
+            logger.warning("complaint hours read failed: %s", exc)
+            return "I couldn't read the shop hours just now. Please try again in a moment."
+        return _hours_answer(policy if isinstance(policy, dict) else {})
+
+    order = await find_buyer_order(db, user_id, phone, order_external_id)
+    if category == "where_is_my_order":
+        if order is None:
+            return "I couldn't find an order on your number."
+        return (
+            f"Order {order.external_order_id} is {order.status}. "
+            f"Payment is {order.payment_status}."
+        )
+    if category in {"payment_pending", "payment_failed"}:
+        if order is None:
+            return "I couldn't find an order on your number to recover payment."
+        return _payment_recovery_answer(order)
+    if category == "cancel":
+        if order is None:
+            return "I couldn't find an order on your number to cancel."
+        return (
+            f"Order {order.external_order_id} is {order.status}. "
+            f"Payment is {order.payment_status}."
+        )
+    if category == "start_return":
+        if order is None:
+            return "I couldn't find an order on your number to return."
+        if not payment_already_collected(order):
+            return (
+                f"Order {order.external_order_id} payment is {order.payment_status}. "
+                "There is no collected payment to return."
+            )
+        return (
+            f"Order {order.external_order_id} total KES {_money(order.total)} "
+            "can be returned. Tell me the reason and I will start it."
+        )
+    return "Tell me the order and what you need help with."
+
+
 async def request_return(
     db: AsyncSession,
     user_id: UUID,
@@ -223,8 +462,12 @@ async def request_return(
     phone: str,
     reason_code: str,
     amount: Any,
+    inventory_already_restocked: bool = False,
 ) -> CommerceReturn:
-    """Create a return. Auto-approve pays only when policy and payout say so."""
+    """Create a return. Auto-approve pays only when policy and payout say so.
+
+    The phone must match the buyer on the order. Payout uses that same number.
+    """
     policy = await get_policy(db, user_id)
     external_id = str(order_external_id or "").strip()
     order = await _load_order(db, user_id, external_id)
@@ -233,6 +476,10 @@ async def request_return(
             "order_not_found",
             f"Order {external_id} not found",
         )
+    phone_text = str(phone or "").strip()
+    if not phone_text:
+        raise CommerceReturnError("invalid_phone", "Customer phone is required")
+    _require_buyer_phone(order, phone_text)
 
     code = str(reason_code or "").strip()
     allowed = list(policy.get("return_reason_codes") or [])
@@ -251,10 +498,6 @@ async def request_return(
             "Return amount cannot exceed the order total",
         )
 
-    phone_text = str(phone or "").strip()
-    if not phone_text:
-        raise CommerceReturnError("invalid_phone", "Customer phone is required")
-
     existing = await _matching_open_return(
         db,
         user_id,
@@ -264,6 +507,13 @@ async def request_return(
         phone=phone_text,
     )
     if existing is not None:
+        if inventory_already_restocked and not _snapshot(existing).get("inventory_restocked"):
+            existing_snapshot = _snapshot(existing)
+            existing_snapshot["inventory_restocked"] = True
+            existing_snapshot["opened_from"] = "paid_cancel"
+            existing.raw_snapshot = existing_snapshot
+            await db.commit()
+            await db.refresh(existing)
         return existing
 
     reserved = await reserved_refund_amount(db, user_id, external_id)
@@ -275,6 +525,13 @@ async def request_return(
         )
 
     created = _as_utc(order.created_at)
+    snapshot = {
+        "order_created_at": created.isoformat() if created else None,
+        "order_total": str(_money(order.total)),
+    }
+    if inventory_already_restocked:
+        snapshot["inventory_restocked"] = True
+        snapshot["opened_from"] = "paid_cancel"
     row = CommerceReturn(
         user_id=user_id,
         external_return_id=_new_external_id("RET"),
@@ -285,24 +542,88 @@ async def request_return(
         currency=order.currency or "KES",
         status=CommerceReturnStatus.PENDING_APPROVAL.value,
         auto_approved=False,
-        raw_snapshot={
-            "order_created_at": created.isoformat() if created else None,
-            "order_total": str(_money(order.total)),
-        },
+        raw_snapshot=snapshot,
     )
+    should_restock = False
     if evaluate_auto_approve(policy, row, order):
         row.auto_approved = True
         row.status = CommerceReturnStatus.APPROVED.value
         snapshot = _snapshot(row)
         snapshot["approved_by"] = "auto"
+        if not snapshot.get("inventory_restocked"):
+            snapshot["inventory_restocked"] = True
+            should_restock = True
+        row.raw_snapshot = snapshot
+    else:
+        snapshot = _snapshot(row)
+        snapshot["customer_message"] = _pending_return_message(row)
         row.raw_snapshot = snapshot
 
     db.add(row)
     await db.commit()
     await db.refresh(row)
+    if should_restock:
+        await _restock_return_lines(db, user_id, row)
+        await db.refresh(row)
     if row.auto_approved:
         await execute_refund(db, row)
         await db.refresh(row)
+    return row
+
+
+async def open_paid_cancel_return(
+    db: AsyncSession,
+    user_id: UUID,
+    order_external_id: str,
+    phone: str,
+) -> Optional[CommerceReturn]:
+    """Open the refund pipeline after a paid cancel. None when the order was not paid.
+
+    Stock was already returned by cancel, so approval must not restock again.
+    """
+    external_id = str(order_external_id or "").strip()
+    order = await _load_order(db, user_id, external_id)
+    if order is None:
+        raise CommerceReturnError("order_not_found", f"Order {external_id} not found")
+    if not payment_already_collected(order):
+        return None
+    _require_buyer_phone(order, phone)
+    policy = await get_policy(db, user_id)
+    reason = _policy_reason(policy)
+    if not reason:
+        raise CommerceReturnError(
+            "invalid_reason",
+            "The shop has no return reason for this paid cancellation",
+        )
+    row = await request_return(
+        db,
+        user_id,
+        order_external_id=external_id,
+        phone=phone,
+        reason_code=reason,
+        amount=order.total,
+        inventory_already_restocked=True,
+    )
+    if row.status == CommerceReturnStatus.REFUNDED.value:
+        return row
+    snapshot = _snapshot(row)
+    stored = str(snapshot.get("customer_message") or "").strip()
+    if "refunded" in stored.lower():
+        stored = ""
+    lead = f"Order {order.external_order_id} is cancelled."
+    if stored and lead not in stored:
+        stored = f"{lead} {stored}"
+    elif not stored:
+        stored = (
+            f"{lead} Your return {row.external_return_id} for KES {_money(row.amount)} "
+            "is waiting for the shop to pay you. This payment is not complete."
+        )
+    snapshot["customer_message"] = stored
+    snapshot["opened_from"] = "paid_cancel"
+    snapshot["inventory_restocked"] = True
+    row.raw_snapshot = snapshot
+    await db.commit()
+    await db.refresh(row)
     return row
 
 
@@ -312,7 +633,7 @@ async def approve_return(
     return_id: Any,
     actor_user_id: UUID,
 ) -> CommerceReturn:
-    """Hub approve. Creates one refund attempt via ``execute_refund``."""
+    """Hub approve. Restocks tracked units once, then starts one refund attempt."""
     row = await _require_return(db, user_id, return_id)
     if row.status in _TERMINAL_APPROVAL:
         return row
@@ -321,13 +642,43 @@ async def approve_return(
     if row.status == CommerceReturnStatus.DENIED.value:
         raise CommerceReturnError("already_denied", "This return was denied")
 
-    snapshot = _snapshot(row)
-    snapshot["approved_by"] = str(actor_user_id)
-    row.raw_snapshot = snapshot
-    row.status = CommerceReturnStatus.APPROVED.value
-    await db.commit()
+    should_restock = False
+    if row.status != CommerceReturnStatus.APPROVED.value:
+        snapshot = _snapshot(row)
+        snapshot["approved_by"] = str(actor_user_id)
+        if not snapshot.get("inventory_restocked"):
+            snapshot["inventory_restocked"] = True
+            should_restock = True
+        claimed = await db.execute(
+            update(CommerceReturn)
+            .where(
+                CommerceReturn.id == row.id,
+                CommerceReturn.status == row.status,
+            )
+            .values(
+                status=CommerceReturnStatus.APPROVED.value,
+                raw_snapshot=snapshot,
+            )
+        )
+        await db.commit()
+        if claimed.rowcount != 1:
+            await db.refresh(row)
+            return row
+        await db.refresh(row)
+    elif not _snapshot(row).get("inventory_restocked"):
+        snapshot = _snapshot(row)
+        snapshot["inventory_restocked"] = True
+        row.raw_snapshot = snapshot
+        await db.commit()
+        should_restock = True
+        await db.refresh(row)
+
+    if should_restock:
+        await _restock_return_lines(db, user_id, row)
+        await db.refresh(row)
     await execute_refund(db, row)
     await db.refresh(row)
+    await _notify_return_message(db, row)
     return row
 
 
@@ -381,6 +732,20 @@ async def request_complaint(
         else CommerceComplaintStatus.HANDED_OFF.value
     )
     order_id = str(order_external_id).strip() if order_external_id else None
+    answer = ""
+    if self_serve:
+        answer = await _self_serve_answer(
+            db,
+            user_id,
+            phone=phone_text,
+            category=normalized,
+            order_external_id=order_id,
+        )
+    snapshot: dict[str, Any] = {}
+    if detail:
+        snapshot["detail"] = detail
+    if answer:
+        snapshot["customer_message"] = answer
     row = CommerceComplaint(
         user_id=user_id,
         external_complaint_id=_new_external_id("CMP"),
@@ -388,7 +753,7 @@ async def request_complaint(
         customer_phone=phone_text,
         category=normalized,
         status=status,
-        raw_snapshot={"detail": detail} if detail else {},
+        raw_snapshot=snapshot,
     )
     db.add(row)
     await db.commit()
@@ -396,7 +761,7 @@ async def request_complaint(
     effects: list[dict] = []
     if not self_serve:
         effects = [{"type": "handoff", "complaint_id": str(row.id)}]
-    return row, {"ok": True, "effects": effects}
+    return row, {"ok": True, "effects": effects, "customer_message": answer}
 
 
 async def apply_aftersale_command(
@@ -450,6 +815,7 @@ async def apply_aftersale_command(
             "ok": True,
             "complaint_id": str(row.id),
             "status": row.status,
+            "customer_message": result.get("customer_message") or "",
             "effects": result["effects"],
         }
 
@@ -463,9 +829,13 @@ __all__ = [
     "approve_return",
     "deny_return",
     "evaluate_auto_approve",
+    "find_buyer_order",
     "get_return",
     "list_returns",
     "mark_settled_offline",
+    "open_paid_cancel_return",
+    "payment_already_collected",
+    "phones_match",
     "request_complaint",
     "request_return",
 ]

@@ -85,7 +85,8 @@ def status_message(order_id: str, status: str, lang: str) -> str:
     return f"Your order *{order_id}* is now {token}."
 
 
-def _phones_match(customer_phone: str, sender_id: str) -> bool:
+def phones_match(customer_phone: str, sender_id: str) -> bool:
+    """True when both numbers share the same last 9 digits."""
     phone = _digits(customer_phone)
     sender = _digits(sender_id)
     if not phone or not sender:
@@ -114,7 +115,7 @@ async def _customer_lang(db: AsyncSession, user_id, order) -> str:
         )
     )
     for row in result.scalars().all():
-        if not _phones_match(phone, row.sender_id or ""):
+        if not phones_match(phone, row.sender_id or ""):
             continue
         found = _lang_from_mapping(row.metadata_)
         if found:
@@ -142,6 +143,46 @@ async def _whatsapp_config(db: AsyncSession, user_id) -> dict | None:
     if base_url:
         config["base_url"] = base_url
     return config
+
+
+async def notify_customer_text(
+    db,
+    user_id,
+    phone: str,
+    message: str,
+    *,
+    context: str = "",
+) -> None:
+    """Send stored customer copy on the merchant WhatsApp connection.
+
+    Failures are logged and never raised, so a refund row stays committed.
+    """
+    try:
+        text = (message or "").strip()
+        destination = (phone or "").strip()
+        if not text or not destination:
+            logger.warning(
+                "commerce customer notify skipped; missing phone or message %s",
+                context,
+            )
+            return
+        config = await _whatsapp_config(db, user_id)
+        if config is None:
+            logger.warning(
+                "commerce customer notify skipped; WhatsApp not connected %s",
+                context,
+            )
+            return
+        result = await WhatsAppService().send_message(destination, text, config=config)
+        if not isinstance(result, dict) or not result.get("success"):
+            error = result.get("error") if isinstance(result, dict) else result
+            logger.warning(
+                "commerce customer notify failed %s error=%s",
+                context,
+                error,
+            )
+    except Exception:
+        logger.exception("commerce customer notify failed %s", context)
 
 
 async def notify_order_status_change(db, user_id, order, previous_status: str) -> None:

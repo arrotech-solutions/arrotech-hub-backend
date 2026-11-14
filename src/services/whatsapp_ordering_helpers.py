@@ -1259,6 +1259,31 @@ def _coerce_rails_flag(value: Any) -> bool:
     return False
 
 
+def commerce_rails_intended(
+    business_config: Optional[Dict[str, Any]],
+    order_type: str = "",
+) -> bool:
+    """True when this merchant is on the library ordering path and rails are not explicitly off.
+
+    A failed policy read must fail closed for these merchants. Rent, support,
+    and real estate stay on the legacy agent even when policy cannot be read.
+    """
+    config = dict(business_config or {})
+    if order_type:
+        config["order_type"] = order_type
+    order = str(config.get("order_type") or "").strip().lower()
+    agent_mode = str(config.get("agent_mode") or "").strip().lower()
+    if agent_mode == "support" or order in _NON_RAILS_ORDER_TYPES:
+        return False
+    if order and order not in _LIBRARY_ORDERING_TYPES:
+        return False
+    if "commerce_rails_enabled" in config and not _coerce_rails_flag(
+        config.get("commerce_rails_enabled")
+    ):
+        return False
+    return True
+
+
 def normalize_commerce_rails_enabled(
     business_config: Optional[Dict[str, Any]],
     policy: Optional[Dict[str, Any]] = None,

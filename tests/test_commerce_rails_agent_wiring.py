@@ -510,3 +510,308 @@ def test_business_alert_reads_flat_customer_fields():
     assert "254700000001" in alert
     assert "Unknown" not in alert
     assert "N/A" not in alert
+
+
+@pytest.mark.asyncio
+async def test_paid_cancel_opens_a_refund_and_restocks_once(db_session, test_user):
+    """Paid cancel before preparing restocks once and leaves a non-refunded return."""
+    product = CatalogProduct(
+        user_id=test_user.id,
+        name="Tea",
+        price=Decimal("100.00"),
+        description="Tea",
+        category="drinks",
+        sku="TEA-CANCEL",
+        brand="Shop",
+        quantity=Decimal("5"),
+        unit="pcs",
+        condition="new",
+        image_url="",
+        availability="in_stock",
+        search_text="tea",
+    )
+    db_session.add(product)
+    await db_session.commit()
+    await db_session.refresh(product)
+
+    phone = "254700000001"
+    session_key = f"ccm:whatsapp:{test_user.id}:{phone}"
+    session = _session(session_key, str(test_user.id), phone)
+    agent = ConversationalAgentService()
+    patches = _bind_session(session)
+    with patches[0], patches[1], patches[2]:
+        await _tool(
+            agent,
+            test_user,
+            db_session,
+            session_key,
+            "manage_cart",
+            {"action": "add", "product_id": str(product.id), "quantity": 1},
+        )
+        placed = await _tool(
+            agent,
+            test_user,
+            db_session,
+            session_key,
+            "create_order",
+            {
+                "customer_name": "Asha",
+                "customer_phone": phone,
+                "delivery_method": "pickup",
+            },
+        )
+        order_id = placed["order_data"]["order_id"]
+        stored = await db_session.execute(
+            select(CommerceOrder).where(CommerceOrder.external_order_id == order_id)
+        )
+        order = stored.scalar_one()
+        order.payment_status = "paid"
+        order.mpesa_receipt = "QKPAID1"
+        await db_session.commit()
+        cancelled = await _tool(
+            agent,
+            test_user,
+            db_session,
+            session_key,
+            "cancel_order",
+            {"order_id": order_id, "customer_phone": phone},
+        )
+
+    message = cancelled.get("verbatim_customer_message") or ""
+    assert cancelled["success"] is True
+    assert "refunded" not in message.lower()
+    assert "not complete" in message.lower()
+    assert order_id in message
+    await db_session.refresh(product)
+    await db_session.refresh(order)
+    assert int(product.quantity) == 5
+    assert order.status == "cancelled"
+    assert order.payment_status == "paid"
+    returns = (
+        await db_session.execute(
+            select(CommerceReturn).where(CommerceReturn.user_id == test_user.id)
+        )
+    ).scalars().all()
+    assert len(returns) == 1
+    assert returns[0].status != "refunded"
+    assert returns[0].order_external_id == order_id
+    assert (returns[0].raw_snapshot or {}).get("inventory_restocked") is True
+
+    from src.services.commerce_returns_service import approve_return
+
+    await approve_return(db_session, test_user.id, returns[0].id, actor_user_id=test_user.id)
+    await db_session.refresh(product)
+    assert int(product.quantity) == 5
+
+
+@pytest.mark.asyncio
+async def test_return_refuses_a_sender_who_is_not_the_buyer(db_session, test_user):
+    order = CommerceOrder(
+        user_id=test_user.id,
+        external_order_id="ORD-OTHER",
+        customer_name="Asha",
+        customer_phone="254700000001",
+        status="delivered",
+        payment_status="paid",
+        currency="KES",
+        total=Decimal("100.00"),
+        line_items=[],
+        delivery_method="pickup",
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(order)
+    await db_session.commit()
+    agent = ConversationalAgentService()
+    sender = "254711111111"
+    result = await _tool(
+        agent,
+        test_user,
+        db_session,
+        f"ccm:whatsapp:{test_user.id}:{sender}",
+        "request_return",
+        {
+            "order_external_id": "ORD-OTHER",
+            "phone": sender,
+            "reason_code": "damaged",
+            "amount": "100.00",
+        },
+    )
+    assert result.get("success") is False
+    stored = await db_session.execute(
+        select(CommerceReturn).where(CommerceReturn.user_id == test_user.id)
+    )
+    assert stored.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_self_serve_complaints_answer_status_hours_and_payment(db_session, test_user):
+    order = CommerceOrder(
+        user_id=test_user.id,
+        external_order_id="ORD-ASK",
+        customer_name="Asha",
+        customer_phone="254700000001",
+        status="preparing",
+        payment_status="failed",
+        currency="KES",
+        total=Decimal("80.00"),
+        line_items=[],
+        delivery_method="pickup",
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(order)
+    await db_session.commit()
+    await upsert_policy(
+        db_session,
+        test_user.id,
+        {
+            "business_hours": {
+                day: {"open": "08:00", "close": "20:00"}
+                for day in (
+                    "monday",
+                    "tuesday",
+                    "wednesday",
+                    "thursday",
+                    "friday",
+                    "saturday",
+                    "sunday",
+                )
+            }
+        },
+    )
+    agent = ConversationalAgentService()
+    phone = "254700000001"
+    session_key = f"ccm:whatsapp:{test_user.id}:{phone}"
+
+    status = await _tool(
+        agent,
+        test_user,
+        db_session,
+        session_key,
+        "request_complaint",
+        {"category": "where_is_my_order", "order_external_id": "ORD-ASK"},
+    )
+    hours = await _tool(
+        agent,
+        test_user,
+        db_session,
+        session_key,
+        "request_complaint",
+        {"category": "hours"},
+    )
+    payment = await _tool(
+        agent,
+        test_user,
+        db_session,
+        session_key,
+        "request_complaint",
+        {"category": "payment_failed", "order_external_id": "ORD-ASK"},
+    )
+    for result in (status, hours, payment):
+        text = result.get("verbatim_customer_message") or ""
+        assert result.get("success") is True
+        assert "noted that" not in text.lower()
+        assert text.strip()
+    assert "ORD-ASK" in status["verbatim_customer_message"]
+    assert "preparing" in status["verbatim_customer_message"]
+    assert "Hours:" in hours["verbatim_customer_message"] or "closed" in hours["verbatim_customer_message"].lower()
+    assert "M-Pesa" in payment["verbatim_customer_message"]
+    assert "failed" in payment["verbatim_customer_message"].lower()
+
+    started = await _tool(
+        agent,
+        test_user,
+        db_session,
+        session_key,
+        "request_complaint",
+        {"category": "start_return", "order_external_id": "ORD-ASK"},
+    )
+    started_text = started.get("verbatim_customer_message") or ""
+    assert "noted that" not in started_text.lower()
+    assert "no collected payment" in started_text.lower()
+
+    order.payment_status = "paid"
+    order.status = "pending"
+    await db_session.commit()
+    session = _session(session_key, str(test_user.id), phone)
+    patches = _bind_session(session)
+    with patches[0], patches[1], patches[2]:
+        cancelled = await _tool(
+            agent,
+            test_user,
+            db_session,
+            session_key,
+            "request_complaint",
+            {"category": "cancel", "order_external_id": "ORD-ASK"},
+        )
+    cancel_text = cancelled.get("verbatim_customer_message") or ""
+    assert "noted that" not in cancel_text.lower()
+    assert "refunded" not in cancel_text.lower()
+    assert "ORD-ASK" in cancel_text
+    await db_session.refresh(order)
+    assert order.status == "cancelled"
+    opened = (
+        await db_session.execute(
+            select(CommerceReturn).where(CommerceReturn.order_external_id == "ORD-ASK")
+        )
+    ).scalar_one()
+    assert opened.status != "refunded"
+
+
+@pytest.mark.asyncio
+async def test_policy_load_failure_does_not_fall_through_to_legacy(db_session, test_user):
+    agent = ConversationalAgentService()
+    session_key = f"ccm:whatsapp:{test_user.id}:254700000001"
+    with patch(
+        "src.services.commerce_runtime.agent_wiring.get_policy",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("policy db down"),
+    ), patch.object(
+        agent, "_sub_create_order", new_callable=AsyncMock
+    ) as legacy:
+        result = await agent._execute_sub_tool(
+            tool_name="create_order",
+            arguments={"customer_name": "Asha", "delivery_method": "pickup", "items": []},
+            kb_id="",
+            order_type="retail",
+            currency="KES",
+            business_name="Shop",
+            storage_config={"provider": "none"},
+            session_key=session_key,
+            user=test_user,
+            db=db_session,
+            default_customer_phone="254700000001",
+            default_customer_name="Asha",
+            business_config={"order_type": "retail"},
+        )
+    legacy.assert_not_called()
+    assert result.get("human_handoff") is True
+    assert (result.get("verbatim_customer_message") or "").strip()
+    assert "refunded" not in result["verbatim_customer_message"].lower()
+
+    with patch(
+        "src.services.commerce_runtime.agent_wiring.get_policy",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("policy db down"),
+    ), patch.object(
+        agent,
+        "_sub_create_order",
+        new_callable=AsyncMock,
+        return_value={"success": True, "result": "legacy"},
+    ) as rent_legacy:
+        rent = await agent._execute_sub_tool(
+            tool_name="create_order",
+            arguments={"customer_name": "Asha", "items": []},
+            kb_id="",
+            order_type="rent_collection",
+            currency="KES",
+            business_name="Shop",
+            storage_config={"provider": "none"},
+            session_key=session_key,
+            user=test_user,
+            db=db_session,
+            default_customer_phone="254700000001",
+            default_customer_name="Asha",
+            business_config={"order_type": "rent_collection"},
+        )
+    rent_legacy.assert_awaited()
+    assert rent.get("result") == "legacy"

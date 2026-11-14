@@ -407,3 +407,75 @@ async def test_mixed_en_sw_search_adds_the_catalog_item(db_session, test_user):
         assert names == ["Milk"]
         assert journey.rails_state["cart_lines"]
         assert journey.live_llm_calls == 0
+
+
+async def test_pay_then_cancel_opens_a_refund_pipeline(db_session, test_user):
+    """A paid order cancelled before preparing keeps a Hub return and does not say refunded."""
+    tea = _product("Tea", "100.00", "TEA-CANCEL", "tea")
+    async with CommerceJourney(db_session, test_user, products=[tea]) as journey:
+        await journey.say(
+            "Add one tea please",
+            _tools(
+                (
+                    "manage_cart",
+                    {"action": "add", "product_name": "Tea", "quantity": 1, "unit_price": 1},
+                ),
+                closing="Added.",
+            ),
+        )
+        placed = await journey.say(
+            "Thanks, continue",
+            _tools(
+                (
+                    "create_order",
+                    {
+                        "customer_name": "Asha",
+                        "items": [{"name": "Tea", "quantity": 1, "unit_price": 1}],
+                        "delivery_method": "pickup",
+                    },
+                ),
+                closing="Placed.",
+            ),
+        )
+        order_id = placed["order_data"]["order_id"]
+        await journey.say(
+            "Please send the M-Pesa prompt",
+            _tools(
+                (
+                    "initiate_mpesa_payment",
+                    {
+                        "order_id": order_id,
+                        "phone_number": journey.phone,
+                        "amount": 1,
+                        "description": "Tea",
+                    },
+                ),
+                closing="Prompt sent.",
+            ),
+        )
+        await journey.payment_callback(paid=True, receipt="QKCANCEL1")
+        cancelled = await journey.say(
+            "Please cancel that order",
+            _tools(
+                ("cancel_order", {"order_id": order_id}),
+                closing="You have been refunded.",
+            ),
+        )
+
+    text = cancelled["response_text"]
+    assert "refunded" not in text.lower()
+    assert "not complete" in text.lower()
+    order = await journey.order()
+    assert order.status == "cancelled"
+    assert order.payment_status == "paid"
+    row = (
+        await db_session.execute(
+            select(CommerceReturn).where(CommerceReturn.user_id == test_user.id)
+        )
+    ).scalar_one()
+    assert row.status != "refunded"
+    assert row.order_external_id == order_id
+    assert row.amount == Decimal("100.00")
+    await db_session.refresh(tea)
+    assert int(tea.quantity) == 5
+    assert journey.live_llm_calls == 0

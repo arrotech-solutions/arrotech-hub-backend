@@ -497,6 +497,8 @@ async def test_request_complaint_self_serve_resolves_and_dispute_hands_off(
 
     assert resolved.status == "resolved_self_serve"
     assert resolved_result["effects"] == []
+    assert resolved_result["customer_message"]
+    assert "noted that" not in resolved_result["customer_message"].lower()
     assert dispute.status == "handed_off"
     assert dispute_result["effects"] == [
         {"type": "handoff", "complaint_id": str(dispute.id)}
@@ -1393,3 +1395,202 @@ async def test_missing_webhook_url_uses_offline_pending_and_can_settle(
     )
     assert settled.status == "settled_offline"
     assert "refunded" not in _message(settled).lower()
+
+
+@pytest.mark.asyncio
+async def test_return_phone_must_match_the_order_buyer(
+    db_session: AsyncSession,
+    test_user: User,
+):
+    """A return and its payout stay on the buyer number, including the last-9 match."""
+    await _make_order(
+        db_session,
+        test_user,
+        external_id="ORD-PHONE",
+        total="40.00",
+        phone="0712345678",
+    )
+    with pytest.raises(Exception) as mismatch:
+        await request_return(
+            db_session,
+            test_user.id,
+            order_external_id="ORD-PHONE",
+            phone="0799999999",
+            reason_code="damaged",
+            amount=Decimal("40.00"),
+        )
+    assert getattr(mismatch.value, "code", "") == "phone_mismatch"
+    stored = await db_session.execute(
+        select(CommerceReturn).where(CommerceReturn.user_id == test_user.id)
+    )
+    assert stored.scalar_one_or_none() is None
+
+    row = await request_return(
+        db_session,
+        test_user.id,
+        order_external_id="ORD-PHONE",
+        phone="254712345678",
+        reason_code="damaged",
+        amount=Decimal("40.00"),
+    )
+    assert row.customer_phone == "254712345678"
+    row.customer_phone = "254700000099"
+    await db_session.commit()
+
+    from src.services.commerce_refund_service import CommerceReturnError, execute_refund
+
+    with pytest.raises(CommerceReturnError) as payout:
+        await execute_refund(db_session, row)
+    assert payout.value.code == "phone_mismatch"
+    assert await _attempts(db_session, row.id) == []
+
+
+@pytest.mark.asyncio
+async def test_approve_restocks_tracked_quantity_once(
+    db_session: AsyncSession,
+    test_user: User,
+):
+    """Approval puts tracked units back. Settle and a second approve do not."""
+    from src.models import CatalogProduct
+
+    product = CatalogProduct(
+        user_id=test_user.id,
+        name="Rice",
+        price=Decimal("100.00"),
+        description="Rice",
+        category="grocery",
+        sku="RICE-RET",
+        brand="Shop",
+        quantity=Decimal("4"),
+        unit="pcs",
+        condition="new",
+        image_url="",
+        availability="in_stock",
+        search_text="rice",
+    )
+    db_session.add(product)
+    await db_session.commit()
+    await db_session.refresh(product)
+    order = await _make_order(db_session, test_user, external_id="ORD-STOCK", total="100.00")
+    order.line_items = [
+        {
+            "product_id": str(product.id),
+            "qty": 1,
+            "name": "Rice",
+            "unit_price": "100.00",
+        }
+    ]
+    await db_session.commit()
+
+    row = await request_return(
+        db_session,
+        test_user.id,
+        order_external_id="ORD-STOCK",
+        phone=order.customer_phone,
+        reason_code="changed_mind",
+        amount=Decimal("100.00"),
+    )
+    approved = await approve_return(
+        db_session, test_user.id, row.id, actor_user_id=test_user.id
+    )
+    await db_session.refresh(product)
+    assert int(product.quantity) == 5
+    assert (approved.raw_snapshot or {}).get("inventory_restocked") is True
+
+    await mark_settled_offline(
+        db_session, test_user.id, approved.id, actor_user_id=test_user.id
+    )
+    await approve_return(db_session, test_user.id, approved.id, actor_user_id=test_user.id)
+    await db_session.refresh(product)
+    assert int(product.quantity) == 5
+
+
+@pytest.mark.asyncio
+async def test_hub_refund_updates_send_the_stored_customer_message(
+    db_session: AsyncSession,
+    test_user: User,
+):
+    """Approve, offline settle, and a B2C result send the stored sentence."""
+    from unittest.mock import AsyncMock, patch
+
+    from src.models import CommerceRefundAttempt, Connection
+    from src.services.commerce_refund_service import apply_b2c_result
+
+    await _make_order(db_session, test_user, external_id="ORD-NOTIFY", total="25.00")
+    db_session.add(
+        Connection(
+            user_id=test_user.id,
+            platform="whatsapp",
+            name="Shop WhatsApp",
+            status="active",
+            config={"access_token": "test-token", "phone_number_id": "123456"},
+        )
+    )
+    await db_session.commit()
+    row = await request_return(
+        db_session,
+        test_user.id,
+        order_external_id="ORD-NOTIFY",
+        phone="0712345678",
+        reason_code="damaged",
+        amount=Decimal("25.00"),
+    )
+
+    sent: list[str] = []
+
+    async def fake_send(*args, **kwargs):
+        message = kwargs.get("message")
+        if message is None and len(args) >= 2:
+            message = args[1]
+        sent.append(str(message))
+        return {"success": True}
+
+    with patch(
+        "src.services.whatsapp_service.WhatsAppService.send_message",
+        new=AsyncMock(side_effect=fake_send),
+    ):
+        approved = await approve_return(
+            db_session, test_user.id, row.id, actor_user_id=test_user.id
+        )
+        assert sent[-1] == _message(approved)
+        assert "refunded" not in sent[-1].lower()
+
+        async def exploding_send(*args, **kwargs):
+            raise RuntimeError("whatsapp down")
+
+        with patch(
+            "src.services.whatsapp_service.WhatsAppService.send_message",
+            new=AsyncMock(side_effect=exploding_send),
+        ):
+            settled = await mark_settled_offline(
+                db_session,
+                test_user.id,
+                approved.id,
+                actor_user_id=test_user.id,
+            )
+        assert settled.status == "settled_offline"
+
+    attempt = CommerceRefundAttempt(
+        return_id=settled.id,
+        method="mpesa_b2c",
+        status="pending",
+        amount=settled.amount,
+        conversation_id="AG_NOTIFY",
+        originator_conversation_id="orig-notify",
+    )
+    settled.status = "refund_pending"
+    db_session.add(attempt)
+    await db_session.commit()
+
+    with patch(
+        "src.services.whatsapp_service.WhatsAppService.send_message",
+        new=AsyncMock(side_effect=fake_send),
+    ):
+        updated = await apply_b2c_result(
+            db_session,
+            _b2c_result(0, originator="orig-notify", conversation="AG_NOTIFY", receipt="RCPT-N"),
+            user_id=test_user.id,
+        )
+    assert updated.status == "refunded"
+    assert "RCPT-N" in sent[-1]
+    assert sent[-1] == _message(updated)
