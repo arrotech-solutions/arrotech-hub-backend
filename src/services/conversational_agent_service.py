@@ -1634,11 +1634,25 @@ class ConversationalAgentService:
                 except Exception:
                     session = None
                 cart = context_manager.get_cart(session) if session else []
+                checkout_meta = session.metadata if session else {}
+                checkout_phase = str((checkout_meta or {}).get("commerce_phase") or "")
+                checkout_draft = (checkout_meta or {}).get("checkout_draft") or {}
+                collecting_details = (
+                    checkout_phase == "collecting_details"
+                    or bool((checkout_meta or {}).get("awaiting_checkout_details"))
+                    or bool(checkout_draft.get("stage"))
+                )
                 if (
                     session
                     and cart
+                    and collecting_details
                     and not context_manager.is_human_handoff(session)
-                    and not is_order_confirmation_message(user_message)
+                    and not is_order_confirmation_message(
+                        user_message,
+                        phase=checkout_phase
+                        if checkout_phase in ("awaiting_yes", "placed")
+                        else None,
+                    )
                 ):
                     parsed = parse_checkout_details(user_message)
                     draft = session.metadata.get("checkout_draft") or {}
@@ -1687,6 +1701,7 @@ class ConversationalAgentService:
                                 session_key,
                                 {
                                     "awaiting_checkout_details": True,
+                                    "commerce_phase": "collecting_details",
                                     "checkout_draft": {
                                         "name": eff_name or "",
                                         "phone": "",
@@ -1710,6 +1725,7 @@ class ConversationalAgentService:
                                 session_key,
                                 {
                                     "awaiting_checkout_details": True,
+                                    "commerce_phase": "collecting_details",
                                     "checkout_draft": {
                                         "name": "",
                                         "phone": eff_phone or "",
@@ -1751,7 +1767,11 @@ class ConversationalAgentService:
                         for s in ("you asked", "already gave", "that's what", "i gave")
                     ):
                         await context_manager.update_session_metadata(
-                            session_key, {"awaiting_checkout_details": True}
+                            session_key,
+                            {
+                                "awaiting_checkout_details": True,
+                                "commerce_phase": "collecting_details",
+                            },
                         )
                         return await self._cart_fast_path_result(
                             session_key,
@@ -1790,7 +1810,11 @@ class ConversationalAgentService:
                                 "Samahani, sikupata jina lako. 🙂 Niweke jina gani kwenye oda?",
                             )
                         await context_manager.update_session_metadata(
-                            session_key, {"awaiting_checkout_details": True}
+                            session_key,
+                            {
+                                "awaiting_checkout_details": True,
+                                "commerce_phase": "collecting_details",
+                            },
                         )
                         return await self._cart_fast_path_result(
                             session_key, reprompt,
@@ -2189,11 +2213,45 @@ class ConversationalAgentService:
                 if session and not context_manager.is_human_handoff(session):
                     checkout_customer = session.metadata.get("checkout_customer")
                     pending = session.metadata.get("pending_confirmation")
-                    confirmed = (
-                        is_order_confirmation_message(user_message)
-                        or bool(session.metadata.get("order_confirmed"))
+                    phase = str(session.metadata.get("commerce_phase") or "").strip()
+                    confirms = is_order_confirmation_message(
+                        user_message,
+                        phase=phase if phase in ("awaiting_yes", "placed") else None,
                     )
-                    if checkout_customer and pending and confirmed:
+                    if phase == "placed" and confirms:
+                        order_id = str(session.metadata.get("placed_order_id") or "").strip()
+                        rails_state = session.metadata.get("commerce_rails_state") or {}
+                        if not order_id and isinstance(rails_state, dict):
+                            order_id = str(rails_state.get("order_id") or "").strip()
+                        reply = (
+                            f"Order {order_id} is already placed."
+                            if order_id
+                            else "That order is already placed."
+                        )
+                        return await self._cart_fast_path_result(
+                            session_key,
+                            reply,
+                            actions_taken=[
+                                {"tool": "create_order", "result_summary": "already_placed"}
+                            ],
+                            send_cart_buttons=False,
+                        )
+                    phase_ready = (
+                        phase == "awaiting_yes"
+                        and checkout_customer
+                        and pending
+                        and confirms
+                    )
+                    legacy_ready = (
+                        not phase
+                        and checkout_customer
+                        and pending
+                        and (
+                            is_order_confirmation_message(user_message)
+                            or bool(session.metadata.get("order_confirmed"))
+                        )
+                    )
+                    if phase_ready or legacy_ready:
                         items = pending.get("items") or context_manager.get_cart(session)
                         create_args = {
                             "customer_name": checkout_customer.get("name", "") or customer_name,
@@ -2227,6 +2285,9 @@ class ConversationalAgentService:
                             try:
                                 await context_manager.clear_cart(session_key)
                                 await context_manager.clear_pending_confirmation(session_key)
+                                placed_id = ""
+                                if isinstance(order_data, dict):
+                                    placed_id = str(order_data.get("order_id") or "")
                                 await context_manager.update_session_metadata(
                                     session_key,
                                     {
@@ -2234,6 +2295,8 @@ class ConversationalAgentService:
                                         "checkout_draft": {},
                                         "awaiting_checkout_details": False,
                                         "awaiting_order_confirmation": False,
+                                        "commerce_phase": "placed",
+                                        "placed_order_id": placed_id,
                                     },
                                 )
                             except Exception as e:
@@ -2283,6 +2346,41 @@ class ConversationalAgentService:
                         logger.warning(
                             "[CONV_AGENT] Deterministic order creation failed: %s",
                             tool_result.get("result"),
+                        )
+                    elif confirms or is_order_confirmation_message(user_message):
+                        summary_items = []
+                        if isinstance(pending, dict):
+                            summary_items = pending.get("items") or []
+                        if not summary_items:
+                            summary_items = context_manager.get_cart(session)
+                        customer = checkout_customer if isinstance(checkout_customer, dict) else {}
+                        if summary_items and customer.get("name") and customer.get("phone"):
+                            return await self._present_checkout_confirmation(
+                                session_key=session_key,
+                                cart=summary_items,
+                                currency=currency,
+                                customer_name=customer.get("name") or "",
+                                customer_phone=customer.get("phone") or "",
+                                delivery_method=customer.get("delivery_method"),
+                                delivery_methods=delivery_methods,
+                                preferred_language=preferred_language,
+                                delivery_address=customer.get("delivery_address") or "",
+                                table_number=customer.get("table_number"),
+                                user=user,
+                                db=db,
+                            )
+                        reply = self._t(
+                            preferred_language,
+                            "Reply YES to confirm your order.",
+                            "Jibu NDIO kuthibitisha oda yako.",
+                        )
+                        return await self._cart_fast_path_result(
+                            session_key,
+                            reply,
+                            actions_taken=[
+                                {"tool": "checkout", "result_summary": "confirm_not_ready"}
+                            ],
+                            send_cart_buttons=False,
                         )
 
             # Auto-escalation before LLM (frustration, human request, complexity)
@@ -4303,7 +4401,11 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             )
 
         await context_manager.update_session_metadata(
-            session_key, {"awaiting_checkout_details": True}
+            session_key,
+            {
+                "awaiting_checkout_details": True,
+                "commerce_phase": "collecting_details",
+            },
         )
         from .whatsapp_ordering_helpers import format_cart_summary
         summary = format_cart_summary(cart, currency, catalog_word)
@@ -4373,6 +4475,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 session_key,
                 {
                     "awaiting_checkout_details": True,
+                    "commerce_phase": "collecting_details",
                     "checkout_draft": {
                         "name": customer_name or "",
                         "phone": customer_phone or "",
@@ -4407,6 +4510,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 session_key,
                 {
                     "awaiting_checkout_details": True,
+                    "commerce_phase": "collecting_details",
                     "checkout_draft": {
                         "name": customer_name or "",
                         "phone": customer_phone or "",
@@ -4433,6 +4537,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 session_key,
                 {
                     "awaiting_checkout_details": True,
+                    "commerce_phase": "collecting_details",
                     "checkout_draft": {
                         "name": customer_name or "",
                         "phone": customer_phone or "",
@@ -4475,6 +4580,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                     "awaiting_order_confirmation": True,
                     "awaiting_checkout_details": False,
                     "checkout_draft": {},
+                    "commerce_phase": "awaiting_yes",
                 },
             )
         except Exception as e:
@@ -6771,6 +6877,23 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 "[CONV_AGENT] Failed to cache rails order in session: %s", sess_err
             )
 
+    async def _mark_commerce_placed(
+        self, session_key: str, order_data: Optional[Dict[str, Any]]
+    ) -> None:
+        """Record that checkout finished so a second confirm cannot greet or place again."""
+        if not session_key:
+            return
+        order_id = ""
+        if isinstance(order_data, dict):
+            order_id = str(order_data.get("order_id") or "")
+        try:
+            await context_manager.update_session_metadata(
+                session_key,
+                {"commerce_phase": "placed", "placed_order_id": order_id},
+            )
+        except Exception as e:
+            logger.warning("[CONV_AGENT] commerce_phase placed update failed: %s", e)
+
     async def _sub_create_order(
         self,
         arguments: Dict[str, Any],
@@ -6811,6 +6934,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                         business_phone=business_phone,
                         currency=currency,
                     )
+                    await self._mark_commerce_placed(session_key, routed.get("order_data"))
                 return routed
 
             from .whatsapp_ordering_helpers import is_order_confirmation_message
@@ -6852,8 +6976,16 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             pending = (
                 session.metadata.get("pending_confirmation") if session else None
             )
+            confirm_phase = ""
+            if session:
+                confirm_phase = str(session.metadata.get("commerce_phase") or "")
             confirmed = (
-                is_order_confirmation_message(user_message)
+                is_order_confirmation_message(
+                    user_message,
+                    phase=confirm_phase
+                    if confirm_phase in ("awaiting_yes", "placed")
+                    else None,
+                )
                 or (session and session.metadata.get("order_confirmed"))
             )
             if not pending:
@@ -6984,12 +7116,19 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                             by_id = dict(session.metadata.get("orders_by_id") or {})
                             by_id[order_obj["order_id"]] = order_obj
                             await context_manager.update_session_metadata(
-                                session_key, {"orders_by_id": by_id}
+                                session_key,
+                                {
+                                    "orders_by_id": by_id,
+                                    "commerce_phase": "placed",
+                                    "placed_order_id": order_obj["order_id"],
+                                },
                             )
                     except Exception as sess_err:
                         logger.warning(
                             "[CONV_AGENT] Failed to cache order in session: %s", sess_err
                         )
+                elif session_key:
+                    await self._mark_commerce_placed(session_key, order_obj)
 
                 if getattr(settings, "ORDER_TRACKING_ENABLED", True):
                     if notify_phone and user:

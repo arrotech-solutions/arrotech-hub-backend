@@ -815,3 +815,312 @@ async def test_policy_load_failure_does_not_fall_through_to_legacy(db_session, t
         )
     rent_legacy.assert_awaited()
     assert rent.get("result") == "legacy"
+
+
+class _GreetingTurn:
+    error = None
+    content = "Hi! How can I help you today?"
+    tools_called = []
+
+
+def _retail_config():
+    return {
+        "order_type": "retail",
+        "commerce_rails_enabled": True,
+        "business_name": "Shop",
+        "delivery_methods": ["pickup"],
+        "customer_name": "",
+    }
+
+
+async def _add_tea(db_session, test_user, sku: str) -> CatalogProduct:
+    product = CatalogProduct(
+        user_id=test_user.id,
+        name="Tea",
+        price=Decimal("100.00"),
+        description="Tea",
+        category="drinks",
+        sku=sku,
+        brand="Shop",
+        quantity=Decimal("5"),
+        unit="pcs",
+        condition="new",
+        image_url="",
+        availability="in_stock",
+        search_text="tea",
+    )
+    db_session.add(product)
+    await db_session.commit()
+    await db_session.refresh(product)
+    return product
+
+
+def _cart_session(test_user, phone: str, product: CatalogProduct, **metadata):
+    session_key = f"ccm:whatsapp:{test_user.id}:{phone}"
+    session = _session(session_key, str(test_user.id), phone)
+    session.metadata = {
+        "welcome_sent": True,
+        "preferred_language": "en",
+        "cart": [
+            {
+                "id": str(product.id),
+                "name": "Tea",
+                "quantity": 1,
+                "unit_price": 100,
+            }
+        ],
+    }
+    session.metadata.update(metadata)
+    return session
+
+
+async def _present(agent, session, test_user, db_session, phone: str):
+    patches = _bind_session(session)
+    with patches[0], patches[1], patches[2]:
+        return await agent._present_checkout_confirmation(
+            session_key=session.session_key,
+            cart=list(session.metadata["cart"]),
+            currency="KES",
+            customer_name="Asha",
+            customer_phone=phone,
+            delivery_method="pickup",
+            delivery_methods=["pickup"],
+            user=test_user,
+            db=db_session,
+        )
+
+
+async def _say(agent, session, test_user, db_session, message: str):
+    patches = _bind_session(session)
+    with patches[0], patches[1], patches[2], patch.object(
+        agent.llm_service, "chat_completion", new_callable=AsyncMock
+    ) as chat:
+        chat.return_value = _GreetingTurn()
+        result = await agent.execute(
+            user_message=message,
+            session_key=session.session_key,
+            business_config=_retail_config(),
+            user=test_user,
+            db=db_session,
+        )
+    return result, chat
+
+
+_NOT_NAMES = (
+    "My Orders",
+    "orders",
+    "browse catalog",
+    "cancel",
+    "return",
+    "help",
+    "human",
+    "agent",
+    "pay",
+    "yes",
+    "ndio",
+)
+
+
+@pytest.mark.parametrize("message", _NOT_NAMES)
+def test_intent_phrase_is_not_a_checkout_name(message):
+    from src.services.whatsapp_ordering_helpers import parse_checkout_details
+
+    assert (parse_checkout_details(message).get("name") or "") == ""
+
+
+def test_person_name_still_parses_for_checkout():
+    from src.services.whatsapp_ordering_helpers import parse_checkout_details
+
+    assert parse_checkout_details("Asha Wanjiku").get("name") == "Asha Wanjiku"
+
+
+@pytest.mark.asyncio
+async def test_present_checkout_confirmation_sets_awaiting_yes(db_session, test_user):
+    product = await _add_tea(db_session, test_user, "TEA-PHASE")
+    phone = "254700000111"
+    session = _cart_session(test_user, phone, product)
+    agent = ConversationalAgentService()
+
+    presented = await _present(agent, session, test_user, db_session, phone)
+
+    assert session.metadata.get("commerce_phase") == "awaiting_yes"
+    assert session.metadata.get("awaiting_order_confirmation") is True
+    assert session.metadata.get("pending_confirmation")
+    assert "YES" in (presented.get("response_text") or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("word", "phone"),
+    (
+        ("yea", "254700000121"),
+        ("ok", "254700000122"),
+        ("okay", "254700000123"),
+        ("sure", "254700000124"),
+        ("alright", "254700000125"),
+        ("fine", "254700000126"),
+    ),
+)
+async def test_soft_confirm_after_present_places_the_order(
+    db_session, test_user, word, phone
+):
+    product = await _add_tea(db_session, test_user, f"TEA-{word.upper()}")
+    session = _cart_session(test_user, phone, product)
+    agent = ConversationalAgentService()
+    await _present(agent, session, test_user, db_session, phone)
+
+    result, chat = await _say(agent, session, test_user, db_session, word)
+
+    assert result.get("order_created") is True
+    text = (result.get("response_text") or "").lower()
+    assert "placed" in text
+    assert "how can i help" not in text
+    assert session.metadata.get("commerce_phase") == "placed"
+    chat.assert_not_called()
+    stored = await db_session.execute(
+        select(CommerceOrder).where(CommerceOrder.user_id == test_user.id)
+    )
+    assert len(list(stored.scalars().all())) == 1
+
+
+@pytest.mark.asyncio
+async def test_second_confirm_says_already_placed_not_greeting(db_session, test_user):
+    phone = "254700000113"
+    session_key = f"ccm:whatsapp:{test_user.id}:{phone}"
+    session = _session(session_key, str(test_user.id), phone)
+    session.metadata = {
+        "welcome_sent": True,
+        "preferred_language": "en",
+        "commerce_phase": "placed",
+        "placed_order_id": "ORD-9",
+    }
+    agent = ConversationalAgentService()
+
+    result, chat = await _say(agent, session, test_user, db_session, "YES")
+
+    text = result.get("response_text") or ""
+    assert "ORD-9" in text
+    assert "already placed" in text.lower()
+    assert "how can i help" not in text.lower()
+    chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bare_ok_outside_awaiting_yes_does_not_place(db_session, test_user):
+    product = await _add_tea(db_session, test_user, "TEA-OUTSIDE")
+    phone = "254700000114"
+    session = _cart_session(
+        test_user,
+        phone,
+        product,
+        commerce_phase="browsing",
+        awaiting_order_confirmation=True,
+        checkout_customer={
+            "name": "Asha",
+            "phone": phone,
+            "delivery_method": "pickup",
+        },
+        pending_confirmation={
+            "items": [
+                {
+                    "id": str(product.id),
+                    "name": "Tea",
+                    "quantity": 1,
+                    "unit_price": 100,
+                }
+            ]
+        },
+    )
+    agent = ConversationalAgentService()
+
+    result, _chat = await _say(agent, session, test_user, db_session, "ok")
+
+    assert result.get("order_created") is not True
+    assert session.metadata.get("commerce_phase") != "placed"
+    stored = await db_session.execute(
+        select(CommerceOrder).where(CommerceOrder.user_id == test_user.id)
+    )
+    assert list(stored.scalars().all()) == []
+
+
+@pytest.mark.asyncio
+async def test_yes_without_checkout_does_not_greet(db_session, test_user):
+    phone = "254700000115"
+    session_key = f"ccm:whatsapp:{test_user.id}:{phone}"
+    session = _session(session_key, str(test_user.id), phone)
+    session.metadata = {
+        "welcome_sent": True,
+        "preferred_language": "en",
+        "commerce_phase": "browsing",
+    }
+    agent = ConversationalAgentService()
+
+    result, chat = await _say(agent, session, test_user, db_session, "YES")
+
+    text = (result.get("response_text") or "").lower()
+    assert "reply yes to confirm" in text
+    assert "how can i help" not in text
+    assert result.get("order_created") is not True
+    chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_my_orders_is_not_stored_as_the_summary_name(db_session, test_user):
+    product = await _add_tea(db_session, test_user, "TEA-NAME")
+    phone = "254700000116"
+    session = _cart_session(
+        test_user,
+        phone,
+        product,
+        commerce_phase="collecting_details",
+        awaiting_checkout_details=True,
+    )
+    agent = ConversationalAgentService()
+
+    result, _chat = await _say(agent, session, test_user, db_session, "My Orders")
+
+    stored_name = str((session.metadata.get("checkout_customer") or {}).get("name") or "")
+    draft_name = str((session.metadata.get("checkout_draft") or {}).get("name") or "")
+    blob = " ".join(
+        [result.get("response_text") or "", stored_name, draft_name]
+    ).lower()
+    assert "my orders" not in blob
+    assert stored_name.strip().lower() != "my orders"
+
+
+@pytest.mark.asyncio
+async def test_name_is_not_captured_while_browsing(db_session, test_user):
+    product = await _add_tea(db_session, test_user, "TEA-BROWSE-NAME")
+    phone = "254700000117"
+    session = _cart_session(test_user, phone, product, commerce_phase="browsing")
+    agent = ConversationalAgentService()
+
+    result, _chat = await _say(agent, session, test_user, db_session, "Asha Wanjiku")
+
+    text = result.get("response_text") or ""
+    stored_name = str((session.metadata.get("checkout_customer") or {}).get("name") or "")
+    assert "Name: Asha Wanjiku" not in text
+    assert stored_name != "Asha Wanjiku"
+    assert session.metadata.get("commerce_phase") == "browsing"
+
+
+@pytest.mark.asyncio
+async def test_collecting_details_stores_a_real_name_and_waits_for_yes(
+    db_session, test_user
+):
+    product = await _add_tea(db_session, test_user, "TEA-REAL-NAME")
+    phone = "254700000118"
+    session = _cart_session(
+        test_user,
+        phone,
+        product,
+        commerce_phase="collecting_details",
+        awaiting_checkout_details=True,
+    )
+    agent = ConversationalAgentService()
+
+    result, _chat = await _say(agent, session, test_user, db_session, "Asha Wanjiku")
+
+    assert "Name: Asha Wanjiku" in (result.get("response_text") or "")
+    assert session.metadata.get("commerce_phase") == "awaiting_yes"
+    assert (session.metadata.get("checkout_customer") or {}).get("name") == "Asha Wanjiku"
