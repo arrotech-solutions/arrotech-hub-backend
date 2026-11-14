@@ -33,7 +33,43 @@ _SYNONYM_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"water", "maji"}),
     frozenset({"rice", "wali", "mchele"}),
     frozenset({"beans", "maharagwe"}),
+    frozenset({
+        "shoe",
+        "shoes",
+        "footwear",
+        "sneaker",
+        "sneakers",
+        "trainer",
+        "trainers",
+        "boot",
+        "boots",
+    }),
 )
+
+# WhatsApp "Browse Catalog" and similar intents must list products even when
+# the query text does not overlap product names (Nike Air Max ≠ "catalog").
+_BROWSE_ALL_RE = re.compile(
+    r"(?:"
+    r"\bbrowse\b|"
+    r"\bcatalog\b|"
+    r"\bnew arrivals?\b|"
+    r"\bspecial offers?\b|"
+    r"show me what you have|"
+    r"what (?:do )?you (?:have|sell|offer)\b|"
+    r"show (?:me )?(?:all )?(?:products|items|everything)\b|"
+    r"list (?:all )?(?:products|items)\b|"
+    r"see (?:your )?(?:products|catalog|menu)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def is_browse_all_catalog_query(query: str) -> bool:
+    """True when the customer wants a general catalog listing, not a SKU search."""
+    q = (query or "").strip()
+    if not q:
+        return False
+    return bool(_BROWSE_ALL_RE.search(q))
 
 _SYNONYM_MAP: dict[str, frozenset[str]] = {}
 for _group in _SYNONYM_GROUPS:
@@ -208,6 +244,14 @@ class CatalogSearchService:
         products = list(result.scalars().all())
         if not products:
             return []
+
+        # Browse Catalog / "show me what you have" → list inventory.
+        if is_browse_all_catalog_query(query):
+            listed = sorted(
+                products,
+                key=lambda p: ((p.name or "").lower(), str(p.id)),
+            )
+            return [_result(product, 1.0) for product in listed[:top_k]]
 
         query_vec = None
         if any(_is_vector(p.embedding) for p in products):

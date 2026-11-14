@@ -1320,6 +1320,21 @@ class ConversationalAgentService:
                             send_cart_buttons=True,
                         )
 
+                # Browse Catalog button / "show me what you have" — no LLM loop.
+                from .catalog_search_service import is_browse_all_catalog_query
+
+                if is_browse_all_catalog_query(user_message):
+                    return await self._browse_catalog_fast_path(
+                        session_key=session_key,
+                        user_message=user_message,
+                        catalog_word=catalog_word,
+                        currency=currency,
+                        business_name=business_name,
+                        order_type=order_type,
+                        user=user,
+                        db=db,
+                    )
+
             # Human handoff — after self-serve cart/location paths
             if session_key:
                 try:
@@ -4815,6 +4830,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         send_cart_buttons: bool = False,
         send_checkout_pay_button: bool = False,
         send_rent_buttons: Optional[str] = None,
+        cards: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Cart command result — text goes out via workflow whatsapp_send_message step
@@ -4825,7 +4841,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         return {
             "response_text": reply,
             "image_urls": [],
-            "cards": [],
+            "cards": cards or [],
             "order_created": False,
             "order_cancelled": False,
             "order_data": None,
@@ -4839,6 +4855,60 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             "send_agent_mode_buttons": None,
             "send_rent_buttons": send_rent_buttons,
         }
+
+    async def _browse_catalog_fast_path(
+        self,
+        *,
+        session_key: str,
+        user_message: str,
+        catalog_word: str,
+        currency: str,
+        business_name: str,
+        order_type: str,
+        user: User,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Deterministic Browse Catalog: search + send cards without LLM tool loops."""
+        search = await self._search_arrotech_catalog_products(user_message, user, db)
+        products = (search.get("data") or {}).get("products") or []
+        if not products:
+            reply = (
+                f"Our {catalog_word} is empty right now — nothing is listed for sale yet. "
+                f"Please check back soon, or message us if you need help from {business_name}."
+            )
+            return await self._cart_fast_path_result(
+                session_key,
+                reply,
+                actions_taken=[{"tool": "search_products", "result_summary": "browse_empty"}],
+                send_cart_buttons=True,
+            )
+
+        display = await self._sub_display_product_cards(
+            products=products,
+            session_key=session_key,
+            currency=currency,
+            user=user,
+            db=db,
+            order_type=order_type,
+        )
+        cards = display.get("cards") or []
+        reply = (
+            f"Here's what we have in our {catalog_word} right now. "
+            "Tap *Add to Cart* on anything you like!"
+        )
+        return await self._cart_fast_path_result(
+            session_key,
+            reply,
+            actions_taken=[
+                {"tool": "search_products", "result_summary": f"browse:{len(products)}"},
+                {
+                    "tool": "display_product_cards",
+                    "result_summary": f"sent:{display.get('cards_sent', len(cards))}",
+                },
+            ],
+            send_cart_buttons=True,
+            cards=cards,
+        )
 
     async def _send_cart_action_buttons(
         self,
@@ -5610,10 +5680,13 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             return {
                 "success": True,
                 "result": (
-                    "No products found matching that request. "
-                    "Do not invent products or call display_product_cards."
+                    "CATALOG_NO_MATCH: No products matched that request. "
+                    "Tell the customer honestly in one short message. "
+                    "Do NOT invent products. Do NOT call display_product_cards. "
+                    "Do NOT call escalate_to_human. "
+                    "Invite them to browse the catalog or describe the item differently."
                 ),
-                "data": {"results": [], "products": []},
+                "data": {"results": [], "products": [], "empty": True},
             }
 
         products: List[Dict[str, Any]] = []
@@ -5646,10 +5719,13 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             return {
                 "success": True,
                 "result": (
-                    "No products found matching that request. "
-                    "Do not invent products or call display_product_cards."
+                    "CATALOG_NO_MATCH: No products matched that request. "
+                    "Tell the customer honestly in one short message. "
+                    "Do NOT invent products. Do NOT call display_product_cards. "
+                    "Do NOT call escalate_to_human. "
+                    "Invite them to browse the catalog or describe the item differently."
                 ),
-                "data": {"results": [], "products": []},
+                "data": {"results": [], "products": [], "empty": True},
             }
 
         products_json_block = (

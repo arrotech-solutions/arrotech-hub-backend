@@ -289,3 +289,108 @@ async def test_search_empty_catalog_returns_empty(db_session):
     )
 
     assert results == []
+
+
+@pytest.mark.asyncio
+async def test_browse_catalog_query_lists_products_without_name_match(db_session):
+    """WhatsApp Browse Catalog button phrasing must list products.
+
+    The webhook sends a sentence like 'browse your catalog/products' which
+    does not match product names. That used to return [] and the agent then
+    fell through to the human-handoff placeholder.
+    """
+    from src.services.catalog_search_service import CatalogSearchService
+
+    user = await _seed_catalog(
+        db_session,
+        "search-browse@test.com",
+        [
+            {
+                "name": "Nike Air Max",
+                "Price": "8500",
+                "Category": "Footwear",
+                "SKU": "NIKE-1",
+            },
+            {
+                "name": "Adidas Samba",
+                "Price": "7200",
+                "Category": "Footwear",
+                "SKU": "ADI-1",
+            },
+        ],
+    )
+
+    results = await CatalogSearchService().search_products(
+        db_session,
+        user.id,
+        "I'd like to browse your catalog/products. Please show me what you have.",
+    )
+
+    assert {r["sku"] for r in results} == {"NIKE-1", "ADI-1"}
+    assert all(r["score"] > 0 for r in results)
+
+
+@pytest.mark.asyncio
+async def test_search_shoes_matches_footwear_category(db_session):
+    """Query shoes returns Footwear-category products via slang expansion."""
+    from src.services.catalog_search_service import CatalogSearchService
+
+    user = await _seed_catalog(
+        db_session,
+        "search-shoes@test.com",
+        [
+            {
+                "name": "Nike Air Max",
+                "Price": "8500",
+                "Category": "Footwear",
+                "SKU": "NIKE-AIR",
+            },
+            {
+                "name": "Coca-Cola 500ml",
+                "Price": "80",
+                "Category": "Drinks",
+                "SKU": "COKE-500",
+                "Brand": "Coca-Cola",
+            },
+        ],
+    )
+
+    results = await CatalogSearchService().search_products(
+        db_session, user.id, "what shoes do you have"
+    )
+
+    assert [r["sku"] for r in results] == ["NIKE-AIR"]
+
+
+@pytest.mark.asyncio
+async def test_search_shoes_matches_jordan_sneakers_by_name(db_session):
+    """Query shoes matches a product named Jordan sneakers via the footwear group.
+
+    Category is Street so the hit cannot come from a Footwear category token.
+    """
+    from src.services.catalog_search_service import CatalogSearchService
+
+    user = await _seed_catalog(
+        db_session,
+        "search-jordan@test.com",
+        [
+            {
+                "name": "Jordan sneakers",
+                "Price": "9000",
+                "Category": "Street",
+                "SKU": "JORDAN-1",
+            },
+            {
+                "name": "Coca-Cola 500ml",
+                "Price": "80",
+                "Category": "Drinks",
+                "SKU": "COKE-500",
+            },
+        ],
+    )
+
+    results = await CatalogSearchService().search_products(
+        db_session, user.id, "shoes"
+    )
+
+    assert [r["sku"] for r in results] == ["JORDAN-1"]
