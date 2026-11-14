@@ -354,3 +354,9 @@ def test_paid_order_with_failed_receipt_is_not_unpaid_expiry():
     )
     assert svc.should_expire_unpaid({"status": "pending", "payment_notified": False}) is True
     assert svc.should_expire_unpaid({"payment_notified": True, "status": "pending"}) is False
+    assert (
+        svc.should_expire_unpaid(
+            {"payment_status": "paid", "status": "pending", "payment_notified": False}
+        )
+        is False
+    )

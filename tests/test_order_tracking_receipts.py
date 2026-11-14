@@ -480,6 +480,54 @@ async def test_notify_payment_received_uses_text_when_document_send_fails(
 
 
 @pytest.mark.asyncio
+async def test_notify_payment_received_persists_paid_when_send_raises(
+    tracking_service, sample_order, mock_user
+):
+    """A raised receipt send still leaves the order paid and not expirable.
+
+    Breaks if payment_status and receipt_send_status are written only after send returns.
+    """
+    db = AsyncMock()
+    store, _, _ = _memory_cache()
+    store["track"] = {
+        "order_id": sample_order["order_id"],
+        "customer_phone": sample_order["customer_phone"],
+        "whatsapp_sender": sample_order["customer_phone"],
+        "business_name": "Test Cafe",
+        "business_phone": "",
+        "currency": "KES",
+        "order": sample_order,
+        "status": "pending",
+        "payment_notified": False,
+    }
+
+    with patch("src.services.order_tracking_service.cache_service") as cache, patch.object(
+        tracking_service, "_get_whatsapp_config", new_callable=AsyncMock
+    ) as wa_cfg, patch.object(
+        tracking_service, "_generate_receipt_pdf_bytes", new_callable=AsyncMock
+    ) as gen_pdf:
+        cache.get.side_effect = lambda key: store.get("track")
+        cache.set.side_effect = lambda key, value, expire_seconds=3600: store.update(track=value) or True
+        wa_cfg.return_value = {"access_token": "tok", "phone_number_id": "pnid"}
+        gen_pdf.side_effect = RuntimeError("pdf boom")
+
+        with pytest.raises(RuntimeError, match="pdf boom"):
+            await tracking_service.notify_payment_received(
+                user=mock_user,
+                db=db,
+                order_id=sample_order["order_id"],
+                mpesa_receipt="QHXBOOM",
+                amount_paid=1000,
+            )
+
+    saved = store["track"]
+    assert saved["payment_status"] == "paid"
+    assert saved["payment_notified"] is False
+    assert saved["receipt_send_status"] == "failed"
+    assert tracking_service.should_expire_unpaid(saved) is False
+
+
+@pytest.mark.asyncio
 async def test_whatsapp_send_message_empty_skips():
     from src.services.tool_executor import ToolExecutor
 

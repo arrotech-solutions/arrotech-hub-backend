@@ -148,6 +148,77 @@ async def test_initiate_mpesa_blocks_already_paid():
 
 
 @pytest.mark.asyncio
+async def test_initiate_mpesa_blocks_second_stk_when_receipt_failed():
+    """A paid order with a failed receipt must not start another STK push.
+
+    Breaks if the pay gate treats payment_notified as the only paid signal.
+    """
+    from src.services.conversational_agent_service import ConversationalAgentService
+
+    svc = ConversationalAgentService()
+    user = MagicMock()
+    user.id = "f90eb4b7-f155-49ce-b76f-518f8ca9b673"
+
+    with patch("src.services.order_tracking_service.order_tracking_service") as track:
+        track.owner_id_from_session_key.return_value = str(user.id)
+        track.get_registered_order.return_value = {
+            "payment_status": "paid",
+            "payment_notified": False,
+            "receipt_send_status": "failed",
+            "status": "pending",
+        }
+        track.is_stk_debounced.return_value = False
+
+        res = await svc._sub_initiate_mpesa_payment(
+            order_id="ORD-PAID-RECEIPT",
+            phone_number="254711371265",
+            amount=100,
+            description="test",
+            session_key="ccm:whatsapp:u:254711371265",
+            storage_config={},
+            business_name="Test",
+            user=user,
+            db=AsyncMock(),
+        )
+
+    assert res["success"] is False
+    assert "paid" in res["error"].lower()
+    track.is_stk_debounced.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_late_failure_callback_does_not_reopen_paid_order():
+    """A failure callback after STK success must not ask the customer to pay again."""
+    from src.services.order_stk_payment_service import finalize_order_stk_payment
+
+    with patch("src.services.order_stk_payment_service.cache_service") as cache, patch(
+        "src.services.order_stk_payment_service.order_tracking_service"
+    ) as track:
+        cache.get.return_value = None
+        track.get_registered_order.return_value = {
+            "payment_status": "paid",
+            "payment_notified": False,
+            "receipt_send_status": "failed",
+        }
+        track.send_payment_retry_buttons = AsyncMock()
+
+        await finalize_order_stk_payment(
+            db=AsyncMock(),
+            owner_user_id="f90eb4b7-f155-49ce-b76f-518f8ca9b673",
+            order_id="ORD-PAID-RECEIPT",
+            whatsapp_sender="254711371265",
+            mpesa_phone="254711371265",
+            platform="whatsapp",
+            storage_config={"provider": "none"},
+            is_paid=False,
+            result_code="1032",
+            checkout_request_id="ws_CO_LATE",
+        )
+
+    track.send_payment_retry_buttons.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_initiate_mpesa_debounce_blocks_rapid_retry():
     from src.services.conversational_agent_service import ConversationalAgentService
 

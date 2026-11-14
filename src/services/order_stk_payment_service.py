@@ -26,6 +26,16 @@ def _failure_notified_key(checkout_request_id: str) -> str:
     return f"mpesa:stk:failure_notified:{checkout_request_id}"
 
 
+def _registry_payment_settled(registry: Dict[str, Any]) -> bool:
+    """True when M-Pesa already succeeded. Receipt delivery is a separate flag."""
+    registry = registry or {}
+    if str(registry.get("payment_status") or "").lower() == "paid":
+        return True
+    if str(registry.get("status") or "").lower() == "paid":
+        return True
+    return bool(registry.get("payment_notified"))
+
+
 async def finalize_order_stk_payment(
     *,
     db: AsyncSession,
@@ -65,15 +75,16 @@ async def finalize_order_stk_payment(
         logger.info("[STK_PAY] Order %s already has payment_notified — skip", order_id)
         return
 
+    if not is_paid and _registry_payment_settled(registry):
+        logger.info("[STK_PAY] Order %s paid — ignore late failure callback", order_id)
+        return
+
     if not is_paid and checkout_request_id:
         if cache_service.get(_failure_notified_key(checkout_request_id)):
             logger.info(
                 "[STK_PAY] Failure already notified for checkout %s — skip",
                 checkout_request_id,
             )
-            return
-        if registry.get("payment_notified"):
-            logger.info("[STK_PAY] Order %s paid — ignore late failure callback", order_id)
             return
 
     owner_uuid = uuid.UUID(str(owner_user_id))
@@ -280,6 +291,39 @@ async def finalize_order_stk_payment(
         )
     except Exception as alert_err:
         logger.warning("[STK_PAY] Business alert failed for %s: %s", order_id, alert_err)
+
+
+async def _retry_paid_receipt(
+    *,
+    owner_user_id: str,
+    order_id: str,
+    registry: Dict[str, Any],
+    whatsapp_sender: str = "",
+    amount_paid: float = 0.0,
+    currency: str = "KES",
+) -> None:
+    """Send the receipt again. The STK charge already succeeded."""
+    from ..database import get_session_maker
+
+    session_maker = get_session_maker()
+    async with session_maker() as db:
+        try:
+            owner_uuid = uuid.UUID(str(owner_user_id))
+        except (ValueError, TypeError, AttributeError):
+            return
+        owner_res = await db.execute(select(User).where(User.id == owner_uuid))
+        owner_user = owner_res.scalar_one_or_none()
+        if not owner_user:
+            return
+        await order_tracking_service.notify_payment_received(
+            user=owner_user,
+            db=db,
+            order_id=order_id,
+            mpesa_receipt=str(registry.get("mpesa_receipt") or ""),
+            amount_paid=float(registry.get("amount_paid") or registry.get("amount") or amount_paid or 0),
+            currency=str(registry.get("currency") or currency or "KES"),
+            customer_phone=whatsapp_sender or str(registry.get("whatsapp_sender") or ""),
+        )
 
 
 async def _resolve_hub_order_id(
@@ -534,6 +578,21 @@ async def poll_stk_and_finalize_order_payment(
 
         if result_code == "0":
             logger.info("[STK_PAY] Poll confirmed payment for order %s", order_id)
+            fresh = order_tracking_service.get_registered_order(owner_user_id, order_id) or {}
+            if _registry_payment_settled(fresh) and not fresh.get("payment_notified"):
+                await _retry_paid_receipt(
+                    owner_user_id=owner_user_id,
+                    order_id=order_id,
+                    registry=fresh,
+                    whatsapp_sender=whatsapp_sender,
+                    amount_paid=amount_paid,
+                    currency=currency,
+                )
+                fresh = order_tracking_service.get_registered_order(owner_user_id, order_id) or fresh
+                if fresh.get("payment_notified"):
+                    return
+                await asyncio.sleep(interval)
+                continue
             session_maker = get_session_maker()
             async with session_maker() as db:
                 await finalize_order_stk_payment(
@@ -553,6 +612,10 @@ async def poll_stk_and_finalize_order_payment(
                     checkout_request_id=checkout_request_id,
                     merchant_request_id=merchant_request_id,
                 )
+            fresh = order_tracking_service.get_registered_order(owner_user_id, order_id) or {}
+            if fresh.get("receipt_send_status") == "failed" and not fresh.get("payment_notified"):
+                await asyncio.sleep(interval)
+                continue
             return
 
         if result_code in STK_TERMINAL_FAILURE_CODES:

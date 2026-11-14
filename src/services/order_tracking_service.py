@@ -104,6 +104,11 @@ class OrderTrackingService:
             "placement_notified": existing.get("placement_notified", False),
             "placement_receipt_sent": existing.get("placement_receipt_sent", False),
             "payment_notified": existing.get("payment_notified", False),
+            "payment_status": (
+                "paid"
+                if str(existing.get("payment_status") or "").lower() == "paid"
+                else (order_snapshot.get("payment_status") or existing.get("payment_status") or "")
+            ),
             "receipt_send_status": existing.get("receipt_send_status", ""),
             "stk_initiated": existing.get("stk_initiated", False),
             "whatsapp_sender": existing.get("whatsapp_sender") or customer_phone,
@@ -562,6 +567,8 @@ class OrderTrackingService:
         registry = registry or {}
         if registry.get("payment_notified"):
             return False
+        if str(registry.get("payment_status") or "").lower() == "paid":
+            return False
         if str(registry.get("status") or "") == "paid":
             return False
         if registry.get("receipt_send_status") == "failed":
@@ -777,6 +784,27 @@ class OrderTrackingService:
             )
         return sent
 
+    def _persist_payment_settled(
+        self,
+        owner_user_id: str,
+        order_id: str,
+        registry: Dict[str, Any],
+        *,
+        mpesa_receipt: str = "",
+        amount_paid: float = 0.0,
+    ) -> None:
+        """Record Hub/registry paid before receipt send so a raised send cannot expire the order."""
+        saved = dict(registry or {})
+        saved["order_id"] = order_id
+        saved["payment_status"] = "paid"
+        if not saved.get("payment_notified") and saved.get("receipt_send_status") != "sent":
+            saved["receipt_send_status"] = "failed"
+        if mpesa_receipt:
+            saved["mpesa_receipt"] = mpesa_receipt
+        if amount_paid:
+            saved["amount_paid"] = amount_paid
+        self._save_registry(owner_user_id, order_id, saved)
+
     def _record_receipt_delivery(
         self,
         owner_user_id: str,
@@ -790,6 +818,7 @@ class OrderTrackingService:
     ) -> None:
         saved = dict(registry or {})
         saved["order_id"] = order_id
+        saved["payment_status"] = "paid"
         saved["status"] = "paid"
         saved["payment_notified"] = bool(delivered)
         saved["receipt_send_status"] = "sent" if delivered else "failed"
@@ -1158,6 +1187,14 @@ class OrderTrackingService:
         registry = self.get_registered_order(str(user.id), order_id) or {}
         if registry.get("payment_notified"):
             return {"success": True, "order_id": order_id, "skipped": True, "reason": "already_notified"}
+
+        self._persist_payment_settled(
+            str(user.id),
+            order_id,
+            registry,
+            mpesa_receipt=mpesa_receipt,
+            amount_paid=amount_paid,
+        )
 
         try:
             from .notification_service import NotificationService

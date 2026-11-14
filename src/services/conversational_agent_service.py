@@ -8138,7 +8138,11 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             )
 
             registry = order_tracking_service.get_registered_order(owner_id, order_id) or {}
-            if registry.get("payment_notified"):
+            if (
+                str(registry.get("payment_status") or "").lower() == "paid"
+                or str(registry.get("status") or "").lower() == "paid"
+                or registry.get("payment_notified")
+            ):
                 return {"success": False, "error": "This order is already paid."}
             if _safe_str(registry.get("status", "")).lower() == "cancelled":
                 return {
