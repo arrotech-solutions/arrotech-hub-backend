@@ -2242,16 +2242,7 @@ class ConversationalAgentService:
                         and pending
                         and confirms
                     )
-                    legacy_ready = (
-                        not phase
-                        and checkout_customer
-                        and pending
-                        and (
-                            is_order_confirmation_message(user_message)
-                            or bool(session.metadata.get("order_confirmed"))
-                        )
-                    )
-                    if phase_ready or legacy_ready:
+                    if phase_ready:
                         items = pending.get("items") or context_manager.get_cart(session)
                         create_args = {
                             "customer_name": checkout_customer.get("name", "") or customer_name,
@@ -6979,12 +6970,16 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             confirm_phase = ""
             if session:
                 confirm_phase = str(session.metadata.get("commerce_phase") or "")
+            if confirm_phase != "awaiting_yes":
+                return {
+                    "success": False,
+                    "result": "Reply YES to confirm your order.",
+                    "error": "not_awaiting_yes",
+                }
             confirmed = (
                 is_order_confirmation_message(
                     user_message,
-                    phase=confirm_phase
-                    if confirm_phase in ("awaiting_yes", "placed")
-                    else None,
+                    phase="awaiting_yes",
                 )
                 or (session and session.metadata.get("order_confirmed"))
             )

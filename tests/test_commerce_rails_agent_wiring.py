@@ -104,6 +104,7 @@ async def test_rails_place_order_goes_through_runtime_not_legacy(db_session, tes
             {"action": "add", "product_id": str(product.id), "product_name": "Tea", "quantity": 1},
         )
         assert added["success"] is True
+        session.metadata["commerce_phase"] = "awaiting_yes"
         placed = await _tool(
             agent,
             test_user,
@@ -182,8 +183,12 @@ def test_non_ordering_templates_do_not_enable_rails():
 @pytest.mark.asyncio
 async def test_runtime_error_returns_customer_message_and_handoff(db_session, test_user):
     agent = ConversationalAgentService()
-    session_key = f"ccm:whatsapp:{test_user.id}:254700000001"
-    with patch(
+    phone = "254700000001"
+    session_key = f"ccm:whatsapp:{test_user.id}:{phone}"
+    session = _session(session_key, str(test_user.id), phone)
+    session.metadata = {"commerce_phase": "awaiting_yes", "welcome_sent": True}
+    patches = _bind_session(session)
+    with patches[0], patches[1], patches[2], patch(
         "src.services.commerce_runtime.runtime.CommerceRuntime.apply",
         new_callable=AsyncMock,
         side_effect=RuntimeError("db down"),
@@ -381,6 +386,7 @@ async def test_yes_checkout_returns_payable_total_for_payment(db_session, test_u
     session.metadata = {
         "welcome_sent": True,
         "preferred_language": "en",
+        "commerce_phase": "awaiting_yes",
         "awaiting_order_confirmation": True,
         "order_confirmed": True,
         "checkout_customer": {
@@ -548,6 +554,7 @@ async def test_paid_cancel_opens_a_refund_and_restocks_once(db_session, test_use
             "manage_cart",
             {"action": "add", "product_id": str(product.id), "quantity": 1},
         )
+        session.metadata["commerce_phase"] = "awaiting_yes"
         placed = await _tool(
             agent,
             test_user,
@@ -1124,3 +1131,106 @@ async def test_collecting_details_stores_a_real_name_and_waits_for_yes(
     assert "Name: Asha Wanjiku" in (result.get("response_text") or "")
     assert session.metadata.get("commerce_phase") == "awaiting_yes"
     assert (session.metadata.get("checkout_customer") or {}).get("name") == "Asha Wanjiku"
+
+
+@pytest.mark.asyncio
+async def test_yes_without_phase_represents_and_does_not_place(db_session, test_user):
+    """Pending checkout with no commerce_phase must not place on YES."""
+    product = await _add_tea(db_session, test_user, "TEA-NO-PHASE")
+    phone = "254700000131"
+    session = _cart_session(
+        test_user,
+        phone,
+        product,
+        awaiting_order_confirmation=True,
+        order_confirmed=True,
+        checkout_customer={
+            "name": "Asha",
+            "phone": phone,
+            "delivery_method": "pickup",
+        },
+        pending_confirmation={
+            "items": [
+                {
+                    "id": str(product.id),
+                    "name": "Tea",
+                    "quantity": 1,
+                    "unit_price": 100,
+                }
+            ]
+        },
+    )
+    agent = ConversationalAgentService()
+
+    result, chat = await _say(agent, session, test_user, db_session, "YES")
+
+    assert result.get("order_created") is not True
+    assert session.metadata.get("commerce_phase") == "awaiting_yes"
+    text = (result.get("response_text") or "").lower()
+    assert "yes" in text
+    assert "placed" not in text
+    assert "how can i help" not in text
+    chat.assert_not_called()
+    stored = await db_session.execute(
+        select(CommerceOrder).where(CommerceOrder.user_id == test_user.id)
+    )
+    assert list(stored.scalars().all()) == []
+    await db_session.refresh(product)
+    assert int(product.quantity) == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ("", "browsing", "collecting_details"))
+async def test_create_order_tool_does_not_place_outside_awaiting_yes(
+    db_session, test_user, phase
+):
+    product = await _add_tea(db_session, test_user, f"TEA-TOOL-{phase or 'EMPTY'}")
+    phone = "254700000132"
+    session_key = f"ccm:whatsapp:{test_user.id}:{phone}"
+    session = _session(session_key, str(test_user.id), phone)
+    if phase:
+        session.metadata["commerce_phase"] = phase
+    agent = ConversationalAgentService()
+    patches = _bind_session(session)
+
+    with patches[0], patches[1], patches[2]:
+        added = await _tool(
+            agent,
+            test_user,
+            db_session,
+            session_key,
+            "manage_cart",
+            {
+                "action": "add",
+                "product_id": str(product.id),
+                "product_name": "Tea",
+                "quantity": 1,
+            },
+        )
+        assert added["success"] is True
+        if phase:
+            session.metadata["commerce_phase"] = phase
+        else:
+            session.metadata.pop("commerce_phase", None)
+        placed = await _tool(
+            agent,
+            test_user,
+            db_session,
+            session_key,
+            "create_order",
+            {
+                "customer_name": "Asha",
+                "customer_phone": phone,
+                "items": [{"name": "Tea", "quantity": 1, "unit_price": 1}],
+                "delivery_method": "pickup",
+            },
+        )
+
+    assert placed.get("success") is not True
+    assert session.metadata.get("commerce_phase") != "placed"
+    stored = await db_session.execute(
+        select(CommerceOrder).where(CommerceOrder.user_id == test_user.id)
+    )
+    assert list(stored.scalars().all()) == []
+    await db_session.refresh(product)
+    assert int(product.quantity) == 5

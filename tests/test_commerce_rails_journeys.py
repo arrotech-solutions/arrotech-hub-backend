@@ -64,6 +64,7 @@ async def test_browse_to_pay_uses_catalog_price_and_marks_paid(db_session, test_
                 closing="Added Tea.",
             ),
         )
+        journey.session.metadata["commerce_phase"] = "awaiting_yes"
         placed = await journey.say(
             "Thanks, continue",
             _tools(
@@ -123,6 +124,7 @@ async def test_pay_fail_then_retry_marks_the_same_order_paid(db_session, test_us
                 closing="Added.",
             ),
         )
+        journey.session.metadata["commerce_phase"] = "awaiting_yes"
         placed = await journey.say(
             "Thanks, continue",
             _tools(
@@ -423,6 +425,7 @@ async def test_pay_then_cancel_opens_a_refund_pipeline(db_session, test_user):
                 closing="Added.",
             ),
         )
+        journey.session.metadata["commerce_phase"] = "awaiting_yes"
         placed = await journey.say(
             "Thanks, continue",
             _tools(

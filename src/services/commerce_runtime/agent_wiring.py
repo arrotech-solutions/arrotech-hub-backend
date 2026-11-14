@@ -57,6 +57,7 @@ _ERROR_TEXT = {
     "no_order": "I couldn't find that order on your number.",
     "phone_mismatch": "I couldn't find that order on your number.",
     "already_placed": "That order is already placed.",
+    "not_awaiting_yes": "Reply YES to confirm your order.",
     "line_not_found": "I couldn't find that item in your cart.",
     "invalid_quantity": "Tell me a quantity greater than zero.",
     "invalid_checkout_field": "I need a name for that checkout detail.",
@@ -438,6 +439,9 @@ async def _dispatch(
     elif tool_name == "validate_order":
         state, result = await _checkout(runtime, state, arguments)
     elif tool_name == "create_order":
+        phase = str((metadata or {}).get("commerce_phase") or "").strip()
+        if phase != "awaiting_yes":
+            return _fail("not_awaiting_yes")
         state, result = await _place(
             runtime, catalog, state, arguments, metadata, names
         )
