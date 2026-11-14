@@ -2752,6 +2752,7 @@ class ConversationalAgentService:
                     
                     tool_call["arguments"] = tool_args
                     call_id = f"call_{iteration}_{i}"
+                    forced_search_cards_note = ""
 
                     logger.info(f"[CONV_AGENT] Sub-tool call: {tool_name}({json.dumps(tool_args)[:200]})")
 
@@ -2938,6 +2939,52 @@ class ConversationalAgentService:
                         chunks = self._extract_structured_products_from_chunks(tool_result)
                         if chunks:
                             last_search_product_image_map = chunks
+                        ready = self._products_ready_to_display(tool_result)
+                        fresh = [
+                            dict(product)
+                            for product in ready
+                            if str(product.get("id") or "").strip() not in sent_product_ids
+                        ]
+                        if fresh:
+                            source_ids = [
+                                str(product.get("id") or "").strip() for product in fresh
+                            ]
+                            display_result = await self._sub_display_product_cards(
+                                products=fresh,
+                                session_key=session_key,
+                                currency=currency,
+                                user=user,
+                                db=db,
+                                order_type=order_type,
+                            )
+                            for card in display_result.get("cards") or []:
+                                card_id = str(card.get("id") or "").strip()
+                                if card_id and card_id not in sent_product_ids:
+                                    collected_product_cards.append(card)
+                                    sent_product_ids.add(card_id)
+                                elif not card_id:
+                                    collected_product_cards.append(card)
+                            for product_id in source_ids:
+                                if product_id:
+                                    sent_product_ids.add(product_id)
+                            sent_card_images = set(display_result.get("sent_image_urls") or [])
+                            if sent_card_images:
+                                collected_image_urls = [
+                                    url for url in collected_image_urls if url not in sent_card_images
+                                ]
+                            actions_taken.append({
+                                "tool": "display_product_cards",
+                                "args": {"products": fresh},
+                                "result_summary": self._summarize_tool_result(
+                                    "display_product_cards", display_result
+                                )[:200],
+                            })
+                            shown = display_result.get("cards_sent") or len(display_result.get("cards") or [])
+                            forced_search_cards_note = (
+                                f"\n\nSUCCESS: {shown} interactive product card(s) were already sent "
+                                "from this search. Do NOT call display_product_cards again for these "
+                                "products. Do NOT list them as plain text."
+                            )
                             
                     if tool_name == "display_product_cards":
                         tool_cards = tool_result.get("cards", [])
@@ -3040,6 +3087,8 @@ class ConversationalAgentService:
                         )
                     else:
                         llm_tool_msg = json.dumps(tool_result, default=str)
+                    if forced_search_cards_note:
+                        llm_tool_msg = f"{llm_tool_msg}{forced_search_cards_note}"
 
                     # Add tool result to conversation
                     messages.append({
@@ -5780,6 +5829,36 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             "escalation_notification": escalation_notification,
             "human_handoff": True,
         }
+
+    def _products_ready_to_display(self, tool_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Products a search already prepared for cards, including the JSON marker."""
+        if not tool_result or not tool_result.get("success"):
+            return []
+        data = tool_result.get("data") or {}
+        if data.get("empty"):
+            return []
+        products = data.get("products")
+        if not isinstance(products, list) or not products:
+            text = tool_result.get("result") or ""
+            marker = "READY_TO_DISPLAY_PRODUCTS"
+            products = []
+            if marker in text:
+                start = text.find("[", text.find(marker))
+                if start >= 0:
+                    try:
+                        parsed, _ = json.JSONDecoder().raw_decode(text[start:])
+                    except json.JSONDecodeError:
+                        parsed = []
+                    if isinstance(parsed, list):
+                        products = parsed
+        ready: List[Dict[str, Any]] = []
+        for product in products:
+            if not isinstance(product, dict):
+                continue
+            if not (product.get("name") or product.get("id")):
+                continue
+            ready.append(product)
+        return ready
 
     async def _search_arrotech_catalog_products(
         self, query: str, user: User, db: AsyncSession

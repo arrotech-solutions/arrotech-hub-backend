@@ -373,3 +373,92 @@ async def test_execute_browse_all_sends_cards_before_llm(db_session):
     assert "Here's what we have" in result["response_text"]
     assert result["cards"]
     chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_catalog_search_hit_displays_cards_when_model_omits_display(db_session):
+    """A catalog hit is shown as cards even when the model never calls display.
+
+    Fails if search_products returning Jordan sneakers (READY_TO_DISPLAY_PRODUCTS)
+    does not invoke the card path with id JORDAN-1 before the text-only reply.
+    """
+    from src.services.catalog_service import CatalogService
+    from src.services.conversational_agent_service import ConversationalAgentService
+
+    user = _user("search-force-display@test.com")
+    db_session.add(user)
+    await db_session.commit()
+
+    await CatalogService().create_product(
+        db_session,
+        user.id,
+        {
+            "name": "Jordan sneakers",
+            "Price": "9000",
+            "Category": "Street",
+            "SKU": "JORDAN-1",
+            "Availability": "in_stock",
+        },
+    )
+
+    phone = "254700000088"
+    session_key = f"ccm:whatsapp:{user.id}:{phone}"
+    session = _session(session_key, str(user.id), phone)
+
+    async def fake_get(key):
+        return session if key == session.session_key else None
+
+    async def fake_update(key, updates):
+        if key == session.session_key:
+            session.metadata.update(updates)
+
+    async def fake_save(_sess):
+        return None
+
+    agent = ConversationalAgentService()
+    agent._save_to_ccm = AsyncMock()
+
+    class _SearchTurn:
+        error = None
+        content = ""
+        tools_called = [
+            {"name": "search_products", "arguments": {"query": "Jordan sneakers"}}
+        ]
+
+    class _OmitTurn:
+        error = None
+        content = "Let me know if you need anything else."
+        tools_called = []
+
+    search_turn = _SearchTurn()
+    omit_turn = _OmitTurn()
+
+    with (
+        patch.object(context_manager, "get_session_by_key", fake_get),
+        patch.object(context_manager, "update_session_metadata", fake_update),
+        patch.object(context_manager, "save_session", fake_save),
+        patch.object(agent, "_detect_language_llm", new=AsyncMock(return_value=None)),
+        patch.object(agent, "_maybe_send_welcome_quick_replies", new=AsyncMock()),
+        patch.object(
+            agent.llm_service, "chat_completion", new=AsyncMock(side_effect=[search_turn, omit_turn])
+        ) as chat,
+    ):
+        result = await agent.execute(
+            user_message="Do you have Jordan sneakers?",
+            session_key=session_key,
+            business_config={
+                "order_type": "ecommerce",
+                "business_name": "Arrotech Shop",
+                "currency": "KES",
+                "commerce_rails_enabled": False,
+                "kb_id": "",
+            },
+            user=user,
+            db=db_session,
+        )
+
+    assert chat.await_count == 2
+    assert search_turn.tools_called[0]["name"] == "search_products"
+    assert omit_turn.tools_called == []
+    assert [card.get("id") for card in result["cards"]] == ["JORDAN-1"]
+    assert result["human_handoff"] is False
