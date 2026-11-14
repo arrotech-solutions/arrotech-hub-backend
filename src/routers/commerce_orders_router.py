@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
 from ..models import User
+from ..services.commerce_status_notify import notify_order_status_change
 from ..services.commerce_storage_service import (
     CommerceOrderNotFound,
     CommerceStorageService,
@@ -166,6 +167,7 @@ async def patch_commerce_order_status(
                 f"Allowed: {', '.join(allowed) if allowed else 'none'}"
             ),
         )
+    previous_status = order.status or ""
     try:
         updated = await _storage.update_order_status(
             db, user.id, external_order_id, target
@@ -178,4 +180,5 @@ async def patch_commerce_order_status(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
+    await notify_order_status_change(db, user.id, updated, previous_status)
     return {"success": True, "data": serialize_order(updated)}
