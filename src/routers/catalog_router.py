@@ -188,6 +188,7 @@ async def create_catalog_product(
 ):
     """Create a catalog product for the caller."""
     try:
+        payload = await attach_stored_image(user.id, payload)
         product = await create_product(db, user.id, payload)
     except (CatalogNotFound, ValueError) as exc:
         raise _http_for_catalog(exc) from exc
@@ -263,6 +264,7 @@ async def patch_catalog_product(
 ):
     """Partial-update a product owned by the caller."""
     try:
+        payload = await attach_stored_image(user.id, payload)
         product = await update_product(db, user.id, product_id, payload)
     except (CatalogNotFound, ValueError) as exc:
         raise _http_for_catalog(exc) from exc
