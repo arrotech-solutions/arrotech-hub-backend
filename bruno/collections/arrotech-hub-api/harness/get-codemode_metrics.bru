@@ -1,0 +1,11 @@
+meta {
+  name: codemode_metrics
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/_internal/harness/codemode/metrics
+  body: none
+  auth: inherit
+}

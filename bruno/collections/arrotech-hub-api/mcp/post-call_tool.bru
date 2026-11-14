@@ -1,0 +1,15 @@
+meta {
+  name: call_tool
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/mcp/call
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

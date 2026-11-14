@@ -1,0 +1,15 @@
+meta {
+  name: update_onboarding_profile
+  type: http
+  seq: 14
+}
+
+patch {
+  url: {{baseUrl}}/auth/me/onboarding
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

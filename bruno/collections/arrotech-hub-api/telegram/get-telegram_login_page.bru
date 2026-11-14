@@ -1,0 +1,11 @@
+meta {
+  name: telegram_login_page
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/telegram/login
+  body: none
+  auth: inherit
+}

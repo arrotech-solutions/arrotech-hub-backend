@@ -1,0 +1,15 @@
+meta {
+  name: bulk_delete_contact_list
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/api/whatsapp/contacts/bulk-delete
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

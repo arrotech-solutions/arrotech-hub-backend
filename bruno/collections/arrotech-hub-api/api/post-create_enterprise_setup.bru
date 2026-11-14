@@ -1,0 +1,15 @@
+meta {
+  name: create_enterprise_setup
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/enterprise-setup
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

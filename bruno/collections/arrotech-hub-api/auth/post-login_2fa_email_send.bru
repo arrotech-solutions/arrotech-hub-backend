@@ -1,0 +1,15 @@
+meta {
+  name: login_2fa_email_send
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/auth/login/2fa/email/send
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

@@ -1,0 +1,15 @@
+meta {
+  name: set_withdrawal_number
+  type: http
+  seq: 27
+}
+
+post {
+  url: {{baseUrl}}/api/tiktok/wallet/set-withdrawal-number
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

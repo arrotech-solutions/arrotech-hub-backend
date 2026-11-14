@@ -1,0 +1,15 @@
+meta {
+  name: register_whatsapp_phone
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/api/whatsapp/register-phone
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

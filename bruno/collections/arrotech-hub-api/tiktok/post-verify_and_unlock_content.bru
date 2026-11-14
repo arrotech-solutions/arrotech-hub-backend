@@ -1,0 +1,15 @@
+meta {
+  name: verify_and_unlock_content
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/api/tiktok/premium-links/:link_id/verify-and-unlock
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

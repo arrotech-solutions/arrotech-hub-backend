@@ -1,0 +1,15 @@
+meta {
+  name: unlock_premium_link
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/api/tiktok/premium-links/:link_id/unlock
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

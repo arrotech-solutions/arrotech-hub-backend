@@ -1,0 +1,11 @@
+meta {
+  name: get_integration_settings
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/settings/integrations
+  body: none
+  auth: inherit
+}

@@ -1,0 +1,15 @@
+meta {
+  name: sync_templates
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/api/whatsapp/templates/sync
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

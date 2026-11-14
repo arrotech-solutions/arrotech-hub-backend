@@ -1,0 +1,15 @@
+meta {
+  name: subscribe_newsletter
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/public/subscribe
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

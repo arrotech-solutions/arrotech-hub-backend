@@ -1,0 +1,15 @@
+meta {
+  name: create_premium_link
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/api/tiktok/premium-links
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

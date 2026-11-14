@@ -1,0 +1,11 @@
+meta {
+  name: get_my_premium_links
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/api/tiktok/premium-links/my
+  body: none
+  auth: inherit
+}

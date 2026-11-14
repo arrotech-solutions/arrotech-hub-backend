@@ -1,0 +1,11 @@
+meta {
+  name: get_broadcast_stats
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/whatsapp/broadcasts/dashboard/stats
+  body: none
+  auth: inherit
+}

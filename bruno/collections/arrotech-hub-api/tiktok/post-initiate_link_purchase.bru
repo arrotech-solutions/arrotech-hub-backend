@@ -1,0 +1,15 @@
+meta {
+  name: initiate_link_purchase
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/api/tiktok/premium-links/:link_id/purchase
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

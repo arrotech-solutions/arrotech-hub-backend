@@ -1,0 +1,11 @@
+meta {
+  name: get_productivity_trends
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/productivity/trends
+  body: none
+  auth: inherit
+}

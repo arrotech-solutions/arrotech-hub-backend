@@ -1,0 +1,15 @@
+meta {
+  name: update_whatsapp_inbox_settings
+  type: http
+  seq: 34
+}
+
+put {
+  url: {{baseUrl}}/api/whatsapp/inbox-settings
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

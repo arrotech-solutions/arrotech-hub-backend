@@ -1,0 +1,11 @@
+meta {
+  name: get_invitation_info
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/v1/organizations/invitations/info/:token
+  body: none
+  auth: inherit
+}

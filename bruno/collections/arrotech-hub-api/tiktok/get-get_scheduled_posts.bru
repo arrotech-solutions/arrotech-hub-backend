@@ -1,0 +1,11 @@
+meta {
+  name: get_scheduled_posts
+  type: http
+  seq: 22
+}
+
+get {
+  url: {{baseUrl}}/api/tiktok/scheduled-posts
+  body: none
+  auth: inherit
+}

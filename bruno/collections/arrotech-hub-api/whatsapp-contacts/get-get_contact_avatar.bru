@@ -1,0 +1,11 @@
+meta {
+  name: get_contact_avatar
+  type: http
+  seq: 17
+}
+
+get {
+  url: {{baseUrl}}/api/whatsapp/contacts/:contact_id/avatar
+  body: none
+  auth: inherit
+}

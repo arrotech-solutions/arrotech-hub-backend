@@ -1,0 +1,11 @@
+meta {
+  name: get_security_settings
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}/settings/security
+  body: none
+  auth: inherit
+}

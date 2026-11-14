@@ -1,0 +1,15 @@
+meta {
+  name: update_auto_reply
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/api/whatsapp/auto-replies/:rule_id
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

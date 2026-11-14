@@ -1,0 +1,11 @@
+meta {
+  name: list_featured_posts
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/blog/posts/featured
+  body: none
+  auth: inherit
+}

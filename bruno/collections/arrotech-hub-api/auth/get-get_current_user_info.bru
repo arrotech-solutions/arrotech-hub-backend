@@ -1,0 +1,11 @@
+meta {
+  name: get_current_user_info
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/auth/me
+  body: none
+  auth: inherit
+}

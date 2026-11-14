@@ -1,0 +1,11 @@
+meta {
+  name: get_mpesa_agent_config
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/agents/daraja/config
+  body: none
+  auth: inherit
+}

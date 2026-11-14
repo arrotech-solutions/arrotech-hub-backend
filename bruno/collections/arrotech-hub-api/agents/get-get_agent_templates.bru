@@ -1,0 +1,11 @@
+meta {
+  name: get_agent_templates
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/agents/templates
+  body: none
+  auth: inherit
+}

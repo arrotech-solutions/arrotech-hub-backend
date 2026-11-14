@@ -1,0 +1,15 @@
+meta {
+  name: create_workflow_from_steps
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/workflows/create-from-steps
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

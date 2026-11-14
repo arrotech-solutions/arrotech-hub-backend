@@ -1,0 +1,11 @@
+meta {
+  name: export_data
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/auth/me/export
+  body: none
+  auth: inherit
+}

@@ -1,0 +1,11 @@
+meta {
+  name: get_my_fans
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/tiktok/fans
+  body: none
+  auth: inherit
+}

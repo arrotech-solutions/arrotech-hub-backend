@@ -1,0 +1,15 @@
+meta {
+  name: add_member
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{baseUrl}}/api/v1/organizations/:org_id/members
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

@@ -5442,12 +5442,98 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             "human_handoff": True,
         }
 
+    async def _search_arrotech_catalog_products(
+        self, query: str, user: User, db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Search this merchant's Arrotech catalog when no knowledge base is set."""
+        try:
+            from .catalog_search_service import CatalogSearchService
+            from .whatsapp_ordering_helpers import normalize_search_query
+
+            search_query = normalize_search_query(query)
+            hits = await CatalogSearchService().search_products(
+                db, user.id, search_query, top_k=10
+            )
+            if not hits and search_query != query:
+                hits = await CatalogSearchService().search_products(
+                    db, user.id, query, top_k=10
+                )
+        except Exception as e:
+            logger.error(f"[CONV_AGENT] Catalog search error: {e}")
+            return {"success": False, "result": f"Search error: {str(e)}"}
+
+        if not hits:
+            return {
+                "success": True,
+                "result": (
+                    "No products found matching that request. "
+                    "Do not invent products or call display_product_cards."
+                ),
+                "data": {"results": [], "products": []},
+            }
+
+        products: List[Dict[str, Any]] = []
+        results: List[Dict[str, Any]] = []
+        for idx, hit in enumerate(hits):
+            if not isinstance(hit, dict):
+                continue
+            name = (hit.get("name") or "").strip()
+            if not name:
+                continue
+            image_url = hit.get("image_url") or ""
+            try:
+                price_num = float(hit.get("price") or 0)
+            except (TypeError, ValueError):
+                price_num = 0.0
+            desc = hit.get("description") or ""
+            products.append({
+                "id": hit.get("sku") or f"prod_{idx}",
+                "name": name,
+                "price": price_num,
+                "description": desc,
+                "image_url": image_url,
+            })
+            chunk_lines = [name, f"Price: {price_num}"]
+            if desc:
+                chunk_lines.append(f"Description: {desc}")
+            results.append({"text": "\n".join(chunk_lines), "image_url": image_url})
+
+        if not products:
+            return {
+                "success": True,
+                "result": (
+                    "No products found matching that request. "
+                    "Do not invent products or call display_product_cards."
+                ),
+                "data": {"results": [], "products": []},
+            }
+
+        products_json_block = (
+            "\n\nREADY_TO_DISPLAY_PRODUCTS (pass this array directly as the `products` argument to display_product_cards):\n"
+            + json.dumps(products, ensure_ascii=False)
+        )
+        instruction = (
+            "\n\nINSTRUCTION: Call `display_product_cards` NOW with the READY_TO_DISPLAY_PRODUCTS "
+            "JSON array above as the `products` argument. Do NOT modify the products — pass them as-is. "
+            "CRITICAL: Do NOT modify the image_url values. "
+            "Do NOT list products as plain text. "
+            "If the customer explicitly asked to ADD items to their cart, also call "
+            "`manage_cart(action='add', product_name=..., unit_price=..., quantity=...)` "
+            "for each item they requested."
+        )
+        search_text = "\n\n".join(item["text"] for item in results)
+        return {
+            "success": True,
+            "result": f"{search_text}{products_json_block}{instruction}",
+            "data": {"results": results, "products": products},
+        }
+
     async def _sub_search_products(
         self, query: str, kb_id: str, user: User, db: AsyncSession
     ) -> Dict[str, Any]:
-        """Search the business knowledge base via RAG."""
-        if not kb_id:
-            return {"success": False, "result": "No knowledge base configured for this business."}
+        """Search the business knowledge base via RAG, or Arrotech catalog if kb_id is blank."""
+        if not str(kb_id or "").strip():
+            return await self._search_arrotech_catalog_products(query, user, db)
 
         try:
             from .whatsapp_ordering_helpers import normalize_search_query
@@ -6725,6 +6811,16 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             # above (already returned True if matched). Be safe → deny.
             return False
         try:
+            if provider == "arrotech_db":
+                from .commerce_storage_service import CommerceStorageService
+
+                owned = await CommerceStorageService().get_order(
+                    db, user.id, str(order_id or "").strip()
+                )
+                return bool(
+                    owned and _phones_match(owned.customer_phone, customer_phone)
+                )
+
             from .tool_executor import ToolExecutor
             executor = ToolExecutor()
             orders = []
@@ -6893,6 +6989,8 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 orders = await self._get_orders_from_google_sheets(executor, customer_phone, storage_config, user, db)
             elif provider == "airtable":
                 orders = await self._get_orders_from_airtable(executor, customer_phone, storage_config, user, db)
+            elif provider == "arrotech_db":
+                orders = await self._get_orders_from_arrotech_db(customer_phone, user, db)
             else:
                 return {"success": False, "result": f"Storage provider {provider} is not supported for order history."}
 
@@ -7075,6 +7173,71 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             })
             
         return found_orders
+
+    async def _get_orders_from_arrotech_db(
+        self, phone: str, user: User, db: AsyncSession
+    ) -> List[Dict[str, Any]]:
+        from sqlalchemy import select
+
+        from ..models import CommerceOrder
+
+        digits = re.sub(r"\D", "", str(phone or ""))
+        last9 = digits[-9:] if len(digits) >= 9 else digits
+        if not last9:
+            return []
+
+        result = await db.execute(
+            select(CommerceOrder)
+            .where(
+                CommerceOrder.user_id == user.id,
+                CommerceOrder.customer_phone.contains(last9),
+            )
+            .order_by(CommerceOrder.created_at.desc(), CommerceOrder.id.desc())
+        )
+        found_orders = []
+        for order in result.scalars().all():
+            if not _phones_match(order.customer_phone, phone):
+                continue
+            items = order.line_items
+            if isinstance(items, list):
+                items_summary = "; ".join(
+                    f"{it.get('name', '?')} x{it.get('quantity', it.get('qty', 1))}"
+                    for it in items
+                    if isinstance(it, dict)
+                )
+            else:
+                items_summary = str(items or "")
+            found_orders.append({
+                "Order ID": order.external_order_id,
+                "Status": order.status,
+                "Created At": order.created_at.isoformat() if order.created_at else "",
+                "Subtotal": str(order.total),
+                "Currency": order.currency or "KES",
+                "Items": items_summary,
+            })
+        return found_orders
+
+    async def _fetch_order_from_arrotech_db(
+        self, order_id: str, user: User, db: AsyncSession
+    ) -> Optional[Dict[str, Any]]:
+        from .commerce_storage_service import CommerceStorageService
+
+        order = await CommerceStorageService().get_order(db, user.id, order_id)
+        if order is None:
+            return None
+        try:
+            subtotal = float(order.total)
+        except (TypeError, ValueError):
+            subtotal = 0
+        return {
+            "order_id": order.external_order_id,
+            "items": list(order.line_items or []),
+            "subtotal": subtotal,
+            "customer_name": order.customer_name,
+            "customer_phone": order.customer_phone,
+            "delivery_method": order.delivery_method,
+            "currency": order.currency or "KES",
+        }
 
     async def _resolve_order_for_payment(
         self,
@@ -7309,6 +7472,9 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 except (TypeError, ValueError):
                     snapshot["subtotal"] = 0
                 return snapshot
+
+        if provider == "arrotech_db":
+            return await self._fetch_order_from_arrotech_db(order_id, user, db)
 
         return None
 
@@ -8475,11 +8641,16 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         """Background worker for persisting to external storage using a fresh DB session."""
         try:
             from ..database import get_session_maker
-            from .tool_executor import ToolExecutor
-            executor = ToolExecutor()
             session_maker = get_session_maker()
             
             async with session_maker() as new_db:
+                if provider == "arrotech_db":
+                    await self._persist_order_to_arrotech_db(
+                        order_data, user, new_db
+                    )
+                    return
+                from .tool_executor import ToolExecutor
+                executor = ToolExecutor()
                 if provider == "google_sheets":
                     await self._persist_to_google_sheets(
                         executor, order_data, customer, items_summary,
@@ -8526,6 +8697,8 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                     self._run_persist_task,
                     provider, order_data, customer, items_summary, now, storage_config, user
                 )
+            elif provider == "arrotech_db":
+                await self._persist_order_to_arrotech_db(order_data, user, db)
             else:
                 from .tool_executor import ToolExecutor
                 executor = ToolExecutor()
@@ -8556,11 +8729,16 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         """Background worker for updating order status in external storage."""
         try:
             from ..database import get_session_maker
-            from .tool_executor import ToolExecutor
-            executor = ToolExecutor()
             session_maker = get_session_maker()
             
             async with session_maker() as new_db:
+                if provider == "arrotech_db":
+                    await self._update_order_status_in_arrotech_db(
+                        order_id, status, user, new_db
+                    )
+                    return
+                from .tool_executor import ToolExecutor
+                executor = ToolExecutor()
                 if provider == "google_sheets":
                     await self._update_order_status_in_google_sheets(
                         executor, order_id, status, storage_config, user, new_db
@@ -8942,6 +9120,24 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             return
         tx_status = _safe_str((transaction_data or {}).get("status", "paid")).strip().lower()
         try:
+            if provider == "arrotech_db":
+                order_id = _safe_str((transaction_data or {}).get("order_id", "")).strip()
+                if order_id and tx_status == "paid":
+                    receipt = (
+                        _safe_str((transaction_data or {}).get("mpesa_receipt", "")).strip()
+                        or _safe_str((transaction_data or {}).get("transaction_id", "")).strip()
+                        or None
+                    )
+                    from .commerce_storage_service import CommerceStorageService
+
+                    await CommerceStorageService().mark_order_paid(
+                        db,
+                        user.id,
+                        order_id,
+                        mpesa_receipt=receipt,
+                    )
+                return
+
             from .tool_executor import ToolExecutor
             executor = ToolExecutor()
             if provider == "google_sheets":
@@ -9077,6 +9273,10 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         if provider in (None, "", "none"):
             return
 
+        if provider == "arrotech_db":
+            await self._persist_reservation_to_arrotech_db(reservation, user, db)
+            return
+
         record = self._build_reservation_sheet_record(reservation)
         from .tool_executor import ToolExecutor
 
@@ -9160,6 +9360,73 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 logger.warning(f"[CONV_AGENT] Reservation Airtable create failed: {e}")
         else:
             logger.warning(f"[CONV_AGENT] Unknown storage provider for reservation: {provider}")
+
+    @staticmethod
+    def _order_payload_for_arrotech_db(order_data: Dict[str, Any]) -> Dict[str, Any]:
+        customer = order_data.get("customer") or {}
+        items = order_data.get("items") if "items" in order_data else order_data.get("line_items")
+        total = order_data.get("total", order_data.get("subtotal"))
+        payload = {
+            "order_id": order_data.get("order_id") or order_data.get("external_order_id"),
+            "customer_name": order_data.get("customer_name") or customer.get("name", ""),
+            "customer_phone": order_data.get("customer_phone") or customer.get("phone", ""),
+            "status": order_data.get("status", "pending"),
+            "delivery_method": order_data.get("delivery_method") or "pickup",
+            "delivery_address": order_data.get("delivery_address", ""),
+            "total": total,
+            "items": items if isinstance(items, list) else [],
+            "notes": order_data.get("notes", ""),
+            "currency": order_data.get("currency") or "KES",
+            "raw_snapshot": dict(order_data),
+        }
+        if order_data.get("payment_status"):
+            payload["payment_status"] = order_data.get("payment_status")
+        if order_data.get("payment_method"):
+            payload["payment_method"] = order_data.get("payment_method")
+        if order_data.get("mpesa_receipt"):
+            payload["mpesa_receipt"] = order_data.get("mpesa_receipt")
+        return payload
+
+    @staticmethod
+    def _reservation_payload_for_arrotech_db(reservation: Dict[str, Any]) -> Dict[str, Any]:
+        res = reservation.get("reservation", reservation) if isinstance(reservation, dict) else {}
+        customer = res.get("customer") or {}
+        return {
+            "reservation_id": res.get("reservation_id") or res.get("external_reservation_id"),
+            "customer_name": res.get("customer_name") or customer.get("name", ""),
+            "customer_phone": res.get("customer_phone") or customer.get("phone", ""),
+            "reservation_date": res.get("reservation_date", ""),
+            "reservation_time": res.get("reservation_time", ""),
+            "party_size": res.get("party_size"),
+            "notes": res.get("notes", ""),
+            "status": res.get("status") or "confirmed",
+            "raw_snapshot": dict(res),
+        }
+
+    async def _persist_order_to_arrotech_db(
+        self, order_data: Dict[str, Any], user: User, db: AsyncSession
+    ) -> None:
+        from .commerce_storage_service import CommerceStorageService
+
+        payload = self._order_payload_for_arrotech_db(order_data)
+        await CommerceStorageService().upsert_order(db, user.id, payload)
+
+    async def _persist_reservation_to_arrotech_db(
+        self, reservation: Dict[str, Any], user: User, db: AsyncSession
+    ) -> None:
+        from .commerce_storage_service import CommerceStorageService
+
+        payload = self._reservation_payload_for_arrotech_db(reservation)
+        await CommerceStorageService().upsert_reservation(db, user.id, payload)
+
+    async def _update_order_status_in_arrotech_db(
+        self, order_id: str, status: str, user: User, db: AsyncSession
+    ) -> None:
+        from .commerce_storage_service import CommerceStorageService
+
+        if not order_id:
+            return
+        await CommerceStorageService().update_order_status(db, user.id, order_id, status)
 
     async def _persist_to_google_sheets(
         self,

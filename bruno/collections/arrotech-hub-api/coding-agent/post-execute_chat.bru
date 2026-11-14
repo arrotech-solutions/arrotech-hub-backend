@@ -1,0 +1,15 @@
+meta {
+  name: execute_chat
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/coding-agent/sessions/:session_id/chat
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

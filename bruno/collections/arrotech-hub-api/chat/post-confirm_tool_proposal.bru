@@ -1,0 +1,15 @@
+meta {
+  name: confirm_tool_proposal
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/chat/proposals/:proposal_id/confirm
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

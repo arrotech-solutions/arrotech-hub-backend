@@ -1,0 +1,15 @@
+meta {
+  name: verify_mpesa_payment
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/payments/mpesa/verify
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

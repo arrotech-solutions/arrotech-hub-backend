@@ -1,0 +1,11 @@
+meta {
+  name: get_trace_timeline
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/api/internal/traces/:trace_id
+  body: none
+  auth: inherit
+}

@@ -1,0 +1,15 @@
+meta {
+  name: increment_automation_run
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/subscription/usage/automation-run
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

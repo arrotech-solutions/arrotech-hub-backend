@@ -2169,7 +2169,7 @@ WORKFLOW_TEMPLATES = [
         "difficulty": "intermediate",
         "estimated_time": "5 mins",
         "tags": ["whatsapp", "agent", "food", "retail", "ordering"],
-        "required_connections": ["whatsapp", "rag_pipeline", "google_workspace"],
+        "required_connections": ["whatsapp"],
         "trigger_type": WorkflowTriggerType.EVENT,
         "trigger_config": {
             "platform": "whatsapp",
@@ -2257,7 +2257,9 @@ WORKFLOW_TEMPLATES = [
         ],
         "variables": {
             "kb_id": {
-                "type": "string", "required": True, "description": "Knowledge Base ID containing your menu/products", "connection_for": "rag_pipeline"
+                "type": "string",
+                "required": False,
+                "description": "Optional FAQ knowledge base. Leave empty to sell from your Arrotech catalog.",
             },
             "business_name": {
                 "type": "string", "required": True, "description": "Your business name (shown to customers)"
@@ -2285,9 +2287,9 @@ WORKFLOW_TEMPLATES = [
             },
             "storage_provider": {
                 "type": "string",
-                "description": "Where to save orders (none, google_sheets, airtable)",
-                "enum": ["none", "google_sheets", "airtable"],
-                "default": "none"
+                "description": "Where to save orders (arrotech_db default; google_sheets and airtable optional)",
+                "enum": ["arrotech_db", "none", "google_sheets", "airtable"],
+                "default": "arrotech_db"
             },
             "storage_spreadsheet_id": {
                 "type": "string",

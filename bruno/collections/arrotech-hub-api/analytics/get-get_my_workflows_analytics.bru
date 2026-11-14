@@ -1,0 +1,11 @@
+meta {
+  name: get_my_workflows_analytics
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/analytics/my-workflows
+  body: none
+  auth: inherit
+}

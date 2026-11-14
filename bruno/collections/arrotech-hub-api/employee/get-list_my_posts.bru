@@ -1,0 +1,11 @@
+meta {
+  name: list_my_posts
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/admin/my-posts
+  body: none
+  auth: inherit
+}

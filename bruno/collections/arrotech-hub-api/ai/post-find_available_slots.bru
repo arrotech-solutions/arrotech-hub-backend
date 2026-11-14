@@ -1,0 +1,15 @@
+meta {
+  name: find_available_slots
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/ai/find-slots
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

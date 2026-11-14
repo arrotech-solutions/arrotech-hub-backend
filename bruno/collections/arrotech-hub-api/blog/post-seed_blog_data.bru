@@ -1,0 +1,15 @@
+meta {
+  name: seed_blog_data
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/api/blog/seed
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

@@ -1,0 +1,11 @@
+meta {
+  name: get_usage_stats
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/subscription/usage
+  body: none
+  auth: inherit
+}

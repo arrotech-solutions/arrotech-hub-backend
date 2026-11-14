@@ -1,0 +1,15 @@
+meta {
+  name: setup_totp
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/v1/security/2fa/totp/setup
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

@@ -1,0 +1,11 @@
+meta {
+  name: get_unread_count
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/notifications/unread-count
+  body: none
+  auth: inherit
+}

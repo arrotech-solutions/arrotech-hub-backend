@@ -1,0 +1,15 @@
+meta {
+  name: approve_access
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/access/approve
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

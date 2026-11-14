@@ -1,0 +1,15 @@
+meta {
+  name: mark_conversation_read
+  type: http
+  seq: 26
+}
+
+patch {
+  url: {{baseUrl}}/api/whatsapp/contacts/:contact_id/read
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

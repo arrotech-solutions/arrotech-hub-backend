@@ -1,0 +1,11 @@
+meta {
+  name: get_file_info
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/chat/files/:conversation_id/:message_id
+  body: none
+  auth: inherit
+}

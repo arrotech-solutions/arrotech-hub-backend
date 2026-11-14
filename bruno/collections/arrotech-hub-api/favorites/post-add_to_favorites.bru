@@ -1,0 +1,15 @@
+meta {
+  name: add_to_favorites
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/favorites/:workflow_id
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

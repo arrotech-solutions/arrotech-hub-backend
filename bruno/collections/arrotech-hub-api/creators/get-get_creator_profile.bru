@@ -1,0 +1,11 @@
+meta {
+  name: get_creator_profile
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/creators/:creator_id
+  body: none
+  auth: inherit
+}

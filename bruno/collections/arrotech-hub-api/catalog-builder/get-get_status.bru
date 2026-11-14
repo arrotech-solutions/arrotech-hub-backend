@@ -1,0 +1,11 @@
+meta {
+  name: get_status
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/catalog-builder/status
+  body: none
+  auth: inherit
+}

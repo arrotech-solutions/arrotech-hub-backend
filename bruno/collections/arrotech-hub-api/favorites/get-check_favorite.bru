@@ -1,0 +1,11 @@
+meta {
+  name: check_favorite
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/favorites/:workflow_id/check
+  body: none
+  auth: inherit
+}

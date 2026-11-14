@@ -1,0 +1,11 @@
+meta {
+  name: get_admin_user_payments
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/admin/users/:user_id/payments
+  body: none
+  auth: inherit
+}

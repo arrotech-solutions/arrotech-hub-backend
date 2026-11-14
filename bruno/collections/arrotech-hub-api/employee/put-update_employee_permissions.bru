@@ -1,0 +1,15 @@
+meta {
+  name: update_employee_permissions
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/admin/employees/:user_id/permissions
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

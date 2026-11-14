@@ -1,0 +1,11 @@
+meta {
+  name: get_payment_summary
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/api/agents/daraja/summary
+  body: none
+  auth: inherit
+}

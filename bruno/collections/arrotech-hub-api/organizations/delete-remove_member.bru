@@ -1,0 +1,11 @@
+meta {
+  name: remove_member
+  type: http
+  seq: 19
+}
+
+delete {
+  url: {{baseUrl}}/api/v1/organizations/:org_id/members/:user_id
+  body: none
+  auth: inherit
+}

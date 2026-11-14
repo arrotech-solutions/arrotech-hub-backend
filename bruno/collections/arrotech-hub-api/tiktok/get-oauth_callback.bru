@@ -1,0 +1,11 @@
+meta {
+  name: oauth_callback
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/tiktok/callback
+  body: none
+  auth: inherit
+}

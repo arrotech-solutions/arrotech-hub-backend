@@ -1,0 +1,11 @@
+meta {
+  name: get_pricing_plans
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/payments/pricing
+  body: none
+  auth: inherit
+}

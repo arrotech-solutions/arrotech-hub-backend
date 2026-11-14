@@ -1,0 +1,11 @@
+meta {
+  name: get_auth_url
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/auth/asana/url
+  body: none
+  auth: inherit
+}

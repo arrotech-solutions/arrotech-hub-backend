@@ -1,0 +1,15 @@
+meta {
+  name: generate_broadcast_copy
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/whatsapp/broadcasts/generate-copy
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

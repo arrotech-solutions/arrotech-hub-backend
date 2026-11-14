@@ -1,0 +1,15 @@
+meta {
+  name: send_message
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/chat/conversations/:conversation_id/messages
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

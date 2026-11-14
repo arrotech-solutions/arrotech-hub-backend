@@ -1,0 +1,11 @@
+meta {
+  name: get_activity_feed
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/creators/me/activity-feed
+  body: none
+  auth: inherit
+}

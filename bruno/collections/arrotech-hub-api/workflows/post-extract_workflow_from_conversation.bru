@@ -1,0 +1,15 @@
+meta {
+  name: extract_workflow_from_conversation
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/workflows/extract-from-conversation
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

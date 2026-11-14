@@ -1,0 +1,11 @@
+meta {
+  name: validate_desk_webhook
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/zoho/webhook/desk/:user_id
+  body: none
+  auth: inherit
+}

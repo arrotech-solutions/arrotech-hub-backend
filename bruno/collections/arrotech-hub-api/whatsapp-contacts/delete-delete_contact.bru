@@ -1,0 +1,11 @@
+meta {
+  name: delete_contact
+  type: http
+  seq: 16
+}
+
+delete {
+  url: {{baseUrl}}/api/whatsapp/contacts/:contact_id
+  body: none
+  auth: inherit
+}

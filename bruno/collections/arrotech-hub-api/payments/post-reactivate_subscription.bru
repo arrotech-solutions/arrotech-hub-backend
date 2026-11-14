@@ -1,0 +1,15 @@
+meta {
+  name: reactivate_subscription
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{baseUrl}}/payments/subscriptions/reactivate
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

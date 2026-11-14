@@ -1,0 +1,11 @@
+meta {
+  name: get_weekly_comparison
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/productivity/comparison
+  body: none
+  auth: inherit
+}

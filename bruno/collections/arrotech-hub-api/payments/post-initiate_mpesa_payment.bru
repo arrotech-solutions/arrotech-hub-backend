@@ -1,0 +1,15 @@
+meta {
+  name: initiate_mpesa_payment
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/payments/mpesa/initiate
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

@@ -1,0 +1,15 @@
+meta {
+  name: promote_to_employee
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/admin/employees/promote
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

@@ -1,0 +1,15 @@
+meta {
+  name: follow_creator
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/creators/:creator_id/follow
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

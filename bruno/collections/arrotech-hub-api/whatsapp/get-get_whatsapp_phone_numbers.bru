@@ -1,0 +1,11 @@
+meta {
+  name: get_whatsapp_phone_numbers
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/api/whatsapp/phone-numbers
+  body: none
+  auth: inherit
+}

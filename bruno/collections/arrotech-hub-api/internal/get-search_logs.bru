@@ -1,0 +1,11 @@
+meta {
+  name: search_logs
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/internal/logs/search
+  body: none
+  auth: inherit
+}

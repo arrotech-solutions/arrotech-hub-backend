@@ -1,0 +1,11 @@
+meta {
+  name: subscription_stats
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/admin/subscriptions/stats
+  body: none
+  auth: inherit
+}

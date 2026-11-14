@@ -1,0 +1,11 @@
+meta {
+  name: delete_conversation
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{baseUrl}}/chat/conversations/:conversation_id
+  body: none
+  auth: inherit
+}

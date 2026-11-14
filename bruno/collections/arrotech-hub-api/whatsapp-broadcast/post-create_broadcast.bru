@@ -1,0 +1,15 @@
+meta {
+  name: create_broadcast
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/whatsapp/broadcasts
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}
