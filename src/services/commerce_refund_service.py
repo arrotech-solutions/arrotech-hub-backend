@@ -94,8 +94,9 @@ async def b2c_callback_urls_for_user(
 ) -> tuple[Optional[str], Optional[str]]:
     """ResultURL and timeout URL for this merchant's Daraja webhook.
 
-    When a webhook secret exists, both URLs are the tenant callback. That
-    route calls ``apply_b2c_result``. The platform payments logger is not used.
+    When a webhook secret and a public base URL exist, both URLs are the
+    tenant callback. That route calls ``apply_b2c_result``. If either is
+    missing, the caller must not send B2C to the payments logger.
     """
     found = await db.execute(
         select(MpesaAgentConfig).where(MpesaAgentConfig.user_id == user_id)
@@ -329,7 +330,14 @@ async def _execute_refund_locked(
             "A refund can be retried only after a payout has failed",
         )
 
-    use_b2c = payout_credentials_configured()
+    tenant_result, tenant_timeout = await b2c_callback_urls_for_user(db, locked.user_id)
+    creds_ready = payout_credentials_configured()
+    use_b2c = bool(creds_ready and tenant_result and tenant_timeout)
+    if creds_ready and not use_b2c:
+        logger.warning(
+            "B2C payout skipped for user %s: no tenant callback URL that can apply the result",
+            locked.user_id,
+        )
     attempt = _new_attempt(
         locked,
         method=(
@@ -357,9 +365,6 @@ async def _execute_refund_locked(
 
     try:
         creds = load_payout_credentials()
-        tenant_result, tenant_timeout = await b2c_callback_urls_for_user(db, locked.user_id)
-        result_url = tenant_result or creds["result_url"] or None
-        timeout_url = tenant_timeout or creds["timeout_url"] or result_url
         result = await send_b2c_payout(
             phone_number=locked.customer_phone,
             amount=_whole_shillings(locked.amount),
@@ -371,8 +376,8 @@ async def _execute_refund_locked(
             short_code=creds["short_code"] or None,
             initiator_name=creds["initiator_name"] or None,
             security_credential=creds["security_credential"] or None,
-            result_url=result_url,
-            timeout_url=timeout_url,
+            result_url=tenant_result,
+            timeout_url=tenant_timeout,
         )
     except Exception as exc:
         logger.warning("B2C payout uncertain for return %s: %s", locked.id, exc)

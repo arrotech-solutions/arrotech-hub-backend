@@ -95,6 +95,28 @@ async def _attempts(db: AsyncSession, return_id) -> list[CommerceRefundAttempt]:
     return list(result.scalars().all())
 
 
+async def _enable_tenant_b2c(db: AsyncSession, user: User, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give this merchant a callback that can run apply_b2c_result."""
+    from src.models import MpesaAgentConfig
+
+    found = await db.execute(
+        select(MpesaAgentConfig).where(MpesaAgentConfig.user_id == user.id)
+    )
+    if found.scalar_one_or_none() is None:
+        db.add(
+            MpesaAgentConfig(
+                user_id=user.id,
+                webhook_secret="tenant-callback-secret",
+                daraja_shortcode="600000",
+            )
+        )
+        await db.commit()
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.settings.API_BASE_URL",
+        "https://hub.test",
+    )
+
+
 @pytest.mark.asyncio
 async def test_approve_without_payout_creds_is_pending_not_refunded(
     db_session: AsyncSession,
@@ -270,6 +292,7 @@ async def test_approve_with_mocked_b2c_success_marks_refunded(
         "src.services.commerce_refund_service.payout_credentials_configured",
         lambda: True,
     )
+    await _enable_tenant_b2c(db_session, test_user, monkeypatch)
     monkeypatch.setattr(
         "src.services.commerce_refund_service.send_b2c_payout",
         b2c,
@@ -316,6 +339,7 @@ async def test_b2c_accept_without_receipt_stays_refund_pending(
         "src.services.commerce_refund_service.payout_credentials_configured",
         lambda: True,
     )
+    await _enable_tenant_b2c(db_session, test_user, monkeypatch)
     monkeypatch.setattr(
         "src.services.commerce_refund_service.send_b2c_payout",
         AsyncMock(
@@ -359,6 +383,7 @@ async def test_b2c_failure_does_not_mark_refunded(
         "src.services.commerce_refund_service.payout_credentials_configured",
         lambda: True,
     )
+    await _enable_tenant_b2c(db_session, test_user, monkeypatch)
     monkeypatch.setattr(
         "src.services.commerce_refund_service.send_b2c_payout",
         AsyncMock(return_value={"success": False, "error": "Daraja rejected"}),
@@ -709,6 +734,7 @@ async def test_b2c_pending_row_is_committed_before_http_and_timeout_is_not_retri
         "src.services.commerce_refund_service.payout_credentials_configured",
         lambda: True,
     )
+    await _enable_tenant_b2c(db_session, test_user, monkeypatch)
     monkeypatch.setattr(
         "src.services.commerce_refund_service.send_b2c_payout",
         timeout_after_pending,
@@ -762,6 +788,7 @@ async def test_failed_b2c_is_not_auto_retried(
         "src.services.commerce_refund_service.payout_credentials_configured",
         lambda: True,
     )
+    await _enable_tenant_b2c(db_session, test_user, monkeypatch)
     monkeypatch.setattr(
         "src.services.commerce_refund_service.send_b2c_payout",
         reject,
@@ -824,6 +851,7 @@ async def test_retry_refund_creates_a_new_pending_only_after_failure(
         "src.services.commerce_refund_service.payout_credentials_configured",
         lambda: True,
     )
+    await _enable_tenant_b2c(db_session, test_user, monkeypatch)
     monkeypatch.setattr(
         "src.services.commerce_refund_service.send_b2c_payout",
         payout,
@@ -866,6 +894,7 @@ async def test_b2c_result_callback_receipt_marks_refunded_and_failure_allows_set
         "src.services.commerce_refund_service.payout_credentials_configured",
         lambda: True,
     )
+    await _enable_tenant_b2c(db_session, test_user, monkeypatch)
     monkeypatch.setattr(
         "src.services.commerce_refund_service.send_b2c_payout",
         AsyncMock(
@@ -960,6 +989,7 @@ async def test_explicit_settle_offline_while_b2c_pending_does_not_claim_refunded
         "src.services.commerce_refund_service.payout_credentials_configured",
         lambda: True,
     )
+    await _enable_tenant_b2c(db_session, test_user, monkeypatch)
     monkeypatch.setattr(
         "src.services.commerce_refund_service.send_b2c_payout",
         AsyncMock(
@@ -1098,6 +1128,7 @@ async def test_overlapping_execute_refund_sends_b2c_once(
         "src.services.commerce_refund_service.payout_credentials_configured",
         lambda: True,
     )
+    await _enable_tenant_b2c(db_session, test_user, monkeypatch)
     monkeypatch.setattr(
         "src.services.commerce_refund_service.send_b2c_payout",
         slow_success,
@@ -1146,6 +1177,7 @@ async def test_b2c_result_url_posts_to_tenant_callback_and_route_completes_retur
         "src.services.commerce_refund_service.payout_credentials_configured",
         lambda: True,
     )
+    await _enable_tenant_b2c(db_session, test_user, monkeypatch)
     captured: dict = {}
 
     async def accept(**kwargs):
@@ -1297,3 +1329,67 @@ async def test_late_b2c_success_does_not_flip_settled_offline(
     assert row.status == "settled_offline"
     assert attempt.mpesa_receipt == "RCPT-ACCEPT"
     assert "refunded" not in (row.status or "")
+
+
+@pytest.mark.asyncio
+async def test_missing_webhook_url_uses_offline_pending_and_can_settle(
+    db_session: AsyncSession,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Daraja creds without a tenant callback must not send B2C to the payments logger."""
+    await _make_order(db_session, test_user, external_id="ORD-NO-HOOK", total="22.00")
+    row = await request_return(
+        db_session,
+        test_user.id,
+        order_external_id="ORD-NO-HOOK",
+        phone="0712345678",
+        reason_code="damaged",
+        amount=Decimal("22.00"),
+    )
+    calls = {"n": 0}
+
+    async def should_not_send(**kwargs):
+        calls["n"] += 1
+        return {"success": True, "receipt": "SHOULD-NOT", "conversation_id": "AG_NO"}
+
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.payout_credentials_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.settings.MPESA_B2C_RESULT_URL",
+        "",
+    )
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.settings.MPESA_CALLBACK_URL",
+        "https://hub.test/payments/mpesa/callback",
+    )
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.settings.API_BASE_URL",
+        "",
+    )
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.send_b2c_payout",
+        should_not_send,
+    )
+
+    pending = await approve_return(
+        db_session, test_user.id, row.id, actor_user_id=test_user.id
+    )
+
+    assert calls["n"] == 0
+    assert pending.status == "refund_pending"
+    assert "refunded" not in _message(pending).lower()
+    assert "offline" in _message(pending).lower()
+    attempts = await _attempts(db_session, pending.id)
+    assert len(attempts) == 1
+    assert attempts[0].method == "offline"
+    assert attempts[0].status == "pending"
+    assert attempts[0].method != "mpesa_b2c"
+
+    settled = await mark_settled_offline(
+        db_session, test_user.id, pending.id, actor_user_id=test_user.id, note="Cash"
+    )
+    assert settled.status == "settled_offline"
+    assert "refunded" not in _message(settled).lower()
