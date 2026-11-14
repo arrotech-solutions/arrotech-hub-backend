@@ -248,6 +248,12 @@ class BaseConfig(BaseSettings):
     MPESA_BUSINESS_SHORT_CODE: Optional[str] = None
     MPESA_CALLBACK_URL: Optional[str] = None
     MPESA_ENVIRONMENT: str = "sandbox"  # sandbox or live
+    # B2C payout. Absent initiator/security credential means refunds stay offline.
+    MPESA_B2C_INITIATOR_NAME: Optional[str] = None
+    MPESA_B2C_SECURITY_CREDENTIAL: Optional[str] = None
+    MPESA_B2C_SHORTCODE: Optional[str] = None
+    MPESA_B2C_RESULT_URL: Optional[str] = None
+    MPESA_B2C_TIMEOUT_URL: Optional[str] = None
 
     # Support Email Configuration
     SUPPORT_EMAIL_PASSWORD: Optional[str] = None

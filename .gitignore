@@ -103,3 +103,7 @@ mini-hub-*.json
 *.tmp
 *.temp
 .cache/
+
+# Git worktrees
+.worktrees/
+

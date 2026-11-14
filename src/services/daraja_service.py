@@ -184,6 +184,115 @@ class DarajaService:
             "raw": data,
         }
 
+    async def b2c_payment(
+        self,
+        *,
+        phone_number: str,
+        amount: int,
+        remarks: str,
+        occasion: str = "Refund",
+        command_id: str = "BusinessPayment",
+        consumer_key: Optional[str] = None,
+        consumer_secret: Optional[str] = None,
+        short_code: Optional[str] = None,
+        initiator_name: Optional[str] = None,
+        security_credential: Optional[str] = None,
+        result_url: Optional[str] = None,
+        timeout_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Send an M-Pesa B2C payout (BusinessPayment).
+
+        ResponseCode 0 means Daraja accepted the request. A receipt is included
+        only when the body actually carries one. Callers must not treat a bare
+        accept as settled money.
+        """
+        try:
+            whole = int(amount)
+        except (TypeError, ValueError):
+            return {"success": False, "error": "Amount must be at least 1"}
+        if whole < 1:
+            return {"success": False, "error": "Amount must be at least 1"}
+
+        initiator = (initiator_name or settings.MPESA_B2C_INITIATOR_NAME or "").strip()
+        security = (security_credential or settings.MPESA_B2C_SECURITY_CREDENTIAL or "").strip()
+        if not initiator or not security:
+            return {
+                "success": False,
+                "error": "B2C initiator or security credential not configured",
+            }
+
+        party_a = (
+            short_code or settings.MPESA_B2C_SHORTCODE or self.business_short_code or ""
+        ).strip()
+        if not party_a:
+            return {"success": False, "error": "B2C shortcode not configured"}
+
+        result = (result_url or settings.MPESA_B2C_RESULT_URL or settings.MPESA_CALLBACK_URL or "").strip()
+        timeout = (timeout_url or settings.MPESA_B2C_TIMEOUT_URL or result).strip()
+        if not result or not timeout:
+            return {"success": False, "error": "B2C result URL is required"}
+
+        try:
+            msisdn = self._format_msisdn(phone_number)
+            token = await self._get_access_token(consumer_key, consumer_secret)
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+
+        url = f"{self.base_url}/mpesa/b2c/v1/paymentrequest"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        payload = {
+            "InitiatorName": initiator,
+            "SecurityCredential": security,
+            "CommandID": command_id or "BusinessPayment",
+            "Amount": whole,
+            "PartyA": party_a,
+            "PartyB": msisdn,
+            "Remarks": (remarks or "Refund")[:100],
+            "QueueTimeOutURL": timeout,
+            "ResultURL": result,
+            "Occasion": (occasion or "Refund")[:100],
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=payload) as resp:
+                    data = await resp.json(content_type=None)
+                    if resp.status != 200:
+                        return {
+                            "success": False,
+                            "uncertain": True,
+                            "error": f"Daraja B2C error {resp.status}: {data}",
+                            "raw": data,
+                        }
+        except (TimeoutError, aiohttp.ClientError):
+            raise
+        except Exception as exc:
+            logger.error("Daraja B2C payment failed: %s", exc)
+            return {"success": False, "uncertain": True, "error": str(exc)}
+
+        if str(data.get("ResponseCode")) == "0":
+            receipt = data.get("TransactionReceipt") or data.get("MpesaReceiptNumber")
+            logger.info(
+                "Daraja B2C accepted conversation %s",
+                data.get("ConversationID"),
+            )
+            return {
+                "success": True,
+                "accepted": True,
+                "receipt": receipt or None,
+                "conversation_id": data.get("ConversationID"),
+                "originator_conversation_id": data.get("OriginatorConversationID"),
+                "response_description": data.get("ResponseDescription"),
+                "raw": data,
+            }
+
+        return {
+            "success": False,
+            "error": data.get("ResponseDescription") or data.get("errorMessage") or "B2C payment failed",
+            "raw": data,
+        }
+
     async def _get_access_token(self, consumer_key: Optional[str] = None, consumer_secret: Optional[str] = None) -> str:
         """Get or refresh OAuth access token."""
         # Use provided credentials or default to settings

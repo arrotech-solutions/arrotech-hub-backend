@@ -8,9 +8,52 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import StkOrderMapping, StkPaymentAttempt, WhatsAppContact
+from ..models import (
+    CommerceComplaint,
+    CommerceReturn,
+    StkOrderMapping,
+    StkPaymentAttempt,
+    WhatsAppContact,
+)
+from .commerce_policy import get_policy
 from .conversation_context_manager import context_manager, _build_session_key
 from .whatsapp_ordering_helpers import format_cart_summary
+
+
+def _phone_variants(phone: str) -> List[str]:
+    """Forms a stored customer phone may use for the same WhatsApp contact."""
+    raw = (phone or "").strip()
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    variants = {raw, digits, f"+{digits}"}
+    if digits.startswith("254") and len(digits) > 3:
+        variants.add("0" + digits[3:])
+    if digits.startswith("0") and len(digits) > 1:
+        international = "254" + digits[1:]
+        variants.add(international)
+        variants.add(f"+{international}")
+    return [variant for variant in variants if variant]
+
+
+async def _ids_for_customer_phone(
+    db: AsyncSession,
+    model,
+    *,
+    user_id: uuid.UUID,
+    phone: str,
+) -> List[str]:
+    variants = _phone_variants(phone)
+    if not variants:
+        return []
+    result = await db.execute(
+        select(model)
+        .where(
+            model.user_id == user_id,
+            model.customer_phone.in_(variants),
+        )
+        .order_by(desc(model.created_at))
+        .limit(20)
+    )
+    return [str(row.id) for row in result.scalars().all()]
 
 
 async def get_contact_commerce_context(
@@ -24,6 +67,7 @@ async def get_contact_commerce_context(
 
     cart: List[Dict[str, Any]] = []
     pending_order_id: Optional[str] = None
+    commerce_phase: Optional[str] = None
     human_handoff = "human_handoff" in (contact.tags or [])
 
     try:
@@ -32,6 +76,9 @@ async def get_contact_commerce_context(
             cart = context_manager.get_cart(session) or []
             meta = session.metadata or {}
             pending_order_id = meta.get("last_order_id") or meta.get("pending_order_id")
+            rails_state = meta.get("commerce_rails_state")
+            if isinstance(rails_state, dict) and rails_state.get("phase"):
+                commerce_phase = str(rails_state["phase"])
             if context_manager.is_human_handoff(session):
                 human_handoff = True
     except Exception:
@@ -121,6 +168,14 @@ async def get_contact_commerce_context(
 
     timeline.sort(key=lambda e: e.get("at") or "", reverse=True)
 
+    policy = await get_policy(db, user_id)
+    return_ids = await _ids_for_customer_phone(
+        db, CommerceReturn, user_id=user_id, phone=phone
+    )
+    complaint_ids = await _ids_for_customer_phone(
+        db, CommerceComplaint, user_id=user_id, phone=phone
+    )
+
     return {
         "has_cart": bool(cart),
         "cart_items": cart,
@@ -133,4 +188,8 @@ async def get_contact_commerce_context(
         "ai_handling": not human_handoff,
         "session_key": session_key,
         "order_timeline": timeline[:12],
+        "return_ids": return_ids,
+        "complaint_ids": complaint_ids,
+        "commerce_phase": commerce_phase,
+        "policy_sell_modes": list(policy.get("sell_modes") or []),
     }

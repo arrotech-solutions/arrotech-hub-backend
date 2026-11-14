@@ -86,6 +86,7 @@ class OrderTrackingService:
         business_name: str = "",
         business_phone: str = "",
         currency: str = "KES",
+        session_key: str = "",
     ) -> None:
         """Store order → customer mapping for later status push notifications."""
         if not order_id or not customer_phone:
@@ -108,6 +109,7 @@ class OrderTrackingService:
             "payment_attempt_count": existing.get("payment_attempt_count", 0),
             "last_stk_at": existing.get("last_stk_at", ""),
             "last_payment_failure": existing.get("last_payment_failure"),
+            "session_key": session_key or existing.get("session_key") or "",
         }
         cache_service.set(
             self._tracking_key(owner_user_id, order_id),
