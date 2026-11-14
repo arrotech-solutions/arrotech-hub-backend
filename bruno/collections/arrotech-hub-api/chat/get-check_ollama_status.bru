@@ -1,0 +1,11 @@
+meta {
+  name: check_ollama_status
+  type: http
+  seq: 15
+}
+
+get {
+  url: {{baseUrl}}/chat/ollama/status
+  body: none
+  auth: inherit
+}

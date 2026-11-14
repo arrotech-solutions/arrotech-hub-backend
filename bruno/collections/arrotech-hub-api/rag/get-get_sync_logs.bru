@@ -1,0 +1,11 @@
+meta {
+  name: get_sync_logs
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/rag/data-sources/:source_id/sync-logs
+  body: none
+  auth: inherit
+}

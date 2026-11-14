@@ -1,0 +1,15 @@
+meta {
+  name: retry_dlq_event
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/internal/dlq/:event_id/retry
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

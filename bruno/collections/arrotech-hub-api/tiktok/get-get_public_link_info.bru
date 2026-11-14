@@ -1,0 +1,11 @@
+meta {
+  name: get_public_link_info
+  type: http
+  seq: 16
+}
+
+get {
+  url: {{baseUrl}}/api/tiktok/public/link/:link_id
+  body: none
+  auth: inherit
+}

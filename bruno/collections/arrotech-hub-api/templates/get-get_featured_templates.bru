@@ -1,0 +1,11 @@
+meta {
+  name: get_featured_templates
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/templates/featured/list
+  body: none
+  auth: inherit
+}

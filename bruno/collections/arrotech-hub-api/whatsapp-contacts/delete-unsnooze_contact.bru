@@ -1,0 +1,11 @@
+meta {
+  name: unsnooze_contact
+  type: http
+  seq: 30
+}
+
+delete {
+  url: {{baseUrl}}/api/whatsapp/contacts/:contact_id/snooze
+  body: none
+  auth: inherit
+}

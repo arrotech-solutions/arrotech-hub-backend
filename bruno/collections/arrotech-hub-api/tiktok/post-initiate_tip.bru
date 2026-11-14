@@ -1,0 +1,15 @@
+meta {
+  name: initiate_tip
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{baseUrl}}/api/tiktok/public/tip
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

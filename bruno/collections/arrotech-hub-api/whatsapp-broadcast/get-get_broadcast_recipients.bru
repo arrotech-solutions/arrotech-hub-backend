@@ -1,0 +1,11 @@
+meta {
+  name: get_broadcast_recipients
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/api/whatsapp/broadcasts/:broadcast_id/recipients
+  body: none
+  auth: inherit
+}

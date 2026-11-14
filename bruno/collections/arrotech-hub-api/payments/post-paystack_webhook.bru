@@ -1,0 +1,15 @@
+meta {
+  name: paystack_webhook
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/payments/paystack/webhook
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

@@ -1,0 +1,11 @@
+meta {
+  name: feedback_patterns
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/_internal/harness/feedback/patterns
+  body: none
+  auth: inherit
+}

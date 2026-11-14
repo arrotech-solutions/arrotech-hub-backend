@@ -1,0 +1,11 @@
+meta {
+  name: get_my_purchases
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/payments/my-purchases
+  body: none
+  auth: inherit
+}

@@ -85,6 +85,19 @@ def expire_unpaid_orders_task():
                             order_id,
                             sheet_err,
                         )
+                elif storage_config.get("provider") == "arrotech_db" and owner:
+                    try:
+                        from src.services.commerce_storage_service import CommerceStorageService
+
+                        await CommerceStorageService().update_order_status(
+                            db, owner.id, order_id, "cancelled"
+                        )
+                    except Exception as db_err:
+                        logger.warning(
+                            "[ORDER_EXPIRE] Arrotech DB status update failed for %s: %s",
+                            order_id,
+                            db_err,
+                        )
                 logger.info("[ORDER_EXPIRE] Expired unpaid order %s", order_id)
             
             if rows:

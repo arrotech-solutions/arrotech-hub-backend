@@ -1,0 +1,15 @@
+meta {
+  name: execute_agent_manual
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/agents/:agent_id/execute
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

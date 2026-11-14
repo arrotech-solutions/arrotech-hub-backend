@@ -1,0 +1,15 @@
+meta {
+  name: send_media_message
+  type: http
+  seq: 21
+}
+
+post {
+  url: {{baseUrl}}/api/whatsapp/contacts/:contact_id/media
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

@@ -2190,3 +2190,92 @@ class ToolProposal(Base):
         Index("ix_tool_proposals_user_status", "user_id", "status"),
     )
 
+
+class CatalogProduct(Base):
+    """Tenant catalog product for WhatsApp commerce."""
+    __tablename__ = "catalog_products"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    price = Column(Numeric(12, 2), nullable=False)
+    cost_price = Column(Numeric(12, 2), nullable=True)
+    description = Column(Text, nullable=False)
+    category = Column(String, nullable=False)
+    sku = Column(String, nullable=False)
+    brand = Column(String, nullable=False)
+    quantity = Column(Numeric(12, 2), nullable=True)
+    unit = Column(String, nullable=False)
+    condition = Column(String, nullable=False)
+    image_url = Column(String, nullable=False)
+    availability = Column(String, nullable=False, default="in_stock", server_default="in_stock")
+    search_text = Column(Text, nullable=False)
+    embedding = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (
+        Index("ix_catalog_products_user_name", "user_id", "name"),
+    )
+
+    user = relationship("User", foreign_keys=[user_id], backref="catalog_products")
+
+
+class CommerceOrder(Base):
+    """Durable commerce order from WhatsApp agent flows."""
+    __tablename__ = "commerce_orders"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    external_order_id = Column(String, nullable=False)
+    customer_name = Column(String, nullable=False)
+    customer_phone = Column(String, nullable=False)
+    status = Column(String, nullable=False)
+    payment_status = Column(String, nullable=False)
+    payment_method = Column(String, nullable=True)
+    currency = Column(String(8), nullable=False, default="KES", server_default="KES")
+    total = Column(Numeric(12, 2), nullable=False)
+    line_items = Column(JSON, nullable=False)
+    delivery_method = Column(String, nullable=False)
+    delivery_address = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    mpesa_receipt = Column(String, nullable=True)
+    raw_snapshot = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "external_order_id", name="uq_commerce_orders_user_external_order_id"),
+    )
+
+    user = relationship("User", foreign_keys=[user_id], backref="commerce_orders")
+
+
+class CommerceReservation(Base):
+    """Table / venue reservation from WhatsApp agent flows."""
+    __tablename__ = "commerce_reservations"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    external_reservation_id = Column(String, nullable=False)
+    customer_name = Column(String, nullable=False)
+    customer_phone = Column(String, nullable=False)
+    reservation_date = Column(String, nullable=False)
+    reservation_time = Column(String, nullable=False)
+    party_size = Column(Integer, nullable=False)
+    status = Column(String, nullable=False, default="confirmed", server_default="confirmed")
+    notes = Column(Text, nullable=True)
+    raw_snapshot = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "external_reservation_id",
+            name="uq_commerce_reservations_user_external_reservation_id",
+        ),
+    )
+
+    user = relationship("User", foreign_keys=[user_id], backref="commerce_reservations")
+

@@ -1,0 +1,11 @@
+meta {
+  name: oauth_authorize
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/auth/authorize
+  body: none
+  auth: inherit
+}

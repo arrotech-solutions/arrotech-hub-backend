@@ -1,0 +1,15 @@
+meta {
+  name: resend_verification
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{baseUrl}}/auth/resend-verification
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

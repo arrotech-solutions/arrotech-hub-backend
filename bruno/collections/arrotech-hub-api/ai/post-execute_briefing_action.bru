@@ -1,0 +1,15 @@
+meta {
+  name: execute_briefing_action
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/ai/action
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

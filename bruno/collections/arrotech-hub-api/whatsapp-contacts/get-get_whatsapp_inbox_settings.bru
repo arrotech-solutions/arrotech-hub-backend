@@ -1,0 +1,11 @@
+meta {
+  name: get_whatsapp_inbox_settings
+  type: http
+  seq: 33
+}
+
+get {
+  url: {{baseUrl}}/api/whatsapp/inbox-settings
+  body: none
+  auth: inherit
+}

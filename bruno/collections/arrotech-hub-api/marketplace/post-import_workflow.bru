@@ -1,0 +1,15 @@
+meta {
+  name: import_workflow
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/marketplace/workflow/import
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

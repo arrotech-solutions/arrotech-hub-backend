@@ -1,0 +1,11 @@
+meta {
+  name: get_system_metrics
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/internal/metrics
+  body: none
+  auth: inherit
+}

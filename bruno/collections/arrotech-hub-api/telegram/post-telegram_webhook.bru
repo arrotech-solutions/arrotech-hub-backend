@@ -1,0 +1,15 @@
+meta {
+  name: telegram_webhook
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/telegram/webhook
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

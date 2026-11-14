@@ -69,3 +69,20 @@ def test_merge_workflow_storage_infers_google_sheets_provider():
     assert normalized["storage_provider"] == "google_sheets"
     assert normalized["storage_orders_sheet_name"] == "Orders"
     assert normalized["storage_transactions_sheet_name"] == "Transactions"
+
+
+def test_whatsapp_template_defaults_to_whatsapp_only_and_arrotech_db():
+    template = _whatsapp_template()
+    variables = template["variables"]
+    storage = variables["storage_provider"]
+
+    assert template["required_connections"] == ["whatsapp"]
+    assert variables["kb_id"]["required"] is False
+    assert "arrotech_db" in storage["enum"]
+    assert storage["default"] == "arrotech_db"
+
+
+def test_whatsapp_template_business_config_still_passes_kb_id():
+    step = _whatsapp_template()["steps"][0]
+    business_config = step["tool_parameters"]["business_config"]
+    assert business_config["kb_id"] == "{{variables.kb_id}}"

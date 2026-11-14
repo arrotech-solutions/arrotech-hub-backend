@@ -1,0 +1,15 @@
+meta {
+  name: create_chat_agent
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/workflows/chat-agent
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

@@ -1,0 +1,11 @@
+meta {
+  name: get_auth_url
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/facebook/auth-url
+  body: none
+  auth: inherit
+}

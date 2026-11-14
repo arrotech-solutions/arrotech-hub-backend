@@ -1,0 +1,15 @@
+meta {
+  name: update_mpesa_agent_config
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/agents/daraja/config
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

@@ -1,0 +1,11 @@
+meta {
+  name: get_workflow_versions
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/marketplace/workflow/:workflow_id/versions
+  body: none
+  auth: inherit
+}

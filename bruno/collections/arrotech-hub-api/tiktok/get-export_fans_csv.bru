@@ -1,0 +1,11 @@
+meta {
+  name: export_fans_csv
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/tiktok/fans/export
+  body: none
+  auth: inherit
+}

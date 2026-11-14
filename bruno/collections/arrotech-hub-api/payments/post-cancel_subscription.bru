@@ -1,0 +1,15 @@
+meta {
+  name: cancel_subscription
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/payments/subscriptions/cancel
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

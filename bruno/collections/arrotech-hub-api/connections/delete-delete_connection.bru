@@ -1,0 +1,11 @@
+meta {
+  name: delete_connection
+  type: http
+  seq: 6
+}
+
+delete {
+  url: {{baseUrl}}/connections/:connection_id
+  body: none
+  auth: inherit
+}

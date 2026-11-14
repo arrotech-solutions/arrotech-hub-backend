@@ -1,0 +1,11 @@
+meta {
+  name: get_commerce_context
+  type: http
+  seq: 20
+}
+
+get {
+  url: {{baseUrl}}/api/whatsapp/contacts/:contact_id/commerce-context
+  body: none
+  auth: inherit
+}

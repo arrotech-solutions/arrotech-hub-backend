@@ -1,0 +1,15 @@
+meta {
+  name: google_auth
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/auth/google
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

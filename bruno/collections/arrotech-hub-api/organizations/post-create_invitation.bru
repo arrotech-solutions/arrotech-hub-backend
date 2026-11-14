@@ -1,0 +1,15 @@
+meta {
+  name: create_invitation
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/api/v1/organizations/:org_id/invitations
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

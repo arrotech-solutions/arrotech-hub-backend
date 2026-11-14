@@ -1,0 +1,15 @@
+meta {
+  name: verify_totp_setup
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/v1/security/2fa/totp/verify
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

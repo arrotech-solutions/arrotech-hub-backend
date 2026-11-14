@@ -1,0 +1,11 @@
+meta {
+  name: get_messages
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/chat/conversations/:conversation_id/messages
+  body: none
+  auth: inherit
+}

@@ -1,0 +1,15 @@
+meta {
+  name: upload_video
+  type: http
+  seq: 24
+}
+
+post {
+  url: {{baseUrl}}/api/tiktok/upload
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

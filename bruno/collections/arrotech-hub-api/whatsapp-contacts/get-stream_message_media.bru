@@ -1,0 +1,11 @@
+meta {
+  name: stream_message_media
+  type: http
+  seq: 35
+}
+
+get {
+  url: {{baseUrl}}/api/whatsapp/messages/:message_id/media
+  body: none
+  auth: inherit
+}

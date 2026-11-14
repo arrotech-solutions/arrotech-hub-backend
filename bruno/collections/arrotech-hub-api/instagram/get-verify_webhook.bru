@@ -1,0 +1,11 @@
+meta {
+  name: verify_webhook
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/instagram/webhook
+  body: none
+  auth: inherit
+}

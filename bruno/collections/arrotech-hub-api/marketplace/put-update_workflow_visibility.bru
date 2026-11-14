@@ -1,0 +1,15 @@
+meta {
+  name: update_workflow_visibility
+  type: http
+  seq: 14
+}
+
+put {
+  url: {{baseUrl}}/marketplace/workflow/:workflow_id/visibility
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

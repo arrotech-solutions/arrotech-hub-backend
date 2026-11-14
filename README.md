@@ -819,6 +819,10 @@ The `Dockerfile` uses a multi-stage build:
 
 ### Terraform (existing AWS EC2)
 
+For a step-by-step explanation of the AWS architecture, Terraform concepts,
+deployment flow, and safety checks, see the
+[AWS and Terraform learning guide](docs/AWS_TERRAFORM_GUIDE.md).
+
 The `terraform/` configuration is for importing the existing backend EC2 instance,
 its security group, and its Elastic IP. It does not create a new VPC or ECS stack.
 The default VPC, subnet, S3 backup bucket, and other unrelated resources are not

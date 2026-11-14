@@ -1,0 +1,11 @@
+meta {
+  name: export_contacts_csv
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}/api/whatsapp/contacts/export
+  body: none
+  auth: inherit
+}

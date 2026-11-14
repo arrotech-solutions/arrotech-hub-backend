@@ -1,0 +1,7 @@
+opencollection: 1.0.0
+info:
+  name: Arrotech Hub API
+  type: workspace
+collections:
+  - name: Arrotech Hub API
+    path: collections/arrotech-hub-api

@@ -1,0 +1,15 @@
+meta {
+  name: create_session
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/coding-agent/sessions
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

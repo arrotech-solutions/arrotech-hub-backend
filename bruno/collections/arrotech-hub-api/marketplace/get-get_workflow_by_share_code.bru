@@ -1,0 +1,11 @@
+meta {
+  name: get_workflow_by_share_code
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/marketplace/workflow/:share_code
+  body: none
+  auth: inherit
+}

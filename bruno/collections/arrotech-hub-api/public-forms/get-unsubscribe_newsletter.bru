@@ -1,0 +1,11 @@
+meta {
+  name: unsubscribe_newsletter
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/public/unsubscribe
+  body: none
+  auth: inherit
+}

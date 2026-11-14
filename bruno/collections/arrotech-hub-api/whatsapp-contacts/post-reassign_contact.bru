@@ -1,0 +1,15 @@
+meta {
+  name: reassign_contact
+  type: http
+  seq: 27
+}
+
+post {
+  url: {{baseUrl}}/api/whatsapp/contacts/:contact_id/reassign
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

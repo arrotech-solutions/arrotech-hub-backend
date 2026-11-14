@@ -1,0 +1,15 @@
+meta {
+  name: explain_relevant_tools
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/chat/conversations/:conversation_id/explain-tools
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

@@ -1,0 +1,15 @@
+meta {
+  name: test_variable_substitution
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/workflows/test-variable-substitution
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

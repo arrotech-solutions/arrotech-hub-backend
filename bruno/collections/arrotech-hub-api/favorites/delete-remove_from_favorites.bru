@@ -1,0 +1,11 @@
+meta {
+  name: remove_from_favorites
+  type: http
+  seq: 3
+}
+
+delete {
+  url: {{baseUrl}}/favorites/:workflow_id
+  body: none
+  auth: inherit
+}

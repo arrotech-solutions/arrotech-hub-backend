@@ -1,0 +1,11 @@
+meta {
+  name: list_data_sources
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/api/rag/knowledge-bases/:kb_id/data-sources
+  body: none
+  auth: inherit
+}

@@ -1,0 +1,11 @@
+meta {
+  name: get_agent_status
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/agents/:agent_id/status
+  body: none
+  auth: inherit
+}

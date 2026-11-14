@@ -1,0 +1,11 @@
+meta {
+  name: get_broadcast
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/whatsapp/broadcasts/:broadcast_id
+  body: none
+  auth: inherit
+}

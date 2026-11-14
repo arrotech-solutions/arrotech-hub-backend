@@ -1,0 +1,15 @@
+meta {
+  name: create_connection
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/connections
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

@@ -1,0 +1,15 @@
+meta {
+  name: import_contacts_csv
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/api/whatsapp/contacts/import
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

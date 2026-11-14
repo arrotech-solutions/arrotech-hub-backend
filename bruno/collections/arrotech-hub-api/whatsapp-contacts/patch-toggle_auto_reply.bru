@@ -1,0 +1,15 @@
+meta {
+  name: toggle_auto_reply
+  type: http
+  seq: 6
+}
+
+patch {
+  url: {{baseUrl}}/api/whatsapp/auto-replies/:rule_id/toggle
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

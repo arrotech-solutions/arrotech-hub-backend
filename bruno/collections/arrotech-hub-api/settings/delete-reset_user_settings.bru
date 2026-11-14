@@ -1,0 +1,11 @@
+meta {
+  name: reset_user_settings
+  type: http
+  seq: 3
+}
+
+delete {
+  url: {{baseUrl}}/settings
+  body: none
+  auth: inherit
+}

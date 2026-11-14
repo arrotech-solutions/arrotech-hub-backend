@@ -1,0 +1,11 @@
+meta {
+  name: verify_webhook
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/whatsapp/webhook
+  body: none
+  auth: inherit
+}

@@ -13,6 +13,7 @@ from typing import Any, Dict
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
@@ -222,8 +223,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         path = request.url.path
 
-        # Health checks and WebSocket upgrades are never rate-limited
-        if path == "/health" or path.startswith("/ws/"):
+        # Health checks, catalog images (Meta fetch), and WebSocket upgrades are never rate-limited
+        if (
+            path == "/health"
+            or path.startswith("/ws/")
+            or path.startswith("/api/public/catalog-images/")
+        ):
             return await call_next(request)
 
         client_ip = request.client.host if request.client else "unknown"
@@ -371,9 +376,13 @@ main_router.include_router(public_forms_router.router)
 from .routers.coding_agent_router import router as coding_agent_router
 main_router.include_router(coding_agent_router)
 
-# Product Catalog Builder (photo -> Google Sheet)
+# Product Catalog Builder (photo -> Arrotech DB or Google Sheet)
 from .routers.catalog_builder_router import router as catalog_builder_router
+from .routers.catalog_router import router as catalog_router
+from .routers.commerce_orders_router import router as commerce_orders_router
 main_router.include_router(catalog_builder_router)
+main_router.include_router(catalog_router)
+main_router.include_router(commerce_orders_router)
 from .routers.rent_collection_router import router as rent_collection_router
 main_router.include_router(rent_collection_router)
 
@@ -446,6 +455,20 @@ async def health_check():
         "environment": settings.ENVIRONMENT,
         "checks": checks
     }
+
+
+@app.get("/api/public/catalog-images/{user_id}/{filename}")
+async def get_public_catalog_image(user_id: str, filename: str):
+    """Serve a catalog product photo without auth. Path-hardened (no '..')."""
+    from .services.catalog_image_service import resolve_catalog_image_path
+
+    try:
+        path = resolve_catalog_image_path(user_id, filename)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(path)
 
 
 async def run_mcp_server():

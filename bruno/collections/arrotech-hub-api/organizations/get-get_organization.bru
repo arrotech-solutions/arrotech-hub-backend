@@ -1,0 +1,11 @@
+meta {
+  name: get_organization
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/v1/organizations/:org_id
+  body: none
+  auth: inherit
+}

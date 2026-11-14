@@ -1,0 +1,11 @@
+meta {
+  name: get_subscription_status
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/subscription/status
+  body: none
+  auth: inherit
+}

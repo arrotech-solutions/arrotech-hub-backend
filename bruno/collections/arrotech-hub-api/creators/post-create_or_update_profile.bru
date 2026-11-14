@@ -1,0 +1,15 @@
+meta {
+  name: create_or_update_profile
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/creators/me
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

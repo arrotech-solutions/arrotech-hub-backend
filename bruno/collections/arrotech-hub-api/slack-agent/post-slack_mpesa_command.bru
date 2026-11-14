@@ -1,0 +1,15 @@
+meta {
+  name: slack_mpesa_command
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/slack/commands/mpesa
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

@@ -1,0 +1,15 @@
+meta {
+  name: update_member
+  type: http
+  seq: 18
+}
+
+put {
+  url: {{baseUrl}}/api/v1/organizations/:org_id/members/:user_id
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

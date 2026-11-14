@@ -1,0 +1,11 @@
+meta {
+  name: get_creator_earnings
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/payments/creator/earnings
+  body: none
+  auth: inherit
+}

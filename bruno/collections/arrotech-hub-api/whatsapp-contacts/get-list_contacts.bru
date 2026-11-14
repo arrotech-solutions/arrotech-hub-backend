@@ -1,0 +1,11 @@
+meta {
+  name: list_contacts
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/api/whatsapp/contacts
+  body: none
+  auth: inherit
+}

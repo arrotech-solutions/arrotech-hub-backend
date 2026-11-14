@@ -1,0 +1,15 @@
+meta {
+  name: slack_events
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/slack/events
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}

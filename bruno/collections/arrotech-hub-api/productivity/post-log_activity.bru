@@ -1,0 +1,15 @@
+meta {
+  name: log_activity
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/productivity/log-activity
+  body: json
+  auth: inherit
+}
+
+body:json {
+{}
+}
