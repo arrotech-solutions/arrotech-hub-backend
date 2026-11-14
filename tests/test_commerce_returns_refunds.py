@@ -977,15 +977,20 @@ async def test_explicit_settle_offline_while_b2c_pending_does_not_claim_refunded
     )
     assert pending.status == "refund_pending"
 
-    settled = await mark_settled_offline(
-        db_session,
-        test_user.id,
-        pending.id,
-        actor_user_id=test_user.id,
-        note="Paid cash while M-Pesa is still pending",
-    )
-    assert settled.status == "settled_offline"
-    assert "refunded" not in _message(settled).lower()
+    from src.services.commerce_refund_service import CommerceReturnError
+
+    with pytest.raises(CommerceReturnError) as exc:
+        await mark_settled_offline(
+            db_session,
+            test_user.id,
+            pending.id,
+            actor_user_id=test_user.id,
+            note="Paid cash while M-Pesa is still pending",
+        )
+    assert exc.value.code == "payout_in_flight"
+    await db_session.refresh(pending)
+    assert pending.status == "refund_pending"
+    assert pending.status != "settled_offline"
 
 
 @pytest.mark.asyncio
@@ -1112,3 +1117,183 @@ async def test_overlapping_execute_refund_sends_b2c_once(
     assert len(attempts) == 1
     assert attempts[0].status == "success"
     assert attempts[0].mpesa_receipt == "RACE1"
+
+
+@pytest.mark.asyncio
+async def test_b2c_result_url_posts_to_tenant_callback_and_route_completes_return(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """ResultURL is the tenant Daraja callback, and that HTTP route applies the result."""
+    from src.models import MpesaAgentConfig
+
+    secret = "tenant-b2c-secret"
+    db_session.add(
+        MpesaAgentConfig(
+            user_id=test_user.id,
+            webhook_secret=secret,
+            daraja_shortcode="600000",
+        )
+    )
+    await db_session.commit()
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.settings.API_BASE_URL",
+        "https://hub.test",
+    )
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.payout_credentials_configured",
+        lambda: True,
+    )
+    captured: dict = {}
+
+    async def accept(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True,
+            "accepted": True,
+            "receipt": None,
+            "conversation_id": "AG_HTTP",
+            "originator_conversation_id": "orig-http",
+        }
+
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.send_b2c_payout",
+        accept,
+    )
+    await _make_order(db_session, test_user, external_id="ORD-HTTP", total="18.00")
+    row = await request_return(
+        db_session,
+        test_user.id,
+        order_external_id="ORD-HTTP",
+        phone="0712345678",
+        reason_code="damaged",
+        amount=Decimal("18.00"),
+    )
+    pending = await approve_return(
+        db_session, test_user.id, row.id, actor_user_id=test_user.id
+    )
+    assert pending.status == "refund_pending"
+    expected = f"https://hub.test/api/agents/daraja/callback/{secret}"
+    assert captured["result_url"] == expected
+    assert captured["timeout_url"] == expected
+    assert "/payments/mpesa/callback" not in captured["result_url"]
+
+    response = await client.post(
+        f"/api/agents/daraja/callback/{secret}",
+        json=_b2c_result(0, originator="orig-http", conversation="AG_HTTP", receipt="RCPT-HTTP"),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["ResultCode"] == 0
+    await db_session.refresh(pending)
+    assert pending.status == "refunded"
+    assert (await _attempts(db_session, pending.id))[0].mpesa_receipt == "RCPT-HTTP"
+
+    await _make_order(db_session, test_user, external_id="ORD-HTTP-FAIL", total="9.00")
+    fail_row = await request_return(
+        db_session,
+        test_user.id,
+        order_external_id="ORD-HTTP-FAIL",
+        phone="0712345678",
+        reason_code="damaged",
+        amount=Decimal("9.00"),
+    )
+
+    async def accept_fail(**kwargs):
+        return {
+            "success": True,
+            "accepted": True,
+            "receipt": None,
+            "conversation_id": "AG_HTTP_FAIL",
+            "originator_conversation_id": "orig-http-fail",
+        }
+
+    monkeypatch.setattr(
+        "src.services.commerce_refund_service.send_b2c_payout",
+        accept_fail,
+    )
+    waiting = await approve_return(
+        db_session, test_user.id, fail_row.id, actor_user_id=test_user.id
+    )
+    fail_response = await client.post(
+        f"/api/agents/daraja/callback/{secret}",
+        json=_b2c_result(
+            2001,
+            originator="orig-http-fail",
+            conversation="AG_HTTP_FAIL",
+            desc="Rejected",
+        ),
+    )
+    assert fail_response.status_code == 200, fail_response.text
+    await db_session.refresh(waiting)
+    assert waiting.status == "failed"
+    settled = await mark_settled_offline(
+        db_session, test_user.id, waiting.id, actor_user_id=test_user.id
+    )
+    assert settled.status == "settled_offline"
+
+
+@pytest.mark.asyncio
+async def test_late_b2c_success_does_not_flip_settled_offline(
+    db_session: AsyncSession,
+    test_user: User,
+    caplog,
+):
+    import logging
+
+    from src.services.commerce_refund_service import _apply_b2c_accept, apply_b2c_result
+
+    await _make_order(db_session, test_user, external_id="ORD-LATE", total="12.00")
+    row = await request_return(
+        db_session,
+        test_user.id,
+        order_external_id="ORD-LATE",
+        phone="0712345678",
+        reason_code="damaged",
+        amount=Decimal("12.00"),
+    )
+    row.status = "settled_offline"
+    await db_session.commit()
+    from src.models import CommerceRefundAttempt
+
+    attempt = CommerceRefundAttempt(
+        return_id=row.id,
+        method="mpesa_b2c",
+        status="pending",
+        amount=row.amount,
+        conversation_id="AG_LATE",
+        originator_conversation_id="orig-late",
+    )
+    db_session.add(attempt)
+    await db_session.commit()
+
+    with caplog.at_level(logging.WARNING):
+        updated = await apply_b2c_result(
+            db_session,
+            _b2c_result(0, originator="orig-late", conversation="AG_LATE", receipt="RCPT-LATE"),
+            user_id=test_user.id,
+        )
+    assert updated.status == "settled_offline"
+    await db_session.refresh(attempt)
+    assert attempt.mpesa_receipt == "RCPT-LATE"
+    assert "settled offline" in caplog.text.lower()
+
+    row.status = "settled_offline"
+    await db_session.commit()
+    with caplog.at_level(logging.WARNING):
+        await _apply_b2c_accept(
+            db_session,
+            row,
+            attempt,
+            {
+                "success": True,
+                "receipt": "RCPT-ACCEPT",
+                "conversation_id": "AG_LATE",
+                "originator_conversation_id": "orig-late",
+            },
+            row,
+        )
+    assert row.status == "settled_offline"
+    assert attempt.mpesa_receipt == "RCPT-ACCEPT"
+    assert "refunded" not in (row.status or "")

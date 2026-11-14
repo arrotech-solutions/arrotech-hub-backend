@@ -590,14 +590,14 @@ async def _record_manual_payment_in_storage(
 async def tenant_mpesa_callback(
     webhook_secret: str,
     request: Request,
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Handle tenant-specific Daraja callback notifications.
-    
-    CRITICAL: Always return ResultCode 0 to Safaricom immediately.
-    All processing happens in a background task to avoid timeouts
-    that cause Safaricom to reject transactions or replace BillRefNumber
-    with 'ProbCheck'.
+
+    B2C result bodies are applied on this request (``apply_b2c_result``)
+    before the ack. STK and C2B stay in a background task so Safaricom
+    still gets ResultCode 0 immediately.
     """
     logger.info(f"Daraja callback endpoint hit: method={request.method}, secret={webhook_secret[:5]}...")
 
@@ -612,6 +612,41 @@ async def tenant_mpesa_callback(
 
         if not body:
             logger.warning("Empty body received from Daraja callback")
+            return {"ResultCode": 0, "ResultDesc": "Accepted"}
+
+        # B2C result callbacks must run on this request's session so the
+        # ResultURL handler actually calls apply_b2c_result before we ack.
+        # STK and C2B stay in the background task.
+        from ..services.commerce_refund_service import apply_b2c_result, parse_b2c_result
+
+        try:
+            parsed_body = json.loads(body)
+        except json.JSONDecodeError:
+            parsed_body = None
+        if parse_b2c_result(parsed_body):
+            stmt = select(MpesaAgentConfig).where(
+                MpesaAgentConfig.webhook_secret == webhook_secret
+            )
+            config = (await db.execute(stmt)).scalar_one_or_none()
+            if config is None:
+                logger.warning(
+                    "B2C result callback with unknown webhook secret %s",
+                    webhook_secret[:5],
+                )
+            else:
+                applied = await apply_b2c_result(db, parsed_body, user_id=config.user_id)
+                if applied is None:
+                    logger.info(
+                        "Daraja B2C result did not match a refund attempt (user=%s)",
+                        config.user_id,
+                    )
+                else:
+                    logger.info(
+                        "Processed B2C refund callback for return %s user %s status %s",
+                        applied.id,
+                        config.user_id,
+                        applied.status,
+                    )
             return {"ResultCode": 0, "ResultDesc": "Accepted"}
 
         # Fire-and-forget: process in background task with its own DB session

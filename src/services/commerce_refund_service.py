@@ -26,6 +26,7 @@ from ..models import (
     CommerceRefundMethod,
     CommerceReturn,
     CommerceReturnStatus,
+    MpesaAgentConfig,
 )
 from .daraja_service import daraja_service
 
@@ -78,6 +79,36 @@ def load_payout_credentials() -> dict:
         "result_url": result_url,
         "timeout_url": timeout_url,
     }
+
+
+def tenant_daraja_callback_url(webhook_secret: str, base_url: Optional[str] = None) -> str:
+    """Same path STK uses: the tenant callback that applies a B2C result."""
+    base = _clean(base_url if base_url is not None else settings.API_BASE_URL).rstrip("/")
+    secret = _clean(webhook_secret)
+    return f"{base}/api/agents/daraja/callback/{secret}"
+
+
+async def b2c_callback_urls_for_user(
+    db: AsyncSession,
+    user_id: UUID,
+) -> tuple[Optional[str], Optional[str]]:
+    """ResultURL and timeout URL for this merchant's Daraja webhook.
+
+    When a webhook secret exists, both URLs are the tenant callback. That
+    route calls ``apply_b2c_result``. The platform payments logger is not used.
+    """
+    found = await db.execute(
+        select(MpesaAgentConfig).where(MpesaAgentConfig.user_id == user_id)
+    )
+    config = found.scalar_one_or_none()
+    if config is None:
+        return None, None
+    secret = _clean(config.webhook_secret)
+    base = _clean(config.callback_url_override) or _clean(settings.API_BASE_URL)
+    if not secret or not base:
+        return None, None
+    url = tenant_daraja_callback_url(secret, base)
+    return url, url
 
 
 def payout_credentials_configured() -> bool:
@@ -326,6 +357,9 @@ async def _execute_refund_locked(
 
     try:
         creds = load_payout_credentials()
+        tenant_result, tenant_timeout = await b2c_callback_urls_for_user(db, locked.user_id)
+        result_url = tenant_result or creds["result_url"] or None
+        timeout_url = tenant_timeout or creds["timeout_url"] or result_url
         result = await send_b2c_payout(
             phone_number=locked.customer_phone,
             amount=_whole_shillings(locked.amount),
@@ -337,8 +371,8 @@ async def _execute_refund_locked(
             short_code=creds["short_code"] or None,
             initiator_name=creds["initiator_name"] or None,
             security_credential=creds["security_credential"] or None,
-            result_url=creds["result_url"] or None,
-            timeout_url=creds["timeout_url"] or None,
+            result_url=result_url,
+            timeout_url=timeout_url,
         )
     except Exception as exc:
         logger.warning("B2C payout uncertain for return %s: %s", locked.id, exc)
@@ -364,6 +398,18 @@ async def _apply_b2c_accept(
         attempt.conversation_id = conversation_id
     if originator:
         attempt.originator_conversation_id = originator
+
+    if locked.status == CommerceReturnStatus.SETTLED_OFFLINE.value:
+        if receipt:
+            attempt.mpesa_receipt = receipt
+            _remember(locked, mpesa_result_after_offline=receipt)
+        logger.warning(
+            "B2C accept arrived after return %s was settled offline; receipt stored, status unchanged",
+            locked.id,
+        )
+        await db.commit()
+        _mirror(caller, locked)
+        return attempt
 
     if result.get("uncertain") or result.get("timed_out"):
         _remember(locked, payout_uncertain=result.get("error") or "uncertain")
@@ -482,6 +528,10 @@ async def apply_b2c_result(
             if parsed["result_code"] == "0" and parsed["receipt"]:
                 attempt.mpesa_receipt = parsed["receipt"]
                 _remember(locked, mpesa_result_after_offline=parsed["receipt"])
+                logger.warning(
+                    "B2C result arrived after return %s was settled offline; receipt stored, status unchanged",
+                    locked.id,
+                )
                 await db.commit()
             return locked
 
@@ -597,6 +647,20 @@ async def mark_settled_offline(
         )
 
     attempts = await list_refund_attempts(db, return_row.id)
+    in_flight = next(
+        (
+            attempt
+            for attempt in attempts
+            if attempt.method == CommerceRefundMethod.MPESA_B2C.value
+            and attempt.status == CommerceRefundAttemptStatus.PENDING.value
+        ),
+        None,
+    )
+    if in_flight is not None:
+        raise CommerceReturnError(
+            "payout_in_flight",
+            "An M-Pesa payout is still pending. Wait for it to fail before settling offline",
+        )
     offline = next(
         (
             attempt
