@@ -2,7 +2,10 @@ name: Local
 variables:
   - name: baseUrl
     value: http://localhost:8000
+    description: ""
   - name: email
-    value: ""
+    value: arrotechdesign@gmail.com
+    description: ""
   - name: password
-    value: ""
+    value: Harun20930988!
+    description: ""
