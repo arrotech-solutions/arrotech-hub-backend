@@ -335,6 +335,198 @@ async def test_notify_payment_received_idempotent(
         assert result["skipped"] is True
 
 
+def _memory_cache():
+    store = {}
+
+    def cache_get(key):
+        return store.get(key)
+
+    def cache_set(key, value, expire_seconds=3600):
+        store[key] = value
+        return True
+
+    return store, cache_get, cache_set
+
+
+@pytest.mark.asyncio
+async def test_notify_payment_received_stays_retryable_when_document_and_text_fail(
+    tracking_service, sample_order, mock_user
+):
+    """A failed WhatsApp receipt must not set payment_notified.
+
+    Breaks if a Meta error still stamps payment_notified, which stops the
+    next callback or poll from sending the receipt again.
+    """
+    db = AsyncMock()
+    store, cache_get, cache_set = _memory_cache()
+    store["track"] = {
+        "order_id": sample_order["order_id"],
+        "customer_phone": sample_order["customer_phone"],
+        "whatsapp_sender": sample_order["customer_phone"],
+        "business_name": "Test Cafe",
+        "business_phone": "",
+        "currency": "KES",
+        "order": sample_order,
+        "payment_notified": False,
+    }
+
+    with patch("src.services.order_tracking_service.cache_service") as cache, \
+         patch.object(tracking_service, "_get_whatsapp_config", new_callable=AsyncMock) as wa_cfg, \
+         patch.object(tracking_service, "_generate_receipt_pdf_bytes", new_callable=AsyncMock) as gen_pdf, \
+         patch.object(
+             tracking_service.order_service,
+             "format_order_receipt",
+             new_callable=AsyncMock,
+         ) as fmt, \
+         patch("src.services.whatsapp_service.WhatsAppService") as WaCls:
+
+        cache.get.side_effect = lambda key: store.get("track")
+        cache.set.side_effect = lambda key, value, expire_seconds=3600: store.update(track=value) or True
+        wa_cfg.return_value = {"access_token": "tok", "phone_number_id": "pnid"}
+        gen_pdf.return_value = b"%PDF-PAID"
+        fmt.return_value = {"success": True, "message": "Tea receipt"}
+
+        wa = WaCls.return_value
+        wa.upload_and_send_document = AsyncMock(
+            return_value={"success": False, "error": "meta down"}
+        )
+        wa.send_message = AsyncMock(return_value={"success": False, "error": "meta down"})
+
+        failed = await tracking_service.notify_payment_received(
+            user=mock_user,
+            db=db,
+            order_id=sample_order["order_id"],
+            mpesa_receipt="QHXFAIL",
+            amount_paid=1000,
+        )
+
+        assert failed["success"] is False
+        assert store["track"]["payment_notified"] is False
+        assert store["track"]["receipt_send_status"] == "failed"
+
+        wa.upload_and_send_document.return_value = {"success": True}
+        retried = await tracking_service.notify_payment_received(
+            user=mock_user,
+            db=db,
+            order_id=sample_order["order_id"],
+            mpesa_receipt="QHXFAIL",
+            amount_paid=1000,
+        )
+
+    assert retried["success"] is True
+    assert retried.get("skipped") is not True
+    assert "customer_receipt" in retried["sent"]
+    assert store["track"]["payment_notified"] is True
+    assert store["track"]["receipt_send_status"] == "sent"
+    assert wa.upload_and_send_document.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_notify_payment_received_uses_text_when_document_send_fails(
+    tracking_service, sample_order, mock_user
+):
+    """PDF upload failure falls back to a text receipt and only then notifies.
+
+    Breaks if a failed document is treated as delivered, or if text is never sent.
+    """
+    db = AsyncMock()
+    store, _, _ = _memory_cache()
+    store["track"] = {
+        "order_id": sample_order["order_id"],
+        "customer_phone": sample_order["customer_phone"],
+        "whatsapp_sender": sample_order["customer_phone"],
+        "business_name": "Test Cafe",
+        "business_phone": "",
+        "currency": "KES",
+        "order": sample_order,
+        "payment_notified": False,
+    }
+
+    with patch("src.services.order_tracking_service.cache_service") as cache, \
+         patch.object(tracking_service, "_get_whatsapp_config", new_callable=AsyncMock) as wa_cfg, \
+         patch.object(tracking_service, "_generate_receipt_pdf_bytes", new_callable=AsyncMock) as gen_pdf, \
+         patch.object(
+             tracking_service.order_service,
+             "format_order_receipt",
+             new_callable=AsyncMock,
+         ) as fmt, \
+         patch("src.services.whatsapp_service.WhatsAppService") as WaCls:
+
+        cache.get.side_effect = lambda key: store.get("track")
+        cache.set.side_effect = lambda key, value, expire_seconds=3600: store.update(track=value) or True
+        wa_cfg.return_value = {"access_token": "tok", "phone_number_id": "pnid"}
+        gen_pdf.return_value = b"%PDF-PAID"
+        fmt.return_value = {"success": True, "message": "Tea receipt"}
+
+        wa = WaCls.return_value
+        wa.upload_and_send_document = AsyncMock(
+            return_value={"success": False, "error": "meta down"}
+        )
+        wa.send_message = AsyncMock(return_value={"success": True})
+
+        result = await tracking_service.notify_payment_received(
+            user=mock_user,
+            db=db,
+            order_id=sample_order["order_id"],
+            mpesa_receipt="QHXTEXT",
+            amount_paid=1000,
+        )
+
+    assert result["success"] is True
+    assert "customer_text_receipt" in result["sent"]
+    wa.send_message.assert_awaited()
+    assert store["track"]["payment_notified"] is True
+    assert store["track"]["receipt_send_status"] == "sent"
+
+
+@pytest.mark.asyncio
+async def test_notify_payment_received_persists_paid_when_send_raises(
+    tracking_service, sample_order, mock_user
+):
+    """A raised receipt send still leaves the order paid and not expirable.
+
+    Breaks if payment_status and receipt_send_status are written only after send returns.
+    """
+    db = AsyncMock()
+    store, _, _ = _memory_cache()
+    store["track"] = {
+        "order_id": sample_order["order_id"],
+        "customer_phone": sample_order["customer_phone"],
+        "whatsapp_sender": sample_order["customer_phone"],
+        "business_name": "Test Cafe",
+        "business_phone": "",
+        "currency": "KES",
+        "order": sample_order,
+        "status": "pending",
+        "payment_notified": False,
+    }
+
+    with patch("src.services.order_tracking_service.cache_service") as cache, patch.object(
+        tracking_service, "_get_whatsapp_config", new_callable=AsyncMock
+    ) as wa_cfg, patch.object(
+        tracking_service, "_generate_receipt_pdf_bytes", new_callable=AsyncMock
+    ) as gen_pdf:
+        cache.get.side_effect = lambda key: store.get("track")
+        cache.set.side_effect = lambda key, value, expire_seconds=3600: store.update(track=value) or True
+        wa_cfg.return_value = {"access_token": "tok", "phone_number_id": "pnid"}
+        gen_pdf.side_effect = RuntimeError("pdf boom")
+
+        with pytest.raises(RuntimeError, match="pdf boom"):
+            await tracking_service.notify_payment_received(
+                user=mock_user,
+                db=db,
+                order_id=sample_order["order_id"],
+                mpesa_receipt="QHXBOOM",
+                amount_paid=1000,
+            )
+
+    saved = store["track"]
+    assert saved["payment_status"] == "paid"
+    assert saved["payment_notified"] is False
+    assert saved["receipt_send_status"] == "failed"
+    assert tracking_service.should_expire_unpaid(saved) is False
+
+
 @pytest.mark.asyncio
 async def test_whatsapp_send_message_empty_skips():
     from src.services.tool_executor import ToolExecutor

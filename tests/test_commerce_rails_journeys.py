@@ -2,12 +2,15 @@
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import select
 
 from src.models import CatalogProduct, CommerceComplaint, CommerceOrder, CommerceReturn
+from src.services.cache_service import cache_service
 from src.services.commerce_policy import upsert_policy
+from src.services.order_tracking_service import OrderTrackingService, order_tracking_service
 from tests.commerce_rails_journey_harness import CommerceJourney
 
 pytestmark = [pytest.mark.commerce_rails_gate, pytest.mark.asyncio]
@@ -64,6 +67,7 @@ async def test_browse_to_pay_uses_catalog_price_and_marks_paid(db_session, test_
                 closing="Added Tea.",
             ),
         )
+        journey.session.metadata["commerce_phase"] = "awaiting_yes"
         placed = await journey.say(
             "Thanks, continue",
             _tools(
@@ -123,6 +127,7 @@ async def test_pay_fail_then_retry_marks_the_same_order_paid(db_session, test_us
                 closing="Added.",
             ),
         )
+        journey.session.metadata["commerce_phase"] = "awaiting_yes"
         placed = await journey.say(
             "Thanks, continue",
             _tools(
@@ -423,6 +428,7 @@ async def test_pay_then_cancel_opens_a_refund_pipeline(db_session, test_user):
                 closing="Added.",
             ),
         )
+        journey.session.metadata["commerce_phase"] = "awaiting_yes"
         placed = await journey.say(
             "Thanks, continue",
             _tools(
@@ -479,3 +485,72 @@ async def test_pay_then_cancel_opens_a_refund_pipeline(db_session, test_user):
     await db_session.refresh(tea)
     assert int(tea.quantity) == 5
     assert journey.live_llm_calls == 0
+
+
+async def test_stk_success_marks_hub_paid_and_retries_receipt(db_session, test_user):
+    """STK success marks the Hub order paid and only then a delivered receipt.
+
+    Breaks if a failed WhatsApp send sets payment_notified and the retry never sends.
+    """
+    tea = _product("Tea", "100.00", "TEA-RCPT", "tea")
+    async with CommerceJourney(db_session, test_user, products=[tea]) as journey:
+        await journey.say(
+            "Add one tea please",
+            _tools(
+                (
+                    "manage_cart",
+                    {"action": "add", "product_name": "Tea", "quantity": 1, "unit_price": 1},
+                ),
+                closing="Added.",
+            ),
+        )
+        journey.session.metadata["commerce_phase"] = "awaiting_yes"
+        placed = await journey.say(
+            "Thanks, continue",
+            _tools(
+                (
+                    "create_order",
+                    {
+                        "customer_name": "Asha",
+                        "items": [{"name": "Tea", "quantity": 1, "unit_price": 1}],
+                        "delivery_method": "pickup",
+                    },
+                ),
+                closing="Placed.",
+            ),
+        )
+        order_id = placed["order_data"]["order_id"]
+        wa = AsyncMock()
+        wa.upload_and_send_document = AsyncMock(
+            return_value={"success": False, "error": "meta down"}
+        )
+        wa.send_message = AsyncMock(return_value={"success": False, "error": "meta down"})
+        with patch.object(
+            OrderTrackingService,
+            "_get_whatsapp_config",
+            new_callable=AsyncMock,
+            return_value={"access_token": "tok", "phone_number_id": "pnid"},
+        ), patch("src.services.whatsapp_service.WhatsAppService", return_value=wa), patch.object(
+            order_tracking_service.order_service,
+            "format_order_receipt",
+            new_callable=AsyncMock,
+            return_value={"success": True, "message": "Tea receipt"},
+        ):
+            await journey.payment_callback(paid=True, receipt="QKRCPT1")
+            order = await journey.order()
+            key = order_tracking_service._tracking_key(str(test_user.id), order_id)
+            saved = cache_service.get(key) or {}
+            assert order.payment_status == "paid"
+            assert order.mpesa_receipt == "QKRCPT1"
+            assert wa.send_message.await_count >= 1
+            first_sends = wa.send_message.await_count
+            assert saved.get("payment_notified") is not True
+            assert saved.get("receipt_send_status") == "failed"
+
+            wa.send_message.return_value = {"success": True}
+            await journey.payment_callback(paid=True, receipt="QKRCPT1")
+            saved = cache_service.get(key) or {}
+
+        assert saved.get("payment_notified") is True
+        assert saved.get("receipt_send_status") == "sent"
+        assert wa.send_message.await_count > first_sends

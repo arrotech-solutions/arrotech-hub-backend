@@ -1320,6 +1320,21 @@ class ConversationalAgentService:
                             send_cart_buttons=True,
                         )
 
+                # Browse Catalog button / "show me what you have" — no LLM loop.
+                from .catalog_search_service import is_browse_all_catalog_query
+
+                if is_browse_all_catalog_query(user_message):
+                    return await self._browse_catalog_fast_path(
+                        session_key=session_key,
+                        user_message=user_message,
+                        catalog_word=catalog_word,
+                        currency=currency,
+                        business_name=business_name,
+                        order_type=order_type,
+                        user=user,
+                        db=db,
+                    )
+
             # Human handoff — after self-serve cart/location paths
             if session_key:
                 try:
@@ -1619,11 +1634,25 @@ class ConversationalAgentService:
                 except Exception:
                     session = None
                 cart = context_manager.get_cart(session) if session else []
+                checkout_meta = session.metadata if session else {}
+                checkout_phase = str((checkout_meta or {}).get("commerce_phase") or "")
+                checkout_draft = (checkout_meta or {}).get("checkout_draft") or {}
+                collecting_details = (
+                    checkout_phase == "collecting_details"
+                    or bool((checkout_meta or {}).get("awaiting_checkout_details"))
+                    or bool(checkout_draft.get("stage"))
+                )
                 if (
                     session
                     and cart
+                    and collecting_details
                     and not context_manager.is_human_handoff(session)
-                    and not is_order_confirmation_message(user_message)
+                    and not is_order_confirmation_message(
+                        user_message,
+                        phase=checkout_phase
+                        if checkout_phase in ("awaiting_yes", "placed")
+                        else None,
+                    )
                 ):
                     parsed = parse_checkout_details(user_message)
                     draft = session.metadata.get("checkout_draft") or {}
@@ -1672,6 +1701,7 @@ class ConversationalAgentService:
                                 session_key,
                                 {
                                     "awaiting_checkout_details": True,
+                                    "commerce_phase": "collecting_details",
                                     "checkout_draft": {
                                         "name": eff_name or "",
                                         "phone": "",
@@ -1695,6 +1725,7 @@ class ConversationalAgentService:
                                 session_key,
                                 {
                                     "awaiting_checkout_details": True,
+                                    "commerce_phase": "collecting_details",
                                     "checkout_draft": {
                                         "name": "",
                                         "phone": eff_phone or "",
@@ -1736,7 +1767,11 @@ class ConversationalAgentService:
                         for s in ("you asked", "already gave", "that's what", "i gave")
                     ):
                         await context_manager.update_session_metadata(
-                            session_key, {"awaiting_checkout_details": True}
+                            session_key,
+                            {
+                                "awaiting_checkout_details": True,
+                                "commerce_phase": "collecting_details",
+                            },
                         )
                         return await self._cart_fast_path_result(
                             session_key,
@@ -1775,7 +1810,11 @@ class ConversationalAgentService:
                                 "Samahani, sikupata jina lako. 🙂 Niweke jina gani kwenye oda?",
                             )
                         await context_manager.update_session_metadata(
-                            session_key, {"awaiting_checkout_details": True}
+                            session_key,
+                            {
+                                "awaiting_checkout_details": True,
+                                "commerce_phase": "collecting_details",
+                            },
                         )
                         return await self._cart_fast_path_result(
                             session_key, reprompt,
@@ -2174,11 +2213,36 @@ class ConversationalAgentService:
                 if session and not context_manager.is_human_handoff(session):
                     checkout_customer = session.metadata.get("checkout_customer")
                     pending = session.metadata.get("pending_confirmation")
-                    confirmed = (
-                        is_order_confirmation_message(user_message)
-                        or bool(session.metadata.get("order_confirmed"))
+                    phase = str(session.metadata.get("commerce_phase") or "").strip()
+                    confirms = is_order_confirmation_message(
+                        user_message,
+                        phase=phase if phase in ("awaiting_yes", "placed") else None,
                     )
-                    if checkout_customer and pending and confirmed:
+                    if phase == "placed" and confirms:
+                        order_id = str(session.metadata.get("placed_order_id") or "").strip()
+                        rails_state = session.metadata.get("commerce_rails_state") or {}
+                        if not order_id and isinstance(rails_state, dict):
+                            order_id = str(rails_state.get("order_id") or "").strip()
+                        reply = (
+                            f"Order {order_id} is already placed."
+                            if order_id
+                            else "That order is already placed."
+                        )
+                        return await self._cart_fast_path_result(
+                            session_key,
+                            reply,
+                            actions_taken=[
+                                {"tool": "create_order", "result_summary": "already_placed"}
+                            ],
+                            send_cart_buttons=False,
+                        )
+                    phase_ready = (
+                        phase == "awaiting_yes"
+                        and checkout_customer
+                        and pending
+                        and confirms
+                    )
+                    if phase_ready:
                         items = pending.get("items") or context_manager.get_cart(session)
                         create_args = {
                             "customer_name": checkout_customer.get("name", "") or customer_name,
@@ -2212,6 +2276,9 @@ class ConversationalAgentService:
                             try:
                                 await context_manager.clear_cart(session_key)
                                 await context_manager.clear_pending_confirmation(session_key)
+                                placed_id = ""
+                                if isinstance(order_data, dict):
+                                    placed_id = str(order_data.get("order_id") or "")
                                 await context_manager.update_session_metadata(
                                     session_key,
                                     {
@@ -2219,6 +2286,8 @@ class ConversationalAgentService:
                                         "checkout_draft": {},
                                         "awaiting_checkout_details": False,
                                         "awaiting_order_confirmation": False,
+                                        "commerce_phase": "placed",
+                                        "placed_order_id": placed_id,
                                     },
                                 )
                             except Exception as e:
@@ -2268,6 +2337,41 @@ class ConversationalAgentService:
                         logger.warning(
                             "[CONV_AGENT] Deterministic order creation failed: %s",
                             tool_result.get("result"),
+                        )
+                    elif confirms or is_order_confirmation_message(user_message):
+                        summary_items = []
+                        if isinstance(pending, dict):
+                            summary_items = pending.get("items") or []
+                        if not summary_items:
+                            summary_items = context_manager.get_cart(session)
+                        customer = checkout_customer if isinstance(checkout_customer, dict) else {}
+                        if summary_items and customer.get("name") and customer.get("phone"):
+                            return await self._present_checkout_confirmation(
+                                session_key=session_key,
+                                cart=summary_items,
+                                currency=currency,
+                                customer_name=customer.get("name") or "",
+                                customer_phone=customer.get("phone") or "",
+                                delivery_method=customer.get("delivery_method"),
+                                delivery_methods=delivery_methods,
+                                preferred_language=preferred_language,
+                                delivery_address=customer.get("delivery_address") or "",
+                                table_number=customer.get("table_number"),
+                                user=user,
+                                db=db,
+                            )
+                        reply = self._t(
+                            preferred_language,
+                            "Reply YES to confirm your order.",
+                            "Jibu NDIO kuthibitisha oda yako.",
+                        )
+                        return await self._cart_fast_path_result(
+                            session_key,
+                            reply,
+                            actions_taken=[
+                                {"tool": "checkout", "result_summary": "confirm_not_ready"}
+                            ],
+                            send_cart_buttons=False,
                         )
 
             # Auto-escalation before LLM (frustration, human request, complexity)
@@ -2648,6 +2752,7 @@ class ConversationalAgentService:
                     
                     tool_call["arguments"] = tool_args
                     call_id = f"call_{iteration}_{i}"
+                    forced_search_cards_note = ""
 
                     logger.info(f"[CONV_AGENT] Sub-tool call: {tool_name}({json.dumps(tool_args)[:200]})")
 
@@ -2834,6 +2939,52 @@ class ConversationalAgentService:
                         chunks = self._extract_structured_products_from_chunks(tool_result)
                         if chunks:
                             last_search_product_image_map = chunks
+                        ready = self._products_ready_to_display(tool_result)
+                        fresh = [
+                            dict(product)
+                            for product in ready
+                            if str(product.get("id") or "").strip() not in sent_product_ids
+                        ]
+                        if fresh:
+                            source_ids = [
+                                str(product.get("id") or "").strip() for product in fresh
+                            ]
+                            display_result = await self._sub_display_product_cards(
+                                products=fresh,
+                                session_key=session_key,
+                                currency=currency,
+                                user=user,
+                                db=db,
+                                order_type=order_type,
+                            )
+                            for card in display_result.get("cards") or []:
+                                card_id = str(card.get("id") or "").strip()
+                                if card_id and card_id not in sent_product_ids:
+                                    collected_product_cards.append(card)
+                                    sent_product_ids.add(card_id)
+                                elif not card_id:
+                                    collected_product_cards.append(card)
+                            for product_id in source_ids:
+                                if product_id:
+                                    sent_product_ids.add(product_id)
+                            sent_card_images = set(display_result.get("sent_image_urls") or [])
+                            if sent_card_images:
+                                collected_image_urls = [
+                                    url for url in collected_image_urls if url not in sent_card_images
+                                ]
+                            actions_taken.append({
+                                "tool": "display_product_cards",
+                                "args": {"products": fresh},
+                                "result_summary": self._summarize_tool_result(
+                                    "display_product_cards", display_result
+                                )[:200],
+                            })
+                            shown = display_result.get("cards_sent") or len(display_result.get("cards") or [])
+                            forced_search_cards_note = (
+                                f"\n\nSUCCESS: {shown} interactive product card(s) were already sent "
+                                "from this search. Do NOT call display_product_cards again for these "
+                                "products. Do NOT list them as plain text."
+                            )
                             
                     if tool_name == "display_product_cards":
                         tool_cards = tool_result.get("cards", [])
@@ -2936,6 +3087,8 @@ class ConversationalAgentService:
                         )
                     else:
                         llm_tool_msg = json.dumps(tool_result, default=str)
+                    if forced_search_cards_note:
+                        llm_tool_msg = f"{llm_tool_msg}{forced_search_cards_note}"
 
                     # Add tool result to conversation
                     messages.append({
@@ -4288,7 +4441,11 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             )
 
         await context_manager.update_session_metadata(
-            session_key, {"awaiting_checkout_details": True}
+            session_key,
+            {
+                "awaiting_checkout_details": True,
+                "commerce_phase": "collecting_details",
+            },
         )
         from .whatsapp_ordering_helpers import format_cart_summary
         summary = format_cart_summary(cart, currency, catalog_word)
@@ -4358,6 +4515,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 session_key,
                 {
                     "awaiting_checkout_details": True,
+                    "commerce_phase": "collecting_details",
                     "checkout_draft": {
                         "name": customer_name or "",
                         "phone": customer_phone or "",
@@ -4392,6 +4550,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 session_key,
                 {
                     "awaiting_checkout_details": True,
+                    "commerce_phase": "collecting_details",
                     "checkout_draft": {
                         "name": customer_name or "",
                         "phone": customer_phone or "",
@@ -4418,6 +4577,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 session_key,
                 {
                     "awaiting_checkout_details": True,
+                    "commerce_phase": "collecting_details",
                     "checkout_draft": {
                         "name": customer_name or "",
                         "phone": customer_phone or "",
@@ -4460,6 +4620,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                     "awaiting_order_confirmation": True,
                     "awaiting_checkout_details": False,
                     "checkout_draft": {},
+                    "commerce_phase": "awaiting_yes",
                 },
             )
         except Exception as e:
@@ -4815,6 +4976,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         send_cart_buttons: bool = False,
         send_checkout_pay_button: bool = False,
         send_rent_buttons: Optional[str] = None,
+        cards: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Cart command result — text goes out via workflow whatsapp_send_message step
@@ -4825,7 +4987,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         return {
             "response_text": reply,
             "image_urls": [],
-            "cards": [],
+            "cards": cards or [],
             "order_created": False,
             "order_cancelled": False,
             "order_data": None,
@@ -4839,6 +5001,88 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             "send_agent_mode_buttons": None,
             "send_rent_buttons": send_rent_buttons,
         }
+
+    async def _browse_catalog_error_result(
+        self,
+        session_key: str,
+        catalog_word: str,
+        business_name: str,
+    ) -> Dict[str, Any]:
+        """Search failed. Do not claim the catalog is empty."""
+        reply = (
+            f"I couldn't load our {catalog_word} just now. "
+            f"Please try again in a moment, or message {business_name} if you still need help."
+        )
+        return await self._cart_fast_path_result(
+            session_key,
+            reply,
+            actions_taken=[{"tool": "search_products", "result_summary": "browse_error"}],
+            send_cart_buttons=True,
+        )
+
+    async def _browse_catalog_fast_path(
+        self,
+        *,
+        session_key: str,
+        user_message: str,
+        catalog_word: str,
+        currency: str,
+        business_name: str,
+        order_type: str,
+        user: User,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Deterministic Browse Catalog: search + send cards without LLM tool loops."""
+        try:
+            search = await self._search_arrotech_catalog_products(user_message, user, db)
+        except Exception as exc:
+            logger.error("[CONV_AGENT] Browse catalog search failed: %s", exc)
+            return await self._browse_catalog_error_result(session_key, catalog_word, business_name)
+        if not search.get("success"):
+            logger.error(
+                "[CONV_AGENT] Browse catalog search failed: %s",
+                search.get("result"),
+            )
+            return await self._browse_catalog_error_result(session_key, catalog_word, business_name)
+        products = (search.get("data") or {}).get("products") or []
+        if not products:
+            reply = (
+                f"Our {catalog_word} is empty right now — nothing is listed for sale yet. "
+                f"Please check back soon, or message us if you need help from {business_name}."
+            )
+            return await self._cart_fast_path_result(
+                session_key,
+                reply,
+                actions_taken=[{"tool": "search_products", "result_summary": "browse_empty"}],
+                send_cart_buttons=True,
+            )
+
+        display = await self._sub_display_product_cards(
+            products=products,
+            session_key=session_key,
+            currency=currency,
+            user=user,
+            db=db,
+            order_type=order_type,
+        )
+        cards = display.get("cards") or []
+        reply = (
+            f"Here's what we have in our {catalog_word} right now. "
+            "Tap *Add to Cart* on anything you like!"
+        )
+        return await self._cart_fast_path_result(
+            session_key,
+            reply,
+            actions_taken=[
+                {"tool": "search_products", "result_summary": f"browse:{len(products)}"},
+                {
+                    "tool": "display_product_cards",
+                    "result_summary": f"sent:{display.get('cards_sent', len(cards))}",
+                },
+            ],
+            send_cart_buttons=True,
+            cards=cards,
+        )
 
     async def _send_cart_action_buttons(
         self,
@@ -5586,6 +5830,36 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             "human_handoff": True,
         }
 
+    def _products_ready_to_display(self, tool_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Products a search already prepared for cards, including the JSON marker."""
+        if not tool_result or not tool_result.get("success"):
+            return []
+        data = tool_result.get("data") or {}
+        if data.get("empty"):
+            return []
+        products = data.get("products")
+        if not isinstance(products, list) or not products:
+            text = tool_result.get("result") or ""
+            marker = "READY_TO_DISPLAY_PRODUCTS"
+            products = []
+            if marker in text:
+                start = text.find("[", text.find(marker))
+                if start >= 0:
+                    try:
+                        parsed, _ = json.JSONDecoder().raw_decode(text[start:])
+                    except json.JSONDecodeError:
+                        parsed = []
+                    if isinstance(parsed, list):
+                        products = parsed
+        ready: List[Dict[str, Any]] = []
+        for product in products:
+            if not isinstance(product, dict):
+                continue
+            if not (product.get("name") or product.get("id")):
+                continue
+            ready.append(product)
+        return ready
+
     async def _search_arrotech_catalog_products(
         self, query: str, user: User, db: AsyncSession
     ) -> Dict[str, Any]:
@@ -5610,10 +5884,13 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             return {
                 "success": True,
                 "result": (
-                    "No products found matching that request. "
-                    "Do not invent products or call display_product_cards."
+                    "CATALOG_NO_MATCH: No products matched that request. "
+                    "Tell the customer honestly in one short message. "
+                    "Do NOT invent products. Do NOT call display_product_cards. "
+                    "Do NOT call escalate_to_human. "
+                    "Invite them to browse the catalog or describe the item differently."
                 ),
-                "data": {"results": [], "products": []},
+                "data": {"results": [], "products": [], "empty": True},
             }
 
         products: List[Dict[str, Any]] = []
@@ -5646,10 +5923,13 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             return {
                 "success": True,
                 "result": (
-                    "No products found matching that request. "
-                    "Do not invent products or call display_product_cards."
+                    "CATALOG_NO_MATCH: No products matched that request. "
+                    "Tell the customer honestly in one short message. "
+                    "Do NOT invent products. Do NOT call display_product_cards. "
+                    "Do NOT call escalate_to_human. "
+                    "Invite them to browse the catalog or describe the item differently."
                 ),
-                "data": {"results": [], "products": []},
+                "data": {"results": [], "products": [], "empty": True},
             }
 
         products_json_block = (
@@ -6667,6 +6947,23 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 "[CONV_AGENT] Failed to cache rails order in session: %s", sess_err
             )
 
+    async def _mark_commerce_placed(
+        self, session_key: str, order_data: Optional[Dict[str, Any]]
+    ) -> None:
+        """Record that checkout finished so a second confirm cannot greet or place again."""
+        if not session_key:
+            return
+        order_id = ""
+        if isinstance(order_data, dict):
+            order_id = str(order_data.get("order_id") or "")
+        try:
+            await context_manager.update_session_metadata(
+                session_key,
+                {"commerce_phase": "placed", "placed_order_id": order_id},
+            )
+        except Exception as e:
+            logger.warning("[CONV_AGENT] commerce_phase placed update failed: %s", e)
+
     async def _sub_create_order(
         self,
         arguments: Dict[str, Any],
@@ -6707,6 +7004,7 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                         business_phone=business_phone,
                         currency=currency,
                     )
+                    await self._mark_commerce_placed(session_key, routed.get("order_data"))
                 return routed
 
             from .whatsapp_ordering_helpers import is_order_confirmation_message
@@ -6748,8 +7046,20 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             pending = (
                 session.metadata.get("pending_confirmation") if session else None
             )
+            confirm_phase = ""
+            if session:
+                confirm_phase = str(session.metadata.get("commerce_phase") or "")
+            if confirm_phase != "awaiting_yes":
+                return {
+                    "success": False,
+                    "result": "Reply YES to confirm your order.",
+                    "error": "not_awaiting_yes",
+                }
             confirmed = (
-                is_order_confirmation_message(user_message)
+                is_order_confirmation_message(
+                    user_message,
+                    phase="awaiting_yes",
+                )
                 or (session and session.metadata.get("order_confirmed"))
             )
             if not pending:
@@ -6880,12 +7190,19 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                             by_id = dict(session.metadata.get("orders_by_id") or {})
                             by_id[order_obj["order_id"]] = order_obj
                             await context_manager.update_session_metadata(
-                                session_key, {"orders_by_id": by_id}
+                                session_key,
+                                {
+                                    "orders_by_id": by_id,
+                                    "commerce_phase": "placed",
+                                    "placed_order_id": order_obj["order_id"],
+                                },
                             )
                     except Exception as sess_err:
                         logger.warning(
                             "[CONV_AGENT] Failed to cache order in session: %s", sess_err
                         )
+                elif session_key:
+                    await self._mark_commerce_placed(session_key, order_obj)
 
                 if getattr(settings, "ORDER_TRACKING_ENABLED", True):
                     if notify_phone and user:
@@ -7821,7 +8138,11 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             )
 
             registry = order_tracking_service.get_registered_order(owner_id, order_id) or {}
-            if registry.get("payment_notified"):
+            if (
+                str(registry.get("payment_status") or "").lower() == "paid"
+                or str(registry.get("status") or "").lower() == "paid"
+                or registry.get("payment_notified")
+            ):
                 return {"success": False, "error": "This order is already paid."}
             if _safe_str(registry.get("status", "")).lower() == "cancelled":
                 return {

@@ -42,7 +42,7 @@ def expire_unpaid_orders_task():
                 owner_id = str(row.user_id)
                 order_id = row.order_id
                 registry = order_tracking_service.get_registered_order(owner_id, order_id) or {}
-                if registry.get("payment_notified"):
+                if not order_tracking_service.should_expire_unpaid(registry):
                     continue
                 registry["status"] = "cancelled"
                 order_tracking_service._save_registry(owner_id, order_id, registry)
