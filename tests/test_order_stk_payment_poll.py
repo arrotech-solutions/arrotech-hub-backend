@@ -112,3 +112,148 @@ async def test_poll_stk_skips_if_already_notified():
 
         finalize.assert_not_called()
         DarajaCls.return_value.stk_push_query.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_poll_daraja_success_retries_failed_receipt_only():
+    """Daraja success on an already-paid order retries the receipt and does not finalize again.
+
+    Breaks if the poll returns on payment success while receipt_send_status is failed,
+    or if it runs the full paid finalize (a second charge path) instead of the receipt.
+    """
+    from src.services.order_stk_payment_service import poll_stk_and_finalize_order_payment
+
+    owner_id = "f90eb4b7-f155-49ce-b76f-518f8ca9b673"
+    registry = {
+        "order_id": "ORD-RCPT",
+        "payment_status": "paid",
+        "payment_notified": False,
+        "receipt_send_status": "failed",
+        "whatsapp_sender": "254711371265",
+        "mpesa_phone": "254711371265",
+        "platform": "whatsapp",
+        "storage_config": {"provider": "none"},
+        "amount": 100,
+    }
+    mock_db = AsyncMock()
+    mock_user = MagicMock()
+    mock_user.id = owner_id
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_user
+    mock_db.execute = AsyncMock(return_value=mock_result)
+    mock_session_maker = MagicMock()
+    mock_session_maker.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_maker.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    with patch(
+        "src.services.order_stk_payment_service.order_tracking_service"
+    ) as track, patch(
+        "src.services.order_stk_payment_service.DarajaService"
+    ) as DarajaCls, patch(
+        "src.services.order_stk_payment_service.asyncio.sleep", new_callable=AsyncMock
+    ), patch(
+        "src.database.get_session_maker",
+        return_value=mock_session_maker,
+    ), patch(
+        "src.services.order_stk_payment_service.finalize_order_stk_payment",
+        new_callable=AsyncMock,
+    ) as finalize:
+        track.get_registered_order.return_value = registry
+
+        async def _notify(**kwargs):
+            registry["payment_notified"] = True
+            registry["receipt_send_status"] = "sent"
+            return {"success": True}
+
+        track.notify_payment_received = AsyncMock(side_effect=_notify)
+        track.resolve_stk_notify_context.return_value = None
+        track.resolve_stk_notify_context_from_db = AsyncMock(return_value=None)
+        DarajaCls.return_value.stk_push_query = AsyncMock(
+            return_value={"success": True, "result_code": "0", "result_desc": "ok"}
+        )
+
+        await poll_stk_and_finalize_order_payment(
+            owner_user_id=owner_id,
+            order_id="ORD-RCPT",
+            checkout_request_id="ws_CO_RCPT",
+            amount=100,
+            daraja_environment="sandbox",
+            consumer_key="k",
+            consumer_secret="s",
+            short_code="174379",
+            passkey="p",
+            initial_delay_seconds=0,
+            poll_interval_seconds=0,
+            max_wait_seconds=5,
+        )
+
+    finalize.assert_not_called()
+    track.notify_payment_received.assert_awaited()
+    assert registry["payment_notified"] is True
+
+
+@pytest.mark.asyncio
+async def test_poll_timeout_skips_inconclusive_when_already_paid():
+    """A timed-out poll must not tell a paid customer to pay again.
+
+    Breaks if timeout still calls notify_stk_payment_inconclusive while
+    payment_status is paid and the receipt send failed.
+    """
+    from src.services.order_stk_payment_service import poll_stk_and_finalize_order_payment
+
+    owner_id = "f90eb4b7-f155-49ce-b76f-518f8ca9b673"
+    registry = {
+        "order_id": "ORD-TIMEOUT",
+        "payment_status": "paid",
+        "payment_notified": False,
+        "receipt_send_status": "failed",
+        "whatsapp_sender": "254711371265",
+        "amount": 100,
+        "currency": "KES",
+    }
+    mock_db = AsyncMock()
+    mock_user = MagicMock()
+    mock_user.id = owner_id
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_user
+    mock_db.execute = AsyncMock(return_value=mock_result)
+    mock_session_maker = MagicMock()
+    mock_session_maker.return_value.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_session_maker.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    with patch(
+        "src.services.order_stk_payment_service.order_tracking_service"
+    ) as track, patch(
+        "src.services.order_stk_payment_service.DarajaService"
+    ) as DarajaCls, patch(
+        "src.services.order_stk_payment_service.asyncio.sleep", new_callable=AsyncMock
+    ), patch(
+        "src.database.get_session_maker",
+        return_value=mock_session_maker,
+    ):
+        track.get_registered_order.return_value = registry
+        track.notify_stk_payment_inconclusive = AsyncMock()
+        track.notify_payment_received = AsyncMock(return_value={"success": True})
+        track.resolve_stk_notify_context.return_value = None
+        track.resolve_stk_notify_context_from_db = AsyncMock(return_value=None)
+        DarajaCls.return_value.stk_push_query = AsyncMock(
+            return_value={"success": False, "error": "still pending"}
+        )
+
+        await poll_stk_and_finalize_order_payment(
+            owner_user_id=owner_id,
+            order_id="ORD-TIMEOUT",
+            checkout_request_id="ws_CO_TIMEOUT",
+            amount=100,
+            daraja_environment="sandbox",
+            consumer_key="k",
+            consumer_secret="s",
+            short_code="174379",
+            passkey="p",
+            initial_delay_seconds=0,
+            poll_interval_seconds=1,
+            max_wait_seconds=1,
+        )
+
+    track.notify_stk_payment_inconclusive.assert_not_called()
+    track.notify_payment_received.assert_awaited()

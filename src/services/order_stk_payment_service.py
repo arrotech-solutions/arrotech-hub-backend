@@ -26,6 +26,16 @@ def _failure_notified_key(checkout_request_id: str) -> str:
     return f"mpesa:stk:failure_notified:{checkout_request_id}"
 
 
+def _registry_payment_settled(registry: Dict[str, Any]) -> bool:
+    """True when M-Pesa already succeeded. Receipt delivery is a separate flag."""
+    registry = registry or {}
+    if str(registry.get("payment_status") or "").lower() == "paid":
+        return True
+    if str(registry.get("status") or "").lower() == "paid":
+        return True
+    return bool(registry.get("payment_notified"))
+
+
 async def finalize_order_stk_payment(
     *,
     db: AsyncSession,
@@ -48,6 +58,13 @@ async def finalize_order_stk_payment(
     session_key: str = "",
 ) -> None:
     """Send payment confirmation or failure notice (idempotent per checkout attempt)."""
+    order_id = await _resolve_hub_order_id(
+        db,
+        owner_user_id,
+        order_id,
+        checkout_request_id=checkout_request_id,
+        merchant_request_id=merchant_request_id,
+    )
     if not order_id:
         return
 
@@ -58,15 +75,16 @@ async def finalize_order_stk_payment(
         logger.info("[STK_PAY] Order %s already has payment_notified — skip", order_id)
         return
 
+    if not is_paid and _registry_payment_settled(registry):
+        logger.info("[STK_PAY] Order %s paid — ignore late failure callback", order_id)
+        return
+
     if not is_paid and checkout_request_id:
         if cache_service.get(_failure_notified_key(checkout_request_id)):
             logger.info(
                 "[STK_PAY] Failure already notified for checkout %s — skip",
                 checkout_request_id,
             )
-            return
-        if registry.get("payment_notified"):
-            logger.info("[STK_PAY] Order %s paid — ignore late failure callback", order_id)
             return
 
     owner_uuid = uuid.UUID(str(owner_user_id))
@@ -275,6 +293,131 @@ async def finalize_order_stk_payment(
         logger.warning("[STK_PAY] Business alert failed for %s: %s", order_id, alert_err)
 
 
+async def _already_paid_for_poll(owner_user_id: str, order_id: str, registry: Dict[str, Any]) -> bool:
+    """True when the registry or Hub row already records a successful STK."""
+    if _registry_payment_settled(registry):
+        return True
+    try:
+        uuid.UUID(str(owner_user_id))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    from ..database import get_session_maker
+    from .commerce_storage_service import CommerceStorageService
+
+    try:
+        session_maker = get_session_maker()
+        async with session_maker() as db:
+            row = await CommerceStorageService().get_order(db, owner_user_id, order_id)
+    except Exception as exc:
+        logger.warning("[STK_PAY] Hub paid lookup failed for %s: %s", order_id, exc)
+        return False
+    return row is not None and str(getattr(row, "payment_status", "") or "").lower() == "paid"
+
+
+async def _retry_paid_receipt(
+    *,
+    owner_user_id: str,
+    order_id: str,
+    registry: Dict[str, Any],
+    whatsapp_sender: str = "",
+    amount_paid: float = 0.0,
+    currency: str = "KES",
+) -> None:
+    """Send the receipt again. The STK charge already succeeded."""
+    from ..database import get_session_maker
+
+    session_maker = get_session_maker()
+    async with session_maker() as db:
+        try:
+            owner_uuid = uuid.UUID(str(owner_user_id))
+        except (ValueError, TypeError, AttributeError):
+            return
+        owner_res = await db.execute(select(User).where(User.id == owner_uuid))
+        owner_user = owner_res.scalar_one_or_none()
+        if not owner_user:
+            return
+        await order_tracking_service.notify_payment_received(
+            user=owner_user,
+            db=db,
+            order_id=order_id,
+            mpesa_receipt=str(registry.get("mpesa_receipt") or ""),
+            amount_paid=float(registry.get("amount_paid") or registry.get("amount") or amount_paid or 0),
+            currency=str(registry.get("currency") or currency or "KES"),
+            customer_phone=whatsapp_sender or str(registry.get("whatsapp_sender") or ""),
+        )
+
+
+async def _resolve_hub_order_id(
+    db: AsyncSession,
+    owner_user_id: str,
+    order_id: str,
+    *,
+    checkout_request_id: str = "",
+    merchant_request_id: str = "",
+) -> str:
+    """Pick the commerce order id from the callback, Redis, STK mapping, or registry."""
+    given = str(order_id or "").strip()
+    try:
+        uuid.UUID(str(owner_user_id))
+    except (ValueError, TypeError, AttributeError):
+        return given
+    try:
+        if given:
+            from .commerce_storage_service import CommerceStorageService
+
+            existing = await CommerceStorageService().get_order(db, owner_user_id, given)
+            registry = order_tracking_service.get_registered_order(owner_user_id, given) or {}
+            if existing is not None or registry.get("order") or registry.get("order_id") == given:
+                return given
+
+        ctx = order_tracking_service.resolve_stk_notify_context(
+            owner_user_id,
+            checkout_request_id or "",
+            merchant_request_id or "",
+        )
+        if not ctx:
+            ctx = await order_tracking_service.resolve_stk_notify_context_from_db(
+                db,
+                owner_user_id,
+                checkout_request_id or "",
+                merchant_request_id or "",
+            )
+        resolved = str((ctx or {}).get("order_id") or "").strip()
+        if resolved:
+            return resolved
+    except Exception as exc:
+        logger.warning("[STK_PAY] order resolve failed for %s: %s", given or checkout_request_id, exc)
+    return given
+
+
+def _hub_order_payload(order_id: str, registry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Build a commerce_orders upsert from the tracking registry, when it has enough fields."""
+    order = registry.get("order") if isinstance(registry.get("order"), dict) else {}
+    phone = (
+        order.get("customer_phone")
+        or registry.get("whatsapp_sender")
+        or registry.get("customer_phone")
+        or ""
+    )
+    phone = str(phone or "").strip()
+    if not phone:
+        return None
+    total = order.get("total", order.get("subtotal", registry.get("amount")))
+    if total in (None, ""):
+        return None
+    items = order.get("items") if isinstance(order.get("items"), list) else []
+    return {
+        "order_id": order_id,
+        "customer_name": order.get("customer_name") or "Customer",
+        "customer_phone": phone,
+        "delivery_method": order.get("delivery_method") or "pickup",
+        "total": total,
+        "items": items,
+        "status": order.get("status") or "pending",
+        "currency": registry.get("currency") or order.get("currency") or "KES",
+    }
+
+
 async def _sync_rails_payment_status(session_key: str, status: str) -> None:
     if not session_key:
         return
@@ -314,6 +457,12 @@ async def _reconcile_commerce_payment(
 
         storage = CommerceStorageService()
         existing = await storage.get_order(db, owner_user_id, order_id)
+        if existing is None and is_paid:
+            registry = order_tracking_service.get_registered_order(owner_user_id, order_id) or {}
+            payload = _hub_order_payload(order_id, registry)
+            if payload:
+                await storage.upsert_order(db, owner_user_id, payload)
+                existing = await storage.get_order(db, owner_user_id, order_id)
         if existing is None:
             return
         if is_paid:
@@ -450,6 +599,21 @@ async def poll_stk_and_finalize_order_payment(
 
         if result_code == "0":
             logger.info("[STK_PAY] Poll confirmed payment for order %s", order_id)
+            fresh = order_tracking_service.get_registered_order(owner_user_id, order_id) or {}
+            if _registry_payment_settled(fresh) and not fresh.get("payment_notified"):
+                await _retry_paid_receipt(
+                    owner_user_id=owner_user_id,
+                    order_id=order_id,
+                    registry=fresh,
+                    whatsapp_sender=whatsapp_sender,
+                    amount_paid=amount_paid,
+                    currency=currency,
+                )
+                fresh = order_tracking_service.get_registered_order(owner_user_id, order_id) or fresh
+                if fresh.get("payment_notified"):
+                    return
+                await asyncio.sleep(interval)
+                continue
             session_maker = get_session_maker()
             async with session_maker() as db:
                 await finalize_order_stk_payment(
@@ -469,6 +633,10 @@ async def poll_stk_and_finalize_order_payment(
                     checkout_request_id=checkout_request_id,
                     merchant_request_id=merchant_request_id,
                 )
+            fresh = order_tracking_service.get_registered_order(owner_user_id, order_id) or {}
+            if fresh.get("receipt_send_status") == "failed" and not fresh.get("payment_notified"):
+                await asyncio.sleep(interval)
+                continue
             return
 
         if result_code in STK_TERMINAL_FAILURE_CODES:
@@ -499,6 +667,25 @@ async def poll_stk_and_finalize_order_payment(
             return
 
         await asyncio.sleep(interval)
+
+    registry = order_tracking_service.get_registered_order(owner_user_id, order_id) or {}
+    if await _already_paid_for_poll(owner_user_id, order_id, registry):
+        logger.info(
+            "[STK_PAY] Poll timeout skipped inconclusive — order %s already paid",
+            order_id,
+        )
+        if not registry.get("payment_notified"):
+            await _retry_paid_receipt(
+                owner_user_id=owner_user_id,
+                order_id=order_id,
+                registry=registry,
+                whatsapp_sender=str(
+                    registry.get("whatsapp_sender") or registry.get("customer_phone") or ""
+                ),
+                amount_paid=float(registry.get("amount_paid") or registry.get("amount") or 0),
+                currency=str(registry.get("currency") or "KES"),
+            )
+        return
 
     logger.warning(
         "[STK_PAY] Poll timed out for order %s checkout=%s — verify Daraja callback URL",

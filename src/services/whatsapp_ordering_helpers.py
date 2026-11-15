@@ -125,12 +125,18 @@ except ImportError:
         r"\[\[SYSTEM\]\]",
     ]
 
-# Strict checkout confirmation only (exclude bare ok/sure — too ambiguous)
+# Strict checkout confirmation. Bare ok/sure/yea stay out of this set:
+# they confirm only while commerce_phase is awaiting_yes (or a repeat
+# confirm after the order is already placed).
 _CONFIRM_WORDS = frozenset({
     "yes", "y", "yeah", "yep", "confirm", "confirmed",
     "proceed", "go ahead", "place order", "place the order", "ndio", "sawa",
     "ndiyo", "haya", "sawa sawa",
 })
+_AWAITING_YES_CONFIRM_WORDS = frozenset({
+    "yea", "ok", "okay", "okey", "sure", "alright", "alrite", "fine",
+})
+_CONFIRM_PHASES = frozenset({"awaiting_yes", "placed"})
 
 # Common menu and catalog typos (Kenya / food / real estate)
 _TYPO_MAP = {
@@ -187,16 +193,33 @@ def injection_safe_reply(business_name: str) -> str:
     )
 
 
-def is_order_confirmation_message(message: str) -> bool:
+def _matches_confirm_words(normalized: str, words) -> bool:
+    if normalized in words:
+        return True
+    for word in words:
+        if normalized == word or normalized.startswith(word + " "):
+            return True
+    return False
+
+
+def is_order_confirmation_message(message: str, *, phase: Optional[str] = None) -> bool:
+    """True for a checkout confirm.
+
+    Strict words (yes/ndio/sawa/…) confirm in any phase. Soft words
+    (yea/ok/okay/sure/alright/fine) confirm only when `phase` is
+    `awaiting_yes` or `placed` — phase is what makes "ok" unambiguous.
+    """
     if not message:
         return False
     normalized = re.sub(r"[^\w\s]", "", message.strip().lower())
-    if normalized in _CONFIRM_WORDS:
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if _matches_confirm_words(normalized, _CONFIRM_WORDS):
         return True
-    for word in _CONFIRM_WORDS:
-        if normalized == word or normalized.startswith(word + " "):
-            return True
     if "confirm" in normalized and len(normalized) < 40:
+        return True
+    if phase in _CONFIRM_PHASES and _matches_confirm_words(
+        normalized, _AWAITING_YES_CONFIRM_WORDS
+    ):
         return True
     return False
 
@@ -247,7 +270,16 @@ _NOT_A_NAME_PHRASES = (
     "want to", "complete order", "finish order", "ready to", "order now",
     "browse", "menu", "cart", "help", "hello", "hi", "hey", "thanks",
     "thank you", "no you", "that's what", "assist you",
+    "my orders", "browse catalog", "browse the catalog",
 )
+# Whole-message button labels and confirm words. Matched exactly so a
+# short token like "orders" does not reject a longer real name.
+_NOT_A_NAME_EXACT = frozenset({
+    "my orders", "orders", "browse catalog", "browse the catalog",
+    "cancel", "return", "help", "human", "agent", "pay",
+    "yes", "y", "yea", "yeah", "yep", "ok", "okay", "sure",
+    "alright", "fine", "ndio", "ndiyo", "sawa", "confirm", "go ahead",
+})
 
 _CHECKOUT_INTENT_SUBSTRINGS = (
     "checkout", "check out", "place order", "place my order", "place the order",
@@ -264,6 +296,10 @@ _CHECKOUT_INTENT_SUBSTRINGS = (
 def _looks_like_phrase_not_name(text: str) -> bool:
     lower = (text or "").lower().strip()
     if not lower:
+        return True
+    compact = re.sub(r"[^a-z\s']", "", lower)
+    compact = re.sub(r"\s+", " ", compact).strip()
+    if compact in _NOT_A_NAME_EXACT:
         return True
     return any(p in lower for p in _NOT_A_NAME_PHRASES)
 
