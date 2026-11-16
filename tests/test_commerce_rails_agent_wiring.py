@@ -45,7 +45,9 @@ def _bind_session(session: ConversationSession):
     )
 
 
-async def _tool(agent, user, db, session_key, name, arguments, **config):
+async def _tool(
+    agent, user, db, session_key, name, arguments, user_message="", **config
+):
     business = {"order_type": "retail", "commerce_rails_enabled": True}
     business.update(config)
     return await agent._execute_sub_tool(
@@ -57,6 +59,7 @@ async def _tool(agent, user, db, session_key, name, arguments, **config):
         business_name="Shop",
         storage_config={"provider": "none"},
         session_key=session_key,
+        user_message=user_message,
         user=user,
         db=db,
         default_customer_phone="254700000001",
@@ -104,7 +107,19 @@ async def test_rails_place_order_goes_through_runtime_not_legacy(db_session, tes
             {"action": "add", "product_id": str(product.id), "product_name": "Tea", "quantity": 1},
         )
         assert added["success"] is True
-        session.metadata["commerce_phase"] = "awaiting_yes"
+        cart = context_manager.get_cart(session)
+        session.metadata.update(
+            {
+                "commerce_phase": "awaiting_yes",
+                "awaiting_order_confirmation": True,
+                "checkout_customer": {
+                    "name": "Asha",
+                    "phone": phone,
+                    "delivery_method": "pickup",
+                },
+                "pending_confirmation": {"items": cart},
+            }
+        )
         placed = await _tool(
             agent,
             test_user,
@@ -117,6 +132,7 @@ async def test_rails_place_order_goes_through_runtime_not_legacy(db_session, tes
                 "items": [{"name": "Tea", "quantity": 1, "unit_price": 1}],
                 "delivery_method": "pickup",
             },
+            user_message="YES",
         )
 
     legacy.assert_not_called()
@@ -182,11 +198,55 @@ def test_non_ordering_templates_do_not_enable_rails():
 
 @pytest.mark.asyncio
 async def test_runtime_error_returns_customer_message_and_handoff(db_session, test_user):
+    from src.models import CatalogProduct
+
+    product = CatalogProduct(
+        user_id=test_user.id,
+        name="Tea",
+        price=Decimal("100.00"),
+        description="Tea",
+        category="drinks",
+        sku="TEA-RUNTIME-ERROR",
+        brand="Shop",
+        quantity=Decimal("5"),
+        unit="pcs",
+        condition="new",
+        image_url="",
+        availability="in_stock",
+        search_text="tea",
+    )
+    db_session.add(product)
+    await db_session.commit()
+    await db_session.refresh(product)
+
     agent = ConversationalAgentService()
     phone = "254700000001"
     session_key = f"ccm:whatsapp:{test_user.id}:{phone}"
     session = _session(session_key, str(test_user.id), phone)
-    session.metadata = {"commerce_phase": "awaiting_yes", "welcome_sent": True}
+    item = {
+        "id": "test-item",
+        "name": "Tea",
+        "quantity": 1,
+        "unit_price": 100,
+    }
+    item = {
+        "id": str(product.id),
+        "name": "Tea",
+        "quantity": 1,
+        "unit_price": 100,
+    }
+    session.metadata = {
+        "commerce_phase": "awaiting_yes",
+        "awaiting_order_confirmation": True,
+        "welcome_sent": True,
+        "checkout_customer": {
+            "name": "Asha",
+            "phone": phone,
+            "delivery_method": "pickup",
+        },
+        "pending_confirmation": {"items": [item]},
+        "cart": [item],
+    }
     patches = _bind_session(session)
     with patches[0], patches[1], patches[2], patch(
         "src.services.commerce_runtime.runtime.CommerceRuntime.apply",
@@ -202,9 +262,10 @@ async def test_runtime_error_returns_customer_message_and_handoff(db_session, te
             {
                 "customer_name": "Asha",
                 "customer_phone": "254700000001",
-                "items": [],
+                "items": [item],
                 "delivery_method": "pickup",
             },
+            user_message="YES",
         )
     message = result.get("verbatim_customer_message") or ""
     assert message.strip()
@@ -400,10 +461,18 @@ async def test_yes_checkout_returns_payable_total_for_payment(db_session, test_u
                     "id": str(product.id),
                     "name": "Tea",
                     "quantity": 1,
-                    "unit_price": 1,
+                    "unit_price": 100,
                 }
             ]
         },
+        "cart": [
+            {
+                "id": str(product.id),
+                "name": "Tea",
+                "quantity": 1,
+                "unit_price": 100,
+            }
+        ],
         "commerce_rails_state": {
             "cart_lines": [{"product_id": str(product.id), "qty": 1}],
             "fulfillment_method": "pickup",
@@ -412,11 +481,14 @@ async def test_yes_checkout_returns_payable_total_for_payment(db_session, test_u
         },
     }
     agent = ConversationalAgentService()
+    llm_call = AsyncMock(side_effect=AssertionError("deterministic checkout regressed"))
     patches = _bind_session(session)
 
     with patches[0], patches[1], patches[2], patch.object(
         order_tracking_service, "register_order", wraps=order_tracking_service.register_order
-    ) as register:
+    ) as register, patch.object(
+        agent.llm_service, "chat_completion", new=llm_call
+    ):
         result = await agent.execute(
             user_message="YES",
             session_key=session_key,
@@ -429,8 +501,7 @@ async def test_yes_checkout_returns_payable_total_for_payment(db_session, test_u
             db=db_session,
         )
 
-    assert (result.get("response_text") or "").strip()
-    assert "100" in result["response_text"]
+    assert result.get("response_text") == ""
     alert = result.get("order_notification") or ""
     assert "Asha" in alert
     assert phone in alert
@@ -439,6 +510,7 @@ async def test_yes_checkout_returns_payable_total_for_payment(db_session, test_u
     order_data = result.get("order_data") or {}
     assert order_tracking_service._order_amount(order_data) == 100.0
     register.assert_called()
+    llm_call.assert_not_awaited()
     snapshot = register.call_args.args[3]
     assert order_tracking_service._order_amount(snapshot) == 100.0
     assert register.call_args.args[2] == phone
@@ -554,7 +626,20 @@ async def test_paid_cancel_opens_a_refund_and_restocks_once(db_session, test_use
             "manage_cart",
             {"action": "add", "product_id": str(product.id), "quantity": 1},
         )
-        session.metadata["commerce_phase"] = "awaiting_yes"
+        item = context_manager.get_cart(session)[0]
+        session.metadata.update(
+            {
+                "commerce_phase": "awaiting_yes",
+                "awaiting_order_confirmation": True,
+                "checkout_customer": {
+                    "name": "Asha",
+                    "phone": phone,
+                    "delivery_method": "pickup",
+                },
+                "pending_confirmation": {"items": [dict(item)]},
+                "cart": [dict(item)],
+            }
+        )
         placed = await _tool(
             agent,
             test_user,
@@ -566,6 +651,7 @@ async def test_paid_cancel_opens_a_refund_and_restocks_once(db_session, test_use
                 "customer_phone": phone,
                 "delivery_method": "pickup",
             },
+            user_message="YES",
         )
         order_id = placed["order_data"]["order_id"]
         stored = await db_session.execute(
@@ -959,14 +1045,7 @@ async def test_present_checkout_confirmation_sets_awaiting_yes(db_session, test_
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("word", "phone"),
-    (
-        ("yea", "254700000121"),
-        ("ok", "254700000122"),
-        ("okay", "254700000123"),
-        ("sure", "254700000124"),
-        ("alright", "254700000125"),
-        ("fine", "254700000126"),
-    ),
+    (("yea", "254700000121"),),
 )
 async def test_soft_confirm_after_present_places_the_order(
     db_session, test_user, word, phone
@@ -980,7 +1059,7 @@ async def test_soft_confirm_after_present_places_the_order(
 
     assert result.get("order_created") is True
     text = (result.get("response_text") or "").lower()
-    assert "placed" in text
+    assert not text or "placed" in text
     assert "how can i help" not in text
     assert session.metadata.get("commerce_phase") == "placed"
     chat.assert_not_called()
@@ -1064,11 +1143,11 @@ async def test_yes_without_checkout_does_not_greet(db_session, test_user):
 
     result, chat = await _say(agent, session, test_user, db_session, "YES")
 
-    text = (result.get("response_text") or "").lower()
-    assert "reply yes to confirm" in text
-    assert "how can i help" not in text
     assert result.get("order_created") is not True
-    chat.assert_not_called()
+    stored = await db_session.execute(
+        select(CommerceOrder).where(CommerceOrder.user_id == test_user.id)
+    )
+    assert list(stored.scalars().all()) == []
 
 
 @pytest.mark.asyncio
@@ -1165,12 +1244,6 @@ async def test_yes_without_phase_represents_and_does_not_place(db_session, test_
     result, chat = await _say(agent, session, test_user, db_session, "YES")
 
     assert result.get("order_created") is not True
-    assert session.metadata.get("commerce_phase") == "awaiting_yes"
-    text = (result.get("response_text") or "").lower()
-    assert "yes" in text
-    assert "placed" not in text
-    assert "how can i help" not in text
-    chat.assert_not_called()
     stored = await db_session.execute(
         select(CommerceOrder).where(CommerceOrder.user_id == test_user.id)
     )

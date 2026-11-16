@@ -192,12 +192,17 @@ async def test_notify_order_placed_sends_pdf(
          patch.object(tracking_service, "_get_whatsapp_config", new_callable=AsyncMock) as wa_cfg, \
          patch.object(tracking_service.order_service, "format_order_receipt", new_callable=AsyncMock) as fmt, \
          patch.object(tracking_service, "_generate_receipt_pdf_bytes", new_callable=AsyncMock) as gen_pdf, \
+         patch.object(tracking_service, "resolve_payment_mode", new_callable=AsyncMock) as payment_mode, \
+         patch.object(tracking_service, "notify_payment_received", new_callable=AsyncMock) as paid_receipt, \
+         patch("src.services.notification_service.NotificationService.notify", new_callable=AsyncMock), \
          patch("src.services.whatsapp_service.WhatsAppService") as WaCls:
 
         cache.get.return_value = {}
+        cache.redis_client = None
         wa_cfg.return_value = {"access_token": "tok", "phone_number_id": "pnid"}
         fmt.return_value = {"success": True, "message": "text receipt"}
         gen_pdf.return_value = base64.b64decode(pdf_content)
+        payment_mode.return_value = ("mpesa", None)
 
         wa = WaCls.return_value
         wa.send_message = AsyncMock(return_value={"success": True})
@@ -213,8 +218,18 @@ async def test_notify_order_placed_sends_pdf(
         )
 
         assert result["success"] is True
-        wa.upload_and_send_document.assert_called_once()
-        wa.send_message.assert_called_once()
+        wa.upload_and_send_document.assert_awaited_once()
+        wa.send_message.assert_awaited_once()
+        assert "Order received!" in wa.send_message.await_args.args[1]
+        assert gen_pdf.await_args.kwargs["payment_status"] == "pending"
+        payment_mode.assert_awaited_once_with(mock_user, db)
+        wa.send_quick_reply_buttons.assert_awaited_once()
+        buttons = wa.send_quick_reply_buttons.await_args.kwargs["buttons"]
+        assert {button["id"] for button in buttons} == {
+            f"pay_mpesa:{sample_order['order_id']}",
+            f"pay_mpesa_other:{sample_order['order_id']}",
+        }
+        paid_receipt.assert_not_awaited()
         assert "customer_receipt" in result["sent"]
         assert "receipt" not in result["sent"]
 
@@ -224,11 +239,40 @@ async def test_notify_order_placed_idempotent(
     tracking_service, sample_order, mock_user
 ):
     db = AsyncMock()
+    store = {}
 
-    with patch("src.services.order_tracking_service.cache_service") as cache:
-        cache.get.return_value = {"placement_notified": True}
+    with patch("src.services.order_tracking_service.cache_service") as cache, \
+         patch.object(tracking_service, "_get_whatsapp_config", new_callable=AsyncMock) as wa_cfg, \
+         patch.object(tracking_service.order_service, "format_order_receipt", new_callable=AsyncMock) as fmt, \
+         patch.object(tracking_service, "_generate_receipt_pdf_bytes", new_callable=AsyncMock) as gen_pdf, \
+         patch.object(tracking_service, "resolve_payment_mode", new_callable=AsyncMock) as payment_mode, \
+         patch.object(tracking_service, "notify_payment_received", new_callable=AsyncMock) as paid_receipt, \
+         patch("src.services.notification_service.NotificationService.notify", new_callable=AsyncMock), \
+         patch("src.services.whatsapp_service.WhatsAppService") as WaCls:
 
-        result = await tracking_service.notify_order_placed(
+        cache.get.side_effect = lambda key: store.get(key)
+        cache.set.side_effect = (
+            lambda key, value, expire_seconds=3600: store.__setitem__(key, value) or True
+        )
+        cache.redis_client = MagicMock()
+        wa_cfg.return_value = {"access_token": "tok", "phone_number_id": "pnid"}
+        fmt.return_value = {"success": True, "message": "text receipt"}
+        gen_pdf.return_value = b"%PDF"
+        payment_mode.return_value = ("mpesa", None)
+
+        wa = WaCls.return_value
+        wa.send_message = AsyncMock(return_value={"success": True})
+        wa.upload_and_send_document = AsyncMock(return_value={"success": True})
+        wa.send_quick_reply_buttons = AsyncMock(return_value={"success": True})
+
+        first_result = await tracking_service.notify_order_placed(
+            user=mock_user,
+            db=db,
+            customer_phone=sample_order["customer_phone"],
+            order_data={"order": sample_order},
+            business_name="Test Cafe",
+        )
+        second_result = await tracking_service.notify_order_placed(
             user=mock_user,
             db=db,
             customer_phone=sample_order["customer_phone"],
@@ -236,8 +280,14 @@ async def test_notify_order_placed_idempotent(
             business_name="Test Cafe",
         )
 
-        assert result["skipped"] is True
-        assert result["reason"] == "placement_already_notified"
+        assert first_result["success"] is True
+        assert second_result["skipped"] is True
+        assert second_result["reason"] == "placement_already_notified"
+        wa.send_message.assert_awaited_once()
+        wa.upload_and_send_document.assert_awaited_once()
+        wa.send_quick_reply_buttons.assert_awaited_once()
+        gen_pdf.assert_awaited_once()
+        paid_receipt.assert_not_awaited()
 
 
 @pytest.mark.asyncio

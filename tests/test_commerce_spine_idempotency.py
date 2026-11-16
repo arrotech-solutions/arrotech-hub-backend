@@ -1,8 +1,71 @@
 """Duplicate WhatsApp wamid is a single side effect after finalize."""
 
+import asyncio
+import uuid
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.services.idempotency_service import ClaimResult, idempotency_service
+
+
+@pytest.mark.asyncio
+async def test_duplicate_meta_wamid_skips_order_workflow():
+    from src.routers.whatsapp_webhook import background_process_message
+    from src.services.whatsapp_workflow_trigger import WhatsAppWorkflowTrigger
+
+    contact_id = uuid.uuid4()
+    message_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    contact = MagicMock(phone_number="254700000001")
+    message = MagicMock(whatsapp_message_id="wamid.ALREADY_COMPLETED")
+    query_results = [contact, message]
+
+    class FakeDb:
+        def __init__(self):
+            self.execute = AsyncMock(
+                side_effect=[
+                    MagicMock(scalar_one_or_none=MagicMock(return_value=result))
+                    for result in query_results
+                ]
+            )
+
+    db = FakeDb()
+
+    class FakeSessionContext:
+        async def __aenter__(self):
+            return db
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeSessionMaker:
+        def __call__(self):
+            return FakeSessionContext()
+
+    with patch(
+        "src.routers.whatsapp_webhook.get_session_maker",
+        return_value=FakeSessionMaker(),
+    ), patch(
+        "src.database.set_tenant_context",
+        new_callable=AsyncMock,
+    ), patch.object(
+        idempotency_service,
+        "claim_message",
+        new_callable=AsyncMock,
+        return_value=ClaimResult.ALREADY_COMPLETED,
+    ) as claim, patch.object(
+        WhatsAppWorkflowTrigger,
+        "on_message_received",
+        new_callable=AsyncMock,
+    ) as workflow:
+        await background_process_message(user_id, contact_id, message_id)
+
+    claim.assert_awaited_once_with(db, user_id, "wamid.ALREADY_COMPLETED")
+    workflow.assert_not_awaited()
+    assert db.execute.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -120,3 +183,141 @@ async def test_workflow_exception_leaves_wamid_failed_not_completed(
     assert await idempotency_service.claim_message(
         db_session, test_user.id, "wamid.WORKFLOWFAIL1"
     ) == ClaimResult.STALE_RETRY
+
+
+@pytest.mark.asyncio
+async def test_order_followup_fallback_claim_is_atomic_and_scoped(
+    db_session, test_user
+):
+    from src.models import ProcessedWebhookMessage
+
+    user_id = test_user.id
+    first_id = "wamid.FALLBACK-CLAIM-1"
+    other_id = "wamid.FALLBACK-CLAIM-2"
+    await idempotency_service.claim_message(db_session, user_id, first_id)
+    await idempotency_service.claim_message(db_session, user_id, other_id)
+
+    assert await idempotency_service.claim_order_followup_fallback(
+        db_session, user_id, first_id
+    ) is True
+    assert await idempotency_service.claim_order_followup_fallback(
+        db_session, user_id, first_id
+    ) is False
+    assert await idempotency_service.claim_order_followup_fallback(
+        db_session, user_id, other_id
+    ) is True
+
+    rows = (
+        await db_session.execute(
+            select(ProcessedWebhookMessage).where(
+                ProcessedWebhookMessage.user_id == user_id,
+                ProcessedWebhookMessage.whatsapp_message_id.in_(
+                    [first_id, other_id]
+                ),
+            )
+        )
+    ).scalars().all()
+    assert {row.processing_result for row in rows} == {
+        idempotency_service.ORDER_FOLLOWUP_FALLBACK_MARKER
+    }
+
+
+@pytest.mark.asyncio
+async def test_order_followup_fallback_claim_fails_closed_for_missing_or_error(
+    db_session, test_user
+):
+    assert await idempotency_service.claim_order_followup_fallback(
+        db_session, test_user.id, "wamid.MISSING-FALLBACK-ROW"
+    ) is False
+
+    with patch.object(
+        db_session,
+        "execute",
+        new=AsyncMock(side_effect=RuntimeError("database unavailable")),
+    ):
+        assert await idempotency_service.claim_order_followup_fallback(
+            db_session, test_user.id, "wamid.FALLBACK-DB-ERROR"
+        ) is False
+
+
+@pytest.mark.asyncio
+async def test_mark_completed_preserves_order_followup_fallback_marker(
+    db_session, test_user
+):
+    from src.models import ProcessedWebhookMessage
+
+    user_id = test_user.id
+    wamid = "wamid.FALLBACK-MARK-COMPLETED"
+    await idempotency_service.claim_message(db_session, user_id, wamid)
+    assert await idempotency_service.claim_order_followup_fallback(
+        db_session, user_id, wamid
+    ) is True
+
+    await idempotency_service.mark_completed(db_session, user_id, wamid)
+    row = (
+        await db_session.execute(
+            select(ProcessedWebhookMessage).where(
+                ProcessedWebhookMessage.user_id == user_id,
+                ProcessedWebhookMessage.whatsapp_message_id == wamid,
+            )
+        )
+    ).scalar_one()
+
+    assert row.processing_status == "completed"
+    assert row.processing_result == idempotency_service.ORDER_FOLLOWUP_FALLBACK_MARKER
+
+
+@pytest.mark.asyncio
+async def test_concurrent_fallback_for_same_meta_id_sends_at_most_once(
+    db_session, test_user, async_engine
+):
+    from src.services.order_tracking_service import order_tracking_service
+
+    user_id = test_user.id
+    wamid = "wamid.FALLBACK-CONCURRENT"
+    await idempotency_service.claim_message(db_session, user_id, wamid)
+    session_factory = async_sessionmaker(
+        async_engine, class_=AsyncSession, expire_on_commit=False
+    )
+    sends = []
+
+    class FakeWhatsApp:
+        async def send_message(self, phone, message, *, config):
+            sends.append((phone, message))
+            return {"success": True}
+
+    registry = {}
+
+    def save_registry(_owner_id, _order_id, value):
+        registry.update(value)
+
+    with patch.object(
+        order_tracking_service,
+        "_get_whatsapp_config",
+        new=AsyncMock(return_value={"access_token": "token", "phone_number_id": "id"}),
+    ), patch.object(
+        order_tracking_service,
+        "get_registered_order",
+        side_effect=lambda *_args: dict(registry) if registry else None,
+    ), patch.object(
+        order_tracking_service, "_save_registry", side_effect=save_registry
+    ), patch(
+        "src.services.whatsapp_service.WhatsAppService", return_value=FakeWhatsApp()
+    ):
+        async def send_with_new_session():
+            async with session_factory() as db:
+                return await order_tracking_service.send_order_placement_fallback(
+                    user=test_user,
+                    db=db,
+                    customer_phone="254700000001",
+                    order_id="ORD-FALLBACK-CONCURRENT",
+                    business_name="Shop",
+                    meta_message_id=wamid,
+                )
+
+        results = await asyncio.gather(
+            send_with_new_session(), send_with_new_session()
+        )
+
+    assert sum(bool(result.get("success")) and not result.get("skipped") for result in results) <= 1
+    assert len(sends) <= 1
