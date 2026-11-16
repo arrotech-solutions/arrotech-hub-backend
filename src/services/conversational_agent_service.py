@@ -1125,26 +1125,71 @@ class ConversationalAgentService:
                     )
                     session = await context_manager.get_session_by_key(session_key)
 
-            if session_key and is_order_confirmation_message(user_message):
+            checkout_command_message = user_message
+            checkout_session = None
+            active_checkout_summary = False
+            if session_key:
                 try:
-                    # If cart has items but pending_confirmation is missing,
-                    # auto-create it so create_order isn't blocked. Skip entirely
-                    # when the customer is confirming a reservation (YES belongs
-                    # to the booking flow, not the cart).
-                    session = await context_manager.get_session_by_key(session_key)
-                    confirming_reservation = bool(
-                        session and session.metadata.get("awaiting_reservation_confirmation")
-                    )
-                    if not confirming_reservation:
-                        if session and not session.metadata.get("pending_confirmation"):
-                            cart = context_manager.get_cart(session)
-                            if cart:
-                                await context_manager.set_pending_confirmation(
-                                    session_key, cart, {"source": "auto_from_cart"}
-                                )
-                        await context_manager.mark_order_confirmed(session_key)
+                    checkout_session = await context_manager.get_session_by_key(session_key)
                 except Exception as e:
-                    logger.warning(f"[CONV_AGENT] mark_order_confirmed failed: {e}")
+                    logger.warning("[CONV_AGENT] checkout state load failed: %s", e)
+            active_checkout_summary = self._has_active_checkout_summary(
+                checkout_session
+            )
+            checkout_metadata = (
+                checkout_session.metadata if checkout_session else {}
+            )
+
+            if (
+                active_checkout_summary
+                and (user_message or "").strip().lower() == "cancel"
+            ):
+                await context_manager.clear_pending_confirmation(session_key)
+                await context_manager.update_session_metadata(
+                    session_key,
+                    {
+                        "awaiting_order_confirmation": False,
+                        "commerce_phase": "checkout",
+                    },
+                )
+                return await self._cart_fast_path_result(
+                    session_key,
+                    "Your order has not been placed. Your cart is saved, and "
+                    "the checkout summary has been cancelled. You can edit your "
+                    "cart or type *checkout* to review it again.",
+                    actions_taken=[
+                        {"tool": "checkout", "result_summary": "confirmation_cancelled"}
+                    ],
+                    send_cart_buttons=True,
+                )
+
+            if active_checkout_summary:
+                correction = re.match(
+                    r"^\s*(?:yes|ndio|sawa)\b[\s,;:!?.-]+(\S.*)$",
+                    user_message or "",
+                    re.IGNORECASE,
+                )
+                if correction:
+                    correction_message = correction.group(1).strip()
+                    correction_command = match_cart_command(correction_message)
+                    is_add_command = bool(
+                        re.match(r"^add\s+\S", correction_message, re.IGNORECASE)
+                    )
+                    if correction_command in ("remove", "set_quantity") or is_add_command:
+                        checkout_command_message = correction_message
+                        user_message = correction_message
+
+            if (
+                active_checkout_summary
+                and checkout_command_message == user_message
+                and not checkout_metadata.get("awaiting_reservation_confirmation")
+                and not context_manager.is_human_handoff(checkout_session)
+                and self._is_checkout_confirmation_message(user_message)
+            ):
+                try:
+                    await context_manager.mark_order_confirmed(session_key)
+                except Exception as e:
+                    logger.warning("[CONV_AGENT] mark_order_confirmed failed: %s", e)
 
             # ── Rent collection: session reset (no commerce cart UI) ──
             if order_type == "rent_collection" and session_key:
@@ -1169,7 +1214,7 @@ class ConversationalAgentService:
 
             # ── Fast path: cart commands (no LLM) — commerce agents only ──
             if order_type != "rent_collection" and session_key:
-                cart_cmd = match_cart_command(user_message)
+                cart_cmd = match_cart_command(checkout_command_message)
                 # YES / "proceed with the order" confirms an existing summary — don't restart checkout
                 if cart_cmd == "checkout":
                     try:
@@ -1177,7 +1222,7 @@ class ConversationalAgentService:
                         if (
                             _sess
                             and _sess.metadata.get("awaiting_order_confirmation")
-                            and is_order_confirmation_message(user_message)
+                            and is_order_confirmation_message(checkout_command_message)
                         ):
                             cart_cmd = None
                     except Exception:
@@ -1207,6 +1252,7 @@ class ConversationalAgentService:
                             "A person from the shop will follow up."
                         )
                     if rails_reply is not None:
+                        await self._invalidate_checkout_summary(session_key)
                         return await self._cart_fast_path_result(
                             session_key,
                             rails_reply,
@@ -1233,6 +1279,7 @@ class ConversationalAgentService:
                     )
                 if cart_cmd == "clear":
                     await context_manager.clear_cart(session_key)
+                    await self._invalidate_checkout_summary(session_key)
                     reply = cart_cleared_message(catalog_word)
                     return await self._cart_fast_path_result(
                         session_key, reply,
@@ -1282,11 +1329,12 @@ class ConversationalAgentService:
                             exc_info=True,
                         )
                 if cart_cmd == "remove":
-                    name = parse_remove_item_name(user_message)
+                    name = parse_remove_item_name(checkout_command_message)
                     cart, removed, removed_name = await context_manager.remove_cart_item(
                         session_key, product_name=name
                     )
                     if removed:
+                        await self._invalidate_checkout_summary(session_key)
                         reply = f"{cart_item_removed_message(removed_name)}\n\n{format_cart_summary(cart, currency, catalog_word)}"
                     else:
                         reply = (
@@ -1299,12 +1347,13 @@ class ConversationalAgentService:
                         send_cart_buttons=True,
                     )
                 if cart_cmd == "set_quantity":
-                    name, qty = parse_set_quantity_message(user_message)
+                    name, qty = parse_set_quantity_message(checkout_command_message)
                     if name is not None and qty is not None:
                         cart, ok, item_name, _key = await context_manager.set_cart_item_quantity(
                             session_key, qty, product_name=name
                         )
                         if ok:
+                            await self._invalidate_checkout_summary(session_key)
                             reply = (
                                 f"{cart_quantity_updated_message(item_name, qty)}\n\n"
                                 f"{format_cart_summary(cart, currency, catalog_word)}"
@@ -2210,14 +2259,22 @@ class ConversationalAgentService:
                     session = await context_manager.get_session_by_key(session_key)
                 except Exception:
                     session = None
-                if session and not context_manager.is_human_handoff(session):
+                if (
+                    session
+                    and not context_manager.is_human_handoff(session)
+                    and not session.metadata.get("awaiting_reservation_confirmation")
+                    and (
+                        self._has_active_checkout_summary(session)
+                        or session.metadata.get("commerce_phase") == "placed"
+                    )
+                ):
                     checkout_customer = session.metadata.get("checkout_customer")
                     pending = session.metadata.get("pending_confirmation")
                     phase = str(session.metadata.get("commerce_phase") or "").strip()
-                    confirms = is_order_confirmation_message(
-                        user_message,
-                        phase=phase if phase in ("awaiting_yes", "placed") else None,
+                    confirming_reservation = bool(
+                        session.metadata.get("awaiting_reservation_confirmation")
                     )
+                    confirms = self._is_checkout_confirmation_message(user_message)
                     if phase == "placed" and confirms:
                         order_id = str(session.metadata.get("placed_order_id") or "").strip()
                         rails_state = session.metadata.get("commerce_rails_state") or {}
@@ -2238,8 +2295,8 @@ class ConversationalAgentService:
                         )
                     phase_ready = (
                         phase == "awaiting_yes"
-                        and checkout_customer
-                        and pending
+                        and self._has_active_checkout_summary(session)
+                        and not confirming_reservation
                         and confirms
                     )
                     if phase_ready:
@@ -2300,24 +2357,8 @@ class ConversationalAgentService:
                             hidden_context = f"[SYSTEM: Order {order_data.get('order_id')} was successfully created. Do not mention this to the user.]"
                             await self._save_to_ccm(session_key, "assistant", hidden_context)
 
-                            confirmation = (
-                                tool_result.get("verbatim_customer_message")
-                                or tool_result.get("result")
-                                or ""
-                            )
-                            if not str(confirmation).strip():
-                                payable = (
-                                    order_data.get("total")
-                                    or order_data.get("subtotal")
-                                    or 0
-                                )
-                                confirmation = (
-                                    f"Order {order_data.get('order_id')} is placed. "
-                                    f"Total {currency} {payable}. Payment is still pending."
-                                )
-                            final_text = str(confirmation).strip()
                             return {
-                                "response_text": final_text,
+                                "response_text": "",
                                 "image_urls": [],
                                 "cards": [],
                                 "order_created": True,
@@ -2338,7 +2379,7 @@ class ConversationalAgentService:
                             "[CONV_AGENT] Deterministic order creation failed: %s",
                             tool_result.get("result"),
                         )
-                    elif confirms or is_order_confirmation_message(user_message):
+                    elif confirms and not confirming_reservation:
                         summary_items = []
                         if isinstance(pending, dict):
                             summary_items = pending.get("items") or []
@@ -3097,8 +3138,19 @@ class ConversationalAgentService:
                         "content": llm_tool_msg
                     })
 
-            # If we exhausted iterations, return whatever we have
-            final_text = response.content or f"Thank you for your patience! Our team at {business_name} will assist you shortly."
+            # If we exhausted iterations, return whatever we have.
+            # Never pretend a human handoff when the model just ran out of tool turns.
+            if collected_product_cards:
+                final_text = response.content or (
+                    f"Here are some options from our {catalog_word}. "
+                    "Tap *Add to Cart* on anything you like!"
+                )
+            else:
+                final_text = response.content or (
+                    f"I couldn't pull that up cleanly just now. "
+                    f"Tell me what you're looking for, or tap *Browse {catalog_word}* "
+                    f"and I'll show you what's available at {business_name}."
+                )
 
             # Strip bare image URLs from text — images only go through cards
             text_image_urls = extract_image_urls(final_text)
@@ -5465,6 +5517,92 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 _add(customer.get("phone"))
         return allowed
 
+    async def _invalidate_checkout_summary(self, session_key: str) -> None:
+        await context_manager.clear_pending_confirmation(session_key)
+        await context_manager.update_session_metadata(
+            session_key,
+            {
+                "awaiting_order_confirmation": False,
+                "commerce_phase": "checkout",
+            },
+        )
+
+    @staticmethod
+    def _has_active_checkout_summary(session) -> bool:
+        if not session:
+            return False
+        metadata = session.metadata or {}
+        pending = metadata.get("pending_confirmation")
+        items = pending.get("items") if isinstance(pending, dict) else None
+        cart = metadata.get("cart")
+        customer = metadata.get("checkout_customer")
+        return bool(
+            metadata.get("commerce_phase") == "awaiting_yes"
+            and metadata.get("awaiting_order_confirmation")
+            and isinstance(items, list)
+            and items
+            and isinstance(cart, list)
+            and cart
+            and ConversationalAgentService._checkout_items_match(items, cart)
+            and isinstance(customer, dict)
+            and str(customer.get("name") or "").strip()
+            and str(customer.get("phone") or "").strip()
+            and str(customer.get("delivery_method") or "").strip()
+            and not metadata.get("awaiting_reservation_confirmation")
+            and not metadata.get("human_handoff")
+        )
+
+    @staticmethod
+    def _checkout_items_match(pending_items: list, cart_items: list) -> bool:
+        def item_key(item):
+            if not isinstance(item, dict):
+                return None
+            identifier = str(item.get("id") or item.get("product_id") or "").strip()
+            name = str(item.get("name") or "").strip().casefold()
+            try:
+                quantity = float(item.get("quantity", item.get("qty", 1)) or 1)
+                unit_price = float(item.get("unit_price", item.get("price", 0)) or 0)
+            except (TypeError, ValueError):
+                return None
+            return (identifier or name, quantity, unit_price)
+
+        pending_keys = [item_key(item) for item in pending_items]
+        cart_keys = [item_key(item) for item in cart_items]
+        if any(key is None for key in pending_keys + cart_keys):
+            return False
+        return sorted(pending_keys) == sorted(cart_keys)
+
+    def _has_confirmed_active_checkout(self, session, user_message: str) -> bool:
+        if not self._has_active_checkout_summary(session):
+            return False
+        return self._is_checkout_confirmation_message(user_message)
+
+    @staticmethod
+    def _is_checkout_confirmation_message(user_message: str) -> bool:
+        from .whatsapp_ordering_helpers import is_order_confirmation_message
+
+        normalized = re.sub(r"[^\w\s]", "", (user_message or "").strip().lower())
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if normalized in {"ok", "okay", "sure", "alright", "fine"}:
+            return False
+        return is_order_confirmation_message(user_message, phase="awaiting_yes")
+
+    @staticmethod
+    def _requires_checkout_confirmation_gate(session, user_message: str) -> bool:
+        from .whatsapp_ordering_helpers import is_order_confirmation_message
+
+        metadata = session.metadata or {} if session else {}
+        phase = str(metadata.get("commerce_phase") or "")
+        return bool(
+            is_order_confirmation_message(user_message)
+            or is_order_confirmation_message(user_message, phase="awaiting_yes")
+            or metadata.get("pending_confirmation")
+            or metadata.get("awaiting_order_confirmation")
+            or phase == "awaiting_yes"
+            or metadata.get("awaiting_reservation_confirmation")
+            or metadata.get("human_handoff")
+        )
+
     async def _execute_sub_tool(
         self,
         tool_name: str,
@@ -5489,6 +5627,25 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
         business_config = business_config or {}
 
         try:
+            if tool_name == "create_order":
+                session = (
+                    await context_manager.get_session_by_key(session_key)
+                    if session_key
+                    else None
+                )
+                if (
+                    self._requires_checkout_confirmation_gate(session, user_message)
+                    and not self._has_confirmed_active_checkout(session, user_message)
+                ):
+                    return {
+                        "success": False,
+                        "result": (
+                            "ORDER_NOT_CONFIRMED: Show the current checkout summary "
+                            "and get a clear YES before creating the order."
+                        ),
+                        "error": "ORDER_NOT_CONFIRMED",
+                    }
+
             # ── SECURITY: order & payment tools must ALWAYS use the phone number
             # that sent this WhatsApp message. Never trust a phone the LLM or the
             # customer typed — otherwise someone could view, track, or cancel
@@ -5567,6 +5724,13 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                     escalate=_rails_escalate if tool_name == "escalate_to_human" else None,
                 )
                 if routed is not None:
+                    if (
+                        tool_name == "manage_cart"
+                        and routed.get("success")
+                        and str(arguments.get("action") or "view").strip().lower()
+                        in {"add", "remove", "set_quantity", "clear"}
+                    ):
+                        await self._invalidate_checkout_summary(session_key)
                     if tool_name == "create_order" and routed.get("success"):
                         await self._register_rails_order_for_payment(
                             order_data=routed.get("order_data"),
@@ -5652,11 +5816,18 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 )
 
             elif tool_name == "manage_cart":
-                return await self._sub_manage_cart(
+                cart_result = await self._sub_manage_cart(
                     arguments=arguments,
                     session_key=session_key,
                     currency=currency,
                 )
+                if (
+                    cart_result.get("success")
+                    and str(arguments.get("action") or "view").strip().lower()
+                    in {"add", "remove", "set_quantity", "clear"}
+                ):
+                    await self._invalidate_checkout_summary(session_key)
+                return cart_result
 
             elif tool_name == "calculate_total":
                 return await self._sub_calculate_total(
@@ -5955,7 +6126,12 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
     async def _sub_search_products(
         self, query: str, kb_id: str, user: User, db: AsyncSession
     ) -> Dict[str, Any]:
-        """Search the business knowledge base via RAG, or Arrotech catalog if kb_id is blank."""
+        """Search the business knowledge base via RAG, or Arrotech catalog if kb_id is blank.
+
+        If a kb_id is set but RAG returns nothing useful, fall back to the
+        merchant's Arrotech DB catalog so Browse Catalog / product asks still work
+        on the Kenya default path.
+        """
         if not str(kb_id or "").strip():
             return await self._search_arrotech_catalog_products(query, user, db)
 
@@ -5990,6 +6166,33 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                     db,
                 )
             logger.info(f"[CONV_AGENT] search_products result length: {len(str(result.get('result', '')))} chars")
+
+            rag_data = result.get("data") if isinstance(result.get("data"), dict) else {}
+            rag_has_hits = bool(
+                rag_data.get("chunks")
+                or rag_data.get("results")
+                or rag_data.get("documents")
+                or rag_data.get("sources")
+            )
+            rag_text = str(result.get("result") or "").strip()
+            rag_empty = (
+                not result.get("success")
+                or not rag_text
+                or "no results found" in rag_text.lower()
+                or not rag_has_hits
+            )
+            # Prefer live Arrotech catalog when KB search is empty / unusable.
+            if rag_empty:
+                catalog_result = await self._search_arrotech_catalog_products(
+                    query, user, db
+                )
+                catalog_products = (catalog_result.get("data") or {}).get("products") or []
+                if catalog_products:
+                    logger.info(
+                        "[CONV_AGENT] RAG empty — falling back to Arrotech catalog (%d products)",
+                        len(catalog_products),
+                    )
+                    return catalog_result
 
             if result.get("success"):
                 search_text = result.get("result", "No results found")
@@ -6981,6 +7184,24 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
     ) -> Dict[str, Any]:
         """Create an order via OrderService, then persist to connected storage."""
         try:
+            session = (
+                await context_manager.get_session_by_key(session_key)
+                if session_key
+                else None
+            )
+            if (
+                self._requires_checkout_confirmation_gate(session, user_message)
+                and not self._has_confirmed_active_checkout(session, user_message)
+            ):
+                return {
+                    "success": False,
+                    "result": (
+                        "ORDER_NOT_CONFIRMED: Show the current checkout summary "
+                        "and get a clear YES before creating the order."
+                    ),
+                    "error": "ORDER_NOT_CONFIRMED",
+                }
+
             from .commerce_runtime.agent_wiring import dispatch_rails_tool
 
             routed = await dispatch_rails_tool(
@@ -6995,8 +7216,9 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
             )
             if routed is not None:
                 if routed.get("success"):
+                    order_data = routed.get("order_data")
                     await self._register_rails_order_for_payment(
-                        order_data=routed.get("order_data"),
+                        order_data=order_data,
                         arguments=arguments,
                         user=user,
                         session_key=session_key,
@@ -7005,15 +7227,51 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                         currency=currency,
                     )
                     await self._mark_commerce_placed(session_key, routed.get("order_data"))
+                    notify_phone = (
+                        arguments.get("customer_phone")
+                        or (order_data.get("customer_phone") if isinstance(order_data, dict) else "")
+                        or ""
+                    )
+                    if (
+                        getattr(settings, "ORDER_TRACKING_ENABLED", True)
+                        and notify_phone
+                        and user
+                        and isinstance(order_data, dict)
+                        and order_data.get("order_id")
+                    ):
+                        meta_message_id = ""
+                        if session_key:
+                            try:
+                                session = await context_manager.get_session_by_key(session_key)
+                                if session:
+                                    meta_message_id = str(
+                                        session.metadata.get("meta_message_id") or ""
+                                    )
+                            except Exception as session_err:
+                                logger.warning(
+                                    "[CONV_AGENT] Failed to load rails order message ID: %s",
+                                    session_err,
+                                )
+                        notify_args = (
+                            user.id,
+                            notify_phone,
+                            order_data,
+                            business_name,
+                            business_phone,
+                            currency,
+                            meta_message_id,
+                        )
+                        if background_tasks:
+                            background_tasks.add_task(
+                                self._bg_notify_order_placed, *notify_args
+                            )
+                        else:
+                            await self._bg_notify_order_placed(*notify_args)
                 return routed
 
             from .whatsapp_ordering_helpers import is_order_confirmation_message
 
             arguments = await self._apply_saved_delivery_address(arguments, session_key)
-
-            session = None
-            if session_key:
-                session = await context_manager.get_session_by_key(session_key)
 
             # ── Idempotency: atomically claim the right to create an order ──
             # Uses UPDATE … WHERE order_id IS NULL — PostgreSQL row-level locking
@@ -7063,29 +7321,15 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 or (session and session.metadata.get("order_confirmed"))
             )
             if not pending:
-                # Try to auto-create pending_confirmation from cart
-                if session_key:
-                    cart_session = await context_manager.get_session_by_key(session_key)
-                    cart = context_manager.get_cart(cart_session) if cart_session else []
-                    if cart:
-                        logger.info(
-                            "[CONV_AGENT] create_order: auto-creating pending_confirmation from cart (%d items)",
-                            len(cart),
-                        )
-                        await context_manager.set_pending_confirmation(
-                            session_key, cart, {"source": "auto_from_cart_at_create"}
-                        )
-                        pending = {"items": cart}
-                if not pending:
-                    return {
-                        "success": False,
-                        "result": (
-                            "CHECKOUT_REQUIRED: Call calculate_total first, show the customer "
-                            "the order summary with total, then ask them to reply YES (or Ndio) "
-                            "to confirm before create_order."
-                        ),
-                        "error": "CHECKOUT_REQUIRED",
-                    }
+                return {
+                    "success": False,
+                    "result": (
+                        "CHECKOUT_REQUIRED: Call calculate_total first, show the customer "
+                        "the order summary with total, then ask them to reply YES (or Ndio) "
+                        "to confirm before create_order."
+                    ),
+                    "error": "CHECKOUT_REQUIRED",
+                }
             if not confirmed:
                 return {
                     "success": False,
@@ -7261,16 +7505,36 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 user = result.scalar_one_or_none()
                 if not user:
                     return
-                await order_tracking_service.notify_order_placed(
-                    user=user,
-                    db=db,
-                    customer_phone=customer_phone,
-                    order_data=order_data,
-                    business_name=business_name,
-                    business_phone=business_phone,
-                    currency=currency,
-                    meta_message_id=meta_message_id,
-                )
+                delivery_state = {}
+                try:
+                    result = await order_tracking_service.notify_order_placed(
+                        user=user,
+                        db=db,
+                        customer_phone=customer_phone,
+                        order_data=order_data,
+                        business_name=business_name,
+                        business_phone=business_phone,
+                        currency=currency,
+                        meta_message_id=meta_message_id,
+                        delivery_state=delivery_state,
+                    )
+                except Exception as e:
+                    logger.warning(f"[CONV_AGENT] Order tracking notify failed: {e}")
+                    result = {}
+
+                if not result.get("skipped") and not (
+                    result.get("customer_delivery_succeeded")
+                    or delivery_state.get("customer_delivery_succeeded")
+                ):
+                    await order_tracking_service.send_order_placement_fallback(
+                        user=user,
+                        db=db,
+                        customer_phone=customer_phone,
+                        order_id=str(order_data.get("order_id") or ""),
+                        business_name=business_name,
+                        business_phone=business_phone,
+                        meta_message_id=meta_message_id,
+                    )
         except Exception as e:
             logger.warning(f"[CONV_AGENT] Order tracking notify failed: {e}")
 
