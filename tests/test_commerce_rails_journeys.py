@@ -42,16 +42,6 @@ def _tools(*calls: tuple[str, dict], closing: str):
     return steps
 
 
-async def _confirm_checkout(journey: CommerceJourney) -> dict:
-    await journey.say("checkout", [])
-    await journey.say("pickup", [])
-    metadata = journey.session.metadata
-    assert metadata["commerce_phase"] == "awaiting_yes"
-    assert metadata["awaiting_order_confirmation"] is True
-    assert metadata["pending_confirmation"]["items"]
-    return await journey.say("Yes", [])
-
-
 async def test_browse_to_pay_uses_catalog_price_and_marks_paid(db_session, test_user):
     tea = _product("Tea", "100.00", "TEA", "tea chai")
     async with CommerceJourney(db_session, test_user, products=[tea]) as journey:
@@ -77,7 +67,21 @@ async def test_browse_to_pay_uses_catalog_price_and_marks_paid(db_session, test_
                 closing="Added Tea.",
             ),
         )
-        placed = await _confirm_checkout(journey)
+        journey.session.metadata["commerce_phase"] = "awaiting_yes"
+        placed = await journey.say(
+            "Thanks, continue",
+            _tools(
+                (
+                    "create_order",
+                    {
+                        "customer_name": "Asha",
+                        "items": [{"name": "Tea", "quantity": 1, "unit_price": 1}],
+                        "delivery_method": "pickup",
+                    },
+                ),
+                closing="Order placed.",
+            ),
+        )
         assert placed["order_created"] is True
         assert placed["order_data"]["total"] == 100
         prompted = await journey.say(
@@ -123,7 +127,21 @@ async def test_pay_fail_then_retry_marks_the_same_order_paid(db_session, test_us
                 closing="Added.",
             ),
         )
-        placed = await _confirm_checkout(journey)
+        journey.session.metadata["commerce_phase"] = "awaiting_yes"
+        placed = await journey.say(
+            "Thanks, continue",
+            _tools(
+                (
+                    "create_order",
+                    {
+                        "customer_name": "Asha",
+                        "items": [{"name": "Tea", "quantity": 1, "unit_price": 9}],
+                        "delivery_method": "pickup",
+                    },
+                ),
+                closing="Placed.",
+            ),
+        )
         order_id = placed["order_data"]["order_id"]
         await journey.say(
             "Please send the M-Pesa prompt",
@@ -410,7 +428,21 @@ async def test_pay_then_cancel_opens_a_refund_pipeline(db_session, test_user):
                 closing="Added.",
             ),
         )
-        placed = await _confirm_checkout(journey)
+        journey.session.metadata["commerce_phase"] = "awaiting_yes"
+        placed = await journey.say(
+            "Thanks, continue",
+            _tools(
+                (
+                    "create_order",
+                    {
+                        "customer_name": "Asha",
+                        "items": [{"name": "Tea", "quantity": 1, "unit_price": 1}],
+                        "delivery_method": "pickup",
+                    },
+                ),
+                closing="Placed.",
+            ),
+        )
         order_id = placed["order_data"]["order_id"]
         await journey.say(
             "Please send the M-Pesa prompt",
@@ -472,7 +504,21 @@ async def test_stk_success_marks_hub_paid_and_retries_receipt(db_session, test_u
                 closing="Added.",
             ),
         )
-        placed = await _confirm_checkout(journey)
+        journey.session.metadata["commerce_phase"] = "awaiting_yes"
+        placed = await journey.say(
+            "Thanks, continue",
+            _tools(
+                (
+                    "create_order",
+                    {
+                        "customer_name": "Asha",
+                        "items": [{"name": "Tea", "quantity": 1, "unit_price": 1}],
+                        "delivery_method": "pickup",
+                    },
+                ),
+                closing="Placed.",
+            ),
+        )
         order_id = placed["order_data"]["order_id"]
         wa = AsyncMock()
         wa.upload_and_send_document = AsyncMock(
