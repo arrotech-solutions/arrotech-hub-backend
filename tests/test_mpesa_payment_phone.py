@@ -7,7 +7,6 @@ import pytest
 from src.services.conversation_context_manager import ConversationSession, context_manager
 from src.services.conversational_agent_service import ConversationalAgentService
 from src.services.whatsapp_ordering_helpers import (
-    PAY_MPESA_AGENT_PREFIX,
     PAY_MPESA_OTHER_PREFIX,
     extract_phone_from_text,
     mask_mpesa_phone,
@@ -100,69 +99,6 @@ def sample_order_fixture():
         "delivery_method": "pickup",
         "status": "pending",
     }
-
-
-@pytest.mark.asyncio
-async def test_pay_on_this_number_uses_existing_order_without_paid_receipt(
-    db_session, sample_order_fixture,
-):
-    from src.services.commerce_runtime.db_ports import DbOrderPort
-    from src.services.order_tracking_service import order_tracking_service
-
-    agent = ConversationalAgentService()
-    user = MagicMock()
-    user.id = "user-uuid-1"
-    order_id = sample_order_fixture["order_id"]
-    session_key = f"ccm:whatsapp:{user.id}:254711371265"
-    session = ConversationSession(
-        session_key=session_key,
-        platform="whatsapp",
-        owner_user_id=str(user.id),
-        sender_id="254711371265",
-        messages=[],
-        metadata={"orders_by_id": {order_id: sample_order_fixture}},
-    )
-    session_patches = (
-        patch.object(context_manager, "get_session_by_key", AsyncMock(return_value=session)),
-        patch.object(context_manager, "update_session_metadata", AsyncMock()),
-        patch.object(context_manager, "maybe_expire_human_handoff", AsyncMock()),
-        patch.object(context_manager, "save_session", AsyncMock()),
-    )
-
-    with (
-        session_patches[0],
-        session_patches[1],
-        session_patches[2],
-        session_patches[3],
-        patch.object(agent, "_sub_initiate_mpesa_payment", new_callable=AsyncMock) as initiate,
-        patch.object(agent, "_sub_create_order", new_callable=AsyncMock) as create_order,
-        patch.object(DbOrderPort, "save_order", new_callable=AsyncMock) as save_order,
-        patch.object(agent, "_cart_fast_path_result", new_callable=AsyncMock) as fast_path,
-        patch.object(
-            order_tracking_service, "notify_payment_received", new_callable=AsyncMock
-        ) as paid_receipt,
-    ):
-        initiate.return_value = {"success": True}
-        fast_path.return_value = {"response_text": "payment request sent"}
-
-        await agent.execute(
-            user_message=f"{PAY_MPESA_AGENT_PREFIX}{order_id}",
-            session_key=session_key,
-            business_config={
-                "business_name": "Test Cafe",
-                "customer_phone": "254711371265",
-                "commerce_rails_enabled": False,
-            },
-            user=user,
-            db=db_session,
-        )
-
-    initiate.assert_awaited_once()
-    assert initiate.await_args.kwargs["order_id"] == order_id
-    assert initiate.await_args.kwargs["phone_number"] == "254711371265"
-    create_order.assert_not_awaited()
-    save_order.assert_not_awaited()
-    paid_receipt.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -71,6 +71,7 @@ def is_browse_all_catalog_query(query: str) -> bool:
         return False
     return bool(_BROWSE_ALL_RE.search(q))
 
+
 def _is_sellable_catalog_product(product: CatalogProduct) -> bool:
     """In stock (or an equivalent label) with unknown quantity or quantity above zero."""
     token = " ".join(

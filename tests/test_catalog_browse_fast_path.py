@@ -12,15 +12,6 @@ from src.services.conversation_context_manager import (
 )
 
 
-@pytest.fixture(autouse=True)
-def avoid_external_embeddings(monkeypatch):
-    from src.services import catalog_service
-
-    monkeypatch.setattr(
-        catalog_service, "embed_catalog_text", AsyncMock(return_value=None)
-    )
-
-
 def _user(email: str) -> User:
     return User(
         id=uuid.uuid4(),

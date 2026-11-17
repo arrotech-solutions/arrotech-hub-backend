@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import re
 import uuid
 from decimal import Decimal, InvalidOperation
@@ -11,8 +10,6 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import CatalogProduct
-
-logger = logging.getLogger(__name__)
 
 _KEY_MAP = {
     "name": "name",
@@ -114,25 +111,6 @@ def build_search_text(product_fields: dict) -> str:
         if text:
             parts.append(text)
     return " ".join(parts).lower()
-
-
-async def embed_catalog_text(text: str) -> list[float] | None:
-    """Create an embedding for catalog search. Fail open to None."""
-    blob = (text or "").strip()
-    if not blob:
-        return None
-    try:
-        from .openai_service import OpenAIEmbeddingService
-
-        result = await OpenAIEmbeddingService().openai_create_embedding(blob)
-        embedding = result.get("embedding") if result.get("success") else None
-        if isinstance(embedding, list) and embedding and all(
-            isinstance(x, (int, float)) for x in embedding
-        ):
-            return [float(x) for x in embedding]
-    except Exception as exc:
-        logger.warning("Catalog embedding failed (continuing without vector): %s", exc)
-    return None
 
 
 def _like_pattern(query: str) -> str:
@@ -253,13 +231,6 @@ class CatalogService:
             raise CatalogNotFound(pid)
         return product
 
-    async def _refresh_embedding(self, product: CatalogProduct) -> None:
-        """Attach a vector for hybrid search; never block CRUD on embed failure."""
-        try:
-            product.embedding = await embed_catalog_text(product.search_text or product.name or "")
-        except Exception as exc:
-            logger.warning("Catalog embedding assign failed for %s: %s", product.id, exc)
-
     async def create_product(self, db, user_id, data: dict) -> CatalogProduct:
         fields = normalize_product_fields(data)
         await self._ensure_unique_sku(
@@ -267,7 +238,6 @@ class CatalogService:
         )
         product = CatalogProduct(user_id=_as_uuid(user_id))
         self._assign(product, fields, creating=True)
-        await self._refresh_embedding(product)
         db.add(product)
         await db.commit()
         await db.refresh(product)
@@ -279,7 +249,6 @@ class CatalogService:
         sku = _text(fields, "sku") if "sku" in fields else (product.sku or "")
         await self._ensure_unique_sku(db, user_id, sku, exclude_id=product.id)
         self._assign(product, fields, creating=False)
-        await self._refresh_embedding(product)
         await db.commit()
         await db.refresh(product)
         return product
@@ -332,13 +301,11 @@ class CatalogService:
                 if existing is None:
                     product = CatalogProduct(user_id=uid)
                     self._assign(product, fields, creating=True)
-                    await self._refresh_embedding(product)
                     db.add(product)
                     await db.flush()
                     created += 1
                 else:
                     self._assign(existing, fields, creating=False)
-                    await self._refresh_embedding(existing)
                     await db.flush()
                     updated += 1
             except ValueError as exc:
