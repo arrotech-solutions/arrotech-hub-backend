@@ -47,8 +47,6 @@ class IdempotencyService:
         On error: mark_failed() → allows retry on next attempt
     """
 
-    ORDER_FOLLOWUP_FALLBACK_MARKER = "__wa_order_fallback_sent__"
-
     async def claim_message(
         self,
         db: AsyncSession,
@@ -390,49 +388,6 @@ class IdempotencyService:
             )
             # On failure, let the caller proceed rather than silently dropping
             return True
-
-    async def claim_order_followup_fallback(
-        self,
-        db: AsyncSession,
-        user_id,
-        wa_message_id: str,
-    ) -> bool:
-        """Atomically claim the one customer fallback for a WhatsApp message.
-
-        The existing processing_result column stores a reserved marker so no
-        migration or additional per-message flag is needed. Missing rows and
-        database errors fail closed: neither authorizes a customer send.
-        """
-        from ..models import ProcessedWebhookMessage
-
-        if not wa_message_id:
-            return False
-
-        try:
-            result = await db.execute(
-                update(ProcessedWebhookMessage)
-                .where(
-                    and_(
-                        ProcessedWebhookMessage.user_id == user_id,
-                        ProcessedWebhookMessage.whatsapp_message_id == wa_message_id,
-                        ProcessedWebhookMessage.processing_result.is_(None),
-                    )
-                )
-                .values(processing_result=self.ORDER_FOLLOWUP_FALLBACK_MARKER)
-            )
-            await db.commit()
-            return result.rowcount == 1
-        except Exception as e:
-            logger.warning(
-                "[IDEMPOTENCY] fallback claim failed for %s: %s",
-                wa_message_id,
-                e,
-            )
-            try:
-                await db.rollback()
-            except Exception:
-                pass
-            return False
 
 
     async def duplicate_delivery_action(
