@@ -2,7 +2,6 @@
 
 import uuid
 from decimal import Decimal
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -19,15 +18,6 @@ _RESULT_KEYS = {
     "sku",
     "score",
 }
-
-
-@pytest.fixture(autouse=True)
-def avoid_external_embeddings(monkeypatch):
-    from src.services import catalog_service
-
-    monkeypatch.setattr(
-        catalog_service, "embed_catalog_text", AsyncMock(return_value=None)
-    )
 
 
 def _user(email: str) -> User:
@@ -353,7 +343,7 @@ async def test_search_shoes_matches_footwear_category(db_session):
                 "name": "Nike Air Max",
                 "Price": "8500",
                 "Category": "Footwear",
-                "SKU": "NIKE-SHOE",
+                "SKU": "NIKE-AIR",
             },
             {
                 "name": "Coca-Cola 500ml",
@@ -369,7 +359,7 @@ async def test_search_shoes_matches_footwear_category(db_session):
         db_session, user.id, "what shoes do you have"
     )
 
-    assert [r["sku"] for r in results] == ["NIKE-SHOE"]
+    assert [r["sku"] for r in results] == ["NIKE-AIR"]
 
 
 @pytest.mark.asyncio
