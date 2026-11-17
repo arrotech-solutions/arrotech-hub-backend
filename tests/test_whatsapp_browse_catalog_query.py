@@ -1,21 +1,24 @@
 """Browse-catalog intent detection for WhatsApp menu button / agent search."""
 
-from src.services.catalog_search_service import (
-    _expand_query,
-    is_browse_all_catalog_query,
-)
+from src.services.catalog_search_service import _expand_query
+
+
+def _is_browse_all(query: str) -> bool:
+    from src.services.catalog_search_service import is_browse_all_catalog_query
+
+    return is_browse_all_catalog_query(query)
 
 
 class TestIsBrowseAllCatalogQuery:
     def test_webhook_browse_message_is_browse_all(self):
-        assert is_browse_all_catalog_query(
+        assert _is_browse_all(
             "I'd like to browse your catalog/products. Please show me what you have."
         ) is True
 
     def test_specific_product_query_is_not_browse_all(self):
-        assert is_browse_all_catalog_query("what shoes do you have") is False
-        assert is_browse_all_catalog_query("chips") is False
-        assert is_browse_all_catalog_query("xyzzy-no-match") is False
+        assert _is_browse_all("what shoes do you have") is False
+        assert _is_browse_all("chips") is False
+        assert _is_browse_all("xyzzy-no-match") is False
 
 
 class TestShoesSynonymGroup:

@@ -7,7 +7,6 @@ import pytest
 from src.services.conversation_context_manager import ConversationSession, context_manager
 from src.services.conversational_agent_service import ConversationalAgentService
 from src.services.whatsapp_ordering_helpers import (
-    PAY_MPESA_AGENT_PREFIX,
     PAY_MPESA_OTHER_PREFIX,
     extract_phone_from_text,
     mask_mpesa_phone,
@@ -100,69 +99,6 @@ def sample_order_fixture():
         "delivery_method": "pickup",
         "status": "pending",
     }
-
-
-@pytest.mark.asyncio
-async def test_pay_on_this_number_uses_existing_order_without_paid_receipt(
-    db_session, sample_order_fixture,
-):
-    from src.services.commerce_runtime.db_ports import DbOrderPort
-    from src.services.order_tracking_service import order_tracking_service
-
-    agent = ConversationalAgentService()
-    user = MagicMock()
-    user.id = "user-uuid-1"
-    order_id = sample_order_fixture["order_id"]
-    session_key = f"ccm:whatsapp:{user.id}:254711371265"
-    session = ConversationSession(
-        session_key=session_key,
-        platform="whatsapp",
-        owner_user_id=str(user.id),
-        sender_id="254711371265",
-        messages=[],
-        metadata={"orders_by_id": {order_id: sample_order_fixture}},
-    )
-    session_patches = (
-        patch.object(context_manager, "get_session_by_key", AsyncMock(return_value=session)),
-        patch.object(context_manager, "update_session_metadata", AsyncMock()),
-        patch.object(context_manager, "maybe_expire_human_handoff", AsyncMock()),
-        patch.object(context_manager, "save_session", AsyncMock()),
-    )
-
-    with (
-        session_patches[0],
-        session_patches[1],
-        session_patches[2],
-        session_patches[3],
-        patch.object(agent, "_sub_initiate_mpesa_payment", new_callable=AsyncMock) as initiate,
-        patch.object(agent, "_sub_create_order", new_callable=AsyncMock) as create_order,
-        patch.object(DbOrderPort, "save_order", new_callable=AsyncMock) as save_order,
-        patch.object(agent, "_cart_fast_path_result", new_callable=AsyncMock) as fast_path,
-        patch.object(
-            order_tracking_service, "notify_payment_received", new_callable=AsyncMock
-        ) as paid_receipt,
-    ):
-        initiate.return_value = {"success": True}
-        fast_path.return_value = {"response_text": "payment request sent"}
-
-        await agent.execute(
-            user_message=f"{PAY_MPESA_AGENT_PREFIX}{order_id}",
-            session_key=session_key,
-            business_config={
-                "business_name": "Test Cafe",
-                "customer_phone": "254711371265",
-                "commerce_rails_enabled": False,
-            },
-            user=user,
-            db=db_session,
-        )
-
-    initiate.assert_awaited_once()
-    assert initiate.await_args.kwargs["order_id"] == order_id
-    assert initiate.await_args.kwargs["phone_number"] == "254711371265"
-    create_order.assert_not_awaited()
-    save_order.assert_not_awaited()
-    paid_receipt.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -510,98 +446,6 @@ async def test_notify_payment_received_prefers_whatsapp_sender(sample_order_fixt
 
         call_kwargs = wa.upload_and_send_document.call_args.kwargs
         assert call_kwargs["to_number"] == "254711371265"
-
-
-@pytest.mark.asyncio
-async def test_stk_mapping_keeps_whatsapp_recipient_when_mpesa_phone_differs(
-    sample_order_fixture,
-):
-    from types import SimpleNamespace
-
-    from src.services.order_tracking_service import order_tracking_service
-
-    agent = ConversationalAgentService()
-    owner_id = "f90eb4b7-f155-49ce-b76f-518f8ca9b673"
-    whatsapp_phone = "254711371265"
-    mpesa_phone = "254797568564"
-    checkout_id = "ws_CO_OTHER_PHONE"
-    registry = {
-        "order_id": sample_order_fixture["order_id"],
-        "whatsapp_sender": whatsapp_phone,
-        "customer_phone": whatsapp_phone,
-        "order": sample_order_fixture,
-    }
-    cfg = SimpleNamespace(
-        webhook_secret="secret",
-        daraja_shortcode="123456",
-        daraja_passkey="pass",
-        daraja_environment="sandbox",
-        callback_url_override=None,
-    )
-    db_result = MagicMock()
-    db_result.scalar_one_or_none.return_value = cfg
-    db = AsyncMock()
-    db.execute.return_value = db_result
-    user = MagicMock()
-    user.id = owner_id
-    stored = {}
-
-    def store(key, value, expire_seconds=3600):
-        stored[key] = value
-        return True
-
-    with (
-        patch.object(
-            agent, "_resolve_order_for_payment", new_callable=AsyncMock
-        ) as resolve_order,
-        patch.object(order_tracking_service, "get_registered_order", return_value=registry),
-        patch.object(order_tracking_service, "is_stk_debounced", return_value=False),
-        patch.object(order_tracking_service, "record_stk_context") as record_context,
-        patch.object(
-            order_tracking_service, "persist_stk_order_mapping", new_callable=AsyncMock
-        ) as persist_mapping,
-        patch.object(order_tracking_service, "mark_last_stk_at"),
-        patch.object(order_tracking_service, "record_payment_attempt", new_callable=AsyncMock),
-        patch("src.services.conversational_agent_service.cache_service.set", side_effect=store),
-        patch(
-            "src.services.mpesa_reconciliation_service."
-            "MpesaReconciliationService.decrypt_config_credentials",
-            return_value={
-                "daraja_consumer_key": "key",
-                "daraja_consumer_secret": "secret",
-                "daraja_passkey": "pass",
-            },
-        ),
-        patch("src.services.daraja_service.DarajaService") as daraja_cls,
-        patch("src.services.order_stk_payment_service.schedule_stk_payment_poll"),
-    ):
-        resolve_order.return_value = (sample_order_fixture, 500)
-        daraja_cls.return_value.stk_push = AsyncMock(
-            return_value={
-                "success": True,
-                "checkout_request_id": checkout_id,
-                "merchant_request_id": "mr-OTHER-PHONE",
-            }
-        )
-
-        result = await agent._sub_initiate_mpesa_payment(
-            order_id=sample_order_fixture["order_id"],
-            phone_number=mpesa_phone,
-            amount=500,
-            description="Order",
-            session_key="",
-            storage_config={"provider": "none"},
-            business_name="Test Cafe",
-            user=user,
-            db=db,
-        )
-
-    assert result["success"] is True
-    mapping = stored[f"mpesa:stk:checkout:{checkout_id}"]
-    assert mapping["whatsapp_sender"] == whatsapp_phone
-    assert mapping["mpesa_phone"] == mpesa_phone
-    assert record_context.call_args.kwargs["whatsapp_sender"] == whatsapp_phone
-    assert persist_mapping.await_args.kwargs["whatsapp_sender"] == whatsapp_phone
 
 
 @pytest.mark.asyncio

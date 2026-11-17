@@ -102,7 +102,6 @@ class OrderTrackingService:
             "order": order_snapshot,
             "registered_at": existing.get("registered_at") or datetime.utcnow().isoformat(),
             "placement_notified": existing.get("placement_notified", False),
-            "placement_fallback_sent": existing.get("placement_fallback_sent", False),
             "placement_receipt_sent": existing.get("placement_receipt_sent", False),
             "payment_notified": existing.get("payment_notified", False),
             "payment_status": (
@@ -839,7 +838,6 @@ class OrderTrackingService:
         currency: str = "KES",
         skip_payment_prompt: bool = False,
         meta_message_id: str = "",
-        delivery_state: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Send confirmation + PDF receipt when an order is created.
@@ -917,8 +915,6 @@ class OrderTrackingService:
         )
 
         sent = []
-        delivery_state = delivery_state if delivery_state is not None else {}
-        delivery_state["customer_delivery_succeeded"] = False
         wa_config = await self._get_whatsapp_config(user, db)
         if not wa_config:
             return {"success": False, "error": "WhatsApp not connected"}
@@ -926,44 +922,6 @@ class OrderTrackingService:
         from .whatsapp_service import WhatsAppService
 
         wa = WhatsAppService()
-
-        async def send_customer_message(label, failed_label, message, **kwargs):
-            try:
-                result = await wa.send_message(
-                    customer_phone, message, config=wa_config, **kwargs
-                )
-                succeeded = bool(
-                    isinstance(result, dict) and result.get("success")
-                )
-            except Exception as send_error:
-                logger.warning(
-                    "[ORDER_TRACK] Customer send %s failed: %s",
-                    label,
-                    send_error,
-                )
-                succeeded = False
-            sent.append(label if succeeded else failed_label)
-            if succeeded:
-                delivery_state["customer_delivery_succeeded"] = True
-            return succeeded
-
-        async def send_customer_action(label, failed_label, send_action):
-            try:
-                result = await send_action()
-                succeeded = bool(
-                    isinstance(result, dict) and result.get("success")
-                )
-            except Exception as send_error:
-                logger.warning(
-                    "[ORDER_TRACK] Customer send %s failed: %s",
-                    label,
-                    send_error,
-                )
-                succeeded = False
-            sent.append(label if succeeded else failed_label)
-            if succeeded:
-                delivery_state["customer_delivery_succeeded"] = True
-            return succeeded
 
         # ── Idempotency: DB-backed guard for confirmation send ──
         should_send_confirmation = True
@@ -980,9 +938,8 @@ class OrderTrackingService:
                 )
 
         if should_send_confirmation:
-            await send_customer_message(
-                "confirmation", "confirmation_failed", confirmation
-            )
+            r1 = await wa.send_message(customer_phone, confirmation, config=wa_config)
+            sent.append("confirmation" if r1.get("success") else "confirmation_failed")
         else:
             logger.info(
                 "[ORDER_TRACK] Confirmation already sent for message %s — skipping",
@@ -1018,27 +975,19 @@ class OrderTrackingService:
                 filename=f"receipt_{order_id}.pdf",
             )
             if pdf_bytes:
-                try:
-                    pdf_sent = await self._send_receipt_pdf(
-                        wa,
-                        customer_phone=customer_phone,
-                        business_phone="",
-                        pdf_bytes=pdf_bytes,
-                        filename=f"Receipt-{order_id}.pdf",
-                        customer_caption=f"🧾 Here is your receipt for order {order_id}.",
-                        business_caption="",
-                        wa_config=wa_config,
-                    )
-                except Exception as send_error:
-                    logger.warning(
-                        "[ORDER_TRACK] Customer receipt send failed: %s",
-                        send_error,
-                    )
-                    pdf_sent = []
+                pdf_sent = await self._send_receipt_pdf(
+                    wa,
+                    customer_phone=customer_phone,
+                    business_phone="",
+                    pdf_bytes=pdf_bytes,
+                    filename=f"Receipt-{order_id}.pdf",
+                    customer_caption=f"🧾 Here is your receipt for order {order_id}.",
+                    business_caption="",
+                    wa_config=wa_config,
+                )
                 sent.extend(pdf_sent)
                 if any(s == "customer_receipt" for s in pdf_sent):
                     registry["placement_receipt_sent"] = True
-                    delivery_state["customer_delivery_succeeded"] = True
                 else:
                     sent.append("pdf_generation_failed")
             else:
@@ -1051,15 +1000,17 @@ class OrderTrackingService:
             sent.append("receipt_idempotent_skip")
 
         if not registry.get("placement_receipt_sent") and receipt_text:
-            await send_customer_message("receipt", "receipt_failed", receipt_text)
+            r2 = await wa.send_message(customer_phone, receipt_text, config=wa_config)
+            sent.append("receipt" if r2.get("success") else "receipt_failed")
 
         maps_link = self._delivery_maps_link(order)
         if maps_link and order.get("delivery_method") == "delivery":
-            await send_customer_message(
-                "location_link",
-                "location_link_failed",
+            r3 = await wa.send_message(
+                customer_phone,
                 f"📍 *Delivery location saved*\n{maps_link}",
+                config=wa_config,
             )
+            sent.append("location_link" if r3.get("success") else "location_link_failed")
 
         if not skip_payment_prompt:
             pay_mode, pay_cfg = await self.resolve_payment_mode(user, db)
@@ -1084,36 +1035,27 @@ class OrderTrackingService:
                     whatsapp_sender=customer_phone,
                     business_name=business_name,
                 )
-                await send_customer_message(
-                    "manual_payment_prompt",
-                    "manual_payment_prompt_failed",
-                    manual_message,
+                r4 = await wa.send_message(customer_phone, manual_message, config=wa_config)
+                sent.append("manual_payment_prompt" if r4.get("success") else "manual_payment_prompt_failed")
+                r4b = await wa.send_quick_reply_buttons(
+                    to_number=customer_phone,
+                    body_text="Once you've paid, tap below to send your M-Pesa code.",
+                    buttons=[{"id": f"reported_paid:{order_id}", "title": "I've paid"}],
+                    config=wa_config,
                 )
-                await send_customer_action(
-                    "manual_paid_button",
-                    "manual_paid_button_failed",
-                    lambda: wa.send_quick_reply_buttons(
-                        to_number=customer_phone,
-                        body_text="Once you've paid, tap below to send your M-Pesa code.",
-                        buttons=[{"id": f"reported_paid:{order_id}", "title": "I've paid"}],
-                        config=wa_config,
-                    ),
-                )
+                sent.append("manual_paid_button" if r4b.get("success") else "manual_paid_button_failed")
             else:
                 payment_buttons = [
                     {"id": f"pay_mpesa:{order_id}", "title": "Pay on this number"},
                     {"id": f"pay_mpesa_other:{order_id}", "title": "Other number"},
                 ]
-                await send_customer_action(
-                    "payment_prompt",
-                    "payment_prompt_failed",
-                    lambda: wa.send_quick_reply_buttons(
-                        to_number=customer_phone,
-                        body_text="How would you like to pay with M-Pesa?",
-                        buttons=payment_buttons,
-                        config=wa_config,
-                    ),
+                r4 = await wa.send_quick_reply_buttons(
+                    to_number=customer_phone,
+                    body_text="How would you like to pay with M-Pesa?",
+                    buttons=payment_buttons,
+                    config=wa_config,
                 )
+                sent.append("payment_prompt" if r4.get("success") else "payment_prompt_failed")
         else:
             sent.append("payment_prompt_skipped")
 
@@ -1127,87 +1069,7 @@ class OrderTrackingService:
         )
 
         logger.info("[ORDER_TRACK] notify_order_placed order=%s sent=%s", order_id, sent)
-        return {
-            "success": True,
-            "order_id": order_id,
-            "sent": sent,
-            "customer_delivery_succeeded": delivery_state[
-                "customer_delivery_succeeded"
-            ],
-        }
-
-    async def send_order_placement_fallback(
-        self,
-        *,
-        user: User,
-        db: AsyncSession,
-        customer_phone: str,
-        order_id: str,
-        business_name: str,
-        business_phone: str = "",
-        meta_message_id: str = "",
-    ) -> Dict[str, Any]:
-        if not order_id or not customer_phone:
-            return {"success": False, "error": "order_id and customer_phone required"}
-
-        owner_user_id = str(user.id)
-        registry = self.get_registered_order(owner_user_id, order_id) or {
-            "order_id": order_id,
-            "customer_phone": customer_phone,
-            "status": "pending",
-        }
-        if registry.get("placement_fallback_sent"):
-            return {"success": True, "order_id": order_id, "skipped": True}
-
-        wa_config = await self._get_whatsapp_config(user, db)
-        if not wa_config:
-            return {"success": False, "error": "WhatsApp not connected"}
-
-        if not meta_message_id:
-            return {
-                "success": False,
-                "order_id": order_id,
-                "error": "Meta message ID required for fallback idempotency",
-            }
-
-        from .idempotency_service import idempotency_service
-
-        should_send = await idempotency_service.claim_order_followup_fallback(
-            db,
-            user.id,
-            meta_message_id,
-        )
-        if not should_send:
-            return {"success": True, "order_id": order_id, "skipped": True}
-
-        registry["placement_fallback_sent"] = True
-        registry["placement_notified"] = True
-        registry["status"] = registry.get("status") or "pending"
-        self._save_registry(owner_user_id, order_id, registry)
-
-        phone_detail = f" at {business_phone}" if business_phone else ""
-        fallback = (
-            f"Your order *{order_id}* has been placed and is pending. "
-            "We couldn't send the receipt or payment options just now. "
-            "No payment has been initiated. Please contact "
-            f"*{business_name}*{phone_detail} for assistance."
-        )
-        try:
-            from .whatsapp_service import WhatsAppService
-
-            result = await WhatsAppService().send_message(
-                customer_phone, fallback, config=wa_config
-            )
-        except Exception as send_error:
-            logger.warning(
-                "[ORDER_TRACK] Customer order-placement fallback failed: %s",
-                send_error,
-            )
-            return {"success": False, "order_id": order_id, "error": str(send_error)}
-        return {
-            "success": bool(isinstance(result, dict) and result.get("success")),
-            "order_id": order_id,
-        }
+        return {"success": True, "order_id": order_id, "sent": sent}
 
     async def notify_status_change(
         self,
