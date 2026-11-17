@@ -8471,7 +8471,6 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                     or (existing_reg or {}).get("customer_phone")
                     or whatsapp_sender
                 )
-                whatsapp_sender = notify_phone
                 if not existing_reg:
                     order_tracking_service.register_order(
                         owner_id,
