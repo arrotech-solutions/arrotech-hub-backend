@@ -346,6 +346,16 @@ class ConversationContextManager:
         session.metadata.pop("welcome_sent", None)
         session.metadata.pop("awaiting_checkout_details", None)
         session.metadata.pop("checkout_draft", None)
+        session.metadata.pop("checkout_customer", None)
+        # Unpaid pay-loop state — must clear or "reset" leaves the customer
+        # stuck on Pay on this number / Other number forever.
+        session.metadata.pop("commerce_phase", None)
+        session.metadata.pop("placed_order_id", None)
+        session.metadata.pop("commerce_rails_state", None)
+        session.metadata.pop("active_payment_order_id", None)
+        session.metadata.pop("awaiting_mpesa_payment", None)
+        session.metadata.pop("awaiting_mpesa_code", None)
+        session.metadata.pop("awaiting_order_confirmation", None)
         # Reservation flow state — must be wiped on reset so a stale/hallucinated
         # pending booking never resurfaces after "reset".
         session.metadata.pop("reservation_draft", None)

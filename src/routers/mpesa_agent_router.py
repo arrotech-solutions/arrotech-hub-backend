@@ -159,6 +159,43 @@ async def get_mpesa_agent_config(
         raise HTTPException(status_code=500, detail="Failed to get configuration")
 
 
+def _normalize_callback_url_override(value: Optional[str]) -> Optional[str]:
+    """Blank clears override. Full callback paths are rejected — origin only."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    banned = ("/payments/", "/mpesa/callback", "/api/agents/daraja")
+    if any(part in lowered for part in banned):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Webhook Callback URL (Override) must be an API origin only "
+                "(e.g. https://prod.api.arrotechsolutions.com), not a full "
+                "callback path. Leave it empty to use the default."
+            ),
+        )
+    from urllib.parse import urlparse
+
+    parsed = urlparse(text)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(
+            status_code=400,
+            detail="Override must be an http(s) origin like https://your-api.example.com",
+        )
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Override must not include a path. Use the host only; Hub appends "
+                "/api/agents/daraja/callback/{secret}."
+            ),
+        )
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
 @router.post("/config", response_model=MpesaAgentConfigResponse)
 async def update_mpesa_agent_config(
     config_data: MpesaAgentConfigUpdate,
@@ -169,6 +206,12 @@ async def update_mpesa_agent_config(
     try:
         service = MpesaReconciliationService()
         config_dict = config_data.dict(exclude_none=True)
+        # Empty string is exclude_none-dropped; still honor explicit clear/normalize.
+        raw_fields = config_data.dict(exclude_unset=True)
+        if "callback_url_override" in raw_fields:
+            config_dict["callback_url_override"] = _normalize_callback_url_override(
+                raw_fields.get("callback_url_override")
+            )
         config = await service.create_or_update_config(
             current_user.id,
             config_dict,
