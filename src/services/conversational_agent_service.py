@@ -2222,9 +2222,24 @@ class ConversationalAgentService:
                             else None
                         ),
                     )
-                    if phase in ("placed", "paying") and (
-                        confirms or phase == "paying"
-                    ):
+                    # Unpaid re-offer only on confirm / explicit pay intent — never
+                    # trap every message (that blocked reset, browse, and support).
+                    _pay_followup = False
+                    if phase == "paying":
+                        _pay_norm = re.sub(
+                            r"[^\w\s]", "", (user_message or "").strip().lower()
+                        )
+                        _pay_norm = re.sub(r"\s+", " ", _pay_norm).strip()
+                        _pay_followup = _pay_norm in {
+                            "pay",
+                            "payment",
+                            "lipa",
+                            "mpesa",
+                            "m-pesa",
+                            "pay now",
+                            "lipa sasa",
+                        } or _pay_norm.startswith("pay ")
+                    if phase in ("placed", "paying") and (confirms or _pay_followup):
                         order_id = str(session.metadata.get("placed_order_id") or "").strip()
                         rails_state = session.metadata.get("commerce_rails_state") or {}
                         if not order_id and isinstance(rails_state, dict):
@@ -2234,6 +2249,51 @@ class ConversationalAgentService:
                             if session
                             else preferred_language
                         )
+                        # If Hub already shows paid, leave the pay loop.
+                        if order_id:
+                            try:
+                                from .commerce_storage_service import CommerceStorageService
+
+                                _paid_row = await CommerceStorageService().get_order(
+                                    db, user.id, order_id
+                                )
+                                if (
+                                    _paid_row is not None
+                                    and str(_paid_row.payment_status or "")
+                                    .strip()
+                                    .lower()
+                                    == "paid"
+                                ):
+                                    await context_manager.update_session_metadata(
+                                        session_key,
+                                        {"commerce_phase": "post_order"},
+                                    )
+                                    reply = self._t(
+                                        lang,
+                                        (
+                                            f"Order *{order_id}* is already paid. "
+                                            "How else can I help?"
+                                        ),
+                                        (
+                                            f"Oda *{order_id}* tayari imelipwa. "
+                                            "Naweza kukusaidia vingineaje?"
+                                        ),
+                                    )
+                                    return await self._cart_fast_path_result(
+                                        session_key,
+                                        reply,
+                                        actions_taken=[
+                                            {
+                                                "tool": "create_order",
+                                                "result_summary": "already_paid",
+                                            }
+                                        ],
+                                        send_cart_buttons=True,
+                                    )
+                            except Exception as _paid_err:
+                                logger.warning(
+                                    "[CONV_AGENT] paid check failed: %s", _paid_err
+                                )
                         if order_id:
                             reply = self._t(
                                 lang,
