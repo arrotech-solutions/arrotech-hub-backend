@@ -709,7 +709,7 @@ async def _handle_mpesa_callback_background(webhook_secret: str, body: bytes):
     Background task to process M-Pesa callback payload.
     Uses its own DB session (NOT the request-scoped one).
     """
-    from ..database import get_session_maker
+    from ..database import get_session_maker, set_tenant_context
 
     session_maker = get_session_maker()
     async with session_maker() as db:
@@ -735,6 +735,7 @@ async def _handle_mpesa_callback_background(webhook_secret: str, body: bytes):
                 return
 
             logger.info(f"Daraja callback matched to user_id={config.user_id}")
+            await set_tenant_context(db, config.user_id)
 
             service = MpesaReconciliationService()
 

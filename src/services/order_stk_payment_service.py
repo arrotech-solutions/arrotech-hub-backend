@@ -305,8 +305,11 @@ async def _already_paid_for_poll(owner_user_id: str, order_id: str, registry: Di
     from .commerce_storage_service import CommerceStorageService
 
     try:
+        from ..database import set_tenant_context
+
         session_maker = get_session_maker()
         async with session_maker() as db:
+            await set_tenant_context(db, owner_user_id)
             row = await CommerceStorageService().get_order(db, owner_user_id, order_id)
     except Exception as exc:
         logger.warning("[STK_PAY] Hub paid lookup failed for %s: %s", order_id, exc)
@@ -324,10 +327,11 @@ async def _retry_paid_receipt(
     currency: str = "KES",
 ) -> None:
     """Send the receipt again. The STK charge already succeeded."""
-    from ..database import get_session_maker
+    from ..database import get_session_maker, set_tenant_context
 
     session_maker = get_session_maker()
     async with session_maker() as db:
+        await set_tenant_context(db, owner_user_id)
         try:
             owner_uuid = uuid.UUID(str(owner_user_id))
         except (ValueError, TypeError, AttributeError):
@@ -487,6 +491,14 @@ async def _reconcile_commerce_payment(
             order_id,
             exc,
         )
+        try:
+            await db.rollback()
+        except Exception as rollback_err:
+            logger.warning(
+                "[STK_PAY] rollback after reconcile failure for %s: %s",
+                order_id,
+                rollback_err,
+            )
 
 
 def _notify_context_from_registry(registry: Dict[str, Any]) -> Dict[str, Any]:
@@ -522,7 +534,7 @@ async def poll_stk_and_finalize_order_payment(
     Poll Daraja STK query when callbacks are missing (common in dev / misconfigured URLs).
     Idempotent: exits if callback already marked payment_notified.
     """
-    from ..database import get_session_maker
+    from ..database import get_session_maker, set_tenant_context
 
     if not checkout_request_id or not order_id:
         return
@@ -553,6 +565,7 @@ async def poll_stk_and_finalize_order_payment(
         if not ctx:
             session_maker = get_session_maker()
             async with session_maker() as lookup_db:
+                await set_tenant_context(lookup_db, owner_user_id)
                 ctx = await order_tracking_service.resolve_stk_notify_context_from_db(
                     lookup_db,
                     owner_user_id,
@@ -616,6 +629,7 @@ async def poll_stk_and_finalize_order_payment(
                 continue
             session_maker = get_session_maker()
             async with session_maker() as db:
+                await set_tenant_context(db, owner_user_id)
                 await finalize_order_stk_payment(
                     db=db,
                     owner_user_id=owner_user_id,
@@ -648,6 +662,7 @@ async def poll_stk_and_finalize_order_payment(
             )
             session_maker = get_session_maker()
             async with session_maker() as db:
+                await set_tenant_context(db, owner_user_id)
                 await finalize_order_stk_payment(
                     db=db,
                     owner_user_id=owner_user_id,
@@ -694,6 +709,7 @@ async def poll_stk_and_finalize_order_payment(
     )
     session_maker = get_session_maker()
     async with session_maker() as db:
+        await set_tenant_context(db, owner_user_id)
         owner_uuid = uuid.UUID(str(owner_user_id))
         owner_res = await db.execute(select(User).where(User.id == owner_uuid))
         owner_user = owner_res.scalar_one_or_none()
