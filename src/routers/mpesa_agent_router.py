@@ -358,13 +358,17 @@ async def register_mpesa_urls(
                 detail="Daraja ShortCode is missing in configuration"
             )
 
-        # Determine the full webhook URL
-        # Logic: If override exists, use it. Otherwise use the API base URL.
-        base_url = config.callback_url_override or settings.API_BASE_URL
-        # Ensure base_url doesn't end with / for consistency
-        base_url = base_url.rstrip('/')
-        
-        webhook_url = f"{base_url}/api/agents/daraja/callback/{config.webhook_secret}"
+        from ..services.order_stk_payment_service import build_tenant_stk_callback_url
+
+        webhook_url = build_tenant_stk_callback_url(
+            config.webhook_secret or "",
+            callback_url_override=config.callback_url_override or "",
+        )
+        if not webhook_url:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not build Daraja webhook URL (API_BASE_URL / webhook secret)",
+            )
 
         logger.info(f"Registering Daraja URLs for user {current_user.id}. Confirmation: {webhook_url}")
 
@@ -767,8 +771,9 @@ async def _handle_mpesa_callback_background(webhook_secret: str, body: bytes):
                         checkout_request_id,
                     )
                 else:
-                    logger.warning(
-                        "STK callback: could not resolve order context "
+                    logger.error(
+                        "STK callback: could not resolve order context — Hub will stay "
+                        "pending unless poll recovers "
                         "(checkout=%s merchant=%s user=%s result=%s)",
                         checkout_request_id,
                         merchant_request_id,
@@ -800,6 +805,14 @@ async def _handle_mpesa_callback_background(webhook_secret: str, body: bytes):
                         is_paid = False
                         result_code = "fraud_underpayment"
                         parsed["result_desc"] = f"Underpayment: Paid {actual_paid} but expected {expected_amount}"
+
+                if is_paid and not notify_ctx:
+                    logger.error(
+                        "STK paid at Safaricom but no order mapping — customer gets SMS, "
+                        "Hub stays pending (checkout=%s receipt=%s)",
+                        checkout_request_id,
+                        (parsed or {}).get("transaction_id"),
+                    )
 
                 if notify_ctx and is_paid:
                     if (notify_ctx or {}).get("payment_type") == "rent":

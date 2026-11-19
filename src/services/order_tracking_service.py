@@ -519,6 +519,18 @@ class OrderTrackingService:
             )
             row = res.scalar_one_or_none()
 
+        # Last resort: CheckoutRequestID is globally unique — recover if the
+        # user-scoped row was written under a slightly different owner id.
+        if not row and checkout_request_id:
+            res = await db.execute(
+                select(StkOrderMapping).where(
+                    StkOrderMapping.checkout_request_id == checkout_request_id
+                )
+            )
+            candidate = res.scalar_one_or_none()
+            if candidate is not None and str(candidate.user_id) == str(owner_uuid):
+                row = candidate
+
         if not row:
             return None
         logger.info(

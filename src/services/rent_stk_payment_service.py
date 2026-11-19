@@ -81,8 +81,14 @@ async def initiate_rent_stk_payment(
     if order_tracking_service.is_stk_debounced(owner_id, ref):
         return {"success": False, "error": "Please wait a moment before requesting another M-Pesa prompt."}
 
-    base_url = (cfg.callback_url_override or settings.API_BASE_URL).rstrip("/")
-    callback_url = f"{base_url}/api/agents/daraja/callback/{cfg.webhook_secret}"
+    from .order_stk_payment_service import build_tenant_stk_callback_url
+
+    callback_url = build_tenant_stk_callback_url(
+        cfg.webhook_secret or "",
+        callback_url_override=cfg.callback_url_override or "",
+    )
+    if not callback_url:
+        return {"success": False, "error": "M-Pesa callback URL could not be built"}
     tenant_env = (cfg.daraja_environment or "sandbox").lower()
 
     daraja = DarajaService(environment=tenant_env)

@@ -8432,9 +8432,19 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                     "error": "M-Pesa is not configured for this business. Ask the business to set Daraja credentials in Settings → Mpesa Webhooks.",
                 }
 
-            # Build callback URL (tenant-scoped)
-            base_url = (cfg.callback_url_override or settings.API_BASE_URL).rstrip("/")
-            callback_url = f"{base_url}/api/agents/daraja/callback/{cfg.webhook_secret}"
+            # Build callback URL (tenant-scoped). Always origin + agent path —
+            # never concatenate onto /payments/... even if API_BASE_URL is wrong.
+            from .order_stk_payment_service import build_tenant_stk_callback_url
+
+            callback_url = build_tenant_stk_callback_url(
+                cfg.webhook_secret or "",
+                callback_url_override=cfg.callback_url_override or "",
+            )
+            if not callback_url:
+                return {
+                    "success": False,
+                    "error": "M-Pesa callback URL could not be built. Check API_BASE_URL / webhook secret.",
+                }
 
             tenant_env = (cfg.daraja_environment or "sandbox").lower()
             daraja = DarajaService(environment=tenant_env)
@@ -8521,6 +8531,17 @@ This business accepts table reservations. A reservation is SEPARATE from orderin
                 amount=float(amount_int),
                 currency="KES",
             )
+            # Commit before Safaricom can POST the result — otherwise the
+            # callback cannot resolve the order and Hub stays pending.
+            try:
+                await db.commit()
+            except Exception as map_commit_err:
+                logger.error(
+                    "[CONV_AGENT] STK mapping commit failed order=%s: %s",
+                    order_id,
+                    map_commit_err,
+                    exc_info=True,
+                )
 
             logger.info(
                 "[CONV_AGENT] STK initiated order=%s checkout=%s callback_url=%s whatsapp=%s mpesa=%s",

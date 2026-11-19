@@ -13,6 +13,9 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from urllib.parse import urlparse
+
+from ..config import settings
 from ..models import User
 from .cache_service import cache_service
 from .daraja_service import DarajaService
@@ -20,6 +23,33 @@ from .order_tracking_service import order_tracking_service
 from .stk_result_messages import STK_TERMINAL_FAILURE_CODES, stk_customer_message
 
 logger = logging.getLogger(__name__)
+
+
+def public_api_origin(url: str) -> str:
+    """Strip accidental callback/payments paths so STK ResultURL is Hub's agent webhook."""
+    text = (url or "").strip()
+    if not text:
+        return ""
+    if "://" not in text:
+        text = f"https://{text}"
+    parsed = urlparse(text)
+    if not parsed.scheme or not parsed.netloc:
+        return text.rstrip("/")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def build_tenant_stk_callback_url(
+    webhook_secret: str,
+    *,
+    callback_url_override: str = "",
+) -> str:
+    """URL Safaricom must POST STK results to (never the /payments logger)."""
+    secret = (webhook_secret or "").strip()
+    raw = (callback_url_override or "").strip() or (settings.API_BASE_URL or "")
+    base = public_api_origin(raw).rstrip("/")
+    if not base or not secret:
+        return ""
+    return f"{base}/api/agents/daraja/callback/{secret}"
 
 
 def _failure_notified_key(checkout_request_id: str) -> str:
