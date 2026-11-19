@@ -87,7 +87,7 @@ class MpesaReconciliationService:
         config = await self.get_config(user_id, db)
 
         if config:
-            # Update existing
+            # Update existing (None clears nullable columns such as callback override)
             for key, value in data.items():
                 if hasattr(config, key):
                     setattr(config, key, value)

@@ -1032,7 +1032,7 @@ async def test_second_confirm_reoffers_pay_not_greeting(db_session, test_user):
 
 
 @pytest.mark.asyncio
-async def test_unpaid_followup_reoffers_pay_buttons(db_session, test_user):
+async def test_unpaid_pay_intent_reoffers_pay_buttons(db_session, test_user):
     phone = "254700000116"
     session_key = f"ccm:whatsapp:{test_user.id}:{phone}"
     session = _session(session_key, str(test_user.id), phone)
@@ -1053,13 +1053,40 @@ async def test_unpaid_followup_reoffers_pay_buttons(db_session, test_user):
         "_sub_create_order",
         new_callable=AsyncMock,
     ) as create_order:
-        result, chat = await _say(agent, session, test_user, db_session, "hello?")
+        result, chat = await _say(agent, session, test_user, db_session, "pay")
 
     assert "ORD-77" in (result.get("response_text") or "")
     assert "pay on this number" in (result.get("response_text") or "").lower()
     offer_pay.assert_awaited()
     create_order.assert_not_called()
     chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_paying_phase_does_not_trap_reset(db_session, test_user):
+    phone = "254700000117"
+    session_key = f"ccm:whatsapp:{test_user.id}:{phone}"
+    session = _session(session_key, str(test_user.id), phone)
+    session.metadata = {
+        "welcome_sent": True,
+        "preferred_language": "en",
+        "commerce_phase": "paying",
+        "placed_order_id": "ORD-88",
+    }
+    agent = ConversationalAgentService()
+
+    with patch.object(
+        ConversationalAgentService,
+        "_offer_payment_retry_buttons",
+        new_callable=AsyncMock,
+    ) as offer_pay:
+        result, _chat = await _say(agent, session, test_user, db_session, "reset")
+
+    text = (result.get("response_text") or "").lower()
+    assert "pay on this number" not in text
+    assert "fresh start" in text or "welcome" in text
+    offer_pay.assert_not_called()
+    assert session.metadata.get("commerce_phase") != "paying"
 
 
 @pytest.mark.asyncio
