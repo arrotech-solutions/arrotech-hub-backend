@@ -136,7 +136,7 @@ _CONFIRM_WORDS = frozenset({
 _AWAITING_YES_CONFIRM_WORDS = frozenset({
     "yea", "ok", "okay", "okey", "sure", "alright", "alrite", "fine",
 })
-_CONFIRM_PHASES = frozenset({"awaiting_yes", "placed"})
+_CONFIRM_PHASES = frozenset({"awaiting_yes", "placed", "paying"})
 
 # Common menu and catalog typos (Kenya / food / real estate)
 _TYPO_MAP = {
@@ -207,7 +207,8 @@ def is_order_confirmation_message(message: str, *, phase: Optional[str] = None) 
 
     Strict words (yes/ndio/sawa/…) confirm in any phase. Soft words
     (yea/ok/okay/sure/alright/fine) confirm only when `phase` is
-    `awaiting_yes` or `placed` — phase is what makes "ok" unambiguous.
+    `awaiting_yes`, `placed`, or `paying` — phase is what makes "ok"
+    unambiguous.
     """
     if not message:
         return False
