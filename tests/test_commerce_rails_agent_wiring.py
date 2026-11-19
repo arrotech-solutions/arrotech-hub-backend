@@ -976,13 +976,26 @@ async def test_soft_confirm_after_present_places_the_order(
     agent = ConversationalAgentService()
     await _present(agent, session, test_user, db_session, phone)
 
-    result, chat = await _say(agent, session, test_user, db_session, word)
+    with patch.object(
+        ConversationalAgentService,
+        "_offer_payment_retry_buttons",
+        new_callable=AsyncMock,
+    ) as offer_pay, patch.object(
+        ConversationalAgentService,
+        "_sub_initiate_mpesa_payment",
+        new_callable=AsyncMock,
+    ) as stk:
+        result, chat = await _say(agent, session, test_user, db_session, word)
 
     assert result.get("order_created") is True
     text = (result.get("response_text") or "").lower()
     assert "placed" in text
+    assert "pay on this number" in text
     assert "how can i help" not in text
-    assert session.metadata.get("commerce_phase") == "placed"
+    assert session.metadata.get("commerce_phase") == "paying"
+    assert session.metadata.get("placed_order_id")
+    offer_pay.assert_awaited()
+    stk.assert_not_called()
     chat.assert_not_called()
     stored = await db_session.execute(
         select(CommerceOrder).where(CommerceOrder.user_id == test_user.id)
@@ -991,24 +1004,61 @@ async def test_soft_confirm_after_present_places_the_order(
 
 
 @pytest.mark.asyncio
-async def test_second_confirm_says_already_placed_not_greeting(db_session, test_user):
+async def test_second_confirm_reoffers_pay_not_greeting(db_session, test_user):
     phone = "254700000113"
     session_key = f"ccm:whatsapp:{test_user.id}:{phone}"
     session = _session(session_key, str(test_user.id), phone)
     session.metadata = {
         "welcome_sent": True,
         "preferred_language": "en",
-        "commerce_phase": "placed",
+        "commerce_phase": "paying",
         "placed_order_id": "ORD-9",
     }
     agent = ConversationalAgentService()
 
-    result, chat = await _say(agent, session, test_user, db_session, "YES")
+    with patch.object(
+        ConversationalAgentService,
+        "_offer_payment_retry_buttons",
+        new_callable=AsyncMock,
+    ) as offer_pay:
+        result, chat = await _say(agent, session, test_user, db_session, "YES")
 
     text = result.get("response_text") or ""
     assert "ORD-9" in text
-    assert "already placed" in text.lower()
+    assert "pay on this number" in text.lower()
     assert "how can i help" not in text.lower()
+    offer_pay.assert_awaited()
+    chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unpaid_followup_reoffers_pay_buttons(db_session, test_user):
+    phone = "254700000116"
+    session_key = f"ccm:whatsapp:{test_user.id}:{phone}"
+    session = _session(session_key, str(test_user.id), phone)
+    session.metadata = {
+        "welcome_sent": True,
+        "preferred_language": "en",
+        "commerce_phase": "paying",
+        "placed_order_id": "ORD-77",
+    }
+    agent = ConversationalAgentService()
+
+    with patch.object(
+        ConversationalAgentService,
+        "_offer_payment_retry_buttons",
+        new_callable=AsyncMock,
+    ) as offer_pay, patch.object(
+        ConversationalAgentService,
+        "_sub_create_order",
+        new_callable=AsyncMock,
+    ) as create_order:
+        result, chat = await _say(agent, session, test_user, db_session, "hello?")
+
+    assert "ORD-77" in (result.get("response_text") or "")
+    assert "pay on this number" in (result.get("response_text") or "").lower()
+    offer_pay.assert_awaited()
+    create_order.assert_not_called()
     chat.assert_not_called()
 
 

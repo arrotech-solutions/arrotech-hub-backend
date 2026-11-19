@@ -2216,23 +2216,61 @@ class ConversationalAgentService:
                     phase = str(session.metadata.get("commerce_phase") or "").strip()
                     confirms = is_order_confirmation_message(
                         user_message,
-                        phase=phase if phase in ("awaiting_yes", "placed") else None,
+                        phase=(
+                            phase
+                            if phase in ("awaiting_yes", "placed", "paying")
+                            else None
+                        ),
                     )
-                    if phase == "placed" and confirms:
+                    if phase in ("placed", "paying") and (
+                        confirms or phase == "paying"
+                    ):
                         order_id = str(session.metadata.get("placed_order_id") or "").strip()
                         rails_state = session.metadata.get("commerce_rails_state") or {}
                         if not order_id and isinstance(rails_state, dict):
                             order_id = str(rails_state.get("order_id") or "").strip()
-                        reply = (
-                            f"Order {order_id} is already placed."
-                            if order_id
-                            else "That order is already placed."
+                        lang = (
+                            context_manager.get_preferred_language(session)
+                            if session
+                            else preferred_language
                         )
+                        if order_id:
+                            reply = self._t(
+                                lang,
+                                (
+                                    f"Order *{order_id}* is placed and payment is still pending.\n\n"
+                                    "Tap *Pay on this number* to pay on this WhatsApp line, "
+                                    "or *Other number* to use a different M-Pesa number."
+                                ),
+                                (
+                                    f"Oda *{order_id}* imewekwa na malipo bado hayajakamilika.\n\n"
+                                    "Bonyeza *Pay on this number* kulipia kwa namba hii ya WhatsApp, "
+                                    "au *Other number* kutumia namba nyingine ya M-Pesa."
+                                ),
+                            )
+                        else:
+                            reply = self._t(
+                                lang,
+                                "That order is already placed. Payment is still pending.",
+                                "Oda hiyo tayari imewekwa. Malipo bado hayajakamilika.",
+                            )
+                        if order_id:
+                            await self._offer_payment_retry_buttons(
+                                user,
+                                db,
+                                order_id=order_id,
+                                customer_phone=customer_phone,
+                                body_text=reply,
+                                lang=lang,
+                            )
                         return await self._cart_fast_path_result(
                             session_key,
                             reply,
                             actions_taken=[
-                                {"tool": "create_order", "result_summary": "already_placed"}
+                                {
+                                    "tool": "create_order",
+                                    "result_summary": "already_placed_reoffer_pay",
+                                }
                             ],
                             send_cart_buttons=False,
                         )
@@ -2273,12 +2311,12 @@ class ConversationalAgentService:
                         )
                         if tool_result.get("success"):
                             order_data = tool_result.get("order_data", tool_result)
+                            placed_id = ""
+                            if isinstance(order_data, dict):
+                                placed_id = str(order_data.get("order_id") or "")
                             try:
                                 await context_manager.clear_cart(session_key)
                                 await context_manager.clear_pending_confirmation(session_key)
-                                placed_id = ""
-                                if isinstance(order_data, dict):
-                                    placed_id = str(order_data.get("order_id") or "")
                                 await context_manager.update_session_metadata(
                                     session_key,
                                     {
@@ -2286,7 +2324,7 @@ class ConversationalAgentService:
                                         "checkout_draft": {},
                                         "awaiting_checkout_details": False,
                                         "awaiting_order_confirmation": False,
-                                        "commerce_phase": "placed",
+                                        "commerce_phase": "paying",
                                         "placed_order_id": placed_id,
                                     },
                                 )
@@ -2305,17 +2343,52 @@ class ConversationalAgentService:
                                 or tool_result.get("result")
                                 or ""
                             )
+                            lang = preferred_language
                             if not str(confirmation).strip():
                                 payable = (
                                     order_data.get("total")
                                     or order_data.get("subtotal")
                                     or 0
                                 )
-                                confirmation = (
-                                    f"Order {order_data.get('order_id')} is placed. "
-                                    f"Total {currency} {payable}. Payment is still pending."
+                                confirmation = self._t(
+                                    lang,
+                                    (
+                                        f"Order {order_data.get('order_id')} is placed. "
+                                        f"Total {currency} {payable}. Payment is still pending."
+                                    ),
+                                    (
+                                        f"Oda {order_data.get('order_id')} imewekwa. "
+                                        f"Jumla {currency} {payable}. Malipo bado hayajakamilika."
+                                    ),
                                 )
-                            final_text = str(confirmation).strip()
+                            pay_prompt = self._t(
+                                lang,
+                                (
+                                    "Tap *Pay on this number* to pay on this WhatsApp line, "
+                                    "or *Other number* to use a different M-Pesa number."
+                                ),
+                                (
+                                    "Bonyeza *Pay on this number* kulipia kwa namba hii ya WhatsApp, "
+                                    "au *Other number* kutumia namba nyingine ya M-Pesa."
+                                ),
+                            )
+                            final_text = (
+                                f"{str(confirmation).strip()}\n\n{pay_prompt}"
+                            ).strip()
+                            pay_to = (
+                                (checkout_customer or {}).get("phone")
+                                or customer_phone
+                                or ""
+                            )
+                            if placed_id and pay_to:
+                                await self._offer_payment_retry_buttons(
+                                    user,
+                                    db,
+                                    order_id=placed_id,
+                                    customer_phone=str(pay_to),
+                                    body_text=final_text,
+                                    lang=lang,
+                                )
                             return {
                                 "response_text": final_text,
                                 "image_urls": [],
@@ -2328,7 +2401,10 @@ class ConversationalAgentService:
                                 "escalation_notification": "",
                                 "human_handoff": False,
                                 "actions_taken": [
-                                    {"tool": "create_order", "result_summary": "deterministic_checkout"}
+                                    {
+                                        "tool": "create_order",
+                                        "result_summary": "deterministic_checkout_pay_choice",
+                                    }
                                 ],
                                 "send_cart_buttons": False,
                                 "send_agent_mode_buttons": None,
